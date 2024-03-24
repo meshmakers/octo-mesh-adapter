@@ -1,0 +1,19 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshAdapter", "src\MeshAdapter\MeshAdapter.csproj", "{852D2570-DE79-4FEC-A5AA-A9288A438F20}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+		DebugL|Any CPU = DebugL|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{852D2570-DE79-4FEC-A5AA-A9288A438F20}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{852D2570-DE79-4FEC-A5AA-A9288A438F20}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{852D2570-DE79-4FEC-A5AA-A9288A438F20}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{852D2570-DE79-4FEC-A5AA-A9288A438F20}.Release|Any CPU.Build.0 = Release|Any CPU
+		{852D2570-DE79-4FEC-A5AA-A9288A438F20}.DebugL|Any CPU.ActiveCfg = DebugL|Any CPU
+		{852D2570-DE79-4FEC-A5AA-A9288A438F20}.DebugL|Any CPU.Build.0 = DebugL|Any CPU
+	EndGlobalSection
+EndGlobal

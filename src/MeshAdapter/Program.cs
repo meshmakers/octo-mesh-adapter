@@ -1,5 +1,13 @@
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
+using Meshmakers.Octo.MeshAdapter.Consumers;
+using Meshmakers.Octo.MeshAdapter.Repositories;
+using Meshmakers.Octo.MeshAdapter.Services;
+using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
+using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
+using Meshmakers.Octo.Services.Common.DistributionEventHub.Commands;
+using Meshmakers.Octo.Services.Common.DistributionEventHub.Messages;
 using Microsoft.AspNetCore.Builder;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -32,9 +40,27 @@ var adapterBuilder = new WebSocketBuilder();
 
 await adapterBuilder.RunAsync(args, services =>
 {
-    services.AddSingleton<IAdapterService, MeshAdapter.Services.MeshAdapter>();
-    
+    services.AddSingleton<IAdapterService, MeshAdapter>();
+    services.AddDataPipeline()
+        .RegisterNode<GetRtEntitiesByTypeNode>()
+        .RegisterNode<GetRtEntitiesByIdNode>()
+        .RegisterNode<CreateUpdateInfoNode>()
+        .RegisterNode<ApplyChangesNode>()
+        .RegisterNode<RetrieveFromMessageNode>()
+        .RegisterNode<EnrichWithMongoDataNode>()
+        .RegisterEtlContext<IRetrieverEtlContext>();
+            
+    services.AddTransient<IPipelineConfigurationRepository, PipelineConfigurationRepository>();
+    services.AddSingleton<IRetrieverPipelineExecutionService, RetrieverPipelineExecutionService>();
+    services.AddSingleton<ISenderPipelineExecutionService, SenderPipelineExecutionService>();
+    services.AddSingleton<ISenderManager, SenderManager>();
+    services.AddSingleton<IRetrieverManager, RetrieverManager>();
+
 }, builder => {
 
     
+}, configuration =>
+{
+    configuration.AddRoutedEventConsumer<PipelineDataReceivedConsumer, PipelineDataReceived>();
+    configuration.AddRoutedEventConsumer<PipelineDataSentConsumer, PipelineTriggerSchedule>(QueueNames.PipelineTriggerChannelName);
 });

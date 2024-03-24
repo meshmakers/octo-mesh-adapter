@@ -1,6 +1,6 @@
 using Meshmakers.Octo.Sdk.Common.Adapters;
 
-namespace MeshAdapter.Services;
+namespace Meshmakers.Octo.MeshAdapter.Services;
 
 internal class MeshAdapter : IAdapterService
 {

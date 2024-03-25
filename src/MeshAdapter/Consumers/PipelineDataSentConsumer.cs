@@ -13,7 +13,7 @@ namespace Meshmakers.Octo.MeshAdapter.Consumers;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class PipelineDataSentConsumer(
     ILogger<PipelineDataSentConsumer> logger,
-    ISenderPipelineExecutionService pipelineExecutionService)
+    IMeshPipelineExecutionService pipelineExecutionService)
     : IDistributedConsumer<PipelineTriggerSchedule>
 {
     public async Task ConsumeAsync(IDistributedContext<PipelineTriggerSchedule> context)
@@ -26,7 +26,7 @@ internal class PipelineDataSentConsumer(
             try
             {
                 await pipelineExecutionService.ExecutePipelineAsync(context.Message.TenantId.NormalizeString(),
-                    pipelineRtId, new ExecutePipelineOptions(DateTime.UtcNow, SendDebugInfo));
+                    new RtEntityId("System.Communication/MeshPipeline", pipelineRtId), new ExecutePipelineOptions(DateTime.UtcNow, SendDebugInfo));
             }
             catch (Exception ex)
             {
@@ -37,7 +37,7 @@ internal class PipelineDataSentConsumer(
         }
     }
     
-    private Task SendDebugInfo(OctoObjectId pipelineRtId, string debugInfo)
+    private Task SendDebugInfo(RtEntityId pipelineRtEntityId, string debugInfo)
     {
         return Task.CompletedTask;
     }

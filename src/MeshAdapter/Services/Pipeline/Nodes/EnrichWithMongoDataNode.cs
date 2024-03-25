@@ -53,7 +53,7 @@ public class EnrichWithMongoDataConfiguration : NodeConfiguration
 /// This node gets data from mongodb
 /// </summary>
 [Node(nameof(EnrichWithMongoDataNode), 1, typeof(EnrichWithMongoDataConfiguration))]
-internal class EnrichWithMongoDataNode(NodeDelegate next, IRetrieverEtlContext etlContext, ILogger<EnrichWithMongoDataNode> logger) : IPipelineNode
+internal class EnrichWithMongoDataNode(NodeDelegate next, IMeshEtlContext etlContext, ILogger<EnrichWithMongoDataNode> logger) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {

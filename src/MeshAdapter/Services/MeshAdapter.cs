@@ -1,16 +1,43 @@
+using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.Common.Services;
+using NLog;
 
 namespace Meshmakers.Octo.MeshAdapter.Services;
 
-internal class MeshAdapter : IAdapterService
+internal class MeshAdapter(IMeshPipelineExecutionService pipelineExecutionService) : IAdapterService
 {
-    public Task StartupAsync(AdapterStartup adapterStartup, CancellationToken stoppingToken)
+    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+
+    public async Task StartupAsync(AdapterStartup adapterStartup, CancellationToken stoppingToken)
     {
-        return Task.CompletedTask;
+        try
+        {
+            foreach (var dataPipelineConfiguration in adapterStartup.Configuration.Pipelines)
+            {
+                await pipelineExecutionService.RegisterPipeline(adapterStartup.TenantId, dataPipelineConfiguration);
+            }
+        }
+        catch (Exception e)
+        {
+            Logger.Error(e, "Error while startup");
+            throw;
+        }
+      
     }
 
     public Task ShutdownAsync(AdapterShutdown adapterShutdown, CancellationToken stoppingToken)
     {
-        return Task.CompletedTask;
+        try
+        {
+            pipelineExecutionService.UnregisterAllPipelines(adapterShutdown.TenantId);
+            Logger.Info("Mesh Adapter service stopped");
+            return Task.CompletedTask;
+        }
+        catch (Exception e)
+        {
+            Logger.Error(e, "Error while shutdown");
+            throw;
+        }
     }
 }

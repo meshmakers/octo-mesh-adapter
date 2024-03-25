@@ -5,9 +5,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 
 /// <summary>
-/// Interface for the Retriever ETL context
+/// Interface for the Mesh ETL context
 /// </summary>
-public interface IRetrieverEtlContext : IEtlContext
+public interface IMeshEtlContext : IEtlContext
 {
     /// <summary>
     /// Returns the message

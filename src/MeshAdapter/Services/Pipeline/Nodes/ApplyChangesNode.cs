@@ -22,7 +22,7 @@ public class ApplyChangesNodeConfiguration : NodeConfiguration
 /// Applies changes to the object in mongodb
 /// </summary>
 [Node("ApplyChanges", 1, typeof(ApplyChangesNodeConfiguration))]
-public class ApplyChangesNode(NodeDelegate next, IRetrieverEtlContext etlContext) : IPipelineNode
+public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)

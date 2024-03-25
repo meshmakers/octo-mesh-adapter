@@ -45,7 +45,7 @@ public class GetRtEntitiesByIdNodeConfiguration : NodeConfiguration
 /// Gets rt entities by type
 /// </summary>
 [Node("GetRtEntitiesById", 1, typeof(GetRtEntitiesByIdNodeConfiguration))]
-public class GetRtEntitiesByIdNode(NodeDelegate next, IRetrieverEtlContext context) : IPipelineNode
+public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)

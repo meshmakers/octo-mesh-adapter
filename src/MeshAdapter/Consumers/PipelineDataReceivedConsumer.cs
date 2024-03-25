@@ -13,31 +13,31 @@ namespace Meshmakers.Octo.MeshAdapter.Consumers;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class PipelineDataReceivedConsumer(
     ILogger<PipelineDataReceivedConsumer> logger,
-    IRetrieverPipelineExecutionService retrieverPipelineExecutionService)
+    IMeshPipelineExecutionService pipelineExecutionService)
     : IDistributedConsumer<PipelineDataReceived>
 {
     public async Task ConsumeAsync(IDistributedContext<PipelineDataReceived> context)
     {
         var message = context.Message;
-        logger.LogInformation("[{TenantId}] Received Input: PipelineId '{PipelineId}', Value '{Value}'",
-            message.TenantId, message.DataPipelineRtId, message.Value);
+        logger.LogInformation("[{TenantId}] Received Input: PipelineId '{PipelineRtEntityId}', Value '{Value}'",
+            message.TenantId, message.PipelineRtEntityId, message.Value);
 
         try
         {
-            await retrieverPipelineExecutionService.ExecutePipelineAsync(context.Message.TenantId.NormalizeString(),
+            await pipelineExecutionService.ExecutePipelineByDataPipelineRtId(context.Message.TenantId.NormalizeString(),
                 context.Message.DataPipelineRtId,
                 new ExecutePipelineOptions(context.Message.TransactionStartedDateTime, SendDebugInfo)
                     { ExternalReceivedDateTime = context.Message.ExternalReceivedDateTime }, context.Message.Value);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[{TenantId}] Error processing pipeline: '{PipelineId}', Value '{Value}'",
-                message.TenantId, message.DataPipelineRtId, message.Value);
+            logger.LogError(ex, "[{TenantId}] Error processing pipeline: '{PipelineRtEntityId}', Value '{Value}'",
+                message.TenantId, message.PipelineRtEntityId, message.Value);
             throw;
         }
     }
 
-    private Task SendDebugInfo(OctoObjectId pipelineRtId, string debugInfo)
+    private Task SendDebugInfo(RtEntityId pipelineRtEntityId, string debugInfo)
     {
         return Task.CompletedTask;
     }

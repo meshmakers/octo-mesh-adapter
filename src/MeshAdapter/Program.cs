@@ -9,11 +9,11 @@ using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Commands;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Messages;
 
-var adapterBuilder = new WebSocketBuilder();
+var adapterBuilder = new WebAdapterBuilder();
 
 await adapterBuilder.RunAsync(args, builder =>
 {
-    builder.Services.AddSingleton<IAdapterService, MeshAdapter>();
+    builder.Services.AddSingleton<IAdapterService, MeshAdapterService>();
     builder.Services.AddDataPipeline()
         .RegisterNode<GetRtEntitiesByTypeNode>()
         .RegisterNode<GetRtEntitiesByIdNode>()

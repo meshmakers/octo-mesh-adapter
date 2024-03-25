@@ -1,42 +1,42 @@
+using Meshmakers.Octo.Common.DistributionEventHub.Services;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 using Meshmakers.Octo.Sdk.Common.Adapters;
-using Meshmakers.Octo.Sdk.Common.Services;
-using NLog;
 
 namespace Meshmakers.Octo.MeshAdapter.Services;
 
-internal class MeshAdapter(IMeshPipelineExecutionService pipelineExecutionService) : IAdapterService
+internal class MeshAdapterService(ILogger<MeshAdapterService> logger, IMeshPipelineExecutionService pipelineExecutionService, IEventHubControl eventHubControl) : IAdapterService
 {
-    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
-
     public async Task StartupAsync(AdapterStartup adapterStartup, CancellationToken stoppingToken)
     {
+        logger.LogInformation("Startup of mesh adapter");
         try
         {
             foreach (var dataPipelineConfiguration in adapterStartup.Configuration.Pipelines)
             {
                 await pipelineExecutionService.RegisterPipeline(adapterStartup.TenantId, dataPipelineConfiguration);
             }
+
+            await eventHubControl.StartAsync(stoppingToken);
         }
         catch (Exception e)
         {
-            Logger.Error(e, "Error while startup");
+            logger.LogError(e, "Error while startup");
             throw;
         }
       
     }
 
-    public Task ShutdownAsync(AdapterShutdown adapterShutdown, CancellationToken stoppingToken)
+    public async Task ShutdownAsync(AdapterShutdown adapterShutdown, CancellationToken stoppingToken)
     {
         try
         {
             pipelineExecutionService.UnregisterAllPipelines(adapterShutdown.TenantId);
-            Logger.Info("Mesh Adapter service stopped");
-            return Task.CompletedTask;
+            await eventHubControl.StopAsync(stoppingToken);
+            logger.LogInformation("Mesh Adapter service stopped");
         }
         catch (Exception e)
         {
-            Logger.Error(e, "Error while shutdown");
+            logger.LogError(e, "Error while shutdown");
             throw;
         }
     }

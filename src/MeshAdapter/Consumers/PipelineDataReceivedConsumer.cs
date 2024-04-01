@@ -1,7 +1,6 @@
 ﻿using Meshmakers.Common.Shared;
 using Meshmakers.Octo.Common.DistributionEventHub.Consumers;
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
-using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 using Meshmakers.Octo.Sdk.Common.Services;
 
@@ -19,14 +18,15 @@ internal class PipelineDataReceivedConsumer(
     public async Task ConsumeAsync(IDistributedContext<PipelineDataReceived> context)
     {
         var message = context.Message;
-        logger.LogInformation("[{TenantId}] Received Input: PipelineId '{PipelineRtEntityId}', Value '{Value}'",
-            message.TenantId, message.PipelineRtEntityId, message.Value);
+        logger.LogInformation(
+            "[{TenantId}] Received Input: DataPipelineRtId {DataPipelineRtId}, PipelineId '{PipelineRtEntityId}', Value '{Value}'",
+            message.TenantId, message.DataPipelineRtId, message.PipelineRtEntityId, message.Value);
 
         try
         {
             await pipelineExecutionService.ExecutePipelineByDataPipelineRtId(context.Message.TenantId.NormalizeString(),
                 context.Message.DataPipelineRtId,
-                new ExecutePipelineOptions(context.Message.TransactionStartedDateTime, SendDebugInfo)
+                new ExecutePipelineOptions(context.Message.TransactionStartedDateTime)
                     { ExternalReceivedDateTime = context.Message.ExternalReceivedDateTime }, context.Message.Value);
         }
         catch (Exception ex)
@@ -35,10 +35,5 @@ internal class PipelineDataReceivedConsumer(
                 message.TenantId, message.PipelineRtEntityId, message.Value);
             throw;
         }
-    }
-
-    private Task SendDebugInfo(RtEntityId pipelineRtEntityId, string debugInfo)
-    {
-        return Task.CompletedTask;
     }
 }

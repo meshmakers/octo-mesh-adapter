@@ -8,11 +8,11 @@ using Meshmakers.Octo.Services.Common.DistributionEventHub.Messages;
 namespace Meshmakers.Octo.MeshAdapter.Consumers;
 
 /// <summary>
-/// Consumer for PipelineDataSent using distributed event hub
+/// Consumer for PipelineTriggerSchedule using distributed event hub
 /// </summary>
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class PipelineDataSentConsumer(
-    ILogger<PipelineDataSentConsumer> logger,
+internal class PipelineTriggerScheduleConsumer(
+    ILogger<PipelineTriggerScheduleConsumer> logger,
     IMeshPipelineExecutionService pipelineExecutionService)
     : IDistributedConsumer<PipelineTriggerSchedule>
 {
@@ -26,7 +26,7 @@ internal class PipelineDataSentConsumer(
             try
             {
                 await pipelineExecutionService.ExecutePipelineAsync(context.Message.TenantId.NormalizeString(),
-                    new RtEntityId("System.Communication/MeshPipeline", pipelineRtId), new ExecutePipelineOptions(DateTime.UtcNow, SendDebugInfo));
+                    new RtEntityId("System.Communication/MeshPipeline", pipelineRtId), new ExecutePipelineOptions(DateTime.UtcNow));
             }
             catch (Exception ex)
             {
@@ -35,10 +35,5 @@ internal class PipelineDataSentConsumer(
                 throw;
             }
         }
-    }
-    
-    private Task SendDebugInfo(RtEntityId pipelineRtEntityId, string debugInfo)
-    {
-        return Task.CompletedTask;
     }
 }

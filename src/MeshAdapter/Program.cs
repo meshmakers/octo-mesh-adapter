@@ -22,6 +22,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<RetrieveFromMessageNode>()
         .RegisterNode<EnrichWithMongoDataNode>()
         .RegisterNode<SaveInTimeSeriesNode>()
+        .RegisterNode<LoggerNode>()
         .RegisterEtlContext<IMeshEtlContext>();
     
     builder.Services.Configure<OctoSystemConfiguration>(options =>
@@ -38,5 +39,5 @@ await adapterBuilder.RunAsync(args, builder =>
 }, configuration =>
 {
     configuration.AddRoutedEventConsumer<PipelineDataReceivedConsumer, PipelineDataReceived>();
-    configuration.AddRoutedEventConsumer<PipelineDataSentConsumer, PipelineTriggerSchedule>(QueueNames.PipelineTriggerChannelName);
+    configuration.AddRoutedEventConsumer<PipelineTriggerScheduleConsumer, PipelineTriggerSchedule>(QueueNames.PipelineTriggerChannelName);
 });

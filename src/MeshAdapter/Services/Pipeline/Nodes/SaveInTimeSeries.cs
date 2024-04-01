@@ -1,11 +1,10 @@
+using Meshmakers.Octo.MeshNodes.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 
-internal class SaveInTimeSeriesNodeConfiguration : NodeConfiguration;
-
-[Node("SaveInTimeSeries", 1, typeof(SaveInTimeSeriesNodeConfiguration))]
+[NodeConfiguration(typeof(SaveInTimeSeriesNodeConfiguration))]
 internal class SaveInTimeSeriesNode(NodeDelegate next)
     : IPipelineNode
 {

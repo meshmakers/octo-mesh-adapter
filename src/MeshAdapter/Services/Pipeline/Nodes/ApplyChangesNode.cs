@@ -1,4 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshNodes;
+using Meshmakers.Octo.MeshNodes.Nodes;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
@@ -8,20 +10,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 
 /// <summary>
-/// Configuration node object for apply changes to the object in mongodb
-/// </summary>
-public class ApplyChangesNodeConfiguration : NodeConfiguration
-{
-    /// <summary>
-    /// Gets or sets the target property name
-    /// </summary>
-    public string? TargetPropertyName { get; set; }
-}
-
-/// <summary>
 /// Applies changes to the object in mongodb
 /// </summary>
-[Node("ApplyChanges", 1, typeof(ApplyChangesNodeConfiguration))]
+[NodeConfiguration(typeof(ApplyChangesNodeConfiguration))]
 public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />

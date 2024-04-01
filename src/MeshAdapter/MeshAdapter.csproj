@@ -10,6 +10,7 @@
         <Platforms>AnyCPU</Platforms>
         <OutputPath>../bin/$(Configuration)/</OutputPath>
         <UserSecretsId>04bcde24-0d21-4346-8459-3bca58abec32</UserSecretsId>
+        <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
     </PropertyGroup>
 
     <ItemGroup>
@@ -41,9 +42,5 @@
       <ProjectReference Include="..\octo-common-services\src\Infrastructure\Infrastructure.csproj" />
       <ProjectReference Include="..\octo-common-services\src\octo-construction-kit-engine-mongodb\src\Runtime.Engine.MongoDb\Runtime.Engine.MongoDb.csproj" />
       <ProjectReference Include="..\octo-common-services\src\Timeseries\Timeseries.csproj" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <Folder Include="Configuration\" />
     </ItemGroup>
 </Project>

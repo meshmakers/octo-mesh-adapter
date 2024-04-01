@@ -1,5 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.MeshNodes;
+using Meshmakers.Octo.MeshNodes.Nodes;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
@@ -10,66 +12,9 @@ using Newtonsoft.Json.Linq;
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 
 /// <summary>
-/// Configuration node object for update a rt entity object
-/// </summary>
-public class CreateUpdateInfoNodeConfiguration : NodeConfiguration
-{
-    /// <summary>
-    /// Gets or sets the target property name
-    /// </summary>
-    public string? TargetPropertyName { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether to append to the target property name
-    /// </summary>
-    public bool AppendToTargetPropertyName { get; set; } = true;
-    
-    /// <summary>
-    /// The path to the RtEntityId
-    /// </summary>
-    public string? RtIdPath { get; set; }
-
-    /// <summary>
-    /// The runtime id of the object
-    /// </summary>
-    public OctoObjectId? RtId { get; set; }
-
-    /// <summary>
-    /// CkTypeId of query
-    /// </summary>
-    public CkId<CkTypeId>? CkTypeId { get; set; }
-
-    /// <summary>
-    /// Updates to the RtEntity attributes
-    /// </summary>
-    public ICollection<AttributeUpdateConfiguration>? AttributeUpdates { get; set; }
-}
-
-/// <summary>
-/// Update of a specific attribute
-/// </summary>
-public class AttributeUpdateConfiguration
-{
-    /// <summary>
-    /// Defines the attribute name path
-    /// </summary>
-    public string? AttributeName { get; set; }
-
-    /// <summary>
-    /// Gets or sets the attribute value type
-    /// </summary>
-    public AttributeValueTypesDto? AttributeValueType { get; set; }
-
-    /// <summary>
-    /// Value path
-    /// </summary>
-    public string? ValuePath { get; set; }
-}
-
-/// <summary>
 /// Creates an update item for an existing RtEntity
 /// </summary>
-[Node("CreateUpdateInfo", 1, typeof(CreateUpdateInfoNodeConfiguration))]
+[NodeConfiguration(typeof(CreateUpdateInfoNodeConfiguration))]
 public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
 {
     /// <inheritdoc />

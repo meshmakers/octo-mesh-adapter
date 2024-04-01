@@ -1,4 +1,5 @@
-using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshNodes;
+using Meshmakers.Octo.MeshNodes.Nodes;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -6,45 +7,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 
 /// <summary>
-/// Configuration for node get rt entities by id
-/// </summary>
-public class GetRtEntitiesByIdNodeConfiguration : NodeConfiguration
-{
-    /// <summary>
-    /// Gets or sets the target property name
-    /// </summary>
-    public string? TargetPropertyName { get; set; }
-    
-    /// <summary>
-    /// CkTypeId of query
-    /// </summary>
-    public CkId<CkTypeId>? CkTypeId { get; set; }
-    
-    /// <summary>
-    /// Amount of items to skip
-    /// </summary>
-    public int? Skip { get; set; }
-    
-    /// <summary>
-    /// Amount of items to take
-    /// </summary>
-    public int? Take { get; set; }
-    
-    /// <summary>
-    /// Gets or sets the rt ids
-    /// </summary>
-    public ICollection<OctoObjectId>? RtIds { get; set; }
-    
-    /// <summary>
-    /// A list of field filters
-    /// </summary>
-    public ICollection<FieldFilter>? FieldFilters { get; set; }
-}
-
-/// <summary>
 /// Gets rt entities by type
 /// </summary>
-[Node("GetRtEntitiesById", 1, typeof(GetRtEntitiesByIdNodeConfiguration))]
+[NodeConfiguration(typeof(GetRtEntitiesByIdNodeConfiguration))]
 public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) : IPipelineNode
 {
     /// <inheritdoc />

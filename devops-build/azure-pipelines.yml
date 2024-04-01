@@ -56,6 +56,15 @@ stages:
             displayName: 'Set build number'
           - template: setversion.yml
           - task: DotNetCoreCLI@2
+            displayName: 'Build'
+            inputs:
+              command: 'build'
+              projects: $(SolutionFile)
+              arguments: '--configuration $(BuildConfiguration)'
+              publishWebProjects: false
+              zipAfterPublish: false
+              modifyOutputPath: false
+          - task: DotNetCoreCLI@2
             displayName: 'Test'
             inputs:
               command: 'test'
@@ -63,6 +72,14 @@ stages:
                 '**/*Tests.csproj'
                 !'**/*SystemTests.csproj'
               testRunTitle: 'CI'
+          - task: CopyFiles@2
+            displayName: 'Copy Files from **/*.nupkg to $(build.artifactstagingdirectory)'
+            inputs:
+              SourceFolder: $(Build.SourcesDirectory)
+              Contents: |
+                **/*.nupkg
+                bin/**/documentation/**/*.*
+              TargetFolder: $(build.artifactstagingdirectory)
           - task: PowerShell@2
             displayName: 'Create versioninfo file'
             inputs:
@@ -80,5 +97,14 @@ stages:
             displayName: 'Publish Artifact: local'
             inputs:
               ArtifactName: local
- 
+          - task: DotNetCoreCLI@2
+            displayName: Push Nuget Package
+            condition: eq(variables.isRelease, true)
+            inputs:
+              command: custom
+              custom: nuget
+              arguments: >
+                push $(Build.ArtifactStagingDirectory)/**/*.nupkg
+                -s https://api.nuget.org/v3/index.json
+                -k $(NuGetApiKey) 
 

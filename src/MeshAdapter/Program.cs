@@ -3,6 +3,7 @@ using Meshmakers.Octo.MeshAdapter.Consumers;
 using Meshmakers.Octo.MeshAdapter.Services;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
+using Meshmakers.Octo.MeshNodes.Configuration;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
@@ -15,6 +16,7 @@ await adapterBuilder.RunAsync(args, builder =>
 {
     builder.Services.AddSingleton<IAdapterService, MeshAdapterService>();
     builder.Services.AddDataPipeline()
+        .AddMeshDataPipelineNodes()
         .RegisterNode<GetRtEntitiesByTypeNode>()
         .RegisterNode<GetRtEntitiesByIdNode>()
         .RegisterNode<CreateUpdateInfoNode>()

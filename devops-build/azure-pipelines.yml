@@ -13,6 +13,10 @@ trigger:
 variables:
   - group: GitSSHGroup
   - group: OctoDefault
+  - name: buildConfiguration
+    value: 'Release'
+  - name: buildPlatform
+    value: 'any cpu'    
   - name: solutionFile
     value: 'Octo.MeshAdapter.sln'
   - name: isRelease

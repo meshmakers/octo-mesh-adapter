@@ -81,7 +81,7 @@ stages:
             inputs:
               SourceFolder: $(Build.SourcesDirectory)
               Contents: |
-                **/*.nupkg
+                bin/**/*.nupkg
                 bin/**/documentation/**/*.*
               TargetFolder: $(build.artifactstagingdirectory)
           - task: PowerShell@2

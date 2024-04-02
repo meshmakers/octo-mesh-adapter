@@ -13,6 +13,7 @@ trigger:
 variables:
   - group: GitSSHGroup
   - group: OctoDefault
+  - group: ApiKeys
   - name: buildConfiguration
     value: 'Release'
   - name: buildPlatform

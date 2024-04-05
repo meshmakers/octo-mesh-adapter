@@ -13,6 +13,8 @@
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
+        <TargetFrameworks>net8.0;netstandard2.0</TargetFrameworks>
+        <TargetFramework />
     </PropertyGroup>
     
     <ItemGroup>

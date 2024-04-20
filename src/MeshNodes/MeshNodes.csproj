@@ -1,11 +1,11 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <AssemblyName>Meshmakers.Octo.MeshAdaper.Nodes</AssemblyName>
+        <AssemblyName>Meshmakers.Octo.MeshAdapter.Nodes</AssemblyName>
         <Description>Mesh adapter nodes</Description>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <PackageId>Meshmakers.Octo.MeshAdaper.Nodes</PackageId>
-        <RootNamespace>Meshmakers.Octo.MeshAdaper.Nodes</RootNamespace>
+        <PackageId>Meshmakers.Octo.MeshAdapter.Nodes</PackageId>
+        <RootNamespace>Meshmakers.Octo.MeshAdapter.Nodes</RootNamespace>
         <OutputType>Library</OutputType>
         <Configurations>Debug;Release;DebugL</Configurations>
         <Platforms>AnyCPU</Platforms>

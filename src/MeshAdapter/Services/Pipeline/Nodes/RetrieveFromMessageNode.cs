@@ -1,4 +1,4 @@
-using Meshmakers.Octo.MeshNodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Newtonsoft.Json.Linq;

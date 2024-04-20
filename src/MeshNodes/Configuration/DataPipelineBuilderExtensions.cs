@@ -1,11 +1,8 @@
-using Meshmakers.Octo.MeshNodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Meshmakers.Octo.MeshNodes.Configuration;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 
 /// <summary>
 ///     Extension methods for adding Ck model compiler services to the DI container.

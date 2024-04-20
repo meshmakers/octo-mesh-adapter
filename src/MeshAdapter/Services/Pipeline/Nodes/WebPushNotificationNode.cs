@@ -1,20 +1,19 @@
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+﻿using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 
 /// <summary>
-/// Logs a message
+/// Creates a web push notification
 /// </summary>
 /// <param name="next"></param>
-[NodeConfiguration(typeof(LoggerNodeConfiguration))]
-internal class LoggerNode(NodeDelegate next) : IPipelineNode
+[NodeConfiguration(typeof(WebPushNotificationNodeConfiguration))]
+public class WebPushNotificationNode(NodeDelegate next) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.GetNodeConfiguration<LoggerNodeConfiguration>();
-        dataContext.Logger.Info(dataContext.NodeStack.Peek(), c.Message);
+        var c = dataContext.GetNodeConfiguration<WebPushNotificationNodeConfiguration>();
 
         await next(dataContext);
     }

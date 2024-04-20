@@ -1,6 +1,5 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
-using Meshmakers.Octo.MeshNodes;
-using Meshmakers.Octo.MeshNodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;

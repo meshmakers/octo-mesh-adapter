@@ -1,5 +1,4 @@
-using Meshmakers.Octo.MeshNodes;
-using Meshmakers.Octo.MeshNodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;

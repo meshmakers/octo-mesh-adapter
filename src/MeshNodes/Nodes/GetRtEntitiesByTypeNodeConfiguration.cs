@@ -2,7 +2,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshNodes.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 
 /// <summary>
 /// Configuration for node get rt entities by type

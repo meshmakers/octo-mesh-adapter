@@ -1,4 +1,6 @@
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
+using Meshmakers.Octo.MeshAdapter;
+using Meshmakers.Octo.MeshAdapter.Configuration;
 using Meshmakers.Octo.MeshAdapter.Consumers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Services;
@@ -9,6 +11,7 @@ using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Commands;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Messages;
+using Meshmakers.Octo.Services.Common.StreamData.Extensions;
 
 var adapterBuilder = new WebAdapterBuilder();
 
@@ -26,20 +29,31 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<SaveInTimeSeriesNode>()
         .RegisterNode<LoggerNode>()
         .RegisterEtlContext<IMeshEtlContext>();
-    
+
     builder.Services.Configure<OctoSystemConfiguration>(options =>
         builder.Configuration.GetSection("System").Bind(options));
 
+    builder.Services.Configure<MeshAdapterConfiguration>(options =>
+        builder.Configuration.GetSection("MeshAdapter").Bind(options));
+
     builder.Services.AddRuntimeEngine()
         .AddMongoDbRuntimeRepository();
-            
+
     builder.Services.AddSingleton<IMeshPipelineExecutionService, MeshPipelineExecutionService>();
 
-}, builder => {
+    builder.Services.AddStreamDataDatabase(configuration =>
+    {
+        var assetRepoConfig = builder.Configuration.Get<MeshAdapterConfiguration>();
+        if (assetRepoConfig == null)
+        {
+            throw MeshAdapterException.MeshAdapterConfigurationNotFound();
+        }
 
-    
-}, configuration =>
+        configuration.ConnectionString = assetRepoConfig.StreamDataConnectionString;
+    });
+}, builder => { }, configuration =>
 {
     configuration.AddRoutedEventConsumer<PipelineDataReceivedConsumer, PipelineDataReceived>();
-    configuration.AddRoutedEventConsumer<PipelineTriggerScheduleConsumer, PipelineTriggerSchedule>(QueueNames.PipelineTriggerChannelName);
+    configuration.AddRoutedEventConsumer<PipelineTriggerScheduleConsumer, PipelineTriggerSchedule>(QueueNames
+        .PipelineTriggerChannelName);
 });

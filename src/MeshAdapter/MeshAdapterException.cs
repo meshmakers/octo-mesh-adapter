@@ -20,4 +20,9 @@ public class MeshAdapterException : Exception
     {
         return new MeshAdapterException($"Pipeline configuration not found for tenant '{tenantId}' and pipeline '{pipelineRtId}'");
     }
+    
+    public static Exception MeshAdapterConfigurationNotFound()
+    {
+        return new MeshAdapterException("MeshAdapter configuration not found");
+    }
 }

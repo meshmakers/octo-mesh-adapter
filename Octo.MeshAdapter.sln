@@ -14,7 +14,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Common", "src\octo-common-s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Infrastructure", "src\octo-common-services\src\Infrastructure\Infrastructure.csproj", "{7F99E17A-9367-4FD0-84CA-61D0EAF4E28E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Timeseries", "src\octo-common-services\src\Timeseries\Timeseries.csproj", "{FE432E21-D251-4F61-8D63-4DF235867D78}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamData", "src\octo-common-services\src\StreamData\StreamData.csproj", "{FE432E21-D251-4F61-8D63-4DF235867D78}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshNodes", "src\MeshNodes\MeshNodes.csproj", "{ACE91DCC-07EC-4CAB-9DFA-AAD923251BF9}"
 EndProject

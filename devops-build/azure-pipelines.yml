@@ -12,8 +12,8 @@ trigger:
 
 variables:
   - group: GitSSHGroup
-  - group: OctoDefault
   - group: ApiKeys
+  - group: OctoDefault
   - name: buildConfiguration
     value: 'Release'
   - name: buildPlatform
@@ -92,9 +92,8 @@ stages:
               script: |
                 New-Item $(build.artifactstagingdirectory)/versioninfo.txt
                 Set-Content $(build.artifactstagingdirectory)/versioninfo.txt $(Build.BuildNumber)
-          - template: buildAndPushDockerImage.yml
+          - template: build-and-push-docker-image.yml
             parameters:
-              ContainerRegistry: 'dockerhub@ianitor'
               Repository: meshmakers/octo-mesh-adapter
               Dockerfile: src/MeshAdapter/Dockerfile
               IsRelease: ${{ variables.isRelease }}

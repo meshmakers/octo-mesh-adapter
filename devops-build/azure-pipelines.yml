@@ -60,6 +60,7 @@ stages:
                 }
             displayName: 'Set build number'
           - template: setversion.yml
+          - template: download-ca.yml
           - task: DotNetCoreCLI@2
             displayName: 'Build'
             inputs:

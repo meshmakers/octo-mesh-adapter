@@ -47,11 +47,30 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
-        var list = c.TargetPropertyName == null ?
-            new List<IEntityUpdateInfo<RtEntity>>() : 
-            dataContext.GetCurrentValueByPath<List<IEntityUpdateInfo<RtEntity>>>(c.TargetPropertyName) ?? new List<IEntityUpdateInfo<RtEntity>>();
-        
-        
+        if (dataContext.Current == null)
+        {
+            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Current is not set");
+            return;
+        }
+
+        if (c.TargetPropertyName == null)
+        {
+            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "TargetPropertyName is not set");
+            return;
+        }
+
+        if (NoUpdatesForCurrentNode(dataContext, c))
+        {
+            // let other nodes try their luck
+            await next(dataContext);
+            return;
+        }
+
+        // we are most likley not the first node in a pipeline run. Otherwise we just create a new list
+        var updateList = dataContext.Current?.SelectToken(c.TargetPropertyName)
+            ?.ToObject<List<EntityUpdateInfo<RtEntity>>>() ?? [];
+
+
         var rtEntity = new RtEntity();
 
         foreach (var au in c.AttributeUpdates)
@@ -68,7 +87,8 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                 continue;
             }
 
-            var jToken = dataContext.Current?.SelectToken(au.ValuePath ?? "$");
+            var jToken = dataContext.Current?.SelectToken(au.ValuePath ?? "$") ??
+                         dataContext.Current?[au.ValuePath ?? "$"];
             object? value = null;
             if (jToken != null && jToken is JValue jValue)
             {
@@ -79,16 +99,22 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                         break;
                     case AttributeValueTypesDto.Int:
                         value = jValue.Value<int>();
-                        break;                    
+                        break;
                 }
+
+                rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
+                updateList.Add(
+                    EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
             }
-
-            rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
         }
-        list.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
-      
-        dataContext.SetCurrentValueByPath(c.TargetPropertyName, list, RtNewtonsoftSerializer.DefaultSerializer);
 
+        dataContext.SetCurrentValueByPath(c.TargetPropertyName, updateList, RtNewtonsoftSerializer.DefaultSerializer);
         await next(dataContext);
+    }
+
+    private static bool NoUpdatesForCurrentNode(IDataContext dataContext, CreateUpdateInfoNodeConfiguration c)
+    {
+        return c.AttributeUpdates!.Where(x => x.ValuePath != null)
+            .All(x => dataContext.Current!.SelectToken(x.ValuePath!) == null);
     }
 }

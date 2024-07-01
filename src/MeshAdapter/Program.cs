@@ -7,16 +7,21 @@ using Meshmakers.Octo.MeshAdapter.Services;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Extensions;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Commands;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Messages;
 using Meshmakers.Octo.Services.Common.StreamData.Extensions;
+using Meshmakers.Octo.Services.Observability;
 
 var adapterBuilder = new WebAdapterBuilder();
 
 await adapterBuilder.RunAsync(args, builder =>
 {
+    builder.AddObservability()
+        .AddSystemContextHealthCheck();
+    
     builder.Services.AddSingleton<IAdapterService, MeshAdapterService>();
     builder.Services.AddDataPipeline()
         .AddMeshDataPipelineNodes()
@@ -51,7 +56,10 @@ await adapterBuilder.RunAsync(args, builder =>
 
         configuration.ConnectionString = assetRepoConfig.StreamDataConnectionString;
     });
-}, builder => { }, configuration =>
+}, app =>
+{
+    app.MapObservability();
+}, configuration =>
 {
     configuration.AddRoutedEventConsumer<PipelineDataReceivedConsumer, PipelineDataReceived>();
     configuration.AddRoutedEventConsumer<PipelineTriggerScheduleConsumer, PipelineTriggerSchedule>(QueueNames

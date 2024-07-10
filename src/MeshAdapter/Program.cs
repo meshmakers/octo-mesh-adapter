@@ -48,14 +48,16 @@ await adapterBuilder.RunAsync(args, builder =>
 
     builder.Services.AddStreamDataDatabase(configuration =>
     {
-        var meshAdapterConfig = builder.Configuration.Get<MeshAdapterConfiguration>();
+        var meshAdapterConfig = builder.Configuration.GetSection("MeshAdapter").Get<MeshAdapterConfiguration>();
         if (meshAdapterConfig == null)
         {
             throw MeshAdapterException.MeshAdapterConfigurationNotFound();
         }
 
-        configuration.ConnectionStringFromConfiguration(meshAdapterConfig.StreamDataHost,
-            meshAdapterConfig.StreamDataUser, meshAdapterConfig.StreamDataPassword);
+        configuration.ConnectionStringFromConfiguration(
+            meshAdapterConfig.StreamDataHost,
+            meshAdapterConfig.StreamDataUser, 
+            meshAdapterConfig.StreamDataPassword);
     });
 }, app => { app.MapObservability(); }, configuration =>
 {

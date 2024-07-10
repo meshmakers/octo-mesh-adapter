@@ -21,7 +21,7 @@ await adapterBuilder.RunAsync(args, builder =>
 {
     builder.AddObservability()
         .AddSystemContextHealthCheck();
-    
+
     builder.Services.AddSingleton<IAdapterService, MeshAdapterService>();
     builder.Services.AddDataPipeline()
         .AddMeshDataPipelineNodes()
@@ -48,18 +48,16 @@ await adapterBuilder.RunAsync(args, builder =>
 
     builder.Services.AddStreamDataDatabase(configuration =>
     {
-        var assetRepoConfig = builder.Configuration.Get<MeshAdapterConfiguration>();
-        if (assetRepoConfig == null)
+        var meshAdapterConfig = builder.Configuration.Get<MeshAdapterConfiguration>();
+        if (meshAdapterConfig == null)
         {
             throw MeshAdapterException.MeshAdapterConfigurationNotFound();
         }
 
-        configuration.ConnectionString = assetRepoConfig.StreamDataConnectionString;
+        configuration.ConnectionStringFromConfiguration(meshAdapterConfig.StreamDataHost,
+            meshAdapterConfig.StreamDataUser, meshAdapterConfig.StreamDataPassword);
     });
-}, app =>
-{
-    app.MapObservability();
-}, configuration =>
+}, app => { app.MapObservability(); }, configuration =>
 {
     configuration.AddRoutedEventConsumer<PipelineDataReceivedConsumer, PipelineDataReceived>();
     configuration.AddRoutedEventConsumer<PipelineTriggerScheduleConsumer, PipelineTriggerSchedule>(QueueNames

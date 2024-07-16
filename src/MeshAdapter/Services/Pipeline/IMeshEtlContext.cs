@@ -1,5 +1,5 @@
 using Meshmakers.Octo.Runtime.Contracts;
-using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repository;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline;

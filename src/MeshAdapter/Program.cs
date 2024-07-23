@@ -39,7 +39,7 @@ await adapterBuilder.RunAsync(args, builder =>
         builder.Configuration.GetSection("System").Bind(options));
 
     builder.Services.Configure<MeshAdapterConfiguration>(options =>
-        builder.Configuration.GetSection("MeshAdapter").Bind(options));
+        builder.Configuration.GetSection("Adapter").Bind(options));
 
     builder.Services.AddRuntimeEngine()
         .AddMongoDbRuntimeRepository();
@@ -48,16 +48,19 @@ await adapterBuilder.RunAsync(args, builder =>
 
     builder.Services.AddStreamDataDatabase(configuration =>
     {
-        var meshAdapterConfig = builder.Configuration.GetSection("MeshAdapter").Get<MeshAdapterConfiguration>();
-        if (meshAdapterConfig == null)
+        var streamDataHost = builder.Configuration["Adapter:StreamDataHost"];
+        var streamDataUser = builder.Configuration["Adapter:StreamDataUser"];
+        var streamDataPassword = builder.Configuration["Adapter:StreamDataPassword"];
+        
+        if (streamDataHost == null || streamDataUser == null)
         {
-            throw MeshAdapterException.MeshAdapterConfigurationNotFound();
+            throw MeshAdapterException.StreamDataConfigurationNotFound();
         }
 
         configuration.ConnectionStringFromConfiguration(
-            meshAdapterConfig.StreamDataHost,
-            meshAdapterConfig.StreamDataUser, 
-            meshAdapterConfig.StreamDataPassword);
+            streamDataHost,
+            streamDataUser, 
+            streamDataPassword);
     });
 }, app => { app.MapObservability(); }, configuration =>
 {

@@ -19,7 +19,7 @@ RUN dotnet build "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivat
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -o /app/publish
+RUN dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -o /app/publish
 
 FROM base AS final
 WORKDIR /app

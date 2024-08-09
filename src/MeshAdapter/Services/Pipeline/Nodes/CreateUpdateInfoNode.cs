@@ -66,13 +66,13 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
-        // we are most likley not the first node in a pipeline run. Otherwise we just create a new list
+        // we are most likely not the first node in a pipeline run. Otherwise, we just create a new list
         var updateList = dataContext.Current?.SelectToken(c.TargetPropertyName)
             ?.ToObject<List<EntityUpdateInfo<RtEntity>>>() ?? [];
 
 
         var rtEntity = new RtEntity();
-
+        bool hasUpdates = false;
         foreach (var au in c.AttributeUpdates)
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
@@ -103,12 +103,16 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                 }
 
                 rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
-                updateList.Add(
-                    EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
+                hasUpdates = true;
             }
         }
 
+        if (hasUpdates)
+        {
+            updateList.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
+        }
         dataContext.SetCurrentValueByPath(c.TargetPropertyName, updateList, RtNewtonsoftSerializer.DefaultSerializer);
+
         await next(dataContext);
     }
 

@@ -48,11 +48,14 @@ await adapterBuilder.RunAsync(args, builder =>
 
     builder.Services.AddStreamDataDatabase(configuration =>
     {
-        var streamDataHost = builder.Configuration["Adapter:StreamDataHost"];
-        var streamDataUser = builder.Configuration["Adapter:StreamDataUser"];
-        var streamDataPassword = builder.Configuration["Adapter:StreamDataPassword"];
+
+        var c = builder.Configuration.GetSection("Adapter").Get<MeshAdapterConfiguration>();
         
-        if (streamDataHost == null || streamDataUser == null)
+        var streamDataHost = c?.StreamDataHost;
+        var streamDataUser = c?.StreamDataUser;
+        var streamDataPassword = c?.StreamDataPassword;
+        
+        if (c == null || streamDataHost == null || streamDataUser == null)
         {
             throw MeshAdapterException.StreamDataConfigurationNotFound();
         }

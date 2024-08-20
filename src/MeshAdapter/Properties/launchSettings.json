@@ -6,7 +6,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter",
+        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     }

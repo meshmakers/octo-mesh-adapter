@@ -10,8 +10,24 @@ internal class RetrieveFromMessageNode(NodeDelegate next, IMeshEtlContext etlCon
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        dataContext.Current = JObject.Parse(etlContext.Message);
-
+        try
+        {
+            if (etlContext.Message.StartsWith("{"))
+            {
+                dataContext.Current = JObject.Parse(etlContext.Message);
+            }
+            else
+            {
+                dataContext.Current = JArray.Parse(etlContext.Message);
+            }
+            
+        }
+        catch (Exception ex)
+        {
+            dataContext.Logger.Error(dataContext.NodeStack.Peek(), $"Error parsing message: {ex.Message}");
+            dataContext.Logger.Debug(dataContext.NodeStack.Peek(), $"Message: {etlContext.Message}");
+            return;
+        }
         await next(dataContext);
     }
 }

@@ -71,8 +71,7 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             ?.ToObject<List<EntityUpdateInfo<RtEntity>>>() ?? [];
 
 
-        var rtEntity = new RtEntity();
-        bool hasUpdates = false;
+        
         foreach (var au in c.AttributeUpdates)
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
@@ -87,30 +86,35 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                 continue;
             }
 
-            var jToken = dataContext.Current?.SelectToken(au.ValuePath ?? "$") ??
-                         dataContext.Current?[au.ValuePath ?? "$"];
-            object? value = null;
-            if (jToken != null && jToken is JValue jValue)
-            {
-                switch (au.AttributeValueType.Value)
-                {
-                    case AttributeValueTypesDto.Double:
-                        value = jValue.Value<double>();
-                        break;
-                    case AttributeValueTypesDto.Int:
-                        value = jValue.Value<int>();
-                        break;
-                }
+            var jTokens = dataContext.Current?.SelectTokens(au.ValuePath ?? "$") ??
+                          dataContext.Current?[au.ValuePath ?? "$"];
 
-                rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
-                hasUpdates = true;
+            if (jTokens == null)
+            {
+                continue;
+            }
+
+            foreach (var jToken in jTokens)
+            {
+                object? value = null;
+                if (jToken is JValue jValue)
+                {
+                    switch (au.AttributeValueType.Value)
+                    {
+                        case AttributeValueTypesDto.Double:
+                            value = jValue.Value<double>();
+                            break;
+                        case AttributeValueTypesDto.Int:
+                            value = jValue.Value<int>();
+                            break;
+                    }
+                    var rtEntity = new RtEntity();
+                    rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
+                    updateList.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
+                }
             }
         }
 
-        if (hasUpdates)
-        {
-            updateList.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
-        }
         dataContext.SetCurrentValueByPath(c.TargetPropertyName, updateList, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
@@ -119,6 +123,6 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
     private static bool NoUpdatesForCurrentNode(IDataContext dataContext, CreateUpdateInfoNodeConfiguration c)
     {
         return c.AttributeUpdates!.Where(x => x.ValuePath != null)
-            .All(x => dataContext.Current!.SelectToken(x.ValuePath!) == null);
+            .All(x => !dataContext.Current!.SelectTokens(x.ValuePath!).Any());
     }
 }

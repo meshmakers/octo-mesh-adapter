@@ -24,6 +24,8 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
         if (data != null && data.Count != 0)
         {
             var tenantId = etlContext.TenantId;
+            
+            var toInsert = new List<DataPointDto>();
 
             foreach (var datapoint in data)
             {
@@ -46,8 +48,8 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                             CkTypeId = datapoint.RtEntityId.CkTypeId,
                         };
 
-
-                        await streamDataDatabaseClient.InsertDataAsync(tenantId, dataPointDto);
+                        toInsert.Add(dataPointDto);
+                        // await streamDataDatabaseClient.InsertDataAsync(tenantId, dataPointDto);
 
                         break;
 
@@ -58,6 +60,11 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                     default:
                         break;
                 }
+            }
+
+            if (toInsert.Count != 0)
+            {
+                await streamDataDatabaseClient.InsertDataAsync(tenantId, toInsert);
             }
         }
         

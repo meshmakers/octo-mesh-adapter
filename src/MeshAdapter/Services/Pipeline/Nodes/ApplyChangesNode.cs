@@ -23,6 +23,12 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
 
         if (list != null && list.Any())
         {
+            // first we reverse the list because we are interested in the last update for each entity.
+            list.Reverse();
+            
+            // then we are throwing away duplicates because we only want to update each entity once.
+            list = list.DistinctBy(x => x.RtEntityId).ToList();
+
             OperationResult operationResult = new();
             await etlContext.TenantRepository.ApplyChangesAsync(etlContext.Session, list, operationResult);
             if (operationResult.HasErrors || operationResult.HasFatalErrors)

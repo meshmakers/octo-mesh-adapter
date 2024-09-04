@@ -110,6 +110,7 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                             break;
                     }
                     rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
+                    hasUpdate = true;
                 }
             }
         }

@@ -71,7 +71,8 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             ?.ToObject<List<EntityUpdateInfo<RtEntity>>>() ?? [];
 
 
-        
+        var rtEntity = new RtEntity();
+        var hasUpdate = false;
         foreach (var au in c.AttributeUpdates)
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
@@ -108,11 +109,14 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                             value = jValue.Value<int>();
                             break;
                     }
-                    var rtEntity = new RtEntity();
                     rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
-                    updateList.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
                 }
             }
+        }
+
+        if (hasUpdate)
+        {
+            updateList.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
         }
 
         dataContext.SetCurrentValueByPath(c.TargetPropertyName, updateList, RtNewtonsoftSerializer.DefaultSerializer);

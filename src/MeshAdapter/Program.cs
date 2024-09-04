@@ -33,6 +33,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<EnrichWithMongoDataNode>()
         .RegisterNode<SaveInTimeSeriesNode>()
         .RegisterNode<LoggerNode>()
+        .RegisterNode<IterateOverArrayNode>()
         .RegisterEtlContext<IMeshEtlContext>();
 
     builder.Services.Configure<OctoSystemConfiguration>(options =>

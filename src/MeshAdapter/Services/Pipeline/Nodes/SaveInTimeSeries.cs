@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -41,7 +40,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                         var dataPointDto = new DataPointDto(datapoint.RtEntity.Attributes.ToDictionary())
                         {
                             AdapterReceivedTimestamp = etlContext.TransactionStartedDateTime,
-                            Timestamp = etlContext.ExternalReceivedDateTime ?? etlContext.TransactionStartedDateTime,
+                            Timestamp = datapoint.RtEntity.RtChangedDateTime ?? etlContext.ExternalReceivedDateTime ?? etlContext.TransactionStartedDateTime,
                             ExternalId = OctoObjectId.Empty,
                             PlugId = OctoObjectId.Empty,
                             RtId = datapoint.RtEntityId.RtId,

@@ -70,6 +70,16 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
         var updateList = dataContext.Current?.SelectToken(c.TargetPropertyName)
             ?.ToObject<List<EntityUpdateInfo<RtEntity>>>() ?? [];
 
+        var timeStamp = DateTime.UtcNow;
+        if (c.TimestampPropertyPath != null)
+        {
+            var ts = dataContext.Current!.SelectToken(c.TimestampPropertyPath);
+            if (ts != null)
+            {
+                timeStamp = ts.ToObject<DateTime>();
+            }
+        }
+
 
         var rtEntity = new RtEntity();
         var hasUpdate = false;
@@ -110,6 +120,7 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                             break;
                     }
                     rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
+                    rtEntity.RtChangedDateTime = timeStamp;
                     hasUpdate = true;
                 }
             }

@@ -2,18 +2,18 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 
 /// <summary>
-/// Configuration for node get rt entities by type
+/// Configuration for node get rt entities by id
 /// </summary>
-[NodeName("GetRtEntitiesByType", 1)]
-public class GetRtEntitiesByTypeNodeConfiguration : NodeConfiguration
+[NodeName("GetRtEntitiesById", 1)]
+public class GetRtEntitiesByIdNodeConfiguration : NodeConfiguration
 {
     /// <summary>
     /// Gets or sets the target property name
     /// </summary>
-    public string? TargetPropertyName { get; set; }
+    public string? TargetPath { get; set; }
     
     /// <summary>
     /// CkTypeId of query
@@ -29,6 +29,11 @@ public class GetRtEntitiesByTypeNodeConfiguration : NodeConfiguration
     /// Amount of items to take
     /// </summary>
     public int? Take { get; set; }
+    
+    /// <summary>
+    /// Gets or sets the rt ids
+    /// </summary>
+    public ICollection<OctoObjectId>? RtIds { get; set; }
     
     /// <summary>
     /// A list of field filters

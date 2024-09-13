@@ -1,6 +1,6 @@
 ﻿using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 
 /// <summary>
 /// Configuration node object for apply changes to the object in mongodb
@@ -11,5 +11,5 @@ public class ApplyChangesNodeConfiguration : NodeConfiguration
     /// <summary>
     /// Gets or sets the target property name
     /// </summary>
-    public string? TargetPropertyName { get; set; }
+    public string? TargetPath { get; set; }
 }

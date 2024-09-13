@@ -39,18 +39,16 @@ public class MeshPipelineExecutionService(
     IPipelineConfigurationSerializer pipelineConfigurationSerializer)
     : PipelineExecutionService(pipelineConfigurationSerializer), IMeshPipelineExecutionService
 {
-    private readonly SemaphoreSlim _semaphore = new(1, 1);
-
 
     /// <inheritdoc />
-    public override async Task ExecutePipelineAsync(string tenantId, RtEntityId pipelineRtEntityId,
+    public override async Task<object?> ExecutePipelineAsync(string tenantId, RtEntityId pipelineRtEntityId,
         ExecutePipelineOptions executePipelineOptions, object? value = null)
     {
         if (!PipelineExecutionItemsById.TryGetValue(CreateByIdKey(tenantId, pipelineRtEntityId),
                 out var pipelineExecutionItem))
         {
-            logger.LogError("Pipeline {Id} not found in tenant {TenantId}", pipelineRtEntityId, tenantId);
-            return;
+            logger.LogError("[{TenantId}] Pipeline {Id} not found", pipelineRtEntityId, tenantId);
+            throw PipelineExecutionException.PipelineNotFound(tenantId, pipelineRtEntityId);
         }
 
         string message = "";
@@ -61,14 +59,13 @@ public class MeshPipelineExecutionService(
 
         try
         {
-            await _semaphore.WaitAsync();
 
             var tenantRepository = await systemContext.FindTenantRepositoryAsync(tenantId);
 
             using var session = await tenantRepository.GetSessionAsync();
             session.StartTransaction();
 
-            logger.LogDebug("Running pipeline for tenant {TenantId} and pipeline {PipelineRtEntityId}", tenantId,
+            logger.LogDebug("[{TenantId}] Running pipeline for pipeline {PipelineRtEntityId}", tenantId,
                 pipelineRtEntityId);
             var retrieverEtlContext = new MeshEtlContext(pipelineExecutionItem.TenantId, message, tenantRepository,
                 session, pipelineExecutionItem.DataPipelineRtId, pipelineExecutionItem.PipelineRtEntityId,
@@ -82,21 +79,22 @@ public class MeshPipelineExecutionService(
                 debugger.RegisterPipelineRtEntityId(pipelineRtEntityId);
             }
 
-            await etlDataOrchestrator.ExecutePipelineAsync<IMeshEtlContext>(pipelineExecutionItem.ConfigurationRoot,
+            var r = await etlDataOrchestrator.ExecutePipelineAsync<IMeshEtlContext>(pipelineExecutionItem.ConfigurationRoot,
                 retrieverEtlContext, debugger);
-            logger.LogDebug("Pipeline finished for tenant {TenantId} and pipeline {PipelineRtEntityId}", tenantId,
+            
+            await session.CommitTransactionAsync();
+
+            logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId}", tenantId,
                 pipelineRtEntityId);
 
-            await session.CommitTransactionAsync();
+            return r;
         }
         catch (Exception e)
         {
             logger.LogError(e, "[{TenantId}] Failed to execute pipeline {PipelineRtEntityId}", tenantId,
                 pipelineRtEntityId);
-        }
-        finally
-        {
-            _semaphore.Release();
+            throw PipelineExecutionException.PipelineExecutionFailed(pipelineExecutionItem.TenantId,
+                pipelineExecutionItem.DataPipelineRtId, pipelineExecutionItem.PipelineRtEntityId, e);
         }
     }
 
@@ -106,7 +104,7 @@ public class MeshPipelineExecutionService(
         if (!PipelineExecutionItemsByDataPipelineId.TryGetValue(CreateDataPipelineIdKey(tenantId, dataPipelineRtId),
                 out var pipelineExecutionItems))
         {
-            logger.LogError("No Pipelines for data pipeline {DataPipelineRtId} found in tenant {TenantId}",
+            logger.LogError("[{TenantId}] No Pipelines for data pipeline {DataPipelineRtId} found",
                 dataPipelineRtId, tenantId);
             return;
         }

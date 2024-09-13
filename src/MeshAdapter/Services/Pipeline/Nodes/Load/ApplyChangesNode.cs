@@ -1,17 +1,19 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 
 /// <summary>
 /// Applies changes to the object in mongodb
 /// </summary>
 [NodeConfiguration(typeof(ApplyChangesNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
 public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
@@ -19,18 +21,22 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
     {
         var c = dataContext.GetNodeConfiguration<ApplyChangesNodeConfiguration>();
 
-        var list = dataContext.DeserializeCurrentValue<List<EntityUpdateInfo<RtEntity>>>(c.TargetPropertyName, RtNewtonsoftSerializer.DefaultSerializer);
+        var list = dataContext.DeserializeCurrentValue<List<EntityUpdateInfo<RtEntity>>>(c.TargetPath,
+            RtNewtonsoftSerializer.DefaultSerializer);
 
         if (list != null && list.Any())
         {
+            // We use all inserts
+            var resultUpdateInfos = list.Where(x => x.ModOption == EntityModOptions.Insert).ToList();
+
             // first we reverse the list because we are interested in the last update for each entity.
-            list.Reverse();
-            
+            var tempList = list.Where(x => x.ModOption != EntityModOptions.Insert).Reverse();
+
             // then we are throwing away duplicates because we only want to update each entity once.
-            list = list.DistinctBy(x => x.RtEntityId).ToList();
+            resultUpdateInfos.AddRange(tempList.DistinctBy(x => x.GetRtEntityId()));
 
             OperationResult operationResult = new();
-            await etlContext.TenantRepository.ApplyChangesAsync(etlContext.Session, list, operationResult);
+            await etlContext.TenantRepository.ApplyChangesAsync(etlContext.Session, resultUpdateInfos, operationResult);
             if (operationResult.HasErrors || operationResult.HasFatalErrors)
             {
                 dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Error updating RtEntity");

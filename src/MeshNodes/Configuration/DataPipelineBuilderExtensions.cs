@@ -1,4 +1,5 @@
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -15,8 +16,7 @@ public static class DataPipelineBuilderExtensions
     /// <param name="pipelineBuilder"></param>
     public static IDataPipelineBuilder AddMeshDataPipelineNodes(this IDataPipelineBuilder pipelineBuilder)
     {
-        // Register control nodes
-        pipelineBuilder.RegisterNodeConfiguration<LoggerNodeConfiguration>();
+        // Control nodes are for edge and mesh! Implement them in SDK!!
 
         // Register load nodes
         pipelineBuilder.RegisterNodeConfiguration<EnrichWithMongoDataConfiguration>();

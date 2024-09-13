@@ -1,5 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
@@ -8,9 +9,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Services.Common.StreamData;
 using Meshmakers.Octo.Services.Common.StreamData.Dtos;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 
 [NodeConfiguration(typeof(SaveInTimeSeriesNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
 internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContext, IStreamDataDatabaseClient streamDataDatabaseClient)
     : IPipelineNode
 {
@@ -35,7 +37,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
 
                 switch (datapoint.ModOption)
                 {
-                    case EntityModOptions.Insert:
+                    case EntityModOptions.Replace:
                     case EntityModOptions.Update:
                         var dataPointDto = new DataPointDto(datapoint.RtEntity.Attributes.ToDictionary())
                         {
@@ -43,19 +45,16 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                             Timestamp = datapoint.RtEntity.RtChangedDateTime ?? etlContext.ExternalReceivedDateTime ?? etlContext.TransactionStartedDateTime,
                             ExternalId = OctoObjectId.Empty,
                             PlugId = OctoObjectId.Empty,
-                            RtId = datapoint.RtEntityId.RtId,
-                            CkTypeId = datapoint.RtEntityId.CkTypeId,
+                            RtId = datapoint.RtId,
+                            CkTypeId = datapoint.CkTypeId,
                         };
 
                         toInsert.Add(dataPointDto);
-                        // await streamDataDatabaseClient.InsertDataAsync(tenantId, dataPointDto);
-
                         break;
-
 
                     // we don't delete data that comes over the broker
                     case EntityModOptions.Delete:
-                    case EntityModOptions.Replace:
+                    case EntityModOptions.Insert:
                     default:
                         break;
                 }

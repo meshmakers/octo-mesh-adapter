@@ -1,6 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
@@ -8,12 +9,13 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Newtonsoft.Json.Linq;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 
 /// <summary>
 /// Creates an update item for an existing RtEntity
 /// </summary>
 [NodeConfiguration(typeof(CreateUpdateInfoNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
 public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
 {
     /// <inheritdoc />
@@ -27,7 +29,7 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
-        if (c.RtId == null && c.RtIdPath == null)
+        if (c.UpdateKind == UpdateKind.Update && c.RtId == null && c.RtIdPath == null)
         {
             dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtId and RtIdPath is not set");
             return;
@@ -39,47 +41,25 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
-        var rtId = c.RtId ?? dataContext.Current?.SelectToken(c.RtIdPath ?? "$")?.ToObject<OctoObjectId>();
-
-        if (rtId == null)
-        {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtId is not set");
-            return;
-        }
-
         if (dataContext.Current == null)
         {
             dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Current is not set");
             return;
         }
 
-        if (c.TargetPropertyName == null)
+        if (c.TargetPath == null)
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "TargetPropertyName is not set");
-            return;
-        }
-
-        if (NoUpdatesForCurrentNode(dataContext, c))
-        {
-            // let other nodes try their luck
-            await next(dataContext);
+            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "TargetPath is not set");
             return;
         }
 
         // we are most likely not the first node in a pipeline run. Otherwise, we just create a new list
-        var updateList = dataContext.Current?.SelectToken(c.TargetPropertyName)
-            ?.ToObject<List<EntityUpdateInfo<RtEntity>>>() ?? [];
 
         var timeStamp = DateTime.UtcNow;
-        if (c.TimestampPropertyPath != null)
+        if (c.TimestampPath != null)
         {
-            var ts = dataContext.Current!.SelectToken(c.TimestampPropertyPath);
-            if (ts != null)
-            {
-                timeStamp = ts.ToObject<DateTime>();
-            }
+            timeStamp = dataContext.GetCurrentValueByPath<DateTime>(c.TimestampPath);
         }
-
 
         var rtEntity = new RtEntity();
         var hasUpdate = false;
@@ -107,9 +87,9 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
 
             foreach (var jToken in jTokens)
             {
-                object? value = null;
                 if (jToken is JValue jValue)
                 {
+                    object? value;
                     switch (au.AttributeValueType.Value)
                     {
                         case AttributeValueTypesDto.Double:
@@ -118,27 +98,51 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                         case AttributeValueTypesDto.Int:
                             value = jValue.Value<int>();
                             break;
+                        case AttributeValueTypesDto.Boolean:
+                            value = jValue.Value<bool>();
+                            break;
+                        case AttributeValueTypesDto.String:
+                            value = jValue.Value<string>();
+                            break;
+                        case AttributeValueTypesDto.DateTime:
+                            value = jValue.Value<DateTime>();
+                            break;
+                        case AttributeValueTypesDto.Int64:
+                            value = jValue.Value<long>();
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException();
                     }
+
                     rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
-                    rtEntity.RtChangedDateTime = timeStamp;
                     hasUpdate = true;
                 }
             }
         }
 
+        EntityUpdateInfo<RtEntity>? updateItem = null;
         if (hasUpdate)
         {
-            updateList.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity));
+            rtEntity.RtChangedDateTime = timeStamp;
+            if (c.UpdateKind == UpdateKind.Update)
+            {
+                var rtId = c.RtId ?? dataContext.GetCurrentValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
+                if (rtId == null)
+                {
+                    dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtId or RtIdPath is not set");
+                    return;
+                }
+
+                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity);
+            }
+            else
+            {
+                updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(c.CkTypeId, rtEntity);
+            }
         }
 
-        dataContext.SetCurrentValueByPath(c.TargetPropertyName, updateList, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.SetCurrentValueByPath(c.TargetPath, updateItem, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
-    }
-
-    private static bool NoUpdatesForCurrentNode(IDataContext dataContext, CreateUpdateInfoNodeConfiguration c)
-    {
-        return c.AttributeUpdates!.Where(x => x.ValuePath != null)
-            .All(x => !dataContext.Current!.SelectTokens(x.ValuePath!).Any());
     }
 }

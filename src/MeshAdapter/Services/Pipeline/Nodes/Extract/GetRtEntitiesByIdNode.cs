@@ -1,24 +1,33 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
 /// <summary>
 /// Gets rt entities by type
 /// </summary>
-[NodeConfiguration(typeof(GetRtEntitiesByTypeNodeConfiguration))]
-public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+[NodeConfiguration(typeof(GetRtEntitiesByIdNodeConfiguration))]
+public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-       var c = dataContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
+        var etlContext = context;
+
+        var c = dataContext.GetNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {
             dataContext.Logger.Error(dataContext.NodeStack.Peek(), "CkTypeId is not set");
+            return;
+        }
+
+        if (c.RtIds == null)
+        {
+            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtIds is not set");
             return;
         }
 
@@ -31,10 +40,9 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
             }
         }
 
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(etlContext.Session, c.CkTypeId, dataQueryOperation, c.Skip, c.Take);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(etlContext.Session, c.CkTypeId, c.RtIds.ToList(), dataQueryOperation, c.Skip, c.Take);
 
-        dataContext.SetCurrentValueByPath(c.TargetPropertyName, r);
-        
+        dataContext.SetCurrentValueByPath(c.TargetPath, r);
         
         await next(dataContext);
     }

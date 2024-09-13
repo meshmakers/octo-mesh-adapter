@@ -1,8 +1,9 @@
 ﻿using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 
 /// <summary>
 /// Creates a web push notification

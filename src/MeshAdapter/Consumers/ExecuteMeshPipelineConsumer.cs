@@ -18,17 +18,15 @@ internal class ExecuteMeshPipelineConsumer(
     public async Task ConsumeAsync(IDistributedContext<ExecuteMeshPipelineRequest> context)
     {
         var message = context.Message;
-        logger.LogInformation("[{TenantId}] Received", message.TenantId);
+        logger.LogInformation("[{TenantId}] Received command executing pipeline", message.TenantId);
 
         try
         {
-            var output = await pipelineExecutionService.ExecutePipelineAsync(context.Message.TenantId.NormalizeString(),
+            var pipelineExecutionId = await pipelineExecutionService.StartExecutePipelineAsync(context.Message.TenantId.NormalizeString(),
                 context.Message.MeshPipelineRtEntityId, new ExecutePipelineOptions(DateTime.UtcNow),
                 context.Message.PipelineInput);
-
-            var result = output?.Serialize() ?? null;
             
-            await context.RespondAsync(new ExecuteMeshPipelineResponse(true, null, result));
+            await context.RespondAsync(new ExecuteMeshPipelineResponse(true, null, pipelineExecutionId));
         }
         catch (Exception ex)
         {

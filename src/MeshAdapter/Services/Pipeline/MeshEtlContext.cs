@@ -13,19 +13,20 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// <summary>
     /// Create a new instance of <see cref="MeshEtlContext"/>
     /// </summary>
-    /// <param name="tenantId"></param>
     /// <param name="message"></param>
-    /// <param name="tenantRepository"></param>
-    /// <param name="session"></param>
-    /// <param name="dataPipelineRtId"></param>
-    /// <param name="pipelineRtEntityId"></param>
-    /// <param name="externalReceivedDateTime"></param>
-    /// <param name="properties"></param>
-    /// <param name="adapterReceivedDateTime"></param>
+    /// <param name="tenantRepository">Tenant repository</param>
+    /// <param name="session">Session</param>
+    /// <param name="adapterReceivedDateTime">Received date time from the adapter</param>
+    /// <param name="tenantId">Tenant identifier</param>
+    /// <param name="dataPipelineRtId">Data pipeline runtime identifier</param>
+    /// <param name="pipelineExecutionId">Guid that identifies the pipeline execution instance</param>
+    /// <param name="pipelineRtEntityId">Pipeline identifier</param>
+    /// <param name="externalReceivedDateTime">Date and time when the value was received by an optional external system</param>
+    /// <param name="properties">properties that are shared between the different stages of the ETL process and different runs of the pipeline</param>
     public MeshEtlContext(string tenantId, string message, ITenantRepository tenantRepository,
-        IOctoSession session, OctoObjectId dataPipelineRtId,  RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
+        IOctoSession session, OctoObjectId dataPipelineRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
         IDictionary<string, object?> properties)
-        : base(tenantId, dataPipelineRtId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, properties)
+        : base(tenantId, dataPipelineRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, properties)
     {
         Message = message;
         TenantRepository = tenantRepository;

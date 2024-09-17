@@ -19,9 +19,9 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.GetNodeConfiguration<ApplyChangesNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<ApplyChangesNodeConfiguration>();
 
-        var list = dataContext.DeserializeCurrentValue<List<EntityUpdateInfo<RtEntity>>>(c.TargetPath,
+        var list = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
 
         if (list != null && list.Any())
@@ -39,7 +39,7 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
             await etlContext.TenantRepository.ApplyChangesAsync(etlContext.Session, resultUpdateInfos, operationResult);
             if (operationResult.HasErrors || operationResult.HasFatalErrors)
             {
-                dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Error updating RtEntity");
+                dataContext.NodeContext.Error("Error updating RtEntity");
                 return;
             }
         }

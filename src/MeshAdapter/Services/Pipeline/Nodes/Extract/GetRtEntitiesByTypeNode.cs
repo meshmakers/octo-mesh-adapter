@@ -1,4 +1,3 @@
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -10,16 +9,17 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 /// Gets rt entities by type
 /// </summary>
 [NodeConfiguration(typeof(GetRtEntitiesByTypeNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
 public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-       var c = dataContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
+       var c = dataContext.NodeContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "CkTypeId is not set");
+            dataContext.NodeContext.Error("CkTypeId is not set");
             return;
         }
 
@@ -34,7 +34,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
 
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(etlContext.Session, c.CkTypeId, dataQueryOperation, c.Skip, c.Take);
 
-        dataContext.SetCurrentValueByPath(c.TargetPath, r);
+        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, r);
         
         
         await next(dataContext);

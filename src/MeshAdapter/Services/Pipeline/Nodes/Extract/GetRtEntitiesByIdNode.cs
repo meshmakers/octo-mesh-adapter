@@ -1,4 +1,3 @@
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -10,6 +9,7 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 /// Gets rt entities by type
 /// </summary>
 [NodeConfiguration(typeof(GetRtEntitiesByIdNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
 public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) : IPipelineNode
 {
     /// <inheritdoc />
@@ -17,17 +17,17 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
     {
         var etlContext = context;
 
-        var c = dataContext.GetNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "CkTypeId is not set");
+            dataContext.NodeContext.Error("CkTypeId is not set");
             return;
         }
 
         if (c.RtIds == null)
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtIds is not set");
+            dataContext.NodeContext.Error("RtIds is not set");
             return;
         }
 
@@ -42,7 +42,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
 
         var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(etlContext.Session, c.CkTypeId, c.RtIds.ToList(), dataQueryOperation, c.Skip, c.Take);
 
-        dataContext.SetCurrentValueByPath(c.TargetPath, r);
+        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, r);
         
         await next(dataContext);
     }

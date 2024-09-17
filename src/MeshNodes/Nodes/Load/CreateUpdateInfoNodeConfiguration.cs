@@ -7,18 +7,13 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 /// Configuration node object for update a rt entity object
 /// </summary>
 [NodeName("CreateUpdateInfo", 1)]
-public class CreateUpdateInfoNodeConfiguration : NodeConfiguration
+public class CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
     /// Kind of update
     /// </summary>
     public UpdateKind? UpdateKind { get; set; }
     
-    /// <summary>
-    /// Gets or sets the target property name
-    /// </summary>
-    public string? TargetPath { get; set; }
-
     /// <summary>
     /// The path to the RtEntityId
     /// </summary>

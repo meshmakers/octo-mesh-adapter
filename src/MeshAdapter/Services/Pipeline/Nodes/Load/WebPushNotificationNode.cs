@@ -1,5 +1,4 @@
-﻿using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
+﻿using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
@@ -14,7 +13,7 @@ public class WebPushNotificationNode(NodeDelegate next) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.GetNodeConfiguration<WebPushNotificationNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<WebPushNotificationNodeConfiguration>();
 
         await next(dataContext);
     }

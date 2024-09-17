@@ -119,7 +119,7 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
         EntityUpdateInfo<RtEntity>? updateItem = null;
         if (hasUpdate)
         {
-            rtEntity.RtChangedDateTime = timeStamp;
+            rtEntity.RtChangedDateTime = timeStamp.ToUniversalTime();
             if (c.UpdateKind == UpdateKind.Update)
             {
                 var rtId = c.RtId ?? dataContext.GetSimpleValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");

@@ -8,6 +8,7 @@ using Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
+using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Extensions;
 using Meshmakers.Octo.Sdk.Common.Adapters;
@@ -33,6 +34,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<GetRtEntitiesByIdNode>()
         .RegisterNode<CreateUpdateInfoNode>()
         .RegisterNode<ApplyChangesNode>()
+        .RegisterNode<FilterLatestUpdateInfoNode>()
         .RegisterNode<RetrieveFromMessageNode>()
         .RegisterNode<EnrichWithMongoDataNode>()
         .RegisterNode<SaveInTimeSeriesNode>()

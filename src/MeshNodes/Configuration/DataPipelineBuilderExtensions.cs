@@ -1,5 +1,6 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
+using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -27,6 +28,7 @@ public static class DataPipelineBuilderExtensions
         
         // Register transform nodes
         pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
 
         // Register load nodes
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();

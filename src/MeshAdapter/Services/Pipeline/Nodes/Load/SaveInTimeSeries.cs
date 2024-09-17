@@ -18,7 +18,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
         
         var data = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);

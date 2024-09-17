@@ -1,7 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Transform;
 
 /// <summary>
 /// Configuration node object for update a rt entity object

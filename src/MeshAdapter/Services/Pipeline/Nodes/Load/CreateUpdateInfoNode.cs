@@ -21,44 +21,32 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.GetNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "CkTypeId is not set");
+            dataContext.NodeContext.Error("CkTypeId is not set");
             return;
         }
 
-        if (c.UpdateKind == UpdateKind.Update && c.RtId == null && c.RtIdPath == null)
+        if (c is { UpdateKind: UpdateKind.Update, RtId: null, RtIdPath: null })
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtId and RtIdPath is not set");
+            dataContext.NodeContext.Error("RtId and RtIdPath is not set");
             return;
         }
 
         if (c.AttributeUpdates == null || c.AttributeUpdates.Count == 0)
         {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "AttributeUpdates is not set");
+            dataContext.NodeContext.Error("AttributeUpdates is not set");
             return;
         }
-
-        if (dataContext.Current == null)
-        {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Current is not set");
-            return;
-        }
-
-        if (c.TargetPath == null)
-        {
-            dataContext.Logger.Error(dataContext.NodeStack.Peek(), "TargetPath is not set");
-            return;
-        }
-
+        
         // we are most likely not the first node in a pipeline run. Otherwise, we just create a new list
 
         var timeStamp = DateTime.UtcNow;
-        if (c.TimestampPath != null)
+        if (c.TimestampPath != null && dataContext.Current != null)
         {
-            timeStamp = dataContext.GetCurrentValueByPath<DateTime>(c.TimestampPath);
+            timeStamp = dataContext.GetSimpleValueByPath<DateTime>(c.TimestampPath);
         }
 
         var rtEntity = new RtEntity();
@@ -67,56 +55,64 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
             {
-                dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Attribute name is not set");
+                dataContext.NodeContext.Error("Attribute name is not set");
                 continue;
             }
 
             if (au.AttributeValueType == null)
             {
-                dataContext.Logger.Error(dataContext.NodeStack.Peek(), "Attribute value type is not set");
+                dataContext.NodeContext.Error("Attribute value type is not set");
                 continue;
             }
 
-            var jTokens = dataContext.Current?.SelectTokens(au.ValuePath ?? "$") ??
-                          dataContext.Current?[au.ValuePath ?? "$"];
-
-            if (jTokens == null)
+            if (!string.IsNullOrEmpty(au.ValuePath))
             {
-                continue;
-            }
+                var jTokens = dataContext.Current?.SelectTokens(au.ValuePath ?? "$") ??
+                              dataContext.Current?[au.ValuePath ?? "$"];
 
-            foreach (var jToken in jTokens)
-            {
-                if (jToken is JValue jValue)
+                if (jTokens == null)
                 {
-                    object? value;
-                    switch (au.AttributeValueType.Value)
-                    {
-                        case AttributeValueTypesDto.Double:
-                            value = jValue.Value<double>();
-                            break;
-                        case AttributeValueTypesDto.Int:
-                            value = jValue.Value<int>();
-                            break;
-                        case AttributeValueTypesDto.Boolean:
-                            value = jValue.Value<bool>();
-                            break;
-                        case AttributeValueTypesDto.String:
-                            value = jValue.Value<string>();
-                            break;
-                        case AttributeValueTypesDto.DateTime:
-                            value = jValue.Value<DateTime>();
-                            break;
-                        case AttributeValueTypesDto.Int64:
-                            value = jValue.Value<long>();
-                            break;
-                        default:
-                            throw new ArgumentOutOfRangeException();
-                    }
-
-                    rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
-                    hasUpdate = true;
+                    continue;
                 }
+
+                foreach (var jToken in jTokens)
+                {
+                    if (jToken is JValue jValue)
+                    {
+                        object? value;
+                        switch (au.AttributeValueType.Value)
+                        {
+                            case AttributeValueTypesDto.Double:
+                                value = jValue.Value<double>();
+                                break;
+                            case AttributeValueTypesDto.Int:
+                                value = jValue.Value<int>();
+                                break;
+                            case AttributeValueTypesDto.Boolean:
+                                value = jValue.Value<bool>();
+                                break;
+                            case AttributeValueTypesDto.String:
+                                value = jValue.Value<string>();
+                                break;
+                            case AttributeValueTypesDto.DateTime:
+                                value = jValue.Value<DateTime>();
+                                break;
+                            case AttributeValueTypesDto.Int64:
+                                value = jValue.Value<long>();
+                                break;
+                            default:
+                                throw new ArgumentOutOfRangeException();
+                        }
+
+                        rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
+                        hasUpdate = true;
+                    }
+                }
+            }
+            else if (au.Value != null)
+            {
+                rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, au.Value);
+                hasUpdate = true;
             }
         }
 
@@ -126,10 +122,10 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             rtEntity.RtChangedDateTime = timeStamp;
             if (c.UpdateKind == UpdateKind.Update)
             {
-                var rtId = c.RtId ?? dataContext.GetCurrentValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
+                var rtId = c.RtId ?? dataContext.GetSimpleValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
                 if (rtId == null)
                 {
-                    dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtId or RtIdPath is not set");
+                    dataContext.NodeContext.Error("RtId or RtIdPath is not set");
                     return;
                 }
 
@@ -141,7 +137,8 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             }
         }
 
-        dataContext.SetCurrentValueByPath(c.TargetPath, updateItem, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.SetValueByPath(c.TargetPath, updateItem, c.TargetValueKind,
+            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
     }

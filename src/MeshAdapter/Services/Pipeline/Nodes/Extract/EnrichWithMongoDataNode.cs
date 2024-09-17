@@ -1,5 +1,4 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
@@ -21,9 +20,9 @@ internal class EnrichWithMongoDataNode(
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.GetNodeConfiguration<EnrichWithMongoDataConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<EnrichWithMongoDataConfiguration>();
 
-        var updateInfos = dataContext.DeserializeCurrentValue<List<EntityUpdateInfo<RtEntity>>>(c.Path,
+        var updateInfos = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
 
         if (updateInfos != null && updateInfos.Count != 0)
@@ -39,16 +38,16 @@ internal class EnrichWithMongoDataNode(
                 var modOption = entityUpdateInfo.ModOption;
   
                 
-                var rtId = c.RtId ?? dataContext.GetCurrentValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
-                var ckTypeId = c.CkTypeId ?? dataContext.GetCurrentValueByPath<CkId<CkTypeId>?>(c.CkTypeIdPath ?? "$");
+                var rtId = c.RtId ?? dataContext.GetSimpleValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
+                var ckTypeId = c.CkTypeId ?? dataContext.GetSimpleValueByPath<CkId<CkTypeId>?>(c.CkTypeIdPath ?? "$");
                 if (rtId == null)
                 {
-                    dataContext.Logger.Error(dataContext.NodeStack.Peek(), "RtId or RtIdPath is not set");
+                    dataContext.NodeContext.Error("RtId or RtIdPath is not set");
                     return;
                 }
                 if (ckTypeId == null)
                 {
-                    dataContext.Logger.Error(dataContext.NodeStack.Peek(), "CkTypeId or CkTypeIdPath is not set");
+                    dataContext.NodeContext.Error("CkTypeId or CkTypeIdPath is not set");
                     return;
                 }
                 
@@ -77,7 +76,7 @@ internal class EnrichWithMongoDataNode(
         }
 
 
-        dataContext.SetCurrentValueByPath(c.TargetPath, updateInfos, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.SetValueByPath(c.TargetPath, updateInfos, c.TargetValueKind, c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
     }

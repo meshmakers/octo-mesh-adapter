@@ -7,23 +7,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 /// Configuration 
 /// </summary>
 [NodeName("EnrichWithMongoData", 1)]
-public class EnrichWithMongoDataConfiguration : NodeConfiguration
+public class EnrichWithMongoDataConfiguration : SourceTargetPathNodeConfiguration
 {
-    /// <summary>
-    /// Gets or sets the source path of update infos
-    /// </summary>
-    public string? Path { get; set; }
-    
-    /// <summary>
-    /// Gets or sets the target property name
-    /// </summary>
-    public string? TargetPath { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether to append to the target property name
-    /// </summary>
-    public bool AppendToTargetPath { get; set; } = true;
-    
     /// <summary>
     /// The path to the RtId
     /// </summary>

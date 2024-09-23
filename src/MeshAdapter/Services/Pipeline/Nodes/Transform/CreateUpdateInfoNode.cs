@@ -40,7 +40,7 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             dataContext.NodeContext.Error("AttributeUpdates is not set");
             return;
         }
-        
+
         // we are most likely not the first node in a pipeline run. Otherwise, we just create a new list
 
         var timeStamp = DateTime.UtcNow;
@@ -135,10 +135,11 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             {
                 updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(c.CkTypeId, rtEntity);
             }
+
+            dataContext.SetValueByPath(c.TargetPath, updateItem, c.TargetValueKind,
+                c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
         }
 
-        dataContext.SetValueByPath(c.TargetPath, updateItem, c.TargetValueKind,
-            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
     }

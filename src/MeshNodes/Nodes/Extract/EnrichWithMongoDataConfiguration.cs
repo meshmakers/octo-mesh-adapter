@@ -7,7 +7,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 /// Configuration 
 /// </summary>
 [NodeName("EnrichWithMongoData", 1)]
-public class EnrichWithMongoDataConfiguration : SourceTargetPathNodeConfiguration
+public record EnrichWithMongoDataConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
     /// The path to the RtId

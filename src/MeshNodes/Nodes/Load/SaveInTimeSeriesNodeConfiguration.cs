@@ -6,4 +6,4 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 /// Save in time series node configuration
 /// </summary>
 [NodeName("SaveInTimeSeries", 1)]
-public class SaveInTimeSeriesNodeConfiguration : PathNodeConfiguration;
+public record SaveInTimeSeriesNodeConfiguration : PathNodeConfiguration;

@@ -6,4 +6,4 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 /// Configuration node object for apply changes to the object in mongodb
 /// </summary>
 [NodeName("ApplyChanges", 1)]
-public class ApplyChangesNodeConfiguration : PathNodeConfiguration;
+public record ApplyChangesNodeConfiguration : PathNodeConfiguration;

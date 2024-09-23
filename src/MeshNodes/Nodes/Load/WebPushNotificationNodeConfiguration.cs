@@ -6,7 +6,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 /// Configuration node object for web push notifications
 /// </summary>
 [NodeName("WebPushNotification", 1)]
-public class WebPushNotificationNodeConfiguration : NodeConfiguration
+public record WebPushNotificationNodeConfiguration : NodeConfiguration
 {
     /// <summary>
     /// Gets or sets the public key for the voluntary application server identification

@@ -6,4 +6,4 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 /// Configuration for node RetrieveFromMessage
 /// </summary>
 [NodeName("RetrieveFromMessage", 1)]
-public class RetrieveFromMessageNodeConfiguration : NodeConfiguration;
+public record RetrieveFromMessageNodeConfiguration : NodeConfiguration;

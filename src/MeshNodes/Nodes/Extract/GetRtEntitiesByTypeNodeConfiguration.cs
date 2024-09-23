@@ -8,7 +8,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
 /// Configuration for node get rt entities by type
 /// </summary>
 [NodeName("GetRtEntitiesByType", 1)]
-public class GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfiguration
+public record GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
     /// CkTypeId of query

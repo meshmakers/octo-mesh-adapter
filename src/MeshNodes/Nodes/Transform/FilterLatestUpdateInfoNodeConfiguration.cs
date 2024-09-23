@@ -6,4 +6,4 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Transform;
 /// Configuration node object for filtering the latest update info
 /// </summary>
 [NodeName("FilterLatestUpdateInfo", 1)]
-public class FilterLatestUpdateInfoNodeConfiguration : SourceTargetPathNodeConfiguration;
+public record FilterLatestUpdateInfoNodeConfiguration : SourceTargetPathNodeConfiguration;

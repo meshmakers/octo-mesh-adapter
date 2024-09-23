@@ -7,7 +7,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Transform;
 /// Configuration node object for update a rt entity object
 /// </summary>
 [NodeName("CreateUpdateInfo", 1)]
-public class CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfiguration
+public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
     /// Kind of update

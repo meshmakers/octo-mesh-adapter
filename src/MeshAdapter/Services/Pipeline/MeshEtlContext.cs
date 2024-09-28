@@ -13,9 +13,7 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// <summary>
     /// Create a new instance of <see cref="MeshEtlContext"/>
     /// </summary>
-    /// <param name="message"></param>
     /// <param name="tenantRepository">Tenant repository</param>
-    /// <param name="session">Session</param>
     /// <param name="adapterReceivedDateTime">Received date time from the adapter</param>
     /// <param name="tenantId">Tenant identifier</param>
     /// <param name="dataPipelineRtId">Data pipeline runtime identifier</param>
@@ -23,22 +21,14 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// <param name="pipelineRtEntityId">Pipeline identifier</param>
     /// <param name="externalReceivedDateTime">Date and time when the value was received by an optional external system</param>
     /// <param name="properties">properties that are shared between the different stages of the ETL process and different runs of the pipeline</param>
-    public MeshEtlContext(string tenantId, string message, ITenantRepository tenantRepository,
-        IOctoSession session, OctoObjectId dataPipelineRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
+    public MeshEtlContext(string tenantId, ITenantRepository tenantRepository,
+        OctoObjectId dataPipelineRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
         IDictionary<string, object?> properties)
         : base(tenantId, dataPipelineRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, properties)
     {
-        Message = message;
         TenantRepository = tenantRepository;
-        Session = session;
     }
 
     /// <inheritdoc />
-    public string Message { get; }
-
-    /// <inheritdoc />
     public ITenantRepository TenantRepository { get; }
-
-    /// <inheritdoc />
-    public IOctoSession Session { get; }
 }

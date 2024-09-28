@@ -1,4 +1,4 @@
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -40,7 +40,10 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             }
         }
 
-        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(etlContext.Session, c.CkTypeId, c.RtIds.ToList(), dataQueryOperation, c.Skip, c.Take);
+        var session = await etlContext.TenantRepository.GetSessionAsync();
+        session.StartTransaction();
+        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, c.CkTypeId, c.RtIds.ToList(), dataQueryOperation, c.Skip, c.Take);
+        await session.CommitTransactionAsync();
 
         dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, r);
         

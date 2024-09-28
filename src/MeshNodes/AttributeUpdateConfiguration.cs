@@ -1,6 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Nodes;
 
 /// <summary>
 /// Update of a specific attribute

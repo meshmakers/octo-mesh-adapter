@@ -1,6 +1,6 @@
 ﻿using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 
 /// <summary>
 /// Configuration node object for web push notifications

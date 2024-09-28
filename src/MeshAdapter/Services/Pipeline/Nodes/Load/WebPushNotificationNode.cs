@@ -1,4 +1,4 @@
-﻿using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
+﻿using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 

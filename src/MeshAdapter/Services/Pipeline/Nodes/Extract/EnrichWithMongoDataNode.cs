@@ -1,5 +1,5 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
@@ -27,6 +27,9 @@ internal class EnrichWithMongoDataNode(
 
         if (updateInfos != null && updateInfos.Count != 0)
         {
+            var session = await etlContext.TenantRepository.GetSessionAsync();
+            session.StartTransaction();
+            
             foreach (var entityUpdateInfo in updateInfos)
             {
                 if (entityUpdateInfo.ModOption != EntityModOptions.Update &&
@@ -63,7 +66,7 @@ internal class EnrichWithMongoDataNode(
                 {
                     case EntityModOptions.Replace:
                     case EntityModOptions.Update:
-                        await HandleUpdateOrReplace(entityUpdateInfo, c);
+                        await HandleUpdateOrReplace(session, entityUpdateInfo, c);
                         break;
                     case EntityModOptions.Insert:
                     case EntityModOptions.Delete:
@@ -73,6 +76,8 @@ internal class EnrichWithMongoDataNode(
 
                 // Updates lt. Broker
             }
+
+            await session.CommitTransactionAsync();
         }
 
 
@@ -81,7 +86,7 @@ internal class EnrichWithMongoDataNode(
         await next(dataContext);
     }
 
-    private async Task HandleUpdateOrReplace(EntityUpdateInfo<RtEntity> entityUpdateInfo, EnrichWithMongoDataConfiguration config)
+    private async Task HandleUpdateOrReplace(IOctoSession session, EntityUpdateInfo<RtEntity> entityUpdateInfo, EnrichWithMongoDataConfiguration config)
     {
         if(config.AttributeUpdates == null || config.AttributeUpdates.Count == 0)
         {
@@ -93,7 +98,7 @@ internal class EnrichWithMongoDataNode(
             return;
         }
         
-        var entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(etlContext.Session, entityUpdateInfo.GetRtEntityId());
+        var entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session, entityUpdateInfo.GetRtEntityId());
 
         if (entity == null)
         {

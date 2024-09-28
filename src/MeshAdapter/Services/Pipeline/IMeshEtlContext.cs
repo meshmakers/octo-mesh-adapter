@@ -10,17 +10,7 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 public interface IMeshEtlContext : IEtlContext
 {
     /// <summary>
-    /// Returns the message
-    /// </summary>
-    string Message { get; }
-    
-    /// <summary>
     /// Returns the associated tenant repository
     /// </summary>
     ITenantRepository TenantRepository { get; }
-
-    /// <summary>
-    /// Returns the current session
-    /// </summary>
-    IOctoSession Session { get; }
 }

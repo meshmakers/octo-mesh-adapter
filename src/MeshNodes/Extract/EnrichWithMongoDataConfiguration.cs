@@ -1,7 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 
 /// <summary>
 /// Configuration 

@@ -1,7 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Transform;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
 /// Configuration node object for update a rt entity object
@@ -12,7 +12,7 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     /// <summary>
     /// Kind of update
     /// </summary>
-    public UpdateKind? UpdateKind { get; set; }
+    public UpdateKind UpdateKind { get; set; } = UpdateKind.Update;
     
     /// <summary>
     /// The path to the RtEntityId

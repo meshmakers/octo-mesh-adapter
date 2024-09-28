@@ -1,4 +1,4 @@
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+namespace Meshmakers.Octo.MeshAdapter.Nodes;
 
 /// <summary>
 /// Defines the kind of update

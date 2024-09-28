@@ -1,6 +1,7 @@
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Extract;
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -23,7 +24,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<EnrichWithMongoDataConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<RetrieveFromMessageNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromPipelineDataEventNodeConfiguration>();
 
         
         // Register transform nodes

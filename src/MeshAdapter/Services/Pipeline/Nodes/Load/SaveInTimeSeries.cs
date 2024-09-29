@@ -64,8 +64,6 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
             if (toInsert.Count != 0)
             {
                 dataContext.NodeContext.Debug($"Inserting {toInsert.Count} data points into the stream data database");
-                dataContext.NodeContext.Debug(toInsert.Serialize());
-                
                 await streamDataDatabaseClient.InsertDataAsync(tenantId, toInsert);
             }
         }

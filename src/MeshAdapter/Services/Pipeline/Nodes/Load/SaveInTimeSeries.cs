@@ -1,3 +1,4 @@
+using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -62,9 +63,17 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
 
             if (toInsert.Count != 0)
             {
+                dataContext.NodeContext.Debug($"Inserting {toInsert.Count} data points into the stream data database");
+                dataContext.NodeContext.Debug(toInsert.Serialize());
+                
                 await streamDataDatabaseClient.InsertDataAsync(tenantId, toInsert);
             }
         }
+        else
+        {
+            dataContext.NodeContext.Warning("No update infos found");
+        }
+
         
         await next(dataContext);
     }

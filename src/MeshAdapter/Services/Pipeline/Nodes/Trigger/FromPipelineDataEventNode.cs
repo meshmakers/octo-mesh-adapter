@@ -18,7 +18,7 @@ internal class FromPipelineDataEventNode(IEventHubControl eventHubControl)
     public Task StartAsync(ITriggerContext context)
     {
         var address =
-            $"data-pipeline-{context.TenantId.ToLower()}-{context.DataPipelineRtId.ToString()?.ToLower()}-{nameof(PipelineDataReceived).ToLower()}";
+            $"octo::com::{nameof(PipelineDataReceived).ToLower()}-{context.TenantId.ToLower()}-data-pipeline-{context.DataPipelineRtId.ToString()?.ToLower()}";
 
         _endpointHandle = eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(address,
             async message =>

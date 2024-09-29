@@ -85,6 +85,10 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
                 ApplySemaphoreSlim.Release();
             }
         }
+        else
+        {
+            dataContext.NodeContext.Warning("No update infos found");
+        }
 
 
         await next(dataContext);

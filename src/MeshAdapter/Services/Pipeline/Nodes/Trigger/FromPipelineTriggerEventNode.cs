@@ -3,10 +3,10 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Services.Common.DistributionEventHub.Commands;
 using Meshmakers.Octo.Services.Common.DistributionEventHub.Messages;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Trigger;
-
 
 [NodeConfiguration(typeof(FromPipelineTriggerEventNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -18,13 +18,13 @@ internal class FromPipelineTriggerEventNode(IEventHubControl eventHubControl)
     public Task StartAsync(ITriggerContext context)
     {
         var address =
-            $"data-pipeline-{context.TenantId.ToLower()}-{context.DataPipelineRtId.ToString().ToLower()}-{nameof(PipelineTriggerSchedule).ToLower()}";
-
+            $"{QueueNames.PipelineTriggerChannelName.ToLower()}-{context.TenantId.ToLower()}-{context.PipelineRtEntityId.RtId.ToString().ToLower()}";
+        
         _endpointHandle = eventHubControl.RegisterRoutedEventConsumer<PipelineTriggerSchedule>(address,
             async message =>
             {
                 context.NodeContext.Info("[{TenantId}] Received", message.TenantId);
-                
+
                 await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow));
             });
 

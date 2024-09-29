@@ -1,5 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -16,7 +18,8 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 /// </summary>
 [NodeConfiguration(typeof(CreateUpdateInfoNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
+public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
@@ -49,6 +52,8 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
             timeStamp = dataContext.GetSimpleValueByPath<DateTime>(c.TimestampPath);
         }
 
+        var ckTypeGraph = await etlContext.TenantRepository.GetCkTypeGraphAsync(c.CkTypeId);
+
         var rtEntity = new RtEntity();
         var hasUpdate = false;
         foreach (var au in c.AttributeUpdates)
@@ -79,47 +84,31 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
                 {
                     if (jToken is JValue jValue)
                     {
-                        object? value;
-                        switch (au.AttributeValueType.Value)
+                        if (!SetAttributeValue(dataContext, au.AttributeName, au.AttributeValueType.Value, jValue.Value,
+                                rtEntity, ckTypeGraph))
                         {
-                            case AttributeValueTypesDto.Double:
-                                value = jValue.Value<double>();
-                                break;
-                            case AttributeValueTypesDto.Int:
-                                value = jValue.Value<int>();
-                                break;
-                            case AttributeValueTypesDto.Boolean:
-                                value = jValue.Value<bool>();
-                                break;
-                            case AttributeValueTypesDto.String:
-                                value = jValue.Value<string>();
-                                break;
-                            case AttributeValueTypesDto.DateTime:
-                                value = jValue.Value<DateTime>();
-                                break;
-                            case AttributeValueTypesDto.Int64:
-                                value = jValue.Value<long>();
-                                break;
-                            default:
-                                throw new ArgumentOutOfRangeException();
+                            continue;
                         }
-
-                        rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, value);
+                        
                         hasUpdate = true;
                     }
                 }
             }
             else if (au.Value != null)
             {
-                rtEntity.SetAttributeValue(au.AttributeName, au.AttributeValueType.Value, au.Value);
+                if (!SetAttributeValue(dataContext, au.AttributeName, au.AttributeValueType.Value, au.Value, rtEntity, ckTypeGraph))
+                {
+                    return;
+                }
+
                 hasUpdate = true;
             }
         }
 
-        EntityUpdateInfo<RtEntity>? updateItem = null;
         if (hasUpdate)
         {
             rtEntity.RtChangedDateTime = timeStamp.ToUniversalTime();
+            EntityUpdateInfo<RtEntity>? updateItem;
             if (c.UpdateKind == UpdateKind.Update)
             {
                 var rtId = c.RtId ?? dataContext.GetSimpleValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
@@ -142,5 +131,61 @@ public class CreateUpdateInfoNode(NodeDelegate next) : IPipelineNode
 
 
         await next(dataContext);
+    }
+
+    private bool SetAttributeValue(IDataContext dataContext, string attributeName, AttributeValueTypesDto attributeValueType, object? value, RtEntity rtEntity, CkTypeGraph ckTypeGraph)
+    {
+        if (!ckTypeGraph.AllAttributesByName.TryGetValue(attributeName, out var attribute))
+        {
+            dataContext.NodeContext.Error($"Attribute {attributeName} not found in CKType {ckTypeGraph.CkTypeId}");
+            return false;
+        }
+        
+        switch (attributeValueType)
+        {
+            case AttributeValueTypesDto.Enum:
+
+                if (attribute.ValueCkEnumId != null)
+                {
+                    var ckEnumGraph = ckCacheService.GetCkEnum(etlContext.TenantId, attribute.ValueCkEnumId);
+
+                    if (value is string strValue)
+                    {
+                        var enumValue = ckEnumGraph.Values.FirstOrDefault(v =>
+                            string.Compare(v.Name, strValue, StringComparison.OrdinalIgnoreCase) == 0);
+                        if (enumValue == null)
+                        {
+                            dataContext.NodeContext.Error(
+                                $"Enum value {strValue} not found in CKEnum {attribute.ValueCkEnumId}");
+                            return false;
+                        }
+
+                        rtEntity.SetAttributeValue(attributeName, attributeValueType, enumValue.Key);
+                        return true;
+                    }
+
+                    if (value is int intValue)
+                    {
+                        var enumValue = ckEnumGraph.Values.FirstOrDefault(v => v.Key == intValue);
+                        if (enumValue == null)
+                        {
+                            dataContext.NodeContext.Error(
+                                $"Enum value {intValue} not found in CKEnum {attribute.ValueCkEnumId}");
+                            return false;
+                        }
+
+                        rtEntity.SetAttributeValue(attributeName, attributeValueType, enumValue.Key);
+                        return true;
+                    }
+
+                    dataContext.NodeContext.Error($"Enum value {value} is not a valid type");
+                    return false;
+                }
+                dataContext.NodeContext.Error("Enum value is not set");
+                return false;
+            default:
+                rtEntity.SetAttributeValue(attributeName, attributeValueType, value);
+                return true;
+        }
     }
 }

@@ -28,7 +28,7 @@ internal class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
                     context.NodeContext.Info("Received command executing pipeline");
                     
                     JToken input = JValue.CreateNull();
-                    if (message.PipelineInput != null)
+                    if (!string.IsNullOrWhiteSpace(message.PipelineInput))
                     {
                         input = JToken.Parse(message.PipelineInput);
                     }

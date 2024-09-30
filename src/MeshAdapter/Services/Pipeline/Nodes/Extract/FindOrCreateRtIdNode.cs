@@ -1,5 +1,5 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.MeshAdapter.Nodes.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
@@ -12,11 +12,8 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class FindOrCreateRtIdNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
-    private static readonly SemaphoreSlim Semaphore = new(1, 1);
-    
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        
         var c = dataContext.NodeContext.GetNodeConfiguration<FindOrCreateRtIdNodeConfiguration>();
 
         if (c.CkTypeId == null)
@@ -42,13 +39,17 @@ internal class FindOrCreateRtIdNode(NodeDelegate next, IMeshEtlContext etlContex
 
         try
         {
-            await Semaphore.WaitAsync();
-            r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(etlContext.Session, c.CkTypeId,
+            var session = await etlContext.TenantRepository.GetSessionAsync();
+            session.StartTransaction();
+
+            r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, c.CkTypeId,
                 dataQueryOperation, 0, 1);
+            await session.CommitTransactionAsync();
         }
-        finally
+        catch (Exception e)
         {
-            Semaphore.Release();
+            dataContext.NodeContext.Error(e.Message);
+            throw;
         }
 
 
@@ -56,14 +57,12 @@ internal class FindOrCreateRtIdNode(NodeDelegate next, IMeshEtlContext etlContex
         {
             var objectId = OctoObjectId.GenerateNewId();
             dataContext.SetValueByPath("$.rtId", ValueKind.Simple, WriteMode.Overwrite, objectId);
-            dataContext.SetValueByPath("$.modOperation", ValueKind.Simple, WriteMode.Overwrite,
-                UpdateKind.Insert);
+            dataContext.SetValueByPath("$.modOperation", ValueKind.Simple, WriteMode.Overwrite, UpdateKind.Insert);
         }
         else
         {
             dataContext.SetValueByPath("$.rtId", ValueKind.Simple, WriteMode.Overwrite, r.Items.First().RtId);
-            dataContext.SetValueByPath("$.modOperation", ValueKind.Simple, WriteMode.Overwrite,
-                UpdateKind.Update);
+            dataContext.SetValueByPath("$.modOperation", ValueKind.Simple, WriteMode.Overwrite, UpdateKind.Update);
         }
 
         await next(dataContext);

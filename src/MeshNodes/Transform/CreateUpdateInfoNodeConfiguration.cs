@@ -12,7 +12,7 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     /// <summary>
     /// Kind of update
     /// </summary>
-    public UpdateKind UpdateKind { get; set; } = UpdateKind.Update;
+    public UpdateKind? UpdateKind { get; set; }
     
     /// <summary>
     /// The path to the update kind
@@ -43,4 +43,9 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     /// Updates to the RtEntity attributes
     /// </summary>
     public ICollection<AttributeUpdateConfiguration>? AttributeUpdates { get; set; }
+
+    /// <summary>
+    /// The path to the RtWellKnownName if available
+    /// </summary>
+    public string? RtWellKnownNamePath { get; set; }
 }

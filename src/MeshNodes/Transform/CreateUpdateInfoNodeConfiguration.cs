@@ -15,6 +15,11 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     public UpdateKind UpdateKind { get; set; } = UpdateKind.Update;
     
     /// <summary>
+    /// The path to the update kind
+    /// </summary>
+    public string? UpdateKindPath { get; set; }
+    
+    /// <summary>
     /// The path to the RtEntityId
     /// </summary>
     public string? RtIdPath { get; set; }

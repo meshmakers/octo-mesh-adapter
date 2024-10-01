@@ -26,15 +26,19 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     {
         var c = dataContext.NodeContext.GetNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
 
+        var rtId = GetRtId(dataContext, c);
+        var updateKind = GetUpdateKind(dataContext, c);
+        var rtWellKnownName = GetRtWellKnownName(dataContext, c);
+
         if (c.CkTypeId == null)
         {
             dataContext.NodeContext.Error("CkTypeId is not set");
             return;
         }
 
-        if (c is { UpdateKind: UpdateKind.Update, RtId: null, RtIdPath: null })
+        if (updateKind == null || updateKind == UpdateKind.Update && rtId == null)
         {
-            dataContext.NodeContext.Error("RtId and RtIdPath is not set");
+            dataContext.NodeContext.Error("update kind is null OR update kind is Update AND rtId is null");
             return;
         }
 
@@ -55,6 +59,9 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         var ckTypeGraph = await etlContext.TenantRepository.GetCkTypeGraphAsync(c.CkTypeId);
 
         var rtEntity = new RtEntity();
+
+        rtEntity.RtWellKnownName = rtWellKnownName;
+        
         var hasUpdate = false;
         foreach (var au in c.AttributeUpdates)
         {
@@ -109,20 +116,22 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         {
             rtEntity.RtChangedDateTime = timeStamp.ToUniversalTime();
             EntityUpdateInfo<RtEntity>? updateItem;
-            if (c.UpdateKind == UpdateKind.Update)
+            if (updateKind == UpdateKind.Update)
             {
-                var rtId = c.RtId ?? dataContext.GetSimpleValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
-                if (rtId == null)
-                {
-                    dataContext.NodeContext.Error("RtId or RtIdPath is not set");
-                    return;
-                }
-
-                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId.Value), rtEntity);
+                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId!.Value), rtEntity);
             }
             else
             {
-                updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(c.CkTypeId, rtEntity);
+                if (rtId != null)
+                {
+                    rtEntity.RtId = rtId.Value;
+                    rtEntity.CkTypeId = c.CkTypeId;
+                    updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
+                }
+                else
+                {
+                    updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(c.CkTypeId, rtEntity);
+                }
             }
 
             dataContext.SetValueByPath(c.TargetPath, updateItem, c.TargetValueKind,
@@ -187,5 +196,48 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 rtEntity.SetAttributeValue(attributeName, attributeValueType, value);
                 return true;
         }
+    }
+    
+    private static OctoObjectId? GetRtId(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
+    {
+        if (config.RtId != null)
+        {
+            return config.RtId.Value;
+        }
+        if(config.RtIdPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+        
+        var rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(config.RtIdPath, RtNewtonsoftSerializer.DefaultSerializer);
+
+        return rtId;
+    }
+
+    private static UpdateKind? GetUpdateKind(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
+    {
+        if (config.UpdateKind != null)
+        {
+            return config.UpdateKind;
+        }
+        
+        if (config.UpdateKindPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+        
+        var updateKind = dataContext.GetComplexObjectByPath<UpdateKind?>(config.UpdateKindPath, RtNewtonsoftSerializer.DefaultSerializer);
+        return updateKind;
+    }
+    
+    private static string? GetRtWellKnownName(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
+    {
+        if (config.RtWellKnownNamePath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+        
+        var rtWellKnownName = dataContext.GetComplexObjectByPath<string?>(config.RtWellKnownNamePath, RtNewtonsoftSerializer.DefaultSerializer);
+        return rtWellKnownName;
     }
 }

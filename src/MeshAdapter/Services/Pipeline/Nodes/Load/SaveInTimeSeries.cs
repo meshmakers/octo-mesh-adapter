@@ -40,6 +40,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                 {
                     case EntityModOptions.Replace:
                     case EntityModOptions.Update:
+                    case EntityModOptions.Insert:
                         var dataPointDto = new DataPointDto(datapoint.RtEntity.Attributes.ToDictionary())
                         {
                             AdapterReceivedTimestamp = etlContext.TransactionStartedDateTime,
@@ -55,7 +56,6 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
 
                     // we don't delete data that comes over the broker
                     case EntityModOptions.Delete:
-                    case EntityModOptions.Insert:
                     default:
                         break;
                 }

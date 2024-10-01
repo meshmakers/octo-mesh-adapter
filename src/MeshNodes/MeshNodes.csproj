@@ -33,9 +33,5 @@
     <ItemGroup>
         <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoVersion)"/>
     </ItemGroup>
-    
-    <ItemGroup>
-      <Folder Include="Nodes\Load\" />
-    </ItemGroup>
 
 </Project>

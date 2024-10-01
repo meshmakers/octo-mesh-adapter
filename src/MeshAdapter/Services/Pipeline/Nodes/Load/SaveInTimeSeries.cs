@@ -1,4 +1,3 @@
-using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -48,6 +47,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                             ExternalId = OctoObjectId.Empty,
                             PlugId = OctoObjectId.Empty,
                             RtId = datapoint.RtId,
+                            RtWellKnownName = datapoint.RtEntity.RtWellKnownName,
                             CkTypeId = datapoint.CkTypeId,
                         };
 

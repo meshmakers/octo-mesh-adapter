@@ -36,9 +36,16 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             return;
         }
 
-        if (updateKind == null || updateKind == UpdateKind.Update && rtId == null)
+        if (updateKind == null)
         {
-            dataContext.NodeContext.Error("update kind is null OR update kind is Update AND rtId is null");
+            dataContext.NodeContext.Error("update kind is not set. Please provide a UpdateKind or UpdateKindPath");
+            return;
+        }
+        
+        
+        if (updateKind == UpdateKind.Update && rtId == null)
+        {
+            dataContext.NodeContext.Error("RtId is not set. Please provide a RtId or RtIdPath");
             return;
         }
 

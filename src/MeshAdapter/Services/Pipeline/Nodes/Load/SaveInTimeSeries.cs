@@ -42,10 +42,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                     case EntityModOptions.Insert:
                         var dataPointDto = new DataPointDto(datapoint.RtEntity.Attributes.ToDictionary())
                         {
-                            AdapterReceivedTimestamp = etlContext.TransactionStartedDateTime,
                             Timestamp = datapoint.RtEntity.RtChangedDateTime ?? etlContext.ExternalReceivedDateTime ?? etlContext.TransactionStartedDateTime,
-                            ExternalId = OctoObjectId.Empty,
-                            PlugId = OctoObjectId.Empty,
                             RtId = datapoint.RtId,
                             RtWellKnownName = datapoint.RtEntity.RtWellKnownName,
                             CkTypeId = datapoint.CkTypeId,

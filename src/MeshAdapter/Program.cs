@@ -37,6 +37,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<EnrichWithMongoDataNode>()
         .RegisterNode<SaveInTimeSeriesNode>()
         .RegisterNode<FindOrCreateRtIdNode>()
+        .RegisterNode<DataMappingNode>()
         .RegisterTriggerNode<FromPipelineDataEventNode>()
         .RegisterTriggerNode<FromPipelineTriggerEventNode>()
         .RegisterTriggerNode<FromExecutePipelineCommandNode>()

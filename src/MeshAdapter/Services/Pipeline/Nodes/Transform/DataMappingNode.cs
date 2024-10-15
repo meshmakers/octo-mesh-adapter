@@ -1,32 +1,10 @@
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
-
-/// <summary>
-/// Configuration node object for apply changes to the object in mongodb
-/// </summary>
-[NodeName("DataMapping", 1)]
-public record DataMappingNodeConfiguration : SourceTargetPathNodeConfiguration
-{
-    public required AttributeValueTypesDto TargetValueType { get; set; }
-    public required AttributeValueTypesDto SourceValueType { get; set; }
-
-    /// <summary>
-    /// Defines the target type
-    /// </summary>
-    // ReSharper disable once CollectionNeverUpdated.Global
-    public required List<MappingEntry> Mappings { get; set; }
-}
-
-public record MappingEntry
-{
-    public required object SourceValue { get; set; }
-    public required object TargetValue { get; set; }
-    public string? Description { get; set; }
-}
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
 [NodeConfiguration(typeof(DataMappingNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global

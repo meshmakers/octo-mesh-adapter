@@ -2,13 +2,13 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
 /// Configuration node object for apply changes to the object in mongodb
 /// </summary>
 [NodeName("FindOrCreateRtId", 1)]
-public record FindOrCreateRtIdNodeConfiguration : PathNodeConfiguration
+public record FindOrCreateRtIdNodeConfiguration : NodeConfiguration
 {
     /// <summary>
     /// The CkTypeId of the object

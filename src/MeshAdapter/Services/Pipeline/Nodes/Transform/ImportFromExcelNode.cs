@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics.CodeAnalysis;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
@@ -29,9 +30,20 @@ public class ImportFromExcelNode(
 
         var entities = new List<HierarchicalEntity>();
 
-        if (importType == Constants.TreeModelImportType)
+        if (importType == Constants.TreePathImportType)
         {
             ParseTreeByPath(data, columnContext, entities);
+            EnsureTreeParentsExist(entities);
+
+        }
+        else if(importType == Constants.TreeModelImportType2)
+        {
+            ParseTreeByColumns(data, columnContext, entities);
+        }
+        else
+        {
+            dataContext.NodeContext.Error("Unknown import type");
+            return;
         }
 
 
@@ -39,6 +51,44 @@ public class ImportFromExcelNode(
 
 
         await next(dataContext);
+    }
+
+    private void ParseTreeByColumns(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
+    {
+        var maxLayers = columnContext.GetMaxLayer();
+        for (var iLayer = 1; iLayer <= maxLayers; iLayer++)
+        {
+            foreach (var e in data)
+            {
+                if (e is not JArray entry)
+                {
+                    continue;
+                }
+                
+                // we already created this entity
+                var name = columnContext.GetValue<string>(entry, "name", iLayer)!;
+                if(entities.Any(x=> x.Name == name))
+                { 
+                    continue;
+                }
+                
+                var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
+
+                var entity = new HierarchicalEntity(name, parentName);
+                foreach(var attributeName in columnContext.GetColumnNames(iLayer))
+                {
+                    var value = columnContext.GetValue<string>(entry, attributeName, iLayer);
+                    if(value == null || attributeName == "name")
+                    {
+                        continue;
+                    }
+                    entity.Attributes.Add(new(attributeName, value));
+                }
+                
+                
+                entities.Add(entity);
+            }
+        }
     }
 
     private static void ParseTreeByPath(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
@@ -54,7 +104,7 @@ public class ImportFromExcelNode(
 
             name = name.Trim();
 
-            var parentName = ParentNameParser.Parse(name);
+            var parentName = ParentNameParser.ParseSeparatorBased(name);
 
             var entity = new HierarchicalEntity(name, parentName);
             entities.Add(entity);
@@ -79,7 +129,6 @@ public class ImportFromExcelNode(
 
     private async Task StoreInDatabase(List<HierarchicalEntity> buffer, string rootNodeId, INodeContext nodeContext)
     {
-        EnsureParentsExist(buffer);
 
         var rootId = new OctoObjectId(rootNodeId);
 
@@ -115,7 +164,7 @@ public class ImportFromExcelNode(
             }
 
             var insert = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
-            
+
             entities.Add(insert);
 
             var targetCkId = entityParent == null
@@ -125,12 +174,12 @@ public class ImportFromExcelNode(
             var association = AssociationUpdateInfo.CreateCreate(new RtEntityId(rtEntity.CkTypeId, entity.RtId.Value),
                 new RtEntityId(targetCkId, entityParent?.RtId ?? rootId),
                 new CkId<CkAssociationRoleId>("System/ParentChild"));
-            
+
             assocs.Add(association);
         }
 
         using var session = etlContext.TenantRepository.GetSession();
-
+    
         try
         {
             session.StartTransaction();
@@ -145,7 +194,7 @@ public class ImportFromExcelNode(
         }
     }
 
-    private void EnsureParentsExist(List<HierarchicalEntity> buffer)
+    private void EnsureTreeParentsExist(List<HierarchicalEntity> buffer)
     {
         var entityStack = new Stack<HierarchicalEntity>();
 
@@ -166,7 +215,7 @@ public class ImportFromExcelNode(
             }
 
             var name = entity.ParentName;
-            var parentName = ParentNameParser.Parse(name);
+            var parentName = ParentNameParser.ParseSeparatorBased(name);
 
             entityParent = new HierarchicalEntity(name, parentName);
             entityParent.RtId = OctoObjectId.GenerateNewId();
@@ -232,6 +281,3 @@ public class ImportFromExcelNode(
         return true;
     }
 }
-
-[NodeName("PrepareStructuredData", 1)]
-public record ImportFromExcelNodeConfiguration : NodeConfiguration;

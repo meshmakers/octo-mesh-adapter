@@ -1,6 +1,8 @@
 using System.Text;
+using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
@@ -15,13 +17,13 @@ internal class HttpRequestOptions(string route, HttpMethod method, Func<JToken, 
     public Func<JToken, Task<JToken?>> ExecuteFunc{ get; } = executeFunc;
 }
 
-internal class HttpRequestService : IHttpRequestService
+internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHttpRequestService
 {
     private readonly Dictionary<Tuple<string, string>, HttpRequestOptions> _routes = new();
-    
+
     public HttpRouteHandle CreateRoute(HttpRequestOptions options)
     {
-        var key = new Tuple<string, string>(options.Method.ToString().ToUpper(), options.Route.ToLower());
+        var key = new Tuple<string, string>(options.Method.ToString().ToUpper(), GetUri(options.Route));
         if (!_routes.TryAdd(key, options))
         {
             throw HttpRequestException.RouteAlreadyExists(options.Route);
@@ -32,7 +34,7 @@ internal class HttpRequestService : IHttpRequestService
 
     public void RemoveRoute(HttpMethod method, string uri)
     {
-        var key = new Tuple<string, string>(method.ToString().ToUpper(), uri.ToLower());
+        var key = new Tuple<string, string>(method.ToString().ToUpper(), GetUri(uri));
         _routes.Remove(key);
     }
     
@@ -92,5 +94,10 @@ internal class HttpRequestService : IHttpRequestService
             await context.Response.WriteAsync(r.ToString());
         }
         return true;
+    }
+    
+    private string GetUri(string uri)
+    {
+        return $"/{adapterOptions.Value.TenantId?.ToLower()}{uri.ToLower()}";
     }
 }

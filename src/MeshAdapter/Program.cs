@@ -33,6 +33,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<GetRtEntitiesByIdNode>()
         .RegisterNode<CreateUpdateInfoNode>()
         .RegisterNode<ApplyChangesNode>()
+        .RegisterNode<ApplyChangesNode2>()
         .RegisterNode<FilterLatestUpdateInfoNode>()
         .RegisterNode<EnrichWithMongoDataNode>()
         .RegisterNode<SaveInTimeSeriesNode>()

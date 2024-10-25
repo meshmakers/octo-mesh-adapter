@@ -9,14 +9,6 @@ using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.HttpRequests;
 
-internal class HttpRequestOptions(string route, HttpMethod method, Func<JToken, Task<JToken?>> executeFunc)
-{
-    public string Route { get; } = route;
-    public HttpMethod Method { get; } = method;
-    
-    public Func<JToken, Task<JToken?>> ExecuteFunc{ get; } = executeFunc;
-}
-
 internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHttpRequestService
 {
     private readonly Dictionary<Tuple<string, string>, HttpRequestOptions> _routes = new();
@@ -44,6 +36,11 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
         var key = new Tuple<string, string>(context.Request.Method.ToUpper(), path.ToLower());
         if (!_routes.TryGetValue(key, out var route))
         {
+            if (_routes.Any(x=> x.Key.Item2 == path.ToLower()))
+            {
+                return true;
+            }
+            
             return false;
         }
 

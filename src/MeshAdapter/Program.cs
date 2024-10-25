@@ -14,9 +14,13 @@ using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Sdk.SimulationNodes;
+using Meshmakers.Octo.Services.Common.Cors;
 using Meshmakers.Octo.Services.Common.StreamData.Extensions;
+using Meshmakers.Octo.Services.Infrastructure.Services;
 using Meshmakers.Octo.Services.Observability;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Cors.Infrastructure;
+using Microsoft.AspNetCore.Http;
 
 var adapterBuilder = new WebAdapterBuilder();
 
@@ -58,9 +62,14 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.AddSingleton<IContextCreatorService, MeshContextCreatorService>();
 
     builder.Services.AddStreamDataDatabase<ConfigureStreamDataConfiguration>();
+    
+    builder.Services.AddOctoServiceInfrastructure();
+    builder.Services.AddCors();
+
 }, app =>
 {
     app.MapObservability();
+    app.UseCors();
     app.UseMiddleware<DynamicRouteMiddleware>();
 
 });

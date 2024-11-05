@@ -15,3 +15,19 @@ public enum UpdateKind
     /// </summary>
     Insert = 1
 }
+
+/// <summary>
+/// Defines the kind of association update
+/// </summary>
+public enum AssociationUpdateKind
+{
+    /// <summary>
+    /// Crates a new relation
+    /// </summary>
+    Create = 0,
+    
+    /// <summary>
+    /// Deletes an existing relation
+    /// </summary>
+    Delete = 1
+}

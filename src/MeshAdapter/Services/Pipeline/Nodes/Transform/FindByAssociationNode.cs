@@ -1,0 +1,165 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.Serialization;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
+
+[NodeConfiguration(typeof(FindByAssociationNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
+internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+{
+    public async Task ProcessObjectAsync(IDataContext dataContext)
+    {
+        var c = dataContext.NodeContext.GetNodeConfiguration<FindByAssociationNodeConfiguration>();
+
+        var sourceRtId = GetSourceObjectId(dataContext, c);
+        var sourceCkTypeId = GetSourceCkTypeId(dataContext, c);
+        
+        var targetCkTypeId = GetTargetCkTypeId(dataContext, c);
+        var graphDirection = GetGraphDirection(dataContext, c);
+        var roleId = GetAssociationRoleId(dataContext, c);
+
+        if (sourceRtId == null)
+        {
+            dataContext.NodeContext.Error("sourceRtId is not set");
+            return;
+        }
+        
+        if(sourceCkTypeId == null)
+        {
+            dataContext.NodeContext.Error("sourceCkTypeId is not set");
+            return;
+        }
+
+        if (targetCkTypeId == null)
+        {
+            dataContext.NodeContext.Error("targetRtId is not set");
+            return;
+        }
+
+        if (roleId == null)
+        {
+            dataContext.NodeContext.Error("roleId is not set");
+            return;
+        }
+
+        if (graphDirection == null)
+        {
+            dataContext.NodeContext.Error("graph direction is not set");
+            return;
+        }
+
+
+        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        session.StartTransaction();
+
+        var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, [sourceRtId.Value],
+            sourceCkTypeId, roleId,targetCkTypeId, graphDirection.Value, null, DataQueryOperation.Create(), 0, 1);
+        
+        if (result.Count == 0)
+        {
+            dataContext.NodeContext.Error("No association target found");
+            return;
+        }
+
+        var entity = result.Values.Single().Items.Single();
+        
+        dataContext.SetValueByPath(c.TargetPath, entity, c.TargetValueKind,
+            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+
+        await next(dataContext);
+    }
+
+    private CkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext, FindByAssociationNodeConfiguration config)
+    {
+        if (config.SourceCkId == null && config.SourceCkTypeIdPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+
+        var sourceCkTypeId = config.SourceCkId ??
+                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.SourceCkTypeIdPath,
+                                 RtNewtonsoftSerializer.DefaultSerializer);
+
+        return sourceCkTypeId;
+    }
+
+    private CkId<CkAssociationRoleId>? GetAssociationRoleId(IDataContext dataContext,
+        FindByAssociationNodeConfiguration config)
+    {
+        if (config.AssociationRoleId != null)
+        {
+            return config.AssociationRoleId;
+        }
+
+        if (config.AssociationRoleIdPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+
+        var roleId = dataContext.GetSimpleValueByPath<CkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
+        return roleId;
+    }
+
+    private static OctoObjectId? GetSourceObjectId(IDataContext dataContext,
+        FindByAssociationNodeConfiguration config)
+    {
+        if (config.SourceRtId == null && config.SourceRtIdPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+
+        var sourceRtId = config.SourceRtId ??
+                         dataContext.GetComplexObjectByPath<OctoObjectId?>(config.SourceRtIdPath,
+                             RtNewtonsoftSerializer.DefaultSerializer);
+
+        return sourceRtId;
+    }
+
+    private static CkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext, FindByAssociationNodeConfiguration config)
+    {
+        if (config.TargetCkId == null && config.TargetCkTypeIdPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+
+        var targetCkTypeId = config.TargetCkId ??
+                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.TargetCkTypeIdPath,
+                                 RtNewtonsoftSerializer.DefaultSerializer);
+
+        return targetCkTypeId;
+    }
+
+    private static GraphDirections? GetGraphDirection(IDataContext dataContext,
+        FindByAssociationNodeConfiguration config)
+    {
+        if (config.GraphDirection != null)
+        {
+            return Convert(config.GraphDirection);
+        }
+
+        if (config.GraphDirectionPath == null || dataContext.Current == null)
+        {
+            return null;
+        }
+
+        var updateKind =
+            dataContext.GetComplexObjectByPath<GraphDirectionsDto?>(config.GraphDirectionPath,
+                RtNewtonsoftSerializer.DefaultSerializer);
+        return Convert(updateKind);
+    }
+
+    private static GraphDirections? Convert(GraphDirectionsDto? directions)
+    {
+        return directions switch
+        {
+            GraphDirectionsDto.Inbound => GraphDirections.Inbound,
+            GraphDirectionsDto.Outbound => GraphDirections.Outbound,
+            GraphDirectionsDto.Any => GraphDirections.Any,
+            _ => null
+        };
+    }
+}

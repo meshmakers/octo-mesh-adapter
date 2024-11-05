@@ -44,6 +44,8 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<FindOrCreateRtIdNode>()
         .RegisterNode<DataMappingNode>()
         .RegisterNode<ImportFromExcelNode>()
+        .RegisterNode<CreateAssociationUpdateNode>()
+        .RegisterNode<FindByAssociationNode>()
         .RegisterTriggerNode<FromPipelineDataEventNode>()
         .RegisterTriggerNode<FromPipelineTriggerEventNode>()
         .RegisterTriggerNode<FromExecutePipelineCommandNode>()

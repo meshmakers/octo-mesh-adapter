@@ -19,6 +19,21 @@ public record FindOrCreateRtIdNodeConfiguration : NodeConfiguration
     /// the field filters
     /// </summary>
     public required ICollection<PathFieldFilter>? FieldFilters { get; set; }
+    
+    /// <summary>
+    /// Target path where the RtId should be written
+    /// </summary>
+    public string RtIdTargetPath { get; set; } = "$.rtId";
+    
+    /// <summary>
+    /// Target path where the CkTypeId should be written
+    /// </summary>
+    public string CkTypeIdTargetPath { get; set; } = "$.ckTypeId";
+    
+    /// <summary>
+    /// 
+    /// </summary>
+    public string ModOperationPath { get; set; } = "$.modOperation";
 }
 
 /// <summary>

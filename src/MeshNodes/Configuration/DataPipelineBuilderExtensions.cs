@@ -26,13 +26,21 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineDataEventNodeConfiguration>();
 
-        
+
         // Register transform nodes
         pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FindOrCreateRtIdNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FindByAssociationNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
 
         // Register load nodes
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
 
         return pipelineBuilder;

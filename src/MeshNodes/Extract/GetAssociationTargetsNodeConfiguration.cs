@@ -1,13 +1,13 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 
 /// <summary>
-/// Configuration node object for apply changes to the object in mongodb
+/// Configuration node 
 /// </summary>
-[NodeName("FindByAssociation", 1)]
-public record FindByAssociationNodeConfiguration : SourceTargetPathNodeConfiguration
+[NodeName("GetAssociationTargets", 1)]
+public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
     /// Kind of update

@@ -29,6 +29,7 @@ public record DataMappingNodeConfiguration : SourceTargetPathNodeConfiguration
 /// <summary>
 /// Defines a single mapping entry
 /// </summary>
+// ReSharper disable once ClassNeverInstantiated.Global
 public record MappingEntry
 {
     /// <summary>

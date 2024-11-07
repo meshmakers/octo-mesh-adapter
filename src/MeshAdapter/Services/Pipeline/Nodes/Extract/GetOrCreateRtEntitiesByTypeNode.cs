@@ -1,20 +1,20 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes;
-using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
-[NodeConfiguration(typeof(FindOrCreateRtIdNodeConfiguration))]
+[NodeConfiguration(typeof(GetOrCreateRtEntitiesByTypeNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FindOrCreateRtIdNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<FindOrCreateRtIdNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {

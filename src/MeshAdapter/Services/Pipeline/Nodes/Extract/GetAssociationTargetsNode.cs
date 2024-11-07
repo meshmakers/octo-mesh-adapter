@@ -1,23 +1,23 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
+namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
-[NodeConfiguration(typeof(FindByAssociationNodeConfiguration))]
+[NodeConfiguration(typeof(GetAssociationTargetsNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<FindByAssociationNodeConfiguration>();
+        var c = dataContext.NodeContext.GetNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
 
         var sourceRtId = GetSourceObjectId(dataContext, c);
         var sourceCkTypeId = GetSourceCkTypeId(dataContext, c);
-        
+
         var targetCkTypeId = GetTargetCkTypeId(dataContext, c);
         var graphDirection = GetGraphDirection(dataContext, c);
         var roleId = GetAssociationRoleId(dataContext, c);
@@ -27,8 +27,8 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
             dataContext.NodeContext.Error("sourceRtId is not set");
             return;
         }
-        
-        if(sourceCkTypeId == null)
+
+        if (sourceCkTypeId == null)
         {
             dataContext.NodeContext.Error("sourceCkTypeId is not set");
             return;
@@ -57,8 +57,8 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
         session.StartTransaction();
 
         var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, [sourceRtId.Value],
-            sourceCkTypeId, roleId,targetCkTypeId, graphDirection.Value, null, DataQueryOperation.Create(), 0, 1);
-        
+            sourceCkTypeId, roleId, targetCkTypeId, graphDirection.Value, null, DataQueryOperation.Create(), 0, 1);
+
         if (result.Count == 0)
         {
             dataContext.NodeContext.Error("No association target found");
@@ -66,14 +66,14 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
         }
 
         var entity = result.Values.Single().Items.Single();
-        
+
         dataContext.SetValueByPath(c.TargetPath, entity, c.TargetValueKind,
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
     }
 
-    private CkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext, FindByAssociationNodeConfiguration config)
+    private CkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
     {
         if (config.SourceCkId == null && config.SourceCkTypeIdPath == null || dataContext.Current == null)
         {
@@ -88,7 +88,7 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
     }
 
     private CkId<CkAssociationRoleId>? GetAssociationRoleId(IDataContext dataContext,
-        FindByAssociationNodeConfiguration config)
+        GetAssociationTargetsNodeConfiguration config)
     {
         if (config.AssociationRoleId != null)
         {
@@ -105,7 +105,7 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
     }
 
     private static OctoObjectId? GetSourceObjectId(IDataContext dataContext,
-        FindByAssociationNodeConfiguration config)
+        GetAssociationTargetsNodeConfiguration config)
     {
         if (config.SourceRtId == null && config.SourceRtIdPath == null || dataContext.Current == null)
         {
@@ -119,7 +119,8 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
         return sourceRtId;
     }
 
-    private static CkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext, FindByAssociationNodeConfiguration config)
+    private static CkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext,
+        GetAssociationTargetsNodeConfiguration config)
     {
         if (config.TargetCkId == null && config.TargetCkTypeIdPath == null || dataContext.Current == null)
         {
@@ -134,7 +135,7 @@ internal class FindByAssociationNode(NodeDelegate next, IMeshEtlContext etlConte
     }
 
     private static GraphDirections? GetGraphDirection(IDataContext dataContext,
-        FindByAssociationNodeConfiguration config)
+        GetAssociationTargetsNodeConfiguration config)
     {
         if (config.GraphDirection != null)
         {

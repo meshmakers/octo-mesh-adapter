@@ -2,13 +2,13 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
-namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 
 /// <summary>
-/// Configuration node object for apply changes to the object in mongodb
+/// Configuration for node get rt entities by type including field filters
 /// </summary>
-[NodeName("FindOrCreateRtId", 1)]
-public record FindOrCreateRtIdNodeConfiguration : NodeConfiguration
+[NodeName("GetOrCreateRtEntitiesByType", 1)]
+public record GetOrCreateRtEntitiesByTypeNodeConfiguration : NodeConfiguration
 {
     /// <summary>
     /// The CkTypeId of the object
@@ -39,6 +39,7 @@ public record FindOrCreateRtIdNodeConfiguration : NodeConfiguration
 /// <summary>
 /// Field filter that uses the json path to the value
 /// </summary>
+// ReSharper disable once ClassNeverInstantiated.Global
 public record PathFieldFilter
 {
     /// <summary>

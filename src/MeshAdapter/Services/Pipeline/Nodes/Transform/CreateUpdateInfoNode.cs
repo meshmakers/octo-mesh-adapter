@@ -65,10 +65,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
         var ckTypeGraph = await etlContext.TenantRepository.GetCkTypeGraphAsync(c.CkTypeId);
 
-        var rtEntity = new RtEntity();
+        var rtEntity = new RtEntity
+        {
+            RtWellKnownName = rtWellKnownName
+        };
 
-        rtEntity.RtWellKnownName = rtWellKnownName;
-        
         var hasUpdate = false;
         foreach (var au in c.AttributeUpdates)
         {

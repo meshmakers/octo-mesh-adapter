@@ -14,13 +14,9 @@ using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Sdk.SimulationNodes;
-using Meshmakers.Octo.Services.Common.Cors;
 using Meshmakers.Octo.Services.Common.StreamData.Extensions;
-using Meshmakers.Octo.Services.Infrastructure.Services;
 using Meshmakers.Octo.Services.Observability;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Cors.Infrastructure;
-using Microsoft.AspNetCore.Http;
 
 var adapterBuilder = new WebAdapterBuilder();
 
@@ -46,6 +42,11 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<DataMappingNode>()
         .RegisterNode<ImportFromExcelNode>()
         .RegisterNode<CreateAssociationUpdateNode>()
+        .RegisterNode<GetNotificationTemplateNode>()
+        .RegisterNode<PlaceholderReplaceNode>()
+        .RegisterNode<EMailSenderNode>()
+        .RegisterNode<GetQueryByIdNode>()
+        .RegisterNode<QueryResultToMarkdownTableNode>()
         .RegisterTriggerNode<FromPipelineDataEventNode>()
         .RegisterTriggerNode<FromPipelineTriggerEventNode>()
         .RegisterTriggerNode<FromExecutePipelineCommandNode>()
@@ -67,6 +68,7 @@ await adapterBuilder.RunAsync(args, builder =>
     
     builder.Services.AddOctoServiceInfrastructure();
     builder.Services.AddCors();
+    builder.Services.AddCkModelSystemNotification();
 
 }, app =>
 {

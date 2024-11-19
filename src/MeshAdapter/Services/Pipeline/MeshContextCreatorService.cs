@@ -27,7 +27,7 @@ public class MeshContextCreatorService(IServiceProvider serviceProvider, ISystem
         var context = new MeshEtlContext(pipelineRegistration.TenantId, tenantRepository, pipelineRegistration.DataPipelineRtId,
             pipelineExecutionId,
             pipelineRegistration.PipelineRtEntityId, executePipelineOptions.TransactionStartedDateTime,
-            executePipelineOptions.ExternalReceivedDateTime,
+            executePipelineOptions.ExternalReceivedDateTime, pipelineRegistration.GlobalConfiguration,
             pipelineRegistration.Dictionary);
         
         var etlContext = context as TContext;

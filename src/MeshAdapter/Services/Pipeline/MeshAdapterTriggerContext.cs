@@ -51,7 +51,7 @@ internal class MeshAdapterTriggerContext(
         Task<object?> task = Task.Run(async () =>
         {
             var r = await _etlDataOrchestrator.ExecutePipelineAsync(
-                pipelineRegistration.ConfigurationRoot,
+                pipelineRegistration.NodeDefinitionRoot,
                 etlContext, debugger, value);
 
             return r;

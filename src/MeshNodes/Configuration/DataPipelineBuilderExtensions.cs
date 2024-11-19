@@ -22,24 +22,33 @@ public static class DataPipelineBuilderExtensions
 
         // Register extract nodes
         pipelineBuilder.RegisterNodeConfiguration<EnrichWithMongoDataConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetNotificationTemplateNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetQueryByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<FromPipelineDataEventNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
-
-
-        // Register transform nodes
-        pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
 
         // Register load nodes
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
+        pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
+        
+        // Register transform nodes
+        pipelineBuilder.RegisterNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
+        
+        // Register trigger nodes
+        pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromPipelineDataEventNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();
 
         return pipelineBuilder;
     }

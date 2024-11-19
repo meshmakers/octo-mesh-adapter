@@ -13,6 +13,7 @@ using Newtonsoft.Json.Linq;
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
 [NodeConfiguration(typeof(ImportFromExcelNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
 public class ImportFromExcelNode(
     NodeDelegate next,
     IMeshEtlContext etlContext)

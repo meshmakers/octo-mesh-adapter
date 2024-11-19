@@ -5,6 +5,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes;
 /// <summary>
 /// Update of a specific attribute
 /// </summary>
+// ReSharper disable once ClassNeverInstantiated.Global
 public class AttributeUpdateConfiguration
 {
     /// <summary>

@@ -1,3 +1,4 @@
+using GraphQL.Client.Abstractions.Utilities;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -36,17 +37,19 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
         {
             foreach (var fieldFilter in c.FieldFilters)
             {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName, fieldFilter.Operator, fieldFilter.ComparisonValue);
+                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator,
+                    fieldFilter.ComparisonValue);
             }
         }
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, c.CkTypeId, c.RtIds.ToList(), dataQueryOperation, c.Skip, c.Take);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, c.CkTypeId, c.RtIds.ToList(),
+            dataQueryOperation, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, r);
-        
+
         await next(dataContext);
     }
 }

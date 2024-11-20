@@ -47,10 +47,10 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<EMailSenderNode>()
         .RegisterNode<GetQueryByIdNode>()
         .RegisterNode<QueryResultToMarkdownTableNode>()
-        .RegisterTriggerNode<FromPipelineDataEventNode>()
-        .RegisterTriggerNode<FromPipelineTriggerEventNode>()
         .RegisterTriggerNode<FromExecutePipelineCommandNode>()
         .RegisterTriggerNode<FromHttpRequestNode>()
+        .RegisterTriggerNode<FromPipelineTriggerEventNode>()
+        .RegisterTriggerNode<FromWatchRtEntityNode>()
         .RegisterEtlContext<IMeshEtlContext>();
 
     builder.Services.Configure<OctoSystemConfiguration>(options =>

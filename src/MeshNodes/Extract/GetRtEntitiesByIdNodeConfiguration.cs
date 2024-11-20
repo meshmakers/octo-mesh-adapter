@@ -1,5 +1,5 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -33,5 +33,5 @@ public record GetRtEntitiesByIdNodeConfiguration : TargetPathNodeConfiguration
     /// <summary>
     /// A list of field filters
     /// </summary>
-    public ICollection<FieldFilter>? FieldFilters { get; set; }
+    public ICollection<FieldFilterDto>? FieldFilters { get; set; }
 }

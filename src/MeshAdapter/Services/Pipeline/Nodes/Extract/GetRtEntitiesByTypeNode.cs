@@ -1,3 +1,4 @@
+using Meshmakers.Common.Shared;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -28,7 +29,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         {
             foreach (var fieldFilter in c.FieldFilters)
             {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName, fieldFilter.Operator, fieldFilter.ComparisonValue);
+                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator, fieldFilter.ComparisonValue);
             }
         }
 

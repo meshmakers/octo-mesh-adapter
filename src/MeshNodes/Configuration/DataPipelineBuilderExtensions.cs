@@ -47,8 +47,8 @@ public static class DataPipelineBuilderExtensions
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<FromPipelineDataEventNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromWatchRtEntityNodeConfiguration>();
 
         return pipelineBuilder;
     }

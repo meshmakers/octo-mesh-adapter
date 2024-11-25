@@ -13,9 +13,11 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 // ReSharper disable once ClassWithVirtualMembersNeverInherited.Global
 public class MeshContextCreatorService(IServiceProvider serviceProvider, ISystemContext systemContext) : IContextCreatorService
 {
-    public ITriggerContext CreateTriggerContext(string tenantId, OctoObjectId dataPipelineRtId, RtEntityId pipelineRtEntityId, INodeContext nodeContext)
+    public ITriggerContext CreateTriggerContext(string tenantId, OctoObjectId dataPipelineRtId, 
+        RtEntityId pipelineRtEntityId, INodeContext nodeContext, IGlobalConfiguration globalConfiguration)
     {
-        return new MeshAdapterTriggerContext(serviceProvider, tenantId, dataPipelineRtId, pipelineRtEntityId, nodeContext);
+        return new MeshAdapterTriggerContext(serviceProvider, tenantId, dataPipelineRtId, pipelineRtEntityId, 
+            nodeContext, globalConfiguration);
     }
 
     /// <inheritdoc />

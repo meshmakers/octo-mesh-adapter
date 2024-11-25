@@ -1,4 +1,3 @@
-using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
@@ -12,7 +11,8 @@ internal class MeshAdapterTriggerContext(
     string tenantId,
     OctoObjectId dataPipelineRtId,
     RtEntityId pipelineRtEntityId,
-    INodeContext nodeContext) : TriggerContext(tenantId, dataPipelineRtId, pipelineRtEntityId, nodeContext)
+    INodeContext nodeContext, IGlobalConfiguration globalConfiguration) 
+    : TriggerContext(tenantId, dataPipelineRtId, pipelineRtEntityId, nodeContext, globalConfiguration)
 {
     private readonly ILogger<MeshAdapterTriggerContext> _logger = serviceProvider.GetRequiredService<ILogger<MeshAdapterTriggerContext>>();
     private readonly IPipelineRegistryService _pipelineRegistryService = serviceProvider.GetRequiredService<IPipelineRegistryService>();

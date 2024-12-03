@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
@@ -52,12 +53,23 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             return;
         }
 
+        var query = DataQueryOperation.Create();
+
+        if(c.FieldFilters != null && c.FieldFilters.Any())
+        {
+            foreach (var f in c.FieldFilters)
+            {
+                query.AddFieldFilter(f.AttributeName, GetOperator(f.Operator), f.ComparisonValue);
+            }
+        }
+
+
 
         using var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
 
         var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, [sourceRtId.Value],
-            sourceCkTypeId, roleId, targetCkTypeId, graphDirection.Value, null, DataQueryOperation.Create(), 0, 1);
+            sourceCkTypeId, roleId, targetCkTypeId, graphDirection.Value, null, query, 0, 1);
 
         if (result.Count == 0)
         {
@@ -71,6 +83,26 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
+    }
+
+    private FieldFilterOperator GetOperator(FieldFilterOperatorDto f)
+    {
+        return f switch
+        {
+            FieldFilterOperatorDto.Equals => FieldFilterOperator.Equals,
+            FieldFilterOperatorDto.NotEquals => FieldFilterOperator.NotEquals,
+            FieldFilterOperatorDto.LessThan => FieldFilterOperator.LessThan,
+            FieldFilterOperatorDto.LessEqualThan => FieldFilterOperator.LessEqualThan,
+            FieldFilterOperatorDto.GreaterThan => FieldFilterOperator.GreaterThan,
+            FieldFilterOperatorDto.GreaterEqualThan => FieldFilterOperator.GreaterEqualThan,
+            FieldFilterOperatorDto.In => FieldFilterOperator.In,
+            FieldFilterOperatorDto.NotIn => FieldFilterOperator.NotIn,
+            FieldFilterOperatorDto.Like => FieldFilterOperator.Like,
+            FieldFilterOperatorDto.MatchRegEx => FieldFilterOperator.MatchRegEx,
+            FieldFilterOperatorDto.AnyEq => FieldFilterOperator.AnyEq,
+            FieldFilterOperatorDto.Match => FieldFilterOperator.Match,
+            _ => throw new ArgumentOutOfRangeException(nameof(f), f, null)
+        };
     }
 
     private CkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)

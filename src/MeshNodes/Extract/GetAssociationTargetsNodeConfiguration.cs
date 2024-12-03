@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
@@ -60,6 +61,11 @@ public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfi
     /// The role id of the association
     /// </summary>
     public CkId<CkAssociationRoleId>? AssociationRoleId { get; set; }
+    
+    /// <summary>
+    /// A list of field filters
+    /// </summary>
+    public ICollection<FieldFilterDto>? FieldFilters { get; set; }
 }
 
 /// <summary>

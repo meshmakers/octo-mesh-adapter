@@ -6,14 +6,14 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes;
 public enum UpdateKind
 {
     /// <summary>
-    /// Updates an existing rt entity
-    /// </summary>
-    Update = 0,
-    
-    /// <summary>
     /// Inserts a new rt entity
     /// </summary>
-    Insert = 1
+    Insert = 0,
+    
+    /// <summary>
+    /// Updates an existing rt entity
+    /// </summary>
+    Update = 1
 }
 
 /// <summary>

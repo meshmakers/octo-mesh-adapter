@@ -29,6 +29,7 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.AddDataPipeline()
         .AddMeshDataPipelineNodes()
         .AddSimulationNodes()
+        .RegisterNode<GetRtEntitiesByWellKnownNameTypeNode>()
         .RegisterNode<GetRtEntitiesByTypeNode>()
         .RegisterNode<GetRtEntitiesByIdNode>()
         .RegisterNode<CreateUpdateInfoNode>()

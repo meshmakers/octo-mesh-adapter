@@ -21,6 +21,7 @@ public class EMailSenderNode(
         // ReSharper disable UnusedAutoPropertyAccessor.Local
         public required string Host { get; init; }
         public required int Port { get; init; }
+        public string? SenderEmail { get; init; }
         public required string Username { get; init; }
         public required string Password { get; init; }
         public required bool IsSslEnabled { get; init; }
@@ -78,10 +79,9 @@ public class EMailSenderNode(
                     new NetworkCredential(eMailSenderConfiguration.Username, eMailSenderConfiguration.Password),
                 EnableSsl = eMailSenderConfiguration.IsSslEnabled
             };
-            
             var mailMessage = new MailMessage
             {
-                From = new MailAddress(eMailSenderConfiguration.Username),
+                From = new MailAddress(eMailSenderConfiguration.SenderEmail ?? eMailSenderConfiguration.Username),
                 Subject = subject,
                 Body = bodyInHtml,
                 IsBodyHtml = true

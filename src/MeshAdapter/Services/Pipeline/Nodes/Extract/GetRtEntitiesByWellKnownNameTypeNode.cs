@@ -28,7 +28,7 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
             return;
         }
 
-        var token = dataContext.SelectByPath<JToken>(c.Path);
+        var token = dataContext.SelectByPath(c.Path);
         var source = token.Where(t=> t != null).ToDictionary(k => k!.SelectToken(c.WellKnownNamePath)!.Value<string>()!, v => v!);
 
         var dataQueryOperation = DataQueryOperation.Create();

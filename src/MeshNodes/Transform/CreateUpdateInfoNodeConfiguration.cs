@@ -30,6 +30,11 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     public OctoObjectId? RtId { get; set; }
 
     /// <summary>
+    /// When true, the RtId will be generated if it is not existing when RtIdPath is set
+    /// </summary>
+    public bool GenerateRtId { get; set; } = false;
+
+    /// <summary>
     /// CkTypeId of query
     /// </summary>
     public CkId<CkTypeId>? CkTypeId { get; set; }

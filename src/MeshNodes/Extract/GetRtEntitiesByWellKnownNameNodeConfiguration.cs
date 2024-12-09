@@ -7,7 +7,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 /// Configuration for node to get RtEntities by well known name
 /// </summary>
 [NodeName("GetRtEntitiesByWellKnownName", 1)]
-public record GetRtEntitiesByWellKnownNameNodeConfiguration : SourceTargetPathNodeConfiguration
+public record GetRtEntitiesByWellKnownNameNodeConfiguration : PathNodeConfiguration
 {
     /// <summary>
     /// CkTypeId of query
@@ -40,7 +40,12 @@ public record GetRtEntitiesByWellKnownNameNodeConfiguration : SourceTargetPathNo
     public required string CkTypeIdTargetPath { get; set; } = "$.ckTypeId";
     
     /// <summary>
-    /// 
+    /// Operation path where the mod operation should be written
     /// </summary>
     public required string ModOperationPath { get; set; } = "$.modOperation";
+    
+    /// <summary>
+    /// If true, the mod operation will be generated if the RtEntity is not found in the database
+    /// </summary>
+    public bool GenerateInsertOperation { get; set; } = false;
 }

@@ -29,7 +29,7 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
         }
 
         var token = dataContext.SelectByPath(c.Path);
-        var source = token.Where(t=> t != null).ToDictionary(k => k!.SelectToken(c.WellKnownNamePath)!.Value<string>()!, v => v!);
+        var source = token.ToDictionary(k => k.SelectToken(c.WellKnownNamePath)!.Value<string>()!, v => v);
 
         var dataQueryOperation = DataQueryOperation.Create();
         dataQueryOperation.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.In, source.Keys);
@@ -54,16 +54,17 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
                 handledRtWellKnownNames.Add(rtEntity.RtWellKnownName!);
             }
         }
-        
-        source.ExceptBy(handledRtWellKnownNames, x => x.Key).ToList().ForEach(x =>
-        {
-            x.Value.ReplaceNested(c.RtIdTargetPath, OctoObjectId.GenerateNewId().ToString());
-            x.Value.ReplaceNested(c.ModOperationPath, (int) UpdateKind.Insert);
-            x.Value.ReplaceNested(c.CkTypeIdTargetPath, c.CkTypeId.ToString());
-        }); 
 
-        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, source.Values);
-        
+        if (c.GenerateInsertOperation)
+        {
+            source.ExceptBy(handledRtWellKnownNames, x => x.Key).ToList().ForEach(x =>
+            {
+                x.Value.ReplaceNested(c.RtIdTargetPath, OctoObjectId.GenerateNewId().ToString());
+                x.Value.ReplaceNested(c.ModOperationPath, (int)UpdateKind.Insert);
+                x.Value.ReplaceNested(c.CkTypeIdTargetPath, c.CkTypeId.ToString());
+            });
+        }
+
         await next(dataContext);
     }
 }

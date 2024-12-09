@@ -219,6 +219,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         
         var rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(config.RtIdPath, RtNewtonsoftSerializer.DefaultSerializer);
 
+        if (rtId == null && config.GenerateRtId)
+        {
+            rtId = OctoObjectId.GenerateNewId();
+        }
+
         return rtId;
     }
 

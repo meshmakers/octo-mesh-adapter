@@ -66,6 +66,27 @@ public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfi
     /// A list of field filters
     /// </summary>
     public ICollection<FieldFilterDto>? FieldFilters { get; set; }
+    
+    /// <summary>
+    /// A list of sort orders
+    /// </summary>
+    public ICollection<SortOrderDto>? SortOrders { get; set; }
+}
+
+/// <summary>
+/// Allows to define a sort order for a query
+/// </summary>
+// ReSharper disable once ClassNeverInstantiated.Global
+public record SortOrderDto
+{
+    /// <summary>
+    /// The sort order
+    /// </summary>
+    public required SortOrdersDto SortOrder { get; init; }
+    /// <summary>
+    /// The attribute name
+    /// </summary>
+    public required string AttributeName { get; set; }
 }
 
 /// <summary>

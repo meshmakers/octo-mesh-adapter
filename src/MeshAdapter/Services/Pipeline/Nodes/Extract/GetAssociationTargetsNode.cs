@@ -62,8 +62,14 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
                 query.AddFieldFilter(f.AttributeName, GetOperator(f.Operator), f.ComparisonValue);
             }
         }
-
-
+        
+        if(c.SortOrders != null && c.SortOrders.Any())
+        {
+            foreach (var s in c.SortOrders)
+            {
+                query.SortOrder(s.AttributeName, GetSortOrder(s.SortOrder));
+            }
+        }
 
         using var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
@@ -83,6 +89,17 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext);
+    }
+
+    private SortOrders GetSortOrder(SortOrdersDto sortOrder)
+    {
+        return sortOrder switch
+        {
+            SortOrdersDto.Ascending => SortOrders.Ascending,
+            SortOrdersDto.Descending => SortOrders.Descending,
+            SortOrdersDto.Default => SortOrders.Default,
+            _ => throw new ArgumentOutOfRangeException(nameof(sortOrder), sortOrder, null)
+        };
     }
 
     private FieldFilterOperator GetOperator(FieldFilterOperatorDto f)

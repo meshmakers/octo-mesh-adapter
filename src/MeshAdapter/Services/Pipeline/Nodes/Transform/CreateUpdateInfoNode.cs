@@ -1,3 +1,4 @@
+using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
@@ -94,24 +95,12 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 {
                     continue;
                 }
-
-                foreach (var jToken in jTokens)
-                {
-                    if (jToken is JValue jValue)
-                    {
-                        if (!SetAttributeValue(dataContext, au.AttributeName, au.AttributeValueType.Value, jValue.Value,
-                                rtEntity, ckTypeGraph))
-                        {
-                            continue;
-                        }
-                        
-                        hasUpdate = true;
-                    }
-                }
+                
+                hasUpdate |= SetAttributeValue(dataContext, au.AttributeName, jTokens, rtEntity, ckTypeGraph);
             }
             else if (au.Value != null)
             {
-                if (!SetAttributeValue(dataContext, au.AttributeName, au.AttributeValueType.Value, au.Value, rtEntity, ckTypeGraph))
+                if (!SetAttributeValueSingle(dataContext, au.AttributeName, au.Value, rtEntity, ckTypeGraph))
                 {
                     return;
                 }
@@ -150,15 +139,50 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         await next(dataContext);
     }
 
-    private bool SetAttributeValue(IDataContext dataContext, string attributeName, AttributeValueTypesDto attributeValueType, object? value, RtEntity rtEntity, CkTypeGraph ckTypeGraph)
+    private bool SetAttributeValue(IDataContext dataContext, string attributeName, IEnumerable<JToken> jTokens, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
     {
-        if (!ckTypeGraph.AllAttributesByName.TryGetValue(attributeName, out var attribute))
+        bool hasUpdate = false;
+        foreach (var jToken in jTokens)
         {
-            dataContext.NodeContext.Error($"Attribute {attributeName} not found in CKType {ckTypeGraph.CkTypeId}");
+            if (jToken is JValue jValue)
+            {
+                if (!SetAttributeValueSingle(dataContext, attributeName, jValue.Value,
+                        rtTypeWithAttributes, ckTypeWithAttributesGraph))
+                {
+                    continue;
+                }
+                        
+                hasUpdate = true;
+            }
+            else if (jToken is JObject jObject)
+            {
+                if (!SetAttributeValueSingle(dataContext, attributeName, jObject,
+                        rtTypeWithAttributes, ckTypeWithAttributesGraph))
+                {
+                    continue;
+                }
+                        
+                hasUpdate = true;
+            }
+            else
+            {
+                dataContext.NodeContext.Error($"Value {jToken} is not a valid type");
+                throw MeshAdapterPipelineExecutionException.InvalidValue(jToken);
+            }
+        }
+
+        return hasUpdate;
+    }
+
+    private bool SetAttributeValueSingle(IDataContext dataContext, string attributeName, object? value, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+    {
+        if (!ckTypeWithAttributesGraph.AllAttributesByName.TryGetValue(attributeName, out var attribute))
+        {
+            dataContext.NodeContext.Error($"Attribute {attributeName} not found in construction kit type {ckTypeWithAttributesGraph}");
             return false;
         }
         
-        switch (attributeValueType)
+        switch (attribute.ValueType)
         {
             case AttributeValueTypesDto.Enum:
 
@@ -177,7 +201,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                             return false;
                         }
 
-                        rtEntity.SetAttributeValue(attributeName, attributeValueType, enumValue.Key);
+                        rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, enumValue.Key);
                         return true;
                     }
 
@@ -191,7 +215,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                             return false;
                         }
 
-                        rtEntity.SetAttributeValue(attributeName, attributeValueType, enumValue.Key);
+                        rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, enumValue.Key);
                         return true;
                     }
 
@@ -200,8 +224,43 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 }
                 dataContext.NodeContext.Error("Enum value is not set");
                 return false;
+            case AttributeValueTypesDto.Record:
+                if (attribute.ValueCkRecordId != null)
+                {
+                    var ckRecordGraph = ckCacheService.GetCkRecord(etlContext.TenantId, attribute.ValueCkRecordId);
+
+                    if (value is JObject jsObject)
+                    {
+                        bool hasUpdate = false;
+                        var record = new RtRecord
+                        {
+                            CkRecordId = attribute.ValueCkRecordId
+                        };
+                        
+                        foreach (var ckTypeAttributeGraphKeyValue in ckRecordGraph.AllAttributesByName)
+                        {
+                            if (!jsObject.TryGetValue(ckTypeAttributeGraphKeyValue.Key.ToPascalCase(), out var jToken) && 
+                                !jsObject.TryGetValue(ckTypeAttributeGraphKeyValue.Key.ToCamelCase(), out jToken))
+                            {
+                                continue;
+                            }
+                            
+                            hasUpdate |= SetAttributeValueSingle(dataContext, ckTypeAttributeGraphKeyValue.Key, jToken,
+                                record, ckRecordGraph);
+                        }
+                        
+                        rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, record);
+
+                        return hasUpdate;
+                    }
+
+                    dataContext.NodeContext.Error($"Enum value {value} is not a valid type");
+                    return false;
+                }
+                dataContext.NodeContext.Error("Record value is not set");
+                return false;
             default:
-                rtEntity.SetAttributeValue(attributeName, attributeValueType, value);
+                rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, value);
                 return true;
         }
     }

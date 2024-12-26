@@ -21,3 +21,8 @@ $outputPath = "$baseOutputPath/apiReference/Adapters/Mesh"
 $sourcePath = "$baseBinPath/Meshmakers.Octo.MeshAdapter.dll"
 Write-Host "Creating documentation for $sourcePath, doc is generated at $outputPath"
 mmxmldoc2md $sourcePath $outputPath
+
+$outputPath = "$baseOutputPath/apiReference/Adapters/Mesh"
+$sourcePath = "$baseBinPath/Meshmakers.Octo.MeshAdapter.Nodes.dll"
+Write-Host "Creating documentation for $sourcePath, doc is generated at $outputPath"
+mmxmldoc2md $sourcePath $outputPath

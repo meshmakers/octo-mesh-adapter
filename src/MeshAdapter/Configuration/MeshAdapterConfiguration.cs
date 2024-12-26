@@ -1,6 +1,7 @@
 ﻿namespace Meshmakers.Octo.MeshAdapter.Configuration;
 
-public class MeshAdapterConfiguration
+// ReSharper disable once ClassNeverInstantiated.Global
+internal class MeshAdapterConfiguration
 {
     public MeshAdapterConfiguration()
     {

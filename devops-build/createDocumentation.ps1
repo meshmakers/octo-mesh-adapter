@@ -1,0 +1,23 @@
+param ($configuration = "Release")
+
+dotnet tool update --global MMXMLDoc2Markdown
+
+$modulePath = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$baseBinPath = Join-Path $modulePath "../bin/$configuration/net8.0/win-x64"
+if (-not (Test-Path -Path $baseBinPath)) {
+    throw "Bin path '$baseBinPath' does not exist"
+}
+
+$baseOutputPath = Join-Path $baseBinPath "documentation"
+
+# Clean directory
+if (Test-Path -Path $baseOutputPath) {
+    Write-Host "Remove existing documentation at '$baseOutputPath'"
+    Remove-Item -Path $baseOutputPath -Recurse -Force
+}
+
+# Create XML documentation for Libraries
+$outputPath = "$baseOutputPath/apiReference/Adapters/Mesh"
+$sourcePath = "$baseBinPath/Meshmakers.Octo.Communication.Adapters.Sap.dll"
+Write-Host "Creating documentation for $sourcePath, doc is generated at $outputPath"
+mmxmldoc2md $sourcePath $outputPath

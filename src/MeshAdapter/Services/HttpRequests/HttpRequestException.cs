@@ -2,7 +2,7 @@ using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.HttpRequests;
 
-public class HttpRequestException : PipelineExecutionException
+internal class HttpRequestException : PipelineExecutionException
 {
     public HttpRequestException()
     {

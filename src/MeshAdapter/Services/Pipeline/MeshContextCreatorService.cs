@@ -11,7 +11,7 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 /// Default implementation of the <see cref="IContextCreatorService"/> interface
 /// </summary>
 // ReSharper disable once ClassWithVirtualMembersNeverInherited.Global
-public class MeshContextCreatorService(IServiceProvider serviceProvider, ISystemContext systemContext) : IContextCreatorService
+internal class MeshContextCreatorService(IServiceProvider serviceProvider, ISystemContext systemContext) : IContextCreatorService
 {
     public ITriggerContext CreateTriggerContext(string tenantId, OctoObjectId dataPipelineRtId, 
         RtEntityId pipelineRtEntityId, INodeContext nodeContext, IGlobalConfiguration globalConfiguration)

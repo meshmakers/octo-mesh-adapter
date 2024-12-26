@@ -3,7 +3,8 @@ using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.MeshAdapter.Configuration;
 
-public class ConfigureStreamDataConfiguration : IConfigureNamedOptions<StreamDataConfiguration>
+// ReSharper disable once ClassNeverInstantiated.Global
+internal class ConfigureStreamDataConfiguration : IConfigureNamedOptions<StreamDataConfiguration>
 {
     private readonly IOptions<MeshAdapterConfiguration> _options;
 

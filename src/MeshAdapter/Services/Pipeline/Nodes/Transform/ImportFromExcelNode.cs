@@ -12,6 +12,11 @@ using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
+/// <summary>
+/// Pipeline node that imports data from an Excel file
+/// </summary>
+/// <param name="next">Next node in the pipeline</param>
+/// <param name="etlContext">The ETL context</param>
 [NodeConfiguration(typeof(ImportFromExcelNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class ImportFromExcelNode(
@@ -19,6 +24,7 @@ public class ImportFromExcelNode(
     IMeshEtlContext etlContext)
     : IPipelineNode
 {
+    /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
         if (!EnsureAndValidateData(dataContext, out var data, out var columns, out var importType, out var rootNodeId))

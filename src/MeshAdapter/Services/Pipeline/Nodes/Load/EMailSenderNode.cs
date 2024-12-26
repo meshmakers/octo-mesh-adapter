@@ -8,6 +8,11 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 
+/// <summary>
+/// Pipeline node that sends an email
+/// </summary>
+/// <param name="next">Next node in the pipeline</param>
+/// <param name="etlContext">The ETL context</param>
 [NodeConfiguration(typeof(EMailSenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class EMailSenderNode(

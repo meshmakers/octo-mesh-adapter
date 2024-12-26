@@ -11,6 +11,7 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 [NodeConfiguration(typeof(WebPushNotificationNodeConfiguration))]
 public class WebPushNotificationNode(NodeDelegate next) : IPipelineNode
 {
+    /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext)
     {
         var c = dataContext.NodeContext.GetNodeConfiguration<WebPushNotificationNodeConfiguration>();

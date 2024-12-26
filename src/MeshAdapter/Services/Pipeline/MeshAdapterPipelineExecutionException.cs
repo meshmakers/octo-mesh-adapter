@@ -3,7 +3,7 @@ using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline;
 
-public class MeshAdapterPipelineExecutionException : PipelineExecutionException
+internal class MeshAdapterPipelineExecutionException : PipelineExecutionException
 {
     private MeshAdapterPipelineExecutionException()
     {

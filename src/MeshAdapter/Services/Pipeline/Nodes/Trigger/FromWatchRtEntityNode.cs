@@ -11,12 +11,17 @@ using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Trigger;
 
+/// <summary>
+/// Pipeline node that triggers when a real-time entity is updated
+/// </summary>
+/// <param name="systemContext"></param>
 [NodeConfiguration(typeof(FromWatchRtEntityNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class FromWatchRtEntityNode(ISystemContext systemContext) : ITriggerPipelineNode
 {
     private IUpdateStream<RtEntity>? _updateStream;
 
+    /// <inheritdoc />
     public async Task StartAsync(ITriggerContext context)
     {
         var c = context.NodeContext.GetNodeConfiguration<FromWatchRtEntityNodeConfiguration>();
@@ -41,6 +46,7 @@ public class FromWatchRtEntityNode(ISystemContext systemContext) : ITriggerPipel
             .Subscribe();
     }
 
+    /// <inheritdoc />
     public Task StopAsync(ITriggerContext context)
     {
         _updateStream?.Dispose();

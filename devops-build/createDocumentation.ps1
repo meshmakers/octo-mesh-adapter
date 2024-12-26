@@ -3,7 +3,7 @@ param ($configuration = "Release")
 dotnet tool update --global MMXMLDoc2Markdown
 
 $modulePath = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$baseBinPath = Join-Path $modulePath "../bin/$configuration/net8.0/win-x64"
+$baseBinPath = Join-Path $modulePath "../bin/$configuration/net8.0"
 if (-not (Test-Path -Path $baseBinPath)) {
     throw "Bin path '$baseBinPath' does not exist"
 }
@@ -18,6 +18,6 @@ if (Test-Path -Path $baseOutputPath) {
 
 # Create XML documentation for Libraries
 $outputPath = "$baseOutputPath/apiReference/Adapters/Mesh"
-$sourcePath = "$baseBinPath/Meshmakers.Octo.Communication.Adapters.Sap.dll"
+$sourcePath = "$baseBinPath/Meshmakers.Octo.MeshAdapter.dll"
 Write-Host "Creating documentation for $sourcePath, doc is generated at $outputPath"
 mmxmldoc2md $sourcePath $outputPath

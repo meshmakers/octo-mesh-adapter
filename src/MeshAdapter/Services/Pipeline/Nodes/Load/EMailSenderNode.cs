@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Mail;
 using Markdig;
-using Meshmakers.Octo.Communication.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;

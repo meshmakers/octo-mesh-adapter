@@ -78,6 +78,6 @@ stages:
           - template: handle-artifacts.yml
             parameters:
               apiDocumentationPaths:
-                - '$(Build.SourcesDirectory)/bin/$(buildConfiguration)/documentation'
+                - '$(Build.SourcesDirectory)/bin/$(buildConfiguration)/$(artifactsFrameworkVersion)/documentation'
           - template: push-nuget-package.yml
 

@@ -13,7 +13,7 @@ internal class DynamicRouteMiddleware(RequestDelegate next, IHttpRequestService 
             return;
         }
 
-        await next(context); // Nächste Middleware aufrufen
+        await next(context); 
     }
 
 }

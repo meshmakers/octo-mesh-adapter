@@ -18,22 +18,22 @@ public class PlaceholderReplaceNode(NodeDelegate next) : IPipelineNode
         var c = dataContext.NodeContext.GetNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
 
         var value = dataContext.GetSimpleValueByPath<string>(c.Path);
-        
+
         if (string.IsNullOrWhiteSpace(value))
         {
             dataContext.NodeContext.Error("No value found");
             return;
         }
-        
+
         var replaceRules = c.ReplaceRules;
         foreach (var replaceRule in replaceRules)
         {
             var replace = dataContext.GetSimpleValueByPath<string>(replaceRule.Path);
-            value = value.Replace("${" +replaceRule.Placeholder  +"}",  replace, StringComparison.OrdinalIgnoreCase);
+            value = value.Replace("${" + replaceRule.Placeholder + "}", replace, StringComparison.OrdinalIgnoreCase);
         }
-        
+
         dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, value);
-        
+
         await next(dataContext);
     }
 }

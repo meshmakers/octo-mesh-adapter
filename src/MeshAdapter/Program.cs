@@ -51,6 +51,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterTriggerNode<FromExecutePipelineCommandNode>()
         .RegisterTriggerNode<FromHttpRequestNode>()
         .RegisterTriggerNode<FromPipelineTriggerEventNode>()
+        .RegisterTriggerNode<FromSendNotificationNode>()
         .RegisterTriggerNode<FromWatchRtEntityNode>()
         .RegisterEtlContext<IMeshEtlContext>();
 

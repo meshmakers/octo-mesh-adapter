@@ -83,13 +83,19 @@ public class EMailSenderNode(
                     new NetworkCredential(eMailSenderConfiguration.Username, eMailSenderConfiguration.Password),
                 EnableSsl = eMailSenderConfiguration.IsSslEnabled
             };
+            
             var mailMessage = new MailMessage
             {
-                From = new MailAddress(eMailSenderConfiguration.SenderEmail ?? eMailSenderConfiguration.Username),
                 Subject = subject,
                 Body = bodyInHtml,
                 IsBodyHtml = true
             };
+            
+            if (!string.IsNullOrWhiteSpace(eMailSenderConfiguration.SenderEmail))
+            {
+                mailMessage.From = new MailAddress(eMailSenderConfiguration.SenderEmail);
+            }
+            
             foreach (var recipient in recipients)
             {
                 if (!string.IsNullOrWhiteSpace(recipient))

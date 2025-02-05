@@ -59,7 +59,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         {
             foreach (var f in c.FieldFilters)
             {
-                query.AddFieldFilter(f.AttributeName, GetOperator(f.Operator), f.ComparisonValue);
+                query.AddFieldFilter(f.AttributePath, GetOperator(f.Operator), f.ComparisonValue);
             }
         }
         

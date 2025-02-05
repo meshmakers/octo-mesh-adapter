@@ -39,7 +39,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context) : IPip
         {
             foreach (var fieldFilter in rtQuery.FieldFilter)
             {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName, (FieldFilterOperator) fieldFilter.Operator, fieldFilter.ComparisonValue);
+                dataQueryOperation.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator) fieldFilter.Operator, fieldFilter.ComparisonValue);
             }
         }
 
@@ -47,13 +47,13 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context) : IPip
         {
             foreach (var orderItemRecord in rtQuery.Sorting)
             {
-                dataQueryOperation.SortOrder(orderItemRecord.AttributeName, (SortOrders)orderItemRecord.SortOrder);
+                dataQueryOperation.SortOrder(orderItemRecord.AttributePath, (SortOrders)orderItemRecord.SortOrder);
             }
         }
 
         if (rtQuery.AttributeSearchFilter != null)
         {
-            dataQueryOperation.AttributeSearch(rtQuery.AttributeSearchFilter.AttributeNames, rtQuery.AttributeSearchFilter.SearchValue);
+            dataQueryOperation.AttributeSearch(rtQuery.AttributeSearchFilter.AttributePaths, rtQuery.AttributeSearchFilter.SearchValue);
         }
         
         if (rtQuery.TextSearchFilter != null)

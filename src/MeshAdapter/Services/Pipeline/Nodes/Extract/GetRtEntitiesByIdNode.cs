@@ -37,7 +37,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
         {
             foreach (var fieldFilter in c.FieldFilters)
             {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator,
+                dataQueryOperation.AddFieldFilter(fieldFilter.AttributePath.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator,
                     fieldFilter.ComparisonValue);
             }
         }

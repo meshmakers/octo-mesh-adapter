@@ -29,7 +29,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         {
             foreach (var fieldFilter in c.FieldFilters)
             {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator, fieldFilter.ComparisonValue);
+                dataQueryOperation.AddFieldFilter(fieldFilter.AttributePath.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator, fieldFilter.ComparisonValue);
             }
         }
 

@@ -31,9 +31,9 @@ public class FromWatchRtEntityNode(ISystemContext systemContext) : ITriggerPipel
             UpdateTypes = (UpdateTypes)c.UpdateTypes,
             RtId = c.RtId,
             BeforeFieldFilters = c.BeforeFieldFilters?.Select(f =>
-                new FieldFilter(f.AttributeName.ToPascalCase(), (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList(),
+                new FieldFilter(f.AttributePath.ToPascalCase(), (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList(),
             FieldFilters = c.FieldFilters?.Select(f =>
-                new FieldFilter(f.AttributeName.ToPascalCase(), (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList(),
+                new FieldFilter(f.AttributePath.ToPascalCase(), (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList(),
         };
 
         var tenantRepository = await systemContext.FindTenantRepositoryAsync(context.TenantId);

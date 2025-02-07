@@ -117,7 +117,6 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             FieldFilterOperatorDto.Like => FieldFilterOperator.Like,
             FieldFilterOperatorDto.MatchRegEx => FieldFilterOperator.MatchRegEx,
             FieldFilterOperatorDto.AnyEq => FieldFilterOperator.AnyEq,
-            FieldFilterOperatorDto.Match => FieldFilterOperator.Match,
             _ => throw new ArgumentOutOfRangeException(nameof(f), f, null)
         };
     }

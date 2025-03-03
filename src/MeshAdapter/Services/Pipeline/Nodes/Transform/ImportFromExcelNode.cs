@@ -1,6 +1,9 @@
 ﻿using System.Diagnostics.CodeAnalysis;
+using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -16,11 +19,13 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 /// Pipeline node that imports data from an Excel file
 /// </summary>
 /// <param name="next">Next node in the pipeline</param>
+/// <param name="ckCacheService">Construction Kit cache service</param>
 /// <param name="etlContext">The ETL context</param>
 [NodeConfiguration(typeof(ImportFromExcelNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class ImportFromExcelNode(
     NodeDelegate next,
+    ICkCacheService ckCacheService,
     IMeshEtlContext etlContext)
     : IPipelineNode
 {
@@ -73,6 +78,7 @@ public class ImportFromExcelNode(
                 }
                 
                 // we already created this entity
+                var ckTypeId = columnContext.GetCkTypeId(entry, iLayer);
                 var name = columnContext.GetValue<string>(entry, "name", iLayer)!;
                 if(entities.Any(x=> x.Name == name))
                 { 
@@ -81,15 +87,16 @@ public class ImportFromExcelNode(
                 
                 var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
 
-                var entity = new HierarchicalEntity(name, parentName);
-                foreach(var attributeName in columnContext.GetColumnNames(iLayer))
+                var entity = new HierarchicalEntity(ckTypeId, name, parentName);
+                foreach(var attributePath in columnContext.GetAttributePaths(iLayer))
                 {
-                    var value = columnContext.GetValue<string>(entry, attributeName, iLayer);
-                    if(value == null || attributeName == "name")
+                    var value = columnContext.GetValue<string>(entry, attributePath, iLayer);
+                    if(value == null || attributePath == "name")
                     {
                         continue;
                     }
-                    entity.Attributes.Add(new(attributeName, value));
+
+                    entity.Attributes.Add(new(attributePath, value));
                 }
                 
                 
@@ -103,6 +110,7 @@ public class ImportFromExcelNode(
         foreach (var jToken in data)
         {
             var entry = (JArray)jToken;
+            var ckTypeId = columnContext.GetCkTypeId(entry);
             var name = columnContext.GetValue<string>(entry, "name");
             if (name == null)
             {
@@ -113,9 +121,9 @@ public class ImportFromExcelNode(
 
             var parentName = ParentNameParser.ParseSeparatorBased(name);
 
-            var entity = new HierarchicalEntity(name, parentName);
+            var entity = new HierarchicalEntity(ckTypeId, name, parentName);
             entities.Add(entity);
-            foreach (var columnName in columnContext.GetColumnNames())
+            foreach (var columnName in columnContext.GetAttributePaths())
             {
                 if (columnName == "name")
                 {
@@ -156,30 +164,27 @@ public class ImportFromExcelNode(
                 entityParent.RtId = OctoObjectId.GenerateNewId();
             }
 
-            var rtEntity = new RtEntity
-            {
-                RtWellKnownName = entity.Name,
-                RtId = entity.RtId.Value,
-                CkTypeId = new CkId<CkTypeId>(new CkModelId("Basic"), new CkTypeId("TreeNode"))
-            };
-
+            var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityAsync(entity.CkTypeId);
+            rtEntity.RtId = entity.RtId.Value;
+            rtEntity.RtWellKnownName = entity.Name;
             rtEntity.SetAttributeValue("Name", AttributeValueTypesDto.String, entity.Name);
+
+            var ckTypeGraph = ckCacheService.GetCkType(etlContext.TenantId, entity.CkTypeId);
 
             foreach (var attribute in entity.Attributes)
             {
-                rtEntity.SetAttributeValue(attribute.Item1, AttributeValueTypesDto.String, attribute.Item2);
+                if (ckTypeGraph.AllAttributesByName.TryGetValue(attribute.Item1.ToPascalCase(), out var typeAttributeGraph))
+                {
+                    rtEntity.SetAttributeValue(attribute.Item1.ToPascalCase(), typeAttributeGraph.ValueType, attribute.Item2);
+                }
             }
 
             var insert = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
 
             entities.Add(insert);
 
-            var targetCkId = entityParent == null
-                ? new CkId<CkTypeId>(new CkModelId("Basic"), new CkTypeId("Tree"))
-                : new CkId<CkTypeId>(new CkModelId("Basic"), new CkTypeId("TreeNode"));
-
-            var association = AssociationUpdateInfo.CreateCreate(new RtEntityId(rtEntity.CkTypeId, entity.RtId.Value),
-                new RtEntityId(targetCkId, entityParent?.RtId ?? rootId),
+            var association = AssociationUpdateInfo.CreateCreate(new RtEntityId(entity.CkTypeId, entity.RtId.Value),
+                new RtEntityId(entityParent?.CkTypeId ?? "Basic/Tree", entityParent?.RtId ?? rootId),
                 new CkId<CkAssociationRoleId>("System/ParentChild"));
 
             assocs.Add(association);
@@ -224,7 +229,7 @@ public class ImportFromExcelNode(
             var name = entity.ParentName;
             var parentName = ParentNameParser.ParseSeparatorBased(name);
 
-            entityParent = new HierarchicalEntity(name, parentName);
+            entityParent = new HierarchicalEntity("Basic/TreeNode", name, parentName);
             entityParent.RtId = OctoObjectId.GenerateNewId();
             entityParent.Attributes.Add(new("description", "---GENERATED---"));
 

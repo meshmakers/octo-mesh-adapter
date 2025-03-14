@@ -3,6 +3,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
@@ -10,29 +11,30 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class DataMappingNode(NodeDelegate next) : IPipelineNode
 {
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<DataMappingNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<DataMappingNodeConfiguration>();
 
-        var value = GetValueByConfiguredType(dataContext,c.Path, c.SourceValueType);
-        
+        var value = GetValueByConfiguredType(dataContext, nodeContext, c.Path, c.SourceValueType);
+
         if (value == null)
         {
-            await next(dataContext);
+            await next(dataContext, nodeContext);
             return;
         }
 
         foreach (var mapping in c.Mappings)
         {
-            var mappingSourceValue = ConvertToConfiguredType(dataContext, mapping.SourceValue, c.SourceValueType);
-            
+            var mappingSourceValue = ConvertToConfiguredType(nodeContext, mapping.SourceValue, c.SourceValueType);
+
             if (value.Equals(mappingSourceValue))
             {
-                var targetValue = ConvertToConfiguredType(dataContext, mapping.TargetValue, c.TargetValueType);
-                
-                dataContext.NodeContext.Debug("Mapping value {0} to {1} because of {2}", value, targetValue ?? "",
+                var targetValue = ConvertToConfiguredType(nodeContext, mapping.TargetValue, c.TargetValueType);
+
+                nodeContext.Debug("Mapping value {0} to {1} because of {2}", value, targetValue ?? "",
                     mapping.Description ?? "no description");
-                dataContext.SetValueByPath(c.TargetPath, targetValue, c.TargetValueKind, c.TargetValueWriteMode,
+                dataContext.SetValueByPath(c.TargetPath, targetValue, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode,
                     RtNewtonsoftSerializer.DefaultSerializer);
 
                 break;
@@ -40,10 +42,11 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
         }
 
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 
-    private object? GetValueByConfiguredType(IDataContext dataContext, string path, AttributeValueTypesDto sourceValueType)
+    private object? GetValueByConfiguredType(IDataContext dataContext, INodeContext nodeContext, string path,
+        AttributeValueTypesDto sourceValueType)
     {
         return sourceValueType switch
         {
@@ -57,8 +60,8 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
             AttributeValueTypesDto.IntArray => dataContext.GetSimpleValueByPath<int[]>(path),
             AttributeValueTypesDto.TimeSpan => dataContext.GetSimpleValueByPath<TimeSpan>(path),
             AttributeValueTypesDto.Int64 => dataContext.GetSimpleValueByPath<long>(path),
-            
-            /* Not Mapped 
+
+            /* Not Mapped
                 AttributeValueTypesDto.BinaryLinked => dataContext.GetSimpleValueByPath<>(path),
                 AttributeValueTypesDto.Record => dataContext.GetSimpleValueByPath<>(path),
                 AttributeValueTypesDto.RecordArray => dataContext.GetSimpleValueByPath<>(path),
@@ -66,19 +69,18 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
                 AttributeValueTypesDto.DateTimeOffset => dataContext.GetSimpleValueByPath<>(path),
                 AttributeValueTypesDto.GeospatialPoint => dataContext.GetSimpleValueByPath<>(path),
             */
-            
-            _ => LogAndThrow(dataContext, sourceValueType)
+
+            _ => LogAndThrow(nodeContext, sourceValueType)
         };
-        
     }
 
-    private object? LogAndThrow(IDataContext context, AttributeValueTypesDto sourceValueType)
+    private object? LogAndThrow(INodeContext nodeContext, AttributeValueTypesDto sourceValueType)
     {
-        context.NodeContext.Error("Unknown source value type {0}", sourceValueType);
+        nodeContext.Error("Unknown source value type {0}", sourceValueType);
         throw new ArgumentOutOfRangeException(nameof(sourceValueType), sourceValueType, null);
     }
 
-    private object? ConvertToConfiguredType(IDataContext context, object? value, AttributeValueTypesDto type)
+    private object? ConvertToConfiguredType(INodeContext nodeContext, object? value, AttributeValueTypesDto type)
     {
         try
         {
@@ -94,7 +96,7 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
                 AttributeValueTypesDto.IntArray => Convert.ChangeType(value, typeof(int[])),
                 AttributeValueTypesDto.TimeSpan => Convert.ChangeType(value, typeof(TimeSpan)),
                 AttributeValueTypesDto.Int64 => Convert.ChangeType(value, typeof(long)),
-            
+
                 /* Not Mapped
                     AttributeValueTypesDto.BinaryLinked => dataContext.GetSimpleValueByPath<>(path),
                     AttributeValueTypesDto.Record => dataContext.GetSimpleValueByPath<>(path),
@@ -103,14 +105,13 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
                     AttributeValueTypesDto.DateTimeOffset => dataContext.GetSimpleValueByPath<>(path),
                     AttributeValueTypesDto.GeospatialPoint => dataContext.GetSimpleValueByPath<>(path),
                 */
-            
-                _ => LogAndThrow(context, type)
-            };
 
+                _ => LogAndThrow(nodeContext, type)
+            };
         }
         catch
         {
-            context.NodeContext.Error("Failed to convert value {0} to {1}", value ?? "", type);
+            nodeContext.Error("Failed to convert value {0} to {1}", value ?? "", type);
             throw new ArgumentOutOfRangeException(nameof(type), type, null);
         }
     }

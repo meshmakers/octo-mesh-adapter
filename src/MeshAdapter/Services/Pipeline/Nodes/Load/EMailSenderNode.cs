@@ -4,6 +4,7 @@ using Markdig;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 
@@ -35,9 +36,9 @@ public class EMailSenderNode(
     private readonly MarkdownPipeline _pipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
 
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<EMailSenderNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<EMailSenderNodeConfiguration>();
 
         try
         {
@@ -46,7 +47,7 @@ public class EMailSenderNode(
 
             if (!etlContext.GlobalConfiguration.IsDefined(c.ServerConfiguration))
             {
-                dataContext.NodeContext.Error($"Server configuration '{c.ServerConfiguration}' not found");
+                nodeContext.Error($"Server configuration '{c.ServerConfiguration}' not found");
                 return;
             }
 
@@ -56,21 +57,21 @@ public class EMailSenderNode(
             var recipients = dataContext.GetSimpleArrayValueByPath<string>(c.ToPath);
             if (recipients == null)
             {
-                dataContext.NodeContext.Error("No recipients found");
+                nodeContext.Error("No recipients found");
                 return;
             }
 
             var subject = dataContext.GetSimpleValueByPath<string>(c.SubjectPath);
             if (subject == null)
             {
-                dataContext.NodeContext.Error("No subject found");
+                nodeContext.Error("No subject found");
                 return;
             }
 
             var body = dataContext.GetSimpleValueByPath<string>(c.Path);
             if (body == null)
             {
-                dataContext.NodeContext.Error("No body found");
+                nodeContext.Error("No body found");
                 return;
             }
 
@@ -107,9 +108,9 @@ public class EMailSenderNode(
         }
         catch (Exception e)
         {
-            dataContext.NodeContext.Error(e, "Error sending email");
+            nodeContext.Error(e, "Error sending email");
         }
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

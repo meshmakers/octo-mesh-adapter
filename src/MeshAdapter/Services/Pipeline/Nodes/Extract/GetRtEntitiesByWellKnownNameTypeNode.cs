@@ -6,6 +6,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
@@ -18,13 +19,13 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-       var c = dataContext.NodeContext.GetNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
+       var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {
-            dataContext.NodeContext.Error("CkTypeId is not set");
+            nodeContext.Error("CkTypeId is not set");
             return;
         }
 
@@ -65,6 +66,6 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
             });
         }
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

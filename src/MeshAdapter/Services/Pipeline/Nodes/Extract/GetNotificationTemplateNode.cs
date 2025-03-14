@@ -3,6 +3,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v1;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
@@ -17,9 +18,9 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<GetNotificationTemplateNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<GetNotificationTemplateNodeConfiguration>();
 
         var dataQueryOperation = DataQueryOperation.Create();
         dataQueryOperation.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.Equals, c.NotificationTemplateName);
@@ -32,13 +33,13 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         var notificationTemplate = r.Items.FirstOrDefault();
         if (notificationTemplate == null)
         {
-            dataContext.NodeContext.Error("Notification template not found");
+            nodeContext.Error("Notification template not found");
             return;
         }
 
-        dataContext.SetValueByPath(c.SubjectTargetPath, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.SubjectTemplate);
-        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.BodyTemplate);
+        dataContext.SetValueByPath(c.SubjectTargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.SubjectTemplate);
+        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.BodyTemplate);
         
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

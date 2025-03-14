@@ -10,6 +10,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
@@ -23,9 +24,9 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
 
         var rtId = GetRtId(dataContext, c);
         var updateKind = GetUpdateKind(dataContext, c);
@@ -33,26 +34,26 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
         if (c.CkTypeId == null)
         {
-            dataContext.NodeContext.Error("CkTypeId is not set");
+            nodeContext.Error("CkTypeId is not set");
             return;
         }
 
         if (updateKind == null)
         {
-            dataContext.NodeContext.Error("update kind is not set. Please provide a UpdateKind or UpdateKindPath");
+            nodeContext.Error("update kind is not set. Please provide a UpdateKind or UpdateKindPath");
             return;
         }
         
         
         if (updateKind == UpdateKind.Update && rtId == null)
         {
-            dataContext.NodeContext.Error("RtId is not set. Please provide a RtId or RtIdPath");
+            nodeContext.Error("RtId is not set. Please provide a RtId or RtIdPath");
             return;
         }
 
         if (c.AttributeUpdates == null || c.AttributeUpdates.Count == 0)
         {
-            dataContext.NodeContext.Error("AttributeUpdates is not set");
+            nodeContext.Error("AttributeUpdates is not set");
             return;
         }
 
@@ -76,13 +77,13 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
             {
-                dataContext.NodeContext.Error("Attribute name is not set");
+                nodeContext.Error("Attribute name is not set");
                 continue;
             }
 
             if (au.AttributeValueType == null)
             {
-                dataContext.NodeContext.Error("Attribute value type is not set");
+                nodeContext.Error("Attribute value type is not set");
                 continue;
             }
 
@@ -96,11 +97,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     continue;
                 }
                 
-                hasUpdate |= SetAttributeValue(dataContext, au.AttributeName, jTokens, rtEntity, ckTypeGraph);
+                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, jTokens, rtEntity, ckTypeGraph);
             }
             else if (au.Value != null)
             {
-                if (!SetAttributeValueSingle(dataContext, au.AttributeName, au.Value, rtEntity, ckTypeGraph))
+                if (!SetAttributeValueSingle(nodeContext, au.AttributeName, au.Value, rtEntity, ckTypeGraph))
                 {
                     return;
                 }
@@ -131,22 +132,22 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 }
             }
 
-            dataContext.SetValueByPath(c.TargetPath, updateItem, c.TargetValueKind,
+            dataContext.SetValueByPath(c.TargetPath, updateItem, c.DocumentMode, c.TargetValueKind,
                 c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
         }
 
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 
-    private bool SetAttributeValue(IDataContext dataContext, string attributeName, IEnumerable<JToken> jTokens, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+    private bool SetAttributeValue(INodeContext nodeContext, string attributeName, IEnumerable<JToken> jTokens, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
     {
         bool hasUpdate = false;
         foreach (var jToken in jTokens)
         {
             if (jToken is JValue jValue)
             {
-                if (!SetAttributeValueSingle(dataContext, attributeName, jValue.Value,
+                if (!SetAttributeValueSingle(nodeContext, attributeName, jValue.Value,
                         rtTypeWithAttributes, ckTypeWithAttributesGraph))
                 {
                     continue;
@@ -156,7 +157,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             }
             else if (jToken is JObject jObject)
             {
-                if (!SetAttributeValueSingle(dataContext, attributeName, jObject,
+                if (!SetAttributeValueSingle(nodeContext, attributeName, jObject,
                         rtTypeWithAttributes, ckTypeWithAttributesGraph))
                 {
                     continue;
@@ -166,7 +167,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             }
             else
             {
-                dataContext.NodeContext.Error($"Value {jToken} is not a valid type");
+                nodeContext.Error($"Value {jToken} is not a valid type");
                 throw MeshAdapterPipelineExecutionException.InvalidValue(jToken);
             }
         }
@@ -174,11 +175,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         return hasUpdate;
     }
 
-    private bool SetAttributeValueSingle(IDataContext dataContext, string attributeName, object? value, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+    private bool SetAttributeValueSingle(INodeContext nodeContext, string attributeName, object? value, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
     {
         if (!ckTypeWithAttributesGraph.AllAttributesByName.TryGetValue(attributeName, out var attribute))
         {
-            dataContext.NodeContext.Error($"Attribute {attributeName} not found in construction kit type {ckTypeWithAttributesGraph}");
+            nodeContext.Error($"Attribute {attributeName} not found in construction kit type {ckTypeWithAttributesGraph}");
             return false;
         }
         
@@ -196,7 +197,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                             string.Compare(v.Name, strValue, StringComparison.OrdinalIgnoreCase) == 0);
                         if (enumValue == null)
                         {
-                            dataContext.NodeContext.Error(
+                            nodeContext.Error(
                                 $"Enum value {strValue} not found in CKEnum {attribute.ValueCkEnumId}");
                             return false;
                         }
@@ -210,7 +211,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                         var enumValue = ckEnumGraph.Values.FirstOrDefault(v => v.Key == intValue);
                         if (enumValue == null)
                         {
-                            dataContext.NodeContext.Error(
+                            nodeContext.Error(
                                 $"Enum value {intValue} not found in CKEnum {attribute.ValueCkEnumId}");
                             return false;
                         }
@@ -219,10 +220,10 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                         return true;
                     }
 
-                    dataContext.NodeContext.Error($"Enum value {value} is not a valid type");
+                    nodeContext.Error($"Enum value {value} is not a valid type");
                     return false;
                 }
-                dataContext.NodeContext.Error("Enum value is not set");
+                nodeContext.Error("Enum value is not set");
                 return false;
             case AttributeValueTypesDto.Record:
                 if (attribute.ValueCkRecordId != null)
@@ -245,7 +246,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                                 continue;
                             }
                             
-                            hasUpdate |= SetAttributeValueSingle(dataContext, ckTypeAttributeGraphKeyValue.Key, jToken,
+                            hasUpdate |= SetAttributeValueSingle(nodeContext, ckTypeAttributeGraphKeyValue.Key, jToken,
                                 record, ckRecordGraph);
                         }
                         
@@ -254,17 +255,17 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                         return hasUpdate;
                     }
 
-                    dataContext.NodeContext.Error($"Enum value {value} is not a valid type");
+                    nodeContext.Error($"Enum value {value} is not a valid type");
                     return false;
                 }
-                dataContext.NodeContext.Error("Record value is not set");
+                nodeContext.Error("Record value is not set");
                 return false;
             default:
                 rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, value);
                 return true;
         }
     }
-    
+
     private static OctoObjectId? GetRtId(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
     {
         if (config.RtId != null)

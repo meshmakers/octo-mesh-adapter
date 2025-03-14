@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using MongoDB.Driver;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
@@ -19,9 +20,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
     private static readonly SemaphoreSlim ApplySemaphoreSlim = new(1, 1);
 
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<ApplyChangesNodeConfiguration2>();
+        var c = nodeContext.GetNodeConfiguration<ApplyChangesNodeConfiguration2>();
 
         List<EntityUpdateInfo<RtEntity>> entityUpdates = [];
         List<AssociationUpdateInfo> associationUpdates = [];
@@ -75,7 +76,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                             resultAssocUpdate, operationResult);
                         if (operationResult.HasErrors || operationResult.HasFatalErrors)
                         {
-                            dataContext.NodeContext.Error("Error updating RtEntity");
+                            nodeContext.Error("Error updating RtEntity");
                             await session.AbortTransactionAsync();
                         }
                         else
@@ -103,11 +104,11 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
         }
         else
         {
-            dataContext.NodeContext.Warning("No update infos found");
+            nodeContext.Warning("No update infos found");
         }
 
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
     
     private static string ConcatOriginAndTarget(AssociationUpdateInfo updateInfo)

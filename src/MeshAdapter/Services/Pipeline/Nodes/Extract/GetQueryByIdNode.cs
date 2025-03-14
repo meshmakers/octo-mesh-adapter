@@ -4,6 +4,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
@@ -17,9 +18,9 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context) : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<GetQueryByIdNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<GetQueryByIdNodeConfiguration>();
         
         var session = await context.TenantRepository.GetSessionAsync();
         session.StartTransaction();
@@ -30,7 +31,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context) : IPip
         
         if (rtQuery == null)
         {
-            dataContext.NodeContext.Error("Query '{0}' not found", c.QueryRtId);
+            nodeContext.Error("Query '{0}' not found", c.QueryRtId);
             return;
         }
         
@@ -74,10 +75,10 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context) : IPip
             Values = rtQuery.Columns.Select(column => entity.GetAttributeValueOrDefault(column.ToPascalCase())).ToList()
         }));
         
-        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, queryResult);
+        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, queryResult);
 
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
 
     }
 }

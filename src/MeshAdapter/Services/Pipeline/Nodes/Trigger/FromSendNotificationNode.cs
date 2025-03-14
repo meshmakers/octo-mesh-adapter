@@ -29,13 +29,14 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
 
                     JToken input = JArray.FromObject(message.Notifications);
 
+                    var startDateTime = DateTime.UtcNow;
                     var pipelineExecutionId =
                         await context.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow), input);
-                    await responseFunc(new ExecuteMeshPipelineResponse(true, null, pipelineExecutionId));
+                    await responseFunc(new ExecuteMeshPipelineResponse(true, null, pipelineExecutionId, startDateTime));
                 }
                 catch (Exception ex)
                 {
-                    await responseFunc(new ExecuteMeshPipelineResponse(false, ex.Message, null));
+                    await responseFunc(new ExecuteMeshPipelineResponse(false, ex.Message, null, null));
 
                     context.NodeContext.Error(ex, "[{TenantId}] Error processing pipeline: '{PipelineId}'",
                         message.TenantId, context.PipelineRtEntityId);

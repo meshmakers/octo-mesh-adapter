@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
@@ -12,19 +13,19 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
 
         if (c.CkTypeId == null)
         {
-            dataContext.NodeContext.Error("CkTypeId is not set");
+            nodeContext.Error("CkTypeId is not set");
             return;
         }
 
         if (c.FieldFilters == null || c.FieldFilters.Count == 0)
         {
-            dataContext.NodeContext.Error("FieldFilters is not set");
+            nodeContext.Error("FieldFilters is not set");
             return;
         }
 
@@ -48,20 +49,26 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             if (r.TotalCount == 0)
             {
                 var objectId = OctoObjectId.GenerateNewId();
-                dataContext.SetValueByPath(c.RtIdTargetPath, ValueKind.Simple, WriteMode.Overwrite, objectId);
-                dataContext.SetValueByPath(c.CkTypeIdTargetPath, ValueKind.Simple, WriteMode.Overwrite, c.CkTypeId);
-                dataContext.SetValueByPath(c.ModOperationPath, ValueKind.Simple, WriteMode.Overwrite, UpdateKind.Insert);
+                dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, objectId);
+                dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, c.CkTypeId);
+                dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, UpdateKind.Insert);
             }
             else
             {
-                dataContext.SetValueByPath(c.RtIdTargetPath, ValueKind.Simple, WriteMode.Overwrite,
+                dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite,
                     r.Items.First().RtId);
-                dataContext.SetValueByPath(c.CkTypeIdTargetPath, ValueKind.Simple, WriteMode.Overwrite, c.CkTypeId);
-                dataContext.SetValueByPath(c.ModOperationPath, ValueKind.Simple, WriteMode.Overwrite,
+                dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, c.CkTypeId);
+                dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite,
                     UpdateKind.Update);
             }
-            await session.CommitTransactionAsync();
 
+            await session.CommitTransactionAsync();
         }
         catch (Exception e)
         {
@@ -70,10 +77,10 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
                 await session.AbortTransactionAsync();
             }
 
-            dataContext.NodeContext.Error(e.Message);
+            nodeContext.Error(e.Message);
             throw;
         }
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

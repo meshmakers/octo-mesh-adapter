@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Services.Common.StreamData;
 using Meshmakers.Octo.Services.Common.StreamData.Dtos;
 
@@ -15,9 +16,9 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Load;
 internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContext, IStreamDataDatabaseClient streamDataDatabaseClient)
     : IPipelineNode
 {
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
         
         var data = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
@@ -60,16 +61,16 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
 
             if (toInsert.Count != 0)
             {
-                dataContext.NodeContext.Debug($"Inserting {toInsert.Count} data points into the stream data database");
+                nodeContext.Debug($"Inserting {toInsert.Count} data points into the stream data database");
                 await streamDataDatabaseClient.InsertDataAsync(tenantId, toInsert);
             }
         }
         else
         {
-            dataContext.NodeContext.Warning("No update infos found");
+            nodeContext.Warning("No update infos found");
         }
 
         
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

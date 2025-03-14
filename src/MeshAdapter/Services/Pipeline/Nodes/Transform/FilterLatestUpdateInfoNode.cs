@@ -4,6 +4,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
@@ -15,9 +16,9 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 public class FilterLatestUpdateInfoNode(NodeDelegate next) : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
 
         var list = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
@@ -38,10 +39,10 @@ public class FilterLatestUpdateInfoNode(NodeDelegate next) : IPipelineNode
             resultUpdateInfos.AddRange(groupedDelete
                 .Select(x => x.OrderByDescending(y => y.RtEntity?.RtChangedDateTime).First()).ToList());
 
-            dataContext.SetValueByPath(c.TargetPath, resultUpdateInfos, c.TargetValueKind,
+            dataContext.SetValueByPath(c.TargetPath, resultUpdateInfos, c.DocumentMode, c.TargetValueKind,
                 c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
         }
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

@@ -1,4 +1,5 @@
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
 
@@ -9,16 +10,19 @@ internal class MeshAdapterService(
     IPipelineRegistryService pipelineRegistryService,
     IEventHubControl eventHubControl) : IAdapterService
 {
-    public async Task StartupAsync(AdapterStartup adapterStartup, CancellationToken stoppingToken)
+    public async Task<bool> StartupAsync(AdapterStartup adapterStartup, List<DeploymentUpdateErrorMessageDto> errorMessages,
+        CancellationToken stoppingToken)
     {
         logger.LogInformation("Startup of mesh adapter");
         try
         {
-            await pipelineRegistryService.RegisterPipelinesAsync(adapterStartup.TenantId,
-                adapterStartup.Configuration.Pipelines);
+            var success =await pipelineRegistryService.RegisterPipelinesAsync(adapterStartup.TenantId,
+                adapterStartup.Configuration.Pipelines, errorMessages);
             await pipelineRegistryService.StartTriggerPipelineNodesAsync(adapterStartup.TenantId);
 
             await eventHubControl.StartAsync(stoppingToken);
+            
+            return success;
         }
         catch (Exception e)
         {

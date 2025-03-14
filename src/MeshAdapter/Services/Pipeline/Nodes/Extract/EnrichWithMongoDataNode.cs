@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
@@ -18,9 +19,9 @@ internal class EnrichWithMongoDataNode(
     IMeshEtlContext etlContext,
     ILogger<EnrichWithMongoDataNode> logger) : IPipelineNode
 {
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<EnrichWithMongoDataConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<EnrichWithMongoDataConfiguration>();
 
         var updateInfos = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
@@ -29,7 +30,7 @@ internal class EnrichWithMongoDataNode(
         {
             var session = await etlContext.TenantRepository.GetSessionAsync();
             session.StartTransaction();
-            
+
             foreach (var entityUpdateInfo in updateInfos)
             {
                 if (entityUpdateInfo.ModOption != EntityModOptions.Update &&
@@ -37,24 +38,26 @@ internal class EnrichWithMongoDataNode(
                 {
                     continue;
                 }
-                
+
                 var modOption = entityUpdateInfo.ModOption;
-  
-                
+
+
                 var rtId = c.RtId ?? dataContext.GetSimpleValueByPath<OctoObjectId?>(c.RtIdPath ?? "$");
                 var ckTypeId = c.CkTypeId ?? dataContext.GetSimpleValueByPath<CkId<CkTypeId>?>(c.CkTypeIdPath ?? "$");
                 if (rtId == null)
                 {
-                    dataContext.NodeContext.Error("RtId or RtIdPath is not set");
+                    nodeContext.Error("RtId or RtIdPath is not set");
                     return;
                 }
+
                 if (ckTypeId == null)
                 {
-                    dataContext.NodeContext.Error("CkTypeId or CkTypeIdPath is not set");
+                    nodeContext.Error("CkTypeId or CkTypeIdPath is not set");
                     return;
                 }
-                
-                logger.LogDebug("Processing update ({ModOption}) of update info {CkTypeId}@{RtId}", modOption, ckTypeId, rtId);
+
+                logger.LogDebug("Processing update ({ModOption}) of update info {CkTypeId}@{RtId}", modOption, ckTypeId,
+                    rtId);
 
                 if (rtId != c.RtId || ckTypeId != c.CkTypeId)
                 {
@@ -81,30 +84,33 @@ internal class EnrichWithMongoDataNode(
         }
 
 
-        dataContext.SetValueByPath(c.TargetPath, updateInfos, c.TargetValueKind, c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.SetValueByPath(c.TargetPath, updateInfos, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode,
+            RtNewtonsoftSerializer.DefaultSerializer);
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 
-    private async Task HandleUpdateOrReplace(IOctoSession session, EntityUpdateInfo<RtEntity> entityUpdateInfo, EnrichWithMongoDataConfiguration config)
+    private async Task HandleUpdateOrReplace(IOctoSession session, EntityUpdateInfo<RtEntity> entityUpdateInfo,
+        EnrichWithMongoDataConfiguration config)
     {
-        if(config.AttributeUpdates == null || config.AttributeUpdates.Count == 0)
+        if (config.AttributeUpdates == null || config.AttributeUpdates.Count == 0)
         {
             return;
         }
-        
+
         if (entityUpdateInfo.RtEntity == null)
         {
             return;
         }
-        
-        var entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session, entityUpdateInfo.GetRtEntityId());
+
+        var entity =
+            await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session, entityUpdateInfo.GetRtEntityId());
 
         if (entity == null)
         {
             return;
         }
-        
+
         foreach (var attributeUpdate in config.AttributeUpdates)
         {
             var value = entity.GetAttributeValueOrDefault(attributeUpdate.AttributeName!);
@@ -112,7 +118,7 @@ internal class EnrichWithMongoDataNode(
             {
                 continue;
             }
-            
+
             var type = attributeUpdate.AttributeValueType!.Value;
             entityUpdateInfo.RtEntity.SetAttributeValue(attributeUpdate.AttributeName!, type, value);
         }

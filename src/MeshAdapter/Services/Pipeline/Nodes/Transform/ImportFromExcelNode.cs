@@ -30,9 +30,9 @@ public class ImportFromExcelNode(
     : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        if (!EnsureAndValidateData(dataContext, out var data, out var columns, out var importType, out var rootNodeId))
+        if (!EnsureAndValidateData(dataContext, nodeContext, out var data, out var columns, out var importType, out var rootNodeId))
         {
             return;
         }
@@ -54,15 +54,15 @@ public class ImportFromExcelNode(
         }
         else
         {
-            dataContext.NodeContext.Error("Unknown import type");
+            nodeContext.Error("Unknown import type");
             return;
         }
 
 
-        await StoreInDatabase(entities, rootNodeId, dataContext.NodeContext);
+        await StoreInDatabase(entities, rootNodeId, nodeContext);
 
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 
     private void ParseTreeByColumns(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
@@ -240,6 +240,7 @@ public class ImportFromExcelNode(
 
     private static bool EnsureAndValidateData(
         IDataContext dataContext,
+        INodeContext nodeContext,
         [NotNullWhen(true)] out JArray? data,
         [NotNullWhen(true)] out JArray? columns,
         [NotNullWhen(true)] out string? importType,
@@ -254,34 +255,34 @@ public class ImportFromExcelNode(
 
         if (o?["body"] is not JObject body)
         {
-            dataContext.NodeContext.Error("Body is null");
+            nodeContext.Error("Body is null");
             return false;
         }
 
         if (body["columns"] is not JArray c)
         {
-            dataContext.NodeContext.Error("Columns are null");
+            nodeContext.Error("Columns are null");
             return false;
         }
 
 
         if (body["data"] is not JArray d)
         {
-            dataContext.NodeContext.Error("Data is null");
+            nodeContext.Error("Data is null");
             return false;
         }
 
         var i = body.Value<string>("importType");
         if (i == null)
         {
-            dataContext.NodeContext.Error("Import type is not TreeModel");
+            nodeContext.Error("Import type is not TreeModel");
             return false;
         }
 
         var r = body.Value<string>("treeModelRootRtId");
         if (r == null)
         {
-            dataContext.NodeContext.Error("Root node id is not set");
+            nodeContext.Error("Root node id is not set");
             return false;
         }
 

@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 
@@ -12,9 +13,9 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Extract;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
 
         var sourceRtId = GetSourceObjectId(dataContext, c);
         var sourceCkTypeId = GetSourceCkTypeId(dataContext, c);
@@ -25,45 +26,45 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
 
         if (sourceRtId == null)
         {
-            dataContext.NodeContext.Error("sourceRtId is not set");
+            nodeContext.Error("sourceRtId is not set");
             return;
         }
 
         if (sourceCkTypeId == null)
         {
-            dataContext.NodeContext.Error("sourceCkTypeId is not set");
+            nodeContext.Error("sourceCkTypeId is not set");
             return;
         }
 
         if (targetCkTypeId == null)
         {
-            dataContext.NodeContext.Error("targetRtId is not set");
+            nodeContext.Error("targetRtId is not set");
             return;
         }
 
         if (roleId == null)
         {
-            dataContext.NodeContext.Error("roleId is not set");
+            nodeContext.Error("roleId is not set");
             return;
         }
 
         if (graphDirection == null)
         {
-            dataContext.NodeContext.Error("graph direction is not set");
+            nodeContext.Error("graph direction is not set");
             return;
         }
 
         var query = DataQueryOperation.Create();
 
-        if(c.FieldFilters != null && c.FieldFilters.Any())
+        if (c.FieldFilters != null && c.FieldFilters.Any())
         {
             foreach (var f in c.FieldFilters)
             {
                 query.AddFieldFilter(f.AttributePath, GetOperator(f.Operator), f.ComparisonValue);
             }
         }
-        
-        if(c.SortOrders != null && c.SortOrders.Any())
+
+        if (c.SortOrders != null && c.SortOrders.Any())
         {
             foreach (var s in c.SortOrders)
             {
@@ -79,16 +80,16 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
 
         if (result.Count == 0)
         {
-            dataContext.NodeContext.Error("No association target found");
+            nodeContext.Error("No association target found");
             return;
         }
 
         var entity = result.Values.Single().Items.Single();
 
-        dataContext.SetValueByPath(c.TargetPath, entity, c.TargetValueKind,
+        dataContext.SetValueByPath(c.TargetPath, entity, c.DocumentMode, c.TargetValueKind,
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 
     private SortOrders GetSortOrder(SortOrdersDto sortOrder)

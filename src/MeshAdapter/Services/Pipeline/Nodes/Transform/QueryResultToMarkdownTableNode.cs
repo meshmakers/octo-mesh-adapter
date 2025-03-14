@@ -2,6 +2,7 @@ using System.Text;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
@@ -14,14 +15,14 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 public class QueryResultToMarkdownTableNode(NodeDelegate next) : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
 
         var queryResult = dataContext.GetComplexObjectByPath<QueryResult>(c.Path);
         if (queryResult == null)
         {
-            dataContext.NodeContext.Error("No value found");
+            nodeContext.Error("No value found");
             return;
         }
 
@@ -33,8 +34,8 @@ public class QueryResultToMarkdownTableNode(NodeDelegate next) : IPipelineNode
             stringBuilder.AppendLine("| " + string.Join(" | ", row.Values) + " |");
         }
 
-        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, stringBuilder.ToString());
+        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, stringBuilder.ToString());
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

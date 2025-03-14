@@ -1,6 +1,7 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 
@@ -13,15 +14,15 @@ namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Transform;
 public class PlaceholderReplaceNode(NodeDelegate next) : IPipelineNode
 {
     /// <inheritdoc />
-    public async Task ProcessObjectAsync(IDataContext dataContext)
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = dataContext.NodeContext.GetNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
 
         var value = dataContext.GetSimpleValueByPath<string>(c.Path);
 
         if (string.IsNullOrWhiteSpace(value))
         {
-            dataContext.NodeContext.Error("No value found");
+            nodeContext.Error("No value found");
             return;
         }
 
@@ -32,8 +33,8 @@ public class PlaceholderReplaceNode(NodeDelegate next) : IPipelineNode
             value = value.Replace("${" + replaceRule.Placeholder + "}", replace, StringComparison.OrdinalIgnoreCase);
         }
 
-        dataContext.SetValueByPath(c.TargetPath, c.TargetValueKind, c.TargetValueWriteMode, value);
+        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, value);
 
-        await next(dataContext);
+        await next(dataContext, nodeContext);
     }
 }

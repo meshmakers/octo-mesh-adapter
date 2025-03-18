@@ -59,7 +59,7 @@ public record CreateAssociationUpdateNodeConfiguration : SourceTargetPathNodeCon
     /// <summary>
     /// The target CkTypeId
     /// </summary>
-    public CkId<CkTypeId>? TargetCkId { get; set; }
+    public CkId<CkTypeId>? TargetCkTypeId { get; set; }
     
     
     /// <summary>

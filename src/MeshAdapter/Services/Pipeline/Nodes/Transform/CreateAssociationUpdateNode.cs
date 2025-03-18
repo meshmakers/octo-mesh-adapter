@@ -127,7 +127,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
                          dataContext.GetComplexObjectByPath<OctoObjectId?>(config.TargetRtIdPath,
                              RtNewtonsoftSerializer.DefaultSerializer);
 
-        var targetCkTypeId = config.TargetCkId ??
+        var targetCkTypeId = config.TargetCkTypeId ??
                              dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.TargetCkTypeIdPath,
                                  RtNewtonsoftSerializer.DefaultSerializer);
 

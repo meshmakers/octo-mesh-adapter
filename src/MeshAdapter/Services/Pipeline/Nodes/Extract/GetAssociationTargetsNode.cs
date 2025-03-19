@@ -124,12 +124,12 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
 
     private CkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.SourceCkId == null && config.SourceCkTypeIdPath == null || dataContext.Current == null)
+        if (config.SourceCkTypeId == null && config.SourceCkTypeIdPath == null || dataContext.Current == null)
         {
             return null;
         }
 
-        var sourceCkTypeId = config.SourceCkId ??
+        var sourceCkTypeId = config.SourceCkTypeId ??
                              dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.SourceCkTypeIdPath,
                                  RtNewtonsoftSerializer.DefaultSerializer);
 
@@ -171,12 +171,12 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
     private static CkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext,
         GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.TargetCkId == null && config.TargetCkTypeIdPath == null || dataContext.Current == null)
+        if (config.TargetCkTypeId == null && config.TargetCkTypeIdPath == null || dataContext.Current == null)
         {
             return null;
         }
 
-        var targetCkTypeId = config.TargetCkId ??
+        var targetCkTypeId = config.TargetCkTypeId ??
                              dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.TargetCkTypeIdPath,
                                  RtNewtonsoftSerializer.DefaultSerializer);
 

@@ -39,7 +39,7 @@ public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfi
     /// <summary>
     /// The source CkTypeId
     /// </summary>
-    public CkId<CkTypeId>? SourceCkId { get; set; }
+    public CkId<CkTypeId>? SourceCkTypeId { get; set; }
 
     /// <summary>
     /// The path to the target CkTypeId
@@ -49,7 +49,7 @@ public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfi
     /// <summary>
     /// The target CkTypeId
     /// </summary>
-    public CkId<CkTypeId>? TargetCkId { get; set; }
+    public CkId<CkTypeId>? TargetCkTypeId { get; set; }
 
 
     /// <summary>

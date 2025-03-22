@@ -3,7 +3,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
-using Meshmakers.Octo.Services.Common.DistributionEventHub.Commands;
+using Meshmakers.Octo.Services.Contracts.DistributionEventHub.Commands;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.MeshAdapter.Services.Pipeline.Nodes.Trigger;

@@ -14,8 +14,8 @@ using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Sdk.SimulationNodes;
-using Meshmakers.Octo.Services.Common.StreamData.Extensions;
 using Meshmakers.Octo.Services.Observability;
+using Meshmakers.Octo.StreamData.Extensions;
 using Microsoft.AspNetCore.Builder;
 
 var adapterBuilder = new WebAdapterBuilder();

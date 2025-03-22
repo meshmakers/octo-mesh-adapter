@@ -1,4 +1,4 @@
-﻿using Meshmakers.Octo.Services.Common.StreamData.Configuration;
+﻿using Meshmakers.Octo.StreamData.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.MeshAdapter.Configuration;

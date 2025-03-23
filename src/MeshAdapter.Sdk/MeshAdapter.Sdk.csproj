@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <AssemblyName>Meshmakers.Octo.Sdk.MeshAdapter</AssemblyName>
+        <Description>Mesh adapter SDK to create custom mesh adapters</Description>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <PackageId>Meshmakers.Octo.Sdk.MeshAdapter</PackageId>
+        <RootNamespace>Meshmakers.Octo.Sdk.MeshAdapter</RootNamespace>
+        <OutputType>Library</OutputType>
+        <Configurations>Debug;Release;DebugL</Configurations>
+        <Platforms>AnyCPU</Platforms>
+        <NoWarn>1701;1702;CS8002</NoWarn>
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+        <DocumentationFile>../../bin/$(Configuration)\$(AssemblyName).xml</DocumentationFile>
+        <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="..\..\assets\meshmakers64.png">
+            <Pack>True</Pack>
+            <PackagePath/>
+            <Link>meshmakers64.png</Link>
+        </None>
+        <None Include="..\..\LICENSE">
+            <Pack>True</Pack>
+            <PackagePath/>
+            <Link>LICENSE</Link>
+        </None>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>
+        <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
+        <ProjectReference Include="..\octo-common-services\src\Notifications\Notifications.csproj" />
+        <ProjectReference Include="..\octo-common-services\src\octo-construction-kit-engine-mongodb\src\Runtime.Engine.MongoDb\Runtime.Engine.MongoDb.csproj"/>
+        <ProjectReference Include="..\octo-common-services\src\StreamData\StreamData.csproj" />
+    </ItemGroup>
+
+</Project>

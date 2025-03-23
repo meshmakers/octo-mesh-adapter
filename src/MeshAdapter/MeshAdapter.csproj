@@ -9,14 +9,13 @@
         <Configurations>Debug;Release;DebugL</Configurations>
         <Platforms>AnyCPU</Platforms>
         <OutputPath>../bin/$(Configuration)/</OutputPath>
-        <DocumentationFile>../bin/$(Configuration)\$(AssemblyName).xml</DocumentationFile>
+        <DocumentationFile>../../bin/$(Configuration)\$(AssemblyName).xml</DocumentationFile>
         <UserSecretsId>173d8e91-b831-4e8a-a43f-672c57e6a4da</UserSecretsId>
         <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
     </PropertyGroup>
 
     <ItemGroup>
         <PackageReference Include="Meshmakers.Octo.Sdk.Common.Web" Version="$(OctoVersion)"/>
-        <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -39,11 +38,8 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\MeshNodes\MeshNodes.csproj" />
+      <ProjectReference Include="..\MeshAdapter.Sdk\MeshAdapter.Sdk.csproj" />
       <ProjectReference Include="..\octo-common-services\src\Infrastructure\Infrastructure.csproj" />
-      <ProjectReference Include="..\octo-common-services\src\Notifications\Notifications.csproj" />
       <ProjectReference Include="..\octo-common-services\src\Observability\Observability.csproj" />
-      <ProjectReference Include="..\octo-common-services\src\octo-construction-kit-engine-mongodb\src\Runtime.Engine.MongoDb\Runtime.Engine.MongoDb.csproj" />
-      <ProjectReference Include="..\octo-common-services\src\StreamData\StreamData.csproj" />
     </ItemGroup>
 </Project>

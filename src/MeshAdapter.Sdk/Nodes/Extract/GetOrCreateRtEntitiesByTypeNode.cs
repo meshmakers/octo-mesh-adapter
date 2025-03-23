@@ -1,0 +1,86 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshAdapter.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
+
+[NodeConfiguration(typeof(GetOrCreateRtEntitiesByTypeNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
+internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+{
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
+    {
+        var c = nodeContext.GetNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
+
+        if (c.CkTypeId == null)
+        {
+            nodeContext.Error("CkTypeId is not set");
+            return;
+        }
+
+        if (c.FieldFilters == null || c.FieldFilters.Count == 0)
+        {
+            nodeContext.Error("FieldFilters is not set");
+            return;
+        }
+
+        var dataQueryOperation = DataQueryOperation.Create();
+        foreach (var fieldFilter in c.FieldFilters)
+        {
+            var value = dataContext.GetSimpleValueByPath<string>(fieldFilter.Path);
+            dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName, fieldFilter.Operator, value);
+        }
+
+        IOctoSession? session = null;
+
+        try
+        {
+            session = await etlContext.TenantRepository.GetSessionAsync();
+            session.StartTransaction();
+
+            var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, c.CkTypeId,
+                dataQueryOperation, 0, 1);
+
+            if (r.TotalCount == 0)
+            {
+                var objectId = OctoObjectId.GenerateNewId();
+                dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, objectId);
+                dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, c.CkTypeId);
+                dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, UpdateKind.Insert);
+            }
+            else
+            {
+                dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite,
+                    r.Items.First().RtId);
+                dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite, c.CkTypeId);
+                dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite,
+                    UpdateKind.Update);
+            }
+
+            await session.CommitTransactionAsync();
+        }
+        catch (Exception e)
+        {
+            if (session != null)
+            {
+                await session.AbortTransactionAsync();
+            }
+
+            nodeContext.Error(e.Message);
+            throw;
+        }
+
+        await next(dataContext, nodeContext);
+    }
+}

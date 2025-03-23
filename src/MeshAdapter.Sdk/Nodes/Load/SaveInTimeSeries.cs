@@ -5,8 +5,8 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.StreamData;
-using Meshmakers.Octo.StreamData.Dtos;
+using Meshmakers.Octo.Services.StreamData;
+using Meshmakers.Octo.Services.StreamData.Dtos;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 

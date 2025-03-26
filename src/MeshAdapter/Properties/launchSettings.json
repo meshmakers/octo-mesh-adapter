@@ -21,6 +21,17 @@
         "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
+    },
+    "meshadapter (tenant sbeg)": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "OCTO_ADAPTER__TENANTID": "sbeg",
+        "OCTO_ADAPTER__ADAPTERRTID": "67e29b9b3a32f55eaa25fefe",
+        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+      },
+      "applicationUrl": "https://localhost:5020;http://localhost:5021"
     }
   }
 }

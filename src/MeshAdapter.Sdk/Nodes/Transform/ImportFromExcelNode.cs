@@ -79,14 +79,20 @@ public class ImportFromExcelNode(
                 // we already created this entity
                 var ckTypeId = columnContext.GetCkTypeId(entry, iLayer);
                 var name = columnContext.GetValue<string>(entry, "name", iLayer)!;
-                if(entities.Any(x=> x.Name == name))
+                if(entities.Any(x=> x.Name == name && ckTypeId == x.CkTypeId))
                 { 
-                    continue;
+                    // we can't ignore this entity, because it might have different attributes
                 }
                 
                 var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
 
-                var entity = new HierarchicalEntity(ckTypeId, name, parentName);
+                CkId<CkTypeId>? parentCkTypeId = null;
+                if (!string.IsNullOrWhiteSpace(parentName))
+                {
+                    parentCkTypeId = columnContext.GetCkTypeId(entry, iLayer - 1);
+                }
+
+                var entity = new HierarchicalEntity(ckTypeId, name, parentName, parentCkTypeId);
                 foreach(var attributePath in columnContext.GetAttributePaths(iLayer))
                 {
                     var value = columnContext.GetValue<string>(entry, attributePath, iLayer);
@@ -98,12 +104,24 @@ public class ImportFromExcelNode(
                     entity.Attributes.Add(new(attributePath, value));
                 }
                 
-                
-                entities.Add(entity);
+                var possibleDuplicate = entities.FirstOrDefault(x => x.Name == name && x.CkTypeId == ckTypeId);
+                if (possibleDuplicate == null)
+                {
+                    entities.Add(entity);
+                }
+                else
+                {
+                    // we need to check if the attributes are the same
+                    var sameAttributes = entity.Attributes.All(x => possibleDuplicate.Attributes.Any(y => y.Item1 == x.Item1 && y.Item2 == x.Item2));
+                    if (!sameAttributes)
+                    {
+                        entities.Add(entity);
+                    }
+                }
             }
         }
     }
-
+    
     private static void ParseTreeByPath(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
     {
         foreach (var jToken in data)
@@ -115,12 +133,12 @@ public class ImportFromExcelNode(
             {
                 continue;
             }
-
+        
             name = name.Trim();
-
+        
             var parentName = ParentNameParser.ParseSeparatorBased(name);
-
-            var entity = new HierarchicalEntity(ckTypeId, name, parentName);
+        
+            var entity = new HierarchicalEntity(ckTypeId, name, parentName, "Basic/TreeNode");
             entities.Add(entity);
             foreach (var columnName in columnContext.GetAttributePaths())
             {
@@ -128,13 +146,13 @@ public class ImportFromExcelNode(
                 {
                     continue;
                 }
-
+        
                 var value = columnContext.GetValue<string>(entry, columnName);
                 if (value == null)
                 {
                     continue;
                 }
-
+        
                 entity.Attributes.Add(new(columnName, value));
             }
         }
@@ -151,7 +169,7 @@ public class ImportFromExcelNode(
 
         foreach (var entity in buffer)
         {
-            var entityParent = buffer.FirstOrDefault(x => x.Name == entity.ParentName);
+            var entityParent = buffer.FirstOrDefault(x => x.Name == entity.ParentName && x.CkTypeId == entity.ParentCkTypeId);
 
             if (entity.RtId == null)
             {
@@ -228,7 +246,7 @@ public class ImportFromExcelNode(
             var name = entity.ParentName;
             var parentName = ParentNameParser.ParseSeparatorBased(name);
 
-            entityParent = new HierarchicalEntity("Basic/TreeNode", name, parentName);
+            entityParent = new HierarchicalEntity("Basic/TreeNode", name, parentName, "Basic/Tree");
             entityParent.RtId = OctoObjectId.GenerateNewId();
             entityParent.Attributes.Add(new("description", "---GENERATED---"));
 

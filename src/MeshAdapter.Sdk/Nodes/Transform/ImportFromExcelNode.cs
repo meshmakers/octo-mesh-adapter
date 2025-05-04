@@ -136,9 +136,10 @@ public class ImportFromExcelNode(
         
             name = name.Trim();
         
-            var parentName = ParentNameParser.ParseSeparatorBased(name);
+            var parentName = ParentNameParser.ParseSeparatorBased(name, out var itemName);
         
             var entity = new HierarchicalEntity(ckTypeId, name, parentName, "Basic/TreeNode");
+            entity.Attributes.Add(new ("Name", itemName));
             entities.Add(entity);
             foreach (var columnName in columnContext.GetAttributePaths())
             {
@@ -171,10 +172,7 @@ public class ImportFromExcelNode(
         {
             var entityParent = buffer.FirstOrDefault(x => x.Name == entity.ParentName && x.CkTypeId == entity.ParentCkTypeId);
 
-            if (entity.RtId == null)
-            {
-                entity.RtId = OctoObjectId.GenerateNewId();
-            }
+            entity.RtId ??= OctoObjectId.GenerateNewId();
 
             if (entityParent is { RtId: null })
             {
@@ -184,7 +182,6 @@ public class ImportFromExcelNode(
             var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityAsync(entity.CkTypeId);
             rtEntity.RtId = entity.RtId.Value;
             rtEntity.RtWellKnownName = entity.Name;
-            rtEntity.SetAttributeValue("Name", AttributeValueTypesDto.String, entity.Name);
 
             var ckTypeGraph = ckCacheService.GetCkType(etlContext.TenantId, entity.CkTypeId);
 
@@ -234,7 +231,9 @@ public class ImportFromExcelNode(
             var entity = entityStack.Pop();
 
             if (entity.ParentName == null) // we found a root node
+            {
                 continue;
+            }
 
             var entityParent = buffer.FirstOrDefault(x => x.Name == entity.ParentName);
 
@@ -244,11 +243,13 @@ public class ImportFromExcelNode(
             }
 
             var name = entity.ParentName;
-            var parentName = ParentNameParser.ParseSeparatorBased(name);
+            var parentName = ParentNameParser.ParseSeparatorBased(name, out var parentItemName);
 
-            entityParent = new HierarchicalEntity("Basic/TreeNode", name, parentName, "Basic/Tree");
-            entityParent.RtId = OctoObjectId.GenerateNewId();
-            entityParent.Attributes.Add(new("description", "---GENERATED---"));
+            entityParent = new HierarchicalEntity("Basic/TreeNode", name, parentName, "Basic/TreeNode")
+            {
+                RtId = OctoObjectId.GenerateNewId()
+            };
+            entityParent.Attributes.Add(new ("Name", parentItemName));
 
             buffer.Add(entityParent);
             entityStack.Push(entityParent);

@@ -4,5 +4,14 @@ internal static class Constants
 {
     public const string TreePathImportType = "TreePath";
     public const string TreeModelImportType2 = "TreeColumns";
-    public static readonly string[] Delimiters = [" ", "=", "."];
+
+    /// <summary>
+    /// Delimiters for parsing the name of the entity, the delimiter will be ignored to the name
+    /// </summary>
+    public static readonly char[] Delimiters = [' ', '.'];
+
+    /// <summary>
+    /// Delimiters for parsing the name of the entity, the delimiter will be retained to the name
+    /// </summary>
+    public static readonly char[] DelimitersRetained = ['=', '.',  '-'];
 }

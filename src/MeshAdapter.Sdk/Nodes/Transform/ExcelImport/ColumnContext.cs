@@ -18,7 +18,7 @@ internal class ColumnContext
             var attributePath = column.Value<string>("attributePath");
             if (attributePath == null)
                 continue;
-            var ckTypeId = column.Value<string>("ckTypeId") ?? "Basic/TreeNodes";
+            var ckTypeId = column.Value<string>("ckTypeId") ?? "Basic/TreeNode";
             var index = column.Value<int>("columnIndex");
             var layer = 1;
             if (column.TryGetValue("layer", StringComparison.InvariantCultureIgnoreCase, out var layerValue))

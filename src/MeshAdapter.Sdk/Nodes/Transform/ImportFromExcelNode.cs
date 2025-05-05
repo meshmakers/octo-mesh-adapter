@@ -1,10 +1,14 @@
 ﻿using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -31,25 +35,53 @@ public class ImportFromExcelNode(
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        if (!EnsureAndValidateData(dataContext, nodeContext, out var data, out var columns, out var importType, out var rootNodeId))
+        if (!GetImportType(dataContext, nodeContext, out var importType))
         {
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        if (!EnsureAndValidateData(dataContext, nodeContext, out var data, out var columns))
+        {
+            await next(dataContext, nodeContext);
             return;
         }
 
         var columnContext = new ColumnContext(columns);
 
-
-        var entities = new List<HierarchicalEntity>();
-
         if (importType == Constants.TreePathImportType)
         {
+            var entities = new List<HierarchicalEntity>();
+            if (!EnsureAndValidateTreeData(dataContext, nodeContext, out var rootNodeId))
+            {
+                await next(dataContext, nodeContext);
+                return;
+            }
+
             ParseTreeByPath(data, columnContext, entities);
             EnsureTreeParentsExist(entities);
-
+            await StoreTreeInDatabase(entities, rootNodeId, nodeContext);
         }
-        else if(importType == Constants.TreeModelImportType2)
+        else if (importType == Constants.TreeColumnImportType)
         {
+            var entities = new List<HierarchicalEntity>();
+            if (!EnsureAndValidateTreeData(dataContext, nodeContext, out var rootNodeId))
+            {
+                await next(dataContext, nodeContext);
+                return;
+            }
+
             ParseTreeByColumns(data, columnContext, entities);
+            await StoreTreeInDatabase(entities, rootNodeId, nodeContext);
+        }
+        else if (importType == Constants.TreeOrderImportType)
+        {
+            await etlContext.TenantRepository.LoadCacheForTenantAsync(ckCacheService);
+
+            var entities = new List<IEntityUpdateInfo<RtEntity>>();
+            var assocs = new List<AssociationUpdateInfo>();
+            await ParseOrderAsync(data, columnContext, entities, assocs);
+            await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
         }
         else
         {
@@ -58,10 +90,138 @@ public class ImportFromExcelNode(
         }
 
 
-        await StoreInDatabase(entities, rootNodeId, nodeContext);
-
-
         await next(dataContext, nodeContext);
+    }
+
+    private async Task ParseOrderAsync(JArray data, ColumnContext columnContext, List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
+    {
+        var ckTypeId = columnContext.GetCkTypeId(1, "Industry.Maintenance/Order");
+        var validPaths = ckCacheService.GetCkTypeQueryColumnPaths(etlContext.TenantId, ckTypeId).ToDictionary(k=> k.Path, v => v);
+
+        var loadedEntities = new Dictionary<string, RtEntity>();
+
+
+        foreach (var jToken in data)
+        {
+            var entry = (JArray)jToken;
+
+            var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityAsync(ckTypeId);
+            foreach (var attributePath in columnContext.GetAttributePaths())
+            {
+                var value = columnContext.GetValue<string>(entry, attributePath);
+                if (value == null)
+                {
+                    continue;
+                }
+
+                if (validPaths.TryGetValue(attributePath, out var typeQueryColumn))
+                {
+
+                    switch (typeQueryColumn.ValueType)
+                    {
+                        case AttributeValueTypesDto.Association:
+                        {
+                            if (typeQueryColumn.AssociationTuple == null)
+                            {
+                                throw new Exception($"Association tuple is null for {attributePath}");
+                            }
+
+                            var associationDirectionTuple = typeQueryColumn.AssociationTuple;
+
+                            if (!loadedEntities.TryGetValue(value, out RtEntity? treeEntity))
+                            {
+
+                                var dataOperation = DataQueryOperation.Create();
+                                dataOperation.FieldEquals(nameof(RtEntity.RtWellKnownName), value);
+
+                                using var session = etlContext.TenantRepository.GetSession();
+                                session.StartTransaction();
+                                var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
+                                    associationDirectionTuple.CkTypeId, dataOperation, 0, 1);
+
+                                await session.CommitTransactionAsync();
+
+                                if (r.TotalCount == 0)
+                                {
+                                    throw new Exception($"No entity found for {attributePath} with value {value}");
+                                }
+
+                                treeEntity = r.Items.First();
+                                loadedEntities.Add(value, treeEntity);
+                            }
+
+                            var association = AssociationUpdateInfo.CreateCreate(
+                                rtEntity.ToRtEntityId(),
+                                treeEntity.ToRtEntityId(),
+                                associationDirectionTuple.CkAssociationRoleId);
+                            assocs.Add(association);
+
+                            break;
+                        }
+                        case AttributeValueTypesDto.Enum:
+                            if (typeQueryColumn.CkEnumId == null)
+                            {
+                                throw new Exception($"CkEnumId is null for {attributePath}");
+                            }
+
+                            var ckEnumGraph = ckCacheService.GetCkEnum(etlContext.TenantId, typeQueryColumn.CkEnumId);
+
+                            var ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Name == value || ev.Description == value);
+                            if (ckEnumValueDto == null)
+                            {
+                                if (ckEnumGraph.CkEnumId == "Industry.Maintenance/ServiceType")
+                                {
+                                    switch (value)
+                                    {
+                                        case "C00":
+                                        case "C10":
+                                        case "C15":
+                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "01-Korrektiv");
+                                            break;
+                                        case "C20":
+                                        case "C22":
+                                        case "C25":
+                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "02-Präventiv");
+                                            break;
+                                        case "C50":
+                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "04-Verbesserungen/Änderungen");
+                                            break;
+                                        default:
+                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "03-Sonstige");
+                                            break;
+                                    }
+                                }
+
+                            }
+
+                            if (ckEnumValueDto == null)
+                            {
+                                throw new Exception($"No enum value found for {attributePath} with value {value}");
+                            }
+
+                            rtEntity.SetAttributeValue(attributePath.ToPascalCase(), typeQueryColumn.ValueType,
+                                ckEnumValueDto.Key);
+                            break;
+                        default:
+                            object? convertedValue = value;
+                            if (typeQueryColumn.ValueType == AttributeValueTypesDto.DateTime)
+                            {
+                                convertedValue = DateTime.Parse(value, CultureInfo.GetCultureInfoByIetfLanguageTag("de-DE"));
+                            }
+
+                            rtEntity.SetAttributeValue(attributePath.ToPascalCase(), typeQueryColumn.ValueType, convertedValue);
+                            break;
+                    }
+
+
+                }
+
+
+            }
+
+            var insert = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
+            entities.Add(insert);
+        }
     }
 
     private void ParseTreeByColumns(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
@@ -75,35 +235,31 @@ public class ImportFromExcelNode(
                 {
                     continue;
                 }
-                
+
                 // we already created this entity
-                var ckTypeId = columnContext.GetCkTypeId(entry, iLayer);
+                var ckTypeId = columnContext.GetCkTypeId(iLayer);
                 var name = columnContext.GetValue<string>(entry, "name", iLayer)!;
-                if(entities.Any(x=> x.Name == name && ckTypeId == x.CkTypeId))
-                { 
-                    // we can't ignore this entity, because it might have different attributes
-                }
-                
+
                 var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
 
                 CkId<CkTypeId>? parentCkTypeId = null;
                 if (!string.IsNullOrWhiteSpace(parentName))
                 {
-                    parentCkTypeId = columnContext.GetCkTypeId(entry, iLayer - 1);
+                    parentCkTypeId = columnContext.GetCkTypeId(iLayer - 1);
                 }
 
                 var entity = new HierarchicalEntity(ckTypeId, name, parentName, parentCkTypeId);
-                foreach(var attributePath in columnContext.GetAttributePaths(iLayer))
+                foreach (var attributePath in columnContext.GetAttributePaths(iLayer))
                 {
                     var value = columnContext.GetValue<string>(entry, attributePath, iLayer);
-                    if(value == null || attributePath == "name")
+                    if (value == null)
                     {
                         continue;
                     }
 
                     entity.Attributes.Add(new(attributePath, value));
                 }
-                
+
                 var possibleDuplicate = entities.FirstOrDefault(x => x.Name == name && x.CkTypeId == ckTypeId);
                 if (possibleDuplicate == null)
                 {
@@ -112,7 +268,8 @@ public class ImportFromExcelNode(
                 else
                 {
                     // we need to check if the attributes are the same
-                    var sameAttributes = entity.Attributes.All(x => possibleDuplicate.Attributes.Any(y => y.Item1 == x.Item1 && y.Item2 == x.Item2));
+                    var sameAttributes = entity.Attributes.All(x =>
+                        possibleDuplicate.Attributes.Any(y => y.Item1 == x.Item1 && y.Item2 == x.Item2));
                     if (!sameAttributes)
                     {
                         entities.Add(entity);
@@ -121,25 +278,25 @@ public class ImportFromExcelNode(
             }
         }
     }
-    
+
     private static void ParseTreeByPath(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
     {
         foreach (var jToken in data)
         {
             var entry = (JArray)jToken;
-            var ckTypeId = columnContext.GetCkTypeId(entry);
+            var ckTypeId = columnContext.GetCkTypeId();
             var name = columnContext.GetValue<string>(entry, "name");
             if (name == null)
             {
                 continue;
             }
-        
+
             name = name.Trim();
-        
+
             var parentName = ParentNameParser.ParseSeparatorBased(name, out var itemName);
-        
+
             var entity = new HierarchicalEntity(ckTypeId, name, parentName, "Basic/TreeNode");
-            entity.Attributes.Add(new ("Name", itemName));
+            entity.Attributes.Add(new("Name", itemName));
             entities.Add(entity);
             foreach (var columnName in columnContext.GetAttributePaths())
             {
@@ -147,22 +304,21 @@ public class ImportFromExcelNode(
                 {
                     continue;
                 }
-        
+
                 var value = columnContext.GetValue<string>(entry, columnName);
                 if (value == null)
                 {
                     continue;
                 }
-        
+
                 entity.Attributes.Add(new(columnName, value));
             }
         }
     }
 
 
-    private async Task StoreInDatabase(List<HierarchicalEntity> buffer, string rootNodeId, INodeContext nodeContext)
+    private async Task StoreTreeInDatabase(List<HierarchicalEntity> buffer, string rootNodeId, INodeContext nodeContext)
     {
-
         var rootId = new OctoObjectId(rootNodeId);
 
         var assocs = new List<AssociationUpdateInfo>();
@@ -170,7 +326,8 @@ public class ImportFromExcelNode(
 
         foreach (var entity in buffer)
         {
-            var entityParent = buffer.FirstOrDefault(x => x.Name == entity.ParentName && x.CkTypeId == entity.ParentCkTypeId);
+            var entityParent =
+                buffer.FirstOrDefault(x => x.Name == entity.ParentName && x.CkTypeId == entity.ParentCkTypeId);
 
             entity.RtId ??= OctoObjectId.GenerateNewId();
 
@@ -187,9 +344,11 @@ public class ImportFromExcelNode(
 
             foreach (var attribute in entity.Attributes)
             {
-                if (ckTypeGraph.AllAttributesByName.TryGetValue(attribute.Item1.ToPascalCase(), out var typeAttributeGraph))
+                if (ckTypeGraph.AllAttributesByName.TryGetValue(attribute.Item1.ToPascalCase(),
+                        out var typeAttributeGraph))
                 {
-                    rtEntity.SetAttributeValue(attribute.Item1.ToPascalCase(), typeAttributeGraph.ValueType, attribute.Item2);
+                    rtEntity.SetAttributeValue(attribute.Item1.ToPascalCase(), typeAttributeGraph.ValueType,
+                        attribute.Item2);
                 }
             }
 
@@ -204,8 +363,13 @@ public class ImportFromExcelNode(
             assocs.Add(association);
         }
 
+        await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
+    }
+
+    private async Task ApplyChangesInRepositoryAsync(INodeContext nodeContext, List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
+    {
         using var session = etlContext.TenantRepository.GetSession();
-    
+
         try
         {
             session.StartTransaction();
@@ -219,6 +383,7 @@ public class ImportFromExcelNode(
             nodeContext.Error(e, "Error while storing data in database");
         }
     }
+
 
     private void EnsureTreeParentsExist(List<HierarchicalEntity> buffer)
     {
@@ -249,25 +414,74 @@ public class ImportFromExcelNode(
             {
                 RtId = OctoObjectId.GenerateNewId()
             };
-            entityParent.Attributes.Add(new ("Name", parentItemName));
+            entityParent.Attributes.Add(new("Name", parentItemName));
 
             buffer.Add(entityParent);
             entityStack.Push(entityParent);
         }
     }
 
+    private static bool GetImportType(
+        IDataContext dataContext,
+        INodeContext nodeContext,
+        [NotNullWhen(true)] out string? importType
+    )
+    {
+        importType = null;
+        var o = dataContext.Current as JObject;
+
+        if (o?["body"] is not JObject body)
+        {
+            nodeContext.Error("Body is null");
+            return false;
+        }
+
+        var i = body.Value<string>("importType");
+        if (i == null)
+        {
+            nodeContext.Error("Import type is not TreeModel");
+            return false;
+        }
+
+        importType = i;
+        return true;
+    }
+
+    private static bool EnsureAndValidateTreeData(
+        IDataContext dataContext,
+        INodeContext nodeContext,
+        [NotNullWhen(true)] out string? rootNodeId)
+    {
+        rootNodeId = null;
+
+        var o = dataContext.Current as JObject;
+
+        if (o?["body"] is not JObject body)
+        {
+            nodeContext.Error("Body is null");
+            return false;
+        }
+
+        var r = body.Value<string>("treeModelRootRtId");
+        if (r == null)
+        {
+            nodeContext.Error("Root node id is not set");
+            return false;
+        }
+
+        rootNodeId = r;
+
+        return true;
+    }
+
     private static bool EnsureAndValidateData(
         IDataContext dataContext,
         INodeContext nodeContext,
         [NotNullWhen(true)] out JArray? data,
-        [NotNullWhen(true)] out JArray? columns,
-        [NotNullWhen(true)] out string? importType,
-        [NotNullWhen(true)] out string? rootNodeId)
+        [NotNullWhen(true)] out JArray? columns)
     {
         data = null;
         columns = null;
-        importType = null;
-        rootNodeId = null;
 
         var o = dataContext.Current as JObject;
 
@@ -290,24 +504,8 @@ public class ImportFromExcelNode(
             return false;
         }
 
-        var i = body.Value<string>("importType");
-        if (i == null)
-        {
-            nodeContext.Error("Import type is not TreeModel");
-            return false;
-        }
-
-        var r = body.Value<string>("treeModelRootRtId");
-        if (r == null)
-        {
-            nodeContext.Error("Root node id is not set");
-            return false;
-        }
-
         data = d;
         columns = c;
-        importType = i;
-        rootNodeId = r;
 
         return true;
     }

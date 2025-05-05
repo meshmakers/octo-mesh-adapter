@@ -6,7 +6,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 
 internal class ColumnContext
 {
-    private record ColumnIndex(CkId<CkTypeId> CkTypeId, string AttributePath,  int Index, int Layer);
+    private record ColumnIndex(CkId<CkTypeId>? CkTypeId, string AttributePath,  int Index, int Layer);
 
     private readonly List<ColumnIndex> _columnIndexes = [];
 
@@ -17,8 +17,11 @@ internal class ColumnContext
             var column = (JObject)c;
             var attributePath = column.Value<string>("attributePath");
             if (attributePath == null)
+            {
                 continue;
-            var ckTypeId = column.Value<string>("ckTypeId") ?? "Basic/TreeNode";
+            }
+
+            var ckTypeId = column.Value<CkId<CkTypeId>>("ckTypeId");
             var index = column.Value<int>("columnIndex");
             var layer = 1;
             if (column.TryGetValue("layer", StringComparison.InvariantCultureIgnoreCase, out var layerValue))
@@ -35,9 +38,9 @@ internal class ColumnContext
         return index == null ? default : row[index.Value].Value<T>();
     }
 
-    public CkId<CkTypeId> GetCkTypeId(JArray row, int layer = 1)
+    public CkId<CkTypeId> GetCkTypeId(int layer = 1, string ckTypeId = "Basic/TreeNode")
     {
-        return _columnIndexes.FirstOrDefault(x => x.Layer == layer)?.CkTypeId ?? new CkId<CkTypeId>("Basic/TreeNode");
+        return _columnIndexes.FirstOrDefault(x => x.Layer == layer)?.CkTypeId ?? new CkId<CkTypeId>(ckTypeId);
     }
 
     public IEnumerable<string> GetAttributePaths(int layer = 1)

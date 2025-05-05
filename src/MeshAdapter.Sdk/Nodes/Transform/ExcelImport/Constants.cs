@@ -3,7 +3,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 internal static class Constants
 {
     public const string TreePathImportType = "TreePath";
-    public const string TreeModelImportType2 = "TreeColumns";
+    public const string TreeColumnImportType = "TreeColumns";
+    public const string TreeOrderImportType = "Order";
 
     /// <summary>
     /// Delimiters for parsing the name of the entity, the delimiter will be ignored to the name

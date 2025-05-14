@@ -83,6 +83,24 @@ public class ImportFromExcelNode(
             await ParseOrderAsync(data, columnContext, entities, assocs);
             await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
         }
+        else if (importType == Constants.TreeOrderFeedbackImportType)
+        {
+            await etlContext.TenantRepository.LoadCacheForTenantAsync(ckCacheService);
+
+
+            int skip = 0;
+            do
+            {
+                var entities = new List<IEntityUpdateInfo<RtEntity>>();
+                var assocs = new List<AssociationUpdateInfo>();
+
+                await ParseOrderFeedbackAsync(data, columnContext, entities, assocs, skip, 15000);
+
+                await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
+
+                skip += 15000;
+            } while (skip < data.Count);
+        }
         else
         {
             nodeContext.Error("Unknown import type");
@@ -93,10 +111,145 @@ public class ImportFromExcelNode(
         await next(dataContext, nodeContext);
     }
 
-    private async Task ParseOrderAsync(JArray data, ColumnContext columnContext, List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
+    private async Task ParseOrderFeedbackAsync(JArray data, ColumnContext columnContext,
+        List<IEntityUpdateInfo<RtEntity>> entitiesList, List<AssociationUpdateInfo> associationList, int skip, int take)
+    {
+        var ckTypeId = columnContext.GetCkTypeId(1, "Industry.Maintenance/OrderFeedback");
+        var validPaths = ckCacheService.GetCkTypeQueryColumnPaths(etlContext.TenantId, ckTypeId)
+            .ToDictionary(k => k.Path, v => v);
+
+        var loadedEntities = new Dictionary<Tuple<CkId<CkTypeId>, string>, RtEntity>();
+        foreach (var jToken in data.Skip(skip).Take(take))
+        {
+            var entry = (JArray)jToken;
+
+            var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityAsync(ckTypeId);
+            foreach (var columnIndex in columnContext.GetColumns())
+            {
+                var value = columnContext.GetValueByIndex<string>(entry, columnIndex.Index);
+                if (value == null)
+                {
+                    continue;
+                }
+#if FALSE
+                if (validPaths.TryGetValue(columnIndex.AttributePath, out var typeQueryColumn))
+                {
+                    switch (typeQueryColumn.ValueType)
+                    {
+                        case AttributeValueTypesDto.Association:
+                        {
+                            if (typeQueryColumn.AssociationTuple == null)
+                            {
+                                throw new Exception($"Association tuple is null for {columnIndex}");
+                            }
+
+                            var associationDirectionTuple = typeQueryColumn.AssociationTuple;
+
+                            var keyTuple = new Tuple<CkId<CkTypeId>, string>(associationDirectionTuple.CkTypeId, value);
+                            if (!loadedEntities.TryGetValue(keyTuple, out RtEntity? treeEntity))
+                            {
+                                var dataOperation = DataQueryOperation.Create();
+
+                                if (associationDirectionTuple.CkTypeId == "Industry.Maintenance/Order")
+                                {
+                                    dataOperation.FieldEquals("OrderNumber", value);
+                                }
+                                else if (associationDirectionTuple.CkTypeId == "Industry.Maintenance/Employee")
+                                {
+                                    dataOperation.FieldEquals("StaffNumber", int.Parse(value));
+                                }
+                                else
+                                {
+                                    dataOperation.FieldEquals(nameof(RtEntity.RtWellKnownName), value);
+                                }
+
+                                using var session = etlContext.TenantRepository.GetSession();
+                                session.StartTransaction();
+                                var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
+                                    associationDirectionTuple.CkTypeId, dataOperation, 0, 1);
+
+                                await session.CommitTransactionAsync();
+
+                                if (r.TotalCount == 0)
+                                {
+                                    throw new Exception($"No entity found for {columnIndex} with value {value}");
+                                }
+
+                                treeEntity = r.Items.First();
+                                loadedEntities.Add(keyTuple, treeEntity);
+                            }
+
+                            var association = AssociationUpdateInfo.CreateCreate(
+                                rtEntity.ToRtEntityId(),
+                                treeEntity.ToRtEntityId(),
+                                associationDirectionTuple.CkAssociationRoleId);
+                            associationList.Add(association);
+
+                            break;
+                        }
+                        default:
+                            object convertedValue = value;
+                            if (typeQueryColumn.ValueType == AttributeValueTypesDto.DateTime)
+                            {
+                                if (columnIndex.ColumnType == ColumnContext.ColumnType.ScalarDate)
+                                {
+                                    var date = rtEntity.GetAttributeValueOrDefault(columnIndex.AttributePath
+                                        .ToPascalCase());
+                                    convertedValue = DateTime.Parse(value,
+                                        CultureInfo.GetCultureInfoByIetfLanguageTag("de-DE"));
+                                    if (date is DateTime dateTime)
+                                    {
+                                        convertedValue = new DateTime(((DateTime)convertedValue).Year,
+                                            ((DateTime)convertedValue).Month, ((DateTime)convertedValue).Day,
+                                            dateTime.Hour, dateTime.Minute,
+                                            dateTime.Second);
+                                    }
+                                }
+                                else if (columnIndex.ColumnType == ColumnContext.ColumnType.ScalarTime)
+                                {
+                                    var date = rtEntity.GetAttributeValueOrDefault(columnIndex.AttributePath
+                                        .ToPascalCase());
+
+                                    if (!double.TryParse(value, CultureInfo.InvariantCulture, out double doubleValue))
+                                    {
+                                        throw new Exception($"Cannot parse {value} to double to get time");
+                                    }
+
+                                    convertedValue = DateTime.FromOADate(doubleValue);
+                                    if (date is DateTime dateTime)
+                                    {
+                                        convertedValue = new DateTime(dateTime.Year, dateTime.Month, dateTime.Day,
+                                            ((DateTime)convertedValue).Hour, ((DateTime)convertedValue).Minute,
+                                            ((DateTime)convertedValue).Second);
+                                    }
+                                }
+                                else
+                                {
+                                    convertedValue = DateTime.Parse(value,
+                                        CultureInfo.GetCultureInfoByIetfLanguageTag("de-DE"));
+                                }
+                            }
+
+                            rtEntity.SetAttributeValue(columnIndex.AttributePath.ToPascalCase(),
+                                typeQueryColumn.ValueType,
+                                convertedValue);
+                            break;
+                    }
+                }
+#endif
+            }
+
+            var insert = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
+            entitiesList.Add(insert);
+        }
+    }
+
+    private async Task ParseOrderAsync(JArray data, ColumnContext columnContext,
+        List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
     {
         var ckTypeId = columnContext.GetCkTypeId(1, "Industry.Maintenance/Order");
-        var validPaths = ckCacheService.GetCkTypeQueryColumnPaths(etlContext.TenantId, ckTypeId).ToDictionary(k=> k.Path, v => v);
+        var validPaths = ckCacheService.GetCkTypeQueryColumnPaths(etlContext.TenantId, ckTypeId)
+            .ToDictionary(k => k.Path, v => v);
 
         var loadedEntities = new Dictionary<string, RtEntity>();
 
@@ -106,31 +259,30 @@ public class ImportFromExcelNode(
             var entry = (JArray)jToken;
 
             var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityAsync(ckTypeId);
-            foreach (var attributePath in columnContext.GetAttributePaths())
+            foreach (var columnIndex in columnContext.GetColumns())
             {
-                var value = columnContext.GetValue<string>(entry, attributePath);
+                var value = columnContext.GetValueByIndex<string>(entry, columnIndex.Index);
                 if (value == null)
                 {
                     continue;
                 }
 
-                if (validPaths.TryGetValue(attributePath, out var typeQueryColumn))
+                if (validPaths.TryGetValue(columnIndex.AttributePath, out var typeQueryColumn))
                 {
-
                     switch (typeQueryColumn.ValueType)
                     {
+                        #if FALSE
                         case AttributeValueTypesDto.Association:
                         {
                             if (typeQueryColumn.AssociationTuple == null)
                             {
-                                throw new Exception($"Association tuple is null for {attributePath}");
+                                throw new Exception($"Association tuple is null for {columnIndex}");
                             }
 
                             var associationDirectionTuple = typeQueryColumn.AssociationTuple;
 
                             if (!loadedEntities.TryGetValue(value, out RtEntity? treeEntity))
                             {
-
                                 var dataOperation = DataQueryOperation.Create();
                                 dataOperation.FieldEquals(nameof(RtEntity.RtWellKnownName), value);
 
@@ -143,7 +295,7 @@ public class ImportFromExcelNode(
 
                                 if (r.TotalCount == 0)
                                 {
-                                    throw new Exception($"No entity found for {attributePath} with value {value}");
+                                    throw new Exception($"No entity found for {columnIndex} with value {value}");
                                 }
 
                                 treeEntity = r.Items.First();
@@ -158,15 +310,19 @@ public class ImportFromExcelNode(
 
                             break;
                         }
+#endif
                         case AttributeValueTypesDto.Enum:
                             if (typeQueryColumn.CkEnumId == null)
                             {
-                                throw new Exception($"CkEnumId is null for {attributePath}");
+                                throw new Exception($"CkEnumId is null for {columnIndex}");
                             }
 
-                            var ckEnumGraph = ckCacheService.GetCkEnum(etlContext.TenantId, typeQueryColumn.CkEnumId);
+                            var ckEnumGraph =
+                                ckCacheService.GetCkEnum(etlContext.TenantId, typeQueryColumn.CkEnumId);
 
-                            var ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Name == value || ev.Description == value);
+                            var ckEnumValueDto =
+                                ckEnumGraph.Values.FirstOrDefault(ev =>
+                                    ev.Name == value || ev.Description == value);
                             if (ckEnumValueDto == null)
                             {
                                 if (ckEnumGraph.CkEnumId == "Industry.Maintenance/ServiceType")
@@ -176,47 +332,53 @@ public class ImportFromExcelNode(
                                         case "C00":
                                         case "C10":
                                         case "C15":
-                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "01-Korrektiv");
+                                            ckEnumValueDto =
+                                                ckEnumGraph.Values.FirstOrDefault(ev =>
+                                                    ev.Description == "01-Korrektiv");
                                             break;
                                         case "C20":
                                         case "C22":
                                         case "C25":
-                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "02-Präventiv");
+                                            ckEnumValueDto =
+                                                ckEnumGraph.Values.FirstOrDefault(ev =>
+                                                    ev.Description == "02-Präventiv");
                                             break;
                                         case "C50":
-                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "04-Verbesserungen/Änderungen");
+                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev =>
+                                                ev.Description == "04-Verbesserungen/Änderungen");
                                             break;
                                         default:
-                                            ckEnumValueDto = ckEnumGraph.Values.FirstOrDefault(ev => ev.Description == "03-Sonstige");
+                                            ckEnumValueDto =
+                                                ckEnumGraph.Values.FirstOrDefault(ev =>
+                                                    ev.Description == "03-Sonstige");
                                             break;
                                     }
                                 }
-
                             }
 
                             if (ckEnumValueDto == null)
                             {
-                                throw new Exception($"No enum value found for {attributePath} with value {value}");
+                                throw new Exception($"No enum value found for {columnIndex} with value {value}");
                             }
 
-                            rtEntity.SetAttributeValue(attributePath.ToPascalCase(), typeQueryColumn.ValueType,
+                            rtEntity.SetAttributeValue(columnIndex.AttributePath.ToPascalCase(),
+                                typeQueryColumn.ValueType,
                                 ckEnumValueDto.Key);
                             break;
                         default:
-                            object? convertedValue = value;
+                            object convertedValue = value;
                             if (typeQueryColumn.ValueType == AttributeValueTypesDto.DateTime)
                             {
-                                convertedValue = DateTime.Parse(value, CultureInfo.GetCultureInfoByIetfLanguageTag("de-DE"));
+                                convertedValue = DateTime.Parse(value,
+                                    CultureInfo.GetCultureInfoByIetfLanguageTag("de-DE"));
                             }
 
-                            rtEntity.SetAttributeValue(attributePath.ToPascalCase(), typeQueryColumn.ValueType, convertedValue);
+                            rtEntity.SetAttributeValue(columnIndex.AttributePath.ToPascalCase(),
+                                typeQueryColumn.ValueType,
+                                convertedValue);
                             break;
                     }
-
-
                 }
-
-
             }
 
             var insert = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
@@ -238,7 +400,7 @@ public class ImportFromExcelNode(
 
                 // we already created this entity
                 var ckTypeId = columnContext.GetCkTypeId(iLayer);
-                var name = columnContext.GetValue<string>(entry, "name", iLayer)!;
+                var name = columnContext.GetValueByPath<string>(entry, "name")!;
 
                 var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
 
@@ -249,15 +411,15 @@ public class ImportFromExcelNode(
                 }
 
                 var entity = new HierarchicalEntity(ckTypeId, name, parentName, parentCkTypeId);
-                foreach (var attributePath in columnContext.GetAttributePaths(iLayer))
+                foreach (var columnIndex in columnContext.GetColumns(iLayer))
                 {
-                    var value = columnContext.GetValue<string>(entry, attributePath, iLayer);
+                    var value = columnContext.GetValueByIndex<string>(entry, columnIndex.Index);
                     if (value == null)
                     {
                         continue;
                     }
 
-                    entity.Attributes.Add(new(attributePath, value));
+                    entity.Attributes.Add(new(columnIndex.AttributePath, value));
                 }
 
                 var possibleDuplicate = entities.FirstOrDefault(x => x.Name == name && x.CkTypeId == ckTypeId);
@@ -285,7 +447,7 @@ public class ImportFromExcelNode(
         {
             var entry = (JArray)jToken;
             var ckTypeId = columnContext.GetCkTypeId();
-            var name = columnContext.GetValue<string>(entry, "name");
+            var name = columnContext.GetValueByPath<string>(entry, "name");
             if (name == null)
             {
                 continue;
@@ -298,26 +460,27 @@ public class ImportFromExcelNode(
             var entity = new HierarchicalEntity(ckTypeId, name, parentName, "Basic/TreeNode");
             entity.Attributes.Add(new("Name", itemName));
             entities.Add(entity);
-            foreach (var columnName in columnContext.GetAttributePaths())
+            foreach (var columnIndex in columnContext.GetColumns())
             {
-                if (columnName == "name")
+                if (columnIndex.AttributePath == "name")
                 {
                     continue;
                 }
 
-                var value = columnContext.GetValue<string>(entry, columnName);
+                var value = columnContext.GetValueByIndex<string>(entry, columnIndex.Index);
                 if (value == null)
                 {
                     continue;
                 }
 
-                entity.Attributes.Add(new(columnName, value));
+                entity.Attributes.Add(new(columnIndex.AttributePath, value));
             }
         }
     }
 
 
-    private async Task StoreTreeInDatabase(List<HierarchicalEntity> buffer, string rootNodeId, INodeContext nodeContext)
+    private async Task StoreTreeInDatabase(List<HierarchicalEntity> buffer, string rootNodeId,
+        INodeContext nodeContext)
     {
         var rootId = new OctoObjectId(rootNodeId);
 
@@ -366,7 +529,8 @@ public class ImportFromExcelNode(
         await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
     }
 
-    private async Task ApplyChangesInRepositoryAsync(INodeContext nodeContext, List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
+    private async Task ApplyChangesInRepositoryAsync(INodeContext nodeContext,
+        List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
     {
         using var session = etlContext.TenantRepository.GetSession();
 

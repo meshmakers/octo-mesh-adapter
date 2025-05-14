@@ -35,6 +35,6 @@ internal static class ParentNameParser
 
     public static string? ParseLayerBasedName(ColumnContext columnContext, JArray entities, int iLayer)
     {
-        return iLayer == 1 ? null : columnContext.GetValue<string>(entities, "name", iLayer - 1);
+        return iLayer == 1 ? null : columnContext.GetValueByPath<string>(entities, "name");
     }
 }

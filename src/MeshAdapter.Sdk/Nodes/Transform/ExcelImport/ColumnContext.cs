@@ -34,7 +34,12 @@ internal class ColumnContext
                 continue;
             }
 
-            var ckTypeId = column.Value<CkId<CkTypeId>>("ckTypeId");
+            string ckTypeId = "Basic/TreeNode";
+            if (column.TryGetValue("ckTypeId", out var ckTypeIdValue))
+            {
+                ckTypeId = ckTypeIdValue.Value<string>()!;
+            }
+
             var index = column.Value<int>("columnIndex");
             var layer = 1;
             if (column.TryGetValue("layer", StringComparison.InvariantCultureIgnoreCase, out var layerValue))
@@ -48,7 +53,7 @@ internal class ColumnContext
                 columnType = (ColumnType)columnTypeValue.Value<int>();
             }
 
-            _columnIndexes.Add(new(ckTypeId, attributePath, index, layer, columnType));
+            _columnIndexes.Add(new(new CkId<CkTypeId>(ckTypeId), attributePath, index, layer, columnType));
         }
     }
 

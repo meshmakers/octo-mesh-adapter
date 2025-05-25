@@ -48,7 +48,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of source RtId is null.");
     }
 
-    public static Exception TargetCkTypeIdNotFound(INodeContext nodeContext)
+    public static Exception TargetCkTypeIdNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: targetCkTypeId and targetCkTypeIdPath is not set.");
     }
@@ -73,7 +73,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: updateKind or updateKindPath is not set.");
     }
 
-    public static Exception AssociationRoleIdPathNotFound(INodeContext nodeContext)
+    public static Exception AssociationRoleIdPathNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: associationRoleId or associationRoleIdPath is not set.");
     }
@@ -86,5 +86,26 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     public static Exception AssociationRoleIdValueNull(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of association role id is null.");
+    }
+
+    public static Exception GraphDirectionNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Graph direction is not set. Please set graphDirection or graphDirectionPath.");
+    }
+
+    public static Exception OriginCkTypeIdNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Origin CkTypeId is not set. Please set originCkTypeId or originCkTypeIdPath.");
+    }
+
+    public static Exception OriginRtIdsNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Origin RtIds are not set. Please set originRtId or originRtIdPath.");
+    }
+
+    public static Exception ValueNotSet(INodeContext nodeContext, string? cValuePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Value is not set. Please set value or valuePath. ValuePath: {cValuePath}");
     }
 }

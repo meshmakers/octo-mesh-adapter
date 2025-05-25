@@ -1,6 +1,7 @@
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -17,76 +18,74 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
     {
         var c = nodeContext.GetNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
 
-        var sourceRtId = GetSourceObjectId(dataContext, c);
-        var sourceCkTypeId = GetSourceCkTypeId(dataContext, c);
+        var originRtIds = GetOriginRtIds(dataContext, c);
+        var originCkTypeId = GetOriginCkTypeId(dataContext, c);
 
         var targetCkTypeId = GetTargetCkTypeId(dataContext, c);
         var graphDirection = GetGraphDirection(dataContext, c);
-        var roleId = GetAssociationRoleId(dataContext, c);
+        var associationRoleId = GetAssociationRoleId(dataContext, c);
 
-        if (sourceRtId == null)
+        if (originRtIds == null)
         {
-            nodeContext.Error("sourceRtId is not set");
-            return;
+            throw MeshAdapterPipelineExecutionException.OriginRtIdsNotSet(nodeContext);
         }
 
-        if (sourceCkTypeId == null)
+        if (originCkTypeId == null)
         {
-            nodeContext.Error("sourceCkTypeId is not set");
-            return;
+            throw MeshAdapterPipelineExecutionException.OriginCkTypeIdNotSet(nodeContext);
         }
 
         if (targetCkTypeId == null)
         {
-            nodeContext.Error("targetRtId is not set");
-            return;
+            throw MeshAdapterPipelineExecutionException.TargetCkTypeIdNotSet(nodeContext);
         }
 
-        if (roleId == null)
+        if (associationRoleId == null)
         {
-            nodeContext.Error("roleId is not set");
-            return;
+            throw MeshAdapterPipelineExecutionException.AssociationRoleIdPathNotSet(nodeContext);
         }
 
         if (graphDirection == null)
         {
-            nodeContext.Error("graph direction is not set");
-            return;
+            throw MeshAdapterPipelineExecutionException.GraphDirectionNotSet(nodeContext);
         }
 
-        var query = DataQueryOperation.Create();
+        var dataQueryOperation = DataQueryOperation.Create();
 
-        if (c.FieldFilters != null && c.FieldFilters.Any())
-        {
-            foreach (var f in c.FieldFilters)
-            {
-                query.AddFieldFilter(f.AttributePath, GetOperator(f.Operator), f.ComparisonValue);
-            }
-        }
+        // Add field filters from the configuration
+        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
 
         if (c.SortOrders != null && c.SortOrders.Any())
         {
             foreach (var s in c.SortOrders)
             {
-                query.SortOrder(s.AttributeName, GetSortOrder(s.SortOrder));
+                dataQueryOperation.SortOrder(s.AttributeName, GetSortOrder(s.SortOrder));
             }
         }
 
         using var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
 
-        var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, [sourceRtId.Value],
-            sourceCkTypeId, roleId, targetCkTypeId, graphDirection.Value, null, query, 0, 1);
+        var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, originRtIds,
+            originCkTypeId, associationRoleId, targetCkTypeId, graphDirection.Value, null, dataQueryOperation);
 
         if (result.Count == 0)
         {
-            nodeContext.Error("No association target found");
-            return;
+            nodeContext.Warning("No association target found");
         }
 
-        var entity = result.Values.Single().Items.Single();
+        List<MultipleRtEntityResultDto> resultDto = new List<MultipleRtEntityResultDto>(result.Count);
+        foreach (var r in result)
+        {
+            resultDto.Add(new MultipleRtEntityResultDto
+            {
+                OriginRtId =  r.Key,
+                TotalCount = r.Value.TotalCount,
+                Items = r.Value.Items
+            });
+        }
 
-        dataContext.SetValueByPath(c.TargetPath, entity, c.DocumentMode, c.TargetValueKind,
+        dataContext.SetValueByPath(c.TargetPath, resultDto, c.DocumentMode, c.TargetValueKind,
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
         await next(dataContext, nodeContext);
@@ -103,34 +102,17 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         };
     }
 
-    private FieldFilterOperator GetOperator(FieldFilterOperatorDto f)
-    {
-        return f switch
-        {
-            FieldFilterOperatorDto.Equals => FieldFilterOperator.Equals,
-            FieldFilterOperatorDto.NotEquals => FieldFilterOperator.NotEquals,
-            FieldFilterOperatorDto.LessThan => FieldFilterOperator.LessThan,
-            FieldFilterOperatorDto.LessEqualThan => FieldFilterOperator.LessEqualThan,
-            FieldFilterOperatorDto.GreaterThan => FieldFilterOperator.GreaterThan,
-            FieldFilterOperatorDto.GreaterEqualThan => FieldFilterOperator.GreaterEqualThan,
-            FieldFilterOperatorDto.In => FieldFilterOperator.In,
-            FieldFilterOperatorDto.NotIn => FieldFilterOperator.NotIn,
-            FieldFilterOperatorDto.Like => FieldFilterOperator.Like,
-            FieldFilterOperatorDto.MatchRegEx => FieldFilterOperator.MatchRegEx,
-            FieldFilterOperatorDto.AnyEq => FieldFilterOperator.AnyEq,
-            _ => throw new ArgumentOutOfRangeException(nameof(f), f, null)
-        };
-    }
 
-    private CkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
+
+    private CkId<CkTypeId>? GetOriginCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.SourceCkTypeId == null && config.SourceCkTypeIdPath == null || dataContext.Current == null)
+        if (config.OriginCkTypeId == null && config.OriginCkTypeIdPath == null || dataContext.Current == null)
         {
             return null;
         }
 
-        var sourceCkTypeId = config.SourceCkTypeId ??
-                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.SourceCkTypeIdPath,
+        var sourceCkTypeId = config.OriginCkTypeId ??
+                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.OriginCkTypeIdPath,
                                  RtNewtonsoftSerializer.DefaultSerializer);
 
         return sourceCkTypeId;
@@ -153,19 +135,27 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         return roleId;
     }
 
-    private static OctoObjectId? GetSourceObjectId(IDataContext dataContext,
+    private static OctoObjectId[]? GetOriginRtIds(IDataContext dataContext,
         GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.SourceRtId == null && config.SourceRtIdPath == null || dataContext.Current == null)
+        if (config.OriginRtId == null && config.OriginRtIdPath == null || dataContext.Current == null)
         {
             return null;
         }
 
-        var sourceRtId = config.SourceRtId ??
-                         dataContext.GetComplexObjectByPath<OctoObjectId?>(config.SourceRtIdPath,
-                             RtNewtonsoftSerializer.DefaultSerializer);
+        if (!string.IsNullOrWhiteSpace(config.OriginRtIdPath))
+        {
+            var sourceRtIds = dataContext.Current.SelectTokens(config.OriginRtIdPath)
+                .Select(t => t.ToObject<OctoObjectId>(RtNewtonsoftSerializer.DefaultSerializer));
+            return sourceRtIds.ToArray();
+        }
 
-        return sourceRtId;
+        if (config.OriginRtId != null)
+        {
+            return [config.OriginRtId.Value];
+        }
+
+        return null;
     }
 
     private static CkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext,

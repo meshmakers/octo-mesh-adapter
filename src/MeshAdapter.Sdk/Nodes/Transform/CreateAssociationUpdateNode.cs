@@ -52,7 +52,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
 
         if (config.AssociationRoleIdPath == null)
         {
-            throw MeshAdapterPipelineExecutionException.AssociationRoleIdPathNotFound(nodeContext);
+            throw MeshAdapterPipelineExecutionException.AssociationRoleIdPathNotSet(nodeContext);
         }
 
         var roleId = dataContext.GetSimpleValueByPath<CkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);

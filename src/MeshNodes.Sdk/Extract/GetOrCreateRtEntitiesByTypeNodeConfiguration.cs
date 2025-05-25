@@ -1,4 +1,5 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
@@ -18,7 +19,7 @@ public record GetOrCreateRtEntitiesByTypeNodeConfiguration : NodeConfiguration
     /// <summary>
     /// the field filters
     /// </summary>
-    public required ICollection<PathFieldFilter>? FieldFilters { get; set; }
+    public required ICollection<FieldFilterWithPathDto>? FieldFilters { get; set; }
     
     /// <summary>
     /// Target path where the RtId should be written
@@ -36,24 +37,3 @@ public record GetOrCreateRtEntitiesByTypeNodeConfiguration : NodeConfiguration
     public string ModOperationPath { get; set; } = "$.modOperation";
 }
 
-/// <summary>
-/// Field filter that uses the json path to the value
-/// </summary>
-// ReSharper disable once ClassNeverInstantiated.Global
-public record PathFieldFilter
-{
-    /// <summary>
-    /// The Path to the value
-    /// </summary>
-    public required string Path { get; set; }
-    
-    /// <summary>
-    /// The attribute name
-    /// </summary>
-    public required string AttributeName { get; set; }
-    
-    /// <summary>
-    /// The Operator
-    /// </summary>
-    public required FieldFilterOperator Operator { get; set; }
-}

@@ -91,7 +91,9 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
                 AttributeValueTypesDto.Binary => Convert.ChangeType(value, typeof(byte)),
                 AttributeValueTypesDto.Boolean => Convert.ChangeType(value, typeof(bool)),
                 AttributeValueTypesDto.DateTime => Convert.ChangeType(value, typeof(DateTime)),
-                AttributeValueTypesDto.Double => Convert.ChangeType(value, typeof(double)),
+                AttributeValueTypesDto.Double => value is string s
+                    ? double.Parse(s, System.Globalization.CultureInfo.InvariantCulture)
+                    : Convert.ChangeType(value, typeof(double)),
                 AttributeValueTypesDto.StringArray => Convert.ChangeType(value, typeof(string[])),
                 AttributeValueTypesDto.IntArray => Convert.ChangeType(value, typeof(int[])),
                 AttributeValueTypesDto.TimeSpan => Convert.ChangeType(value, typeof(TimeSpan)),

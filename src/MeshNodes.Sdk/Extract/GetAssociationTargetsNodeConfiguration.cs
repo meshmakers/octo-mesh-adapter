@@ -1,5 +1,5 @@
-using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -11,35 +11,35 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
-    /// Kind of update
+    /// Defines the direction of the graph traversal
     /// </summary>
     public GraphDirectionsDto? GraphDirection { get; set; }
 
     /// <summary>
-    /// The path to the update kind
+    /// The path to the graph direction
     /// </summary>
     public string? GraphDirectionPath { get; set; }
 
 
     /// <summary>
-    /// The path to the source RtId
+    /// The path to the origin RtId
     /// </summary>
-    public string? SourceRtIdPath { get; set; }
+    public string? OriginRtIdPath { get; set; }
 
     /// <summary>
-    /// The source RtId
+    /// The origin RtId
     /// </summary>
-    public OctoObjectId? SourceRtId { get; set; }
+    public OctoObjectId? OriginRtId { get; set; }
 
     /// <summary>
-    /// The path to the source CkTypeId
+    /// The path to the origin CkTypeId
     /// </summary>
-    public string? SourceCkTypeIdPath { get; set; }
+    public string? OriginCkTypeIdPath { get; set; }
 
     /// <summary>
-    /// The source CkTypeId
+    /// The origin CkTypeId
     /// </summary>
-    public CkId<CkTypeId>? SourceCkTypeId { get; set; }
+    public CkId<CkTypeId>? OriginCkTypeId { get; set; }
 
     /// <summary>
     /// The path to the target CkTypeId
@@ -65,41 +65,10 @@ public record GetAssociationTargetsNodeConfiguration : SourceTargetPathNodeConfi
     /// <summary>
     /// A list of field filters
     /// </summary>
-    public ICollection<FieldFilterDto>? FieldFilters { get; set; }
+    public ICollection<FieldFilterWithPathDto>? FieldFilters { get; set; }
     
     /// <summary>
     /// A list of sort orders
     /// </summary>
     public ICollection<SortOrderDto>? SortOrders { get; set; }
-}
-
-/// <summary>
-/// Allows to define a sort order for a query
-/// </summary>
-// ReSharper disable once ClassNeverInstantiated.Global
-public record SortOrderDto
-{
-    /// <summary>
-    /// The sort order
-    /// </summary>
-    public required SortOrdersDto SortOrder { get; init; }
-    /// <summary>
-    /// The attribute name
-    /// </summary>
-    public required string AttributeName { get; set; }
-}
-
-/// <summary>
-/// Defines graph directions in graph queries
-/// </summary>
-public enum GraphDirectionsDto
-{
-    /// <summary>All inbound directions (e. g. parent to child)</summary>
-    Inbound = 1,
-
-    /// <summary>All outbound directions (e. g. child to parent)</summary>
-    Outbound = 2,
-
-    /// <summary>All directions</summary>
-    Any = 3,
 }

@@ -30,11 +30,8 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
         }
 
         var dataQueryOperation = DataQueryOperation.Create();
-        foreach (var fieldFilter in c.FieldFilters)
-        {
-            var value = dataContext.GetSimpleValueByPath<string>(fieldFilter.Path);
-            dataQueryOperation.AddFieldFilter(fieldFilter.AttributeName, fieldFilter.Operator, value);
-        }
+        // Add field filters from the configuration
+        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
 
         IOctoSession? session = null;
 

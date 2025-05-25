@@ -23,21 +23,30 @@ public class SumAggregationNode(NodeDelegate next) : IPipelineNode
             throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
         }
 
-        var sourceTokens = dataContext.Current.SelectTokens(c.Path).ToArray();
-
-        foreach (var sourceToken in sourceTokens)
+        double d = 0.0;
+        foreach (var sumAggregationItem in c.Aggregations)
         {
-            double d = 0.0;
-            sourceToken.SelectTokens(c.AggregationPath).Select(s => s.ToObject<double>())
-                .ToList()
-                .ForEach(v => d += v);
+            var sourceTokens = dataContext.Current.SelectTokens(sumAggregationItem.Path).ToArray();
 
-           sourceToken.ReplaceNested(c.TargetPath, d);
+            foreach (var sourceToken in sourceTokens)
+            {
+                if (!string.IsNullOrWhiteSpace(sumAggregationItem.FilterPath))
+                {
+                    var use = sourceToken.SelectTokens(sumAggregationItem.FilterPath)
+                        .All(s => s.Value<string?>() == sumAggregationItem.ComparisonValue?.ToString());
+                    if (!use)
+                    {
+                        continue;
+                    }
+                }
+
+                sourceToken.SelectTokens(sumAggregationItem.AggregationPath).Select(s => s.ToObject<double>())
+                    .ToList()
+                    .ForEach(v => d += v * sumAggregationItem.Value);
+            }
         }
 
-      //  dataContext.
-//sourceToken.ReplaceNested(c.ItemPath, newArray);
-
+        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, d);
 
         await next(dataContext, nodeContext).ConfigureAwait(false);
     }

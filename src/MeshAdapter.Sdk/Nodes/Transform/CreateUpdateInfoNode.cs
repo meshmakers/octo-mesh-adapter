@@ -43,8 +43,8 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             nodeContext.Error("update kind is not set. Please provide a UpdateKind or UpdateKindPath");
             return;
         }
-        
-        
+
+
         if (updateKind == UpdateKind.Update && rtId == null)
         {
             nodeContext.Error("RtId is not set. Please provide a RtId or RtIdPath");
@@ -69,6 +69,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
         var rtEntity = new RtEntity
         {
+            CkTypeId = c.CkTypeId,
             RtWellKnownName = rtWellKnownName
         };
 
@@ -96,7 +97,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 {
                     continue;
                 }
-                
+
                 hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, jTokens, rtEntity, ckTypeGraph);
             }
             else if (au.Value != null)
@@ -140,7 +141,8 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         await next(dataContext, nodeContext);
     }
 
-    private bool SetAttributeValue(INodeContext nodeContext, string attributeName, IEnumerable<JToken> jTokens, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+    private bool SetAttributeValue(INodeContext nodeContext, string attributeName, IEnumerable<JToken> jTokens,
+        RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
     {
         bool hasUpdate = false;
         foreach (var jToken in jTokens)
@@ -152,7 +154,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 {
                     continue;
                 }
-                        
+
                 hasUpdate = true;
             }
             else if (jToken is JObject jObject)
@@ -162,7 +164,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 {
                     continue;
                 }
-                        
+
                 hasUpdate = true;
             }
             else
@@ -175,95 +177,49 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         return hasUpdate;
     }
 
-    private bool SetAttributeValueSingle(INodeContext nodeContext, string attributeName, object? value, RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+    private object? GetAttributeValue(INodeContext nodeContext, object? value)
     {
-        if (!ckTypeWithAttributesGraph.AllAttributesByName.TryGetValue(attributeName, out var attribute))
+        if (value is JObject jObject && jObject.TryGetValue("CkRecordId", out var ckRecordIdToken) &&
+            ckRecordIdToken is JObject ckRecordIdObject)
         {
-            nodeContext.Error($"Attribute {attributeName} not found in construction kit type {ckTypeWithAttributesGraph}");
-            return false;
-        }
-        
-        switch (attribute.ValueType)
-        {
-            case AttributeValueTypesDto.Enum:
-
-                if (attribute.ValueCkEnumId != null)
+            if (jObject.TryGetValue("Attributes", out var attributes) && attributes is JObject attributesObject)
+            {
+                var ckRecordGraphChild = ckCacheService.GetCkRecord(etlContext.TenantId,
+                    ckRecordIdObject["FullName"]!.ToObject<string>()!);
+                var recordChild = new RtRecord
                 {
-                    var ckEnumGraph = ckCacheService.GetCkEnum(etlContext.TenantId, attribute.ValueCkEnumId);
+                    CkRecordId = ckRecordGraphChild.CkRecordId
+                };
 
-                    if (value is string strValue)
-                    {
-                        var enumValue = ckEnumGraph.Values.FirstOrDefault(v =>
-                            string.Compare(v.Name, strValue, StringComparison.OrdinalIgnoreCase) == 0);
-                        if (enumValue == null)
-                        {
-                            nodeContext.Error(
-                                $"Enum value {strValue} not found in CKEnum {attribute.ValueCkEnumId}");
-                            return false;
-                        }
-
-                        rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, enumValue.Key);
-                        return true;
-                    }
-
-                    if (value is int intValue)
-                    {
-                        var enumValue = ckEnumGraph.Values.FirstOrDefault(v => v.Key == intValue);
-                        if (enumValue == null)
-                        {
-                            nodeContext.Error(
-                                $"Enum value {intValue} not found in CKEnum {attribute.ValueCkEnumId}");
-                            return false;
-                        }
-
-                        rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, enumValue.Key);
-                        return true;
-                    }
-
-                    nodeContext.Error($"Enum value {value} is not a valid type");
-                    return false;
-                }
-                nodeContext.Error("Enum value is not set");
-                return false;
-            case AttributeValueTypesDto.Record:
-                if (attribute.ValueCkRecordId != null)
+                foreach (var jToken in attributesObject.Properties())
                 {
-                    var ckRecordGraph = ckCacheService.GetCkRecord(etlContext.TenantId, attribute.ValueCkRecordId);
-
-                    if (value is JObject jsObject)
+                    if (ckRecordGraphChild.AllAttributesByName.TryGetValue(jToken.Name, out var attribute))
                     {
-                        bool hasUpdate = false;
-                        var record = new RtRecord
-                        {
-                            CkRecordId = attribute.ValueCkRecordId
-                        };
-                        
-                        foreach (var ckTypeAttributeGraphKeyValue in ckRecordGraph.AllAttributesByName)
-                        {
-                            if (!jsObject.TryGetValue(ckTypeAttributeGraphKeyValue.Key.ToPascalCase(), out var jToken) && 
-                                !jsObject.TryGetValue(ckTypeAttributeGraphKeyValue.Key.ToCamelCase(), out jToken))
-                            {
-                                continue;
-                            }
-                            
-                            hasUpdate |= SetAttributeValueSingle(nodeContext, ckTypeAttributeGraphKeyValue.Key, jToken,
-                                record, ckRecordGraph);
-                        }
-                        
-                        rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, record);
-
-                        return hasUpdate;
+                        var childValue = GetAttributeValue(nodeContext, jToken.Value);
+                        recordChild.SetAttributeValue(attribute.AttributeName, attribute.ValueType, childValue);
                     }
-
-                    nodeContext.Error($"Enum value {value} is not a valid type");
-                    return false;
+                    else
+                    {
+                        throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, jToken);
+                    }
                 }
-                nodeContext.Error("Record value is not set");
-                return false;
-            default:
-                rtTypeWithAttributes.SetAttributeValue(attributeName, attribute.ValueType, value);
-                return true;
+
+                return recordChild;
+
+            }
         }
+
+        return value;
+    }
+
+    private bool SetAttributeValueSingle(INodeContext nodeContext, string attributeName, object? value,
+        RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+    {
+        var convertedValue = GetAttributeValue(nodeContext, value);
+
+        RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, rtTypeWithAttributes, attributeName,
+            convertedValue);
+        return true;
     }
 
     private static OctoObjectId? GetRtId(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
@@ -272,12 +228,14 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         {
             return config.RtId.Value;
         }
-        if(config.RtIdPath == null || dataContext.Current == null)
+
+        if (config.RtIdPath == null || dataContext.Current == null)
         {
             return null;
         }
-        
-        var rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(config.RtIdPath, RtNewtonsoftSerializer.DefaultSerializer);
+
+        var rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(config.RtIdPath,
+            RtNewtonsoftSerializer.DefaultSerializer);
 
         if (rtId == null && config.GenerateRtId)
         {
@@ -293,24 +251,28 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         {
             return config.UpdateKind;
         }
-        
+
         if (config.UpdateKindPath == null || dataContext.Current == null)
         {
             return null;
         }
-        
-        var updateKind = dataContext.GetComplexObjectByPath<UpdateKind?>(config.UpdateKindPath, RtNewtonsoftSerializer.DefaultSerializer);
+
+        var updateKind =
+            dataContext.GetComplexObjectByPath<UpdateKind?>(config.UpdateKindPath,
+                RtNewtonsoftSerializer.DefaultSerializer);
         return updateKind;
     }
-    
+
     private static string? GetRtWellKnownName(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
     {
         if (config.RtWellKnownNamePath == null || dataContext.Current == null)
         {
             return null;
         }
-        
-        var rtWellKnownName = dataContext.GetComplexObjectByPath<string?>(config.RtWellKnownNamePath, RtNewtonsoftSerializer.DefaultSerializer);
+
+        var rtWellKnownName =
+            dataContext.GetComplexObjectByPath<string?>(config.RtWellKnownNamePath,
+                RtNewtonsoftSerializer.DefaultSerializer);
         return rtWellKnownName;
     }
 }

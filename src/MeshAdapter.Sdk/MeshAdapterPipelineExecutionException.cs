@@ -28,6 +28,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"Invalid value: {jToken}");
     }
 
+    public static Exception InvalidValue(INodeContext nodeContext, JToken jToken)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Invalid value: {jToken}");
+    }
+
     public static Exception SourceCkTypeIdNotFound(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: sourceCkTypeId and sourceCkTypeIdPath is not set.");

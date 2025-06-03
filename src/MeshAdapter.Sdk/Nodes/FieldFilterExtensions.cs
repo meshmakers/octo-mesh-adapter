@@ -1,7 +1,9 @@
+using System.Globalization;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
@@ -15,7 +17,7 @@ internal static class FieldFilterExtensions
         {
             foreach (var fieldFilter in fieldFilters)
             {
-                var comparisonValue = fieldFilter.ComparisonValue;
+                var comparisonValue = GetComparisonValue(fieldFilter.ComparisonValue);
                 if (comparisonValue == null && !string.IsNullOrWhiteSpace(fieldFilter.ComparisonValuePath))
                 {
                     var t = dataContext.Current?.SelectTokens(fieldFilter.ComparisonValuePath ?? "$").ToList();
@@ -36,6 +38,30 @@ internal static class FieldFilterExtensions
                     comparisonValue);
             }
         }
+    }
+
+    private static object? GetComparisonValue(object? comparisonValue)
+    {
+        if (comparisonValue is JValue jValue)
+        {
+            switch (jValue.Type)
+            {
+                case JTokenType.Float:
+                    return jValue.Value<double>();
+                case JTokenType.Boolean:
+                    return jValue.Value<bool>();
+                case JTokenType.Date:
+                    return jValue.Value<DateTime>();
+                case JTokenType.String:
+                    return jValue.Value<string>();
+                case JTokenType.Null:
+                    return null;
+                default:
+                    return jValue.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        return comparisonValue;
     }
 
     private static FieldFilterOperator GetOperator(FieldFilterOperatorDto f)

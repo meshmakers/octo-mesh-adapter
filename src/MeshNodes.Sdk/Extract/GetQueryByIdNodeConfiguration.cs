@@ -17,14 +17,14 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
     public required OctoObjectId QueryRtId { get; init; }
 
     /// <summary>
-    /// Amount of rows to skip
+    /// Number of rows to skip
     /// </summary>
-    public int Skip { get; init; } = 0;
+    public int? Skip { get; init; }
 
     /// <summary>
-    /// Amount of rows to take
+    /// Number of rows to take
     /// </summary>
-    public int Take { get; init; } = 10;
+    public int? Take { get; init; }
 
     /// <summary>
     /// A list of field filters

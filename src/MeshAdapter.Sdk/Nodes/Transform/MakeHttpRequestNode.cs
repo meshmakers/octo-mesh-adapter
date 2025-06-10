@@ -71,9 +71,20 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
                 nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
                     response.StatusCode, responseContent);
 
+                JToken? responseJson = null;
+
+                try
+                {
+                    responseJson = JObject.Parse(responseContent);
+                }
+                catch (Exception)
+                {
+                    // this is fine, the response is not json
+                }
+
                 // Store response in data context at the configured path
                 dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                    c.TargetValueWriteMode, responseContent);
+                    c.TargetValueWriteMode, responseJson ?? responseContent);
             }
             else
             {

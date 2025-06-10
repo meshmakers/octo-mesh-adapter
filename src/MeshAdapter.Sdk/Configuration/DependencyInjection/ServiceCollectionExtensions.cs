@@ -55,6 +55,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<EMailSenderNode>()
             .RegisterNode<GetQueryByIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
+            .RegisterNode<MakeHttpRequestNode>()
             .RegisterTriggerNode<FromExecutePipelineCommandNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()
@@ -76,6 +77,9 @@ public static class ServiceCollectionExtensions
 
         // We want to ensure that all mesh adapters are using the same security configuration
         services.AddCors();
+
+        // the MakeHttpRequestNode requires an HttpClient to make requests
+        services.AddHttpClient();
 
         return dataPipelineBuilder;
     }

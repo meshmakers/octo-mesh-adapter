@@ -31,6 +31,11 @@ public record GetRtEntitiesByIdNodeConfiguration : TargetPathNodeConfiguration
     public ICollection<OctoObjectId>? RtIds { get; set; }
     
     /// <summary>
+    /// Gets or sets the json path to the rt ids
+    /// </summary>
+    public string? RtIdsPath { get; set; }
+    
+    /// <summary>
     /// A list of field filters
     /// </summary>
     public ICollection<FieldFilterWithPathDto>? FieldFilters { get; set; }

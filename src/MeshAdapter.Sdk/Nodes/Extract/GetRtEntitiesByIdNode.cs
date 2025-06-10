@@ -1,4 +1,5 @@
 using GraphQL.Client.Abstractions.Utilities;
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -27,9 +28,17 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             return;
         }
 
-        if (c.RtIds == null)
+        if (c.RtIds == null && c.RtIdsPath == null)
         {
             nodeContext.Error("RtIds is not set");
+            return;
+        }
+        
+        var rtIds = GetRtIds(c, dataContext);
+        
+        if (rtIds.Count == 0)
+        {
+            nodeContext.Error("No RtIds found");
             return;
         }
 
@@ -45,12 +54,34 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, c.CkTypeId, c.RtIds.ToList(),
+        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, c.CkTypeId, rtIds,
             dataQueryOperation, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, r);
 
         await next(dataContext, nodeContext);
+    }
+
+    private static List<OctoObjectId> GetRtIds(GetRtEntitiesByIdNodeConfiguration c, IDataContext dataContext)
+    {
+        if(c.RtIds is { Count: > 0 })
+        {
+            return c.RtIds.ToList();
+        }
+        
+        if (c.RtIdsPath != null)
+        {
+            var rtIds = dataContext.GetSimpleArrayValueByPath<string>(c.RtIdsPath)?.ToList();
+            if (rtIds == null || rtIds.Count == 0)
+            {
+                throw new InvalidOperationException($"No RtIds found at path '{c.RtIdsPath}'");
+            }
+            return rtIds
+                .Select(id => new OctoObjectId(id!))
+                .ToList();
+        }
+        
+        return [];
     }
 }

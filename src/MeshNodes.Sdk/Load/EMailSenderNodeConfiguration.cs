@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -27,6 +28,31 @@ public record EMailSenderNodeConfiguration : PathNodeConfiguration
     /// Source path to Recipient email addresses
     /// </summary>
     public required string ToPath { get; set; }
+    
+    
+    /// <summary>
+    /// Optional path to the cc email addresses
+    /// </summary>
+    public string? CcPath { get; set; }
+    
+    /// <summary>
+    /// Optional list of cc email addresses
+    /// </summary>
+    public ICollection<string>? CcAddresses { get; set; }
+    
+    
+    /// <summary>
+    /// Optional path to the bcc email addresses
+    /// </summary>
+    public string? BccPath { get; set; }
+    
+    
+    /// <summary>
+    /// Optional list of bcc email addresses
+    /// </summary>
+    public ICollection<string>? BccAddresses { get; set; }
+    
+    
     
     /// <summary>
     /// The path the the attatchmet RtId

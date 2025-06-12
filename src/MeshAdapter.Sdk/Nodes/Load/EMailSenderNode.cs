@@ -74,6 +74,7 @@ public class EMailSenderNode(
                 nodeContext.Error("No body found");
                 return;
             }
+            
 
             var bodyInHtml = Markdown.ToHtml(body, _pipeline);
 
@@ -112,13 +113,8 @@ public class EMailSenderNode(
                 mailMessage.Attachments.Add(attachmentItem);
             }
             
-            foreach (var recipient in recipients)
-            {
-                if (!string.IsNullOrWhiteSpace(recipient))
-                {
-                    mailMessage.To.Add(new MailAddress(recipient));
-                }
-            }
+            AddReciepients(dataContext, recipients, mailMessage, c);
+
 
             await client.SendMailAsync(mailMessage);
         }
@@ -169,6 +165,52 @@ public class EMailSenderNode(
         {
             nodeContext.Error(e, "Error getting attachment {RtId}", attachmentRtId);
             return null;
+        }
+    }
+    
+    private static void AddReciepients(IDataContext dataContext, IEnumerable<string?> recipients, MailMessage mailMessage,
+        EMailSenderNodeConfiguration c)
+    {
+        foreach (var recipient in recipients)
+        {
+            if (!string.IsNullOrWhiteSpace(recipient))
+            {
+                mailMessage.To.Add(new MailAddress(recipient));
+            }
+        }
+            
+        var ccAddresses = c.CcAddresses != null && c.CcAddresses.Count > 0
+            ? c.CcAddresses
+            : !string.IsNullOrWhiteSpace(c.CcPath)
+                ? dataContext.GetSimpleArrayValueByPath<string>(c.CcPath)
+                : null;
+            
+        if (ccAddresses != null)
+        {
+            foreach (var cc in ccAddresses)
+            {
+                if (!string.IsNullOrWhiteSpace(cc))
+                {
+                    mailMessage.CC.Add(cc);
+                }
+            }
+        }
+            
+        var bccAddresses = c.BccAddresses != null && c.BccAddresses.Count > 0
+            ? c.BccAddresses
+            : !string.IsNullOrWhiteSpace(c.BccPath)
+                ? dataContext.GetSimpleArrayValueByPath<string>(c.BccPath)
+                : null;
+            
+        if (bccAddresses != null)
+        {
+            foreach (var bcc in bccAddresses)
+            {
+                if (!string.IsNullOrWhiteSpace(bcc))
+                {
+                    mailMessage.Bcc.Add(bcc);
+                }
+            }
         }
     }
 }

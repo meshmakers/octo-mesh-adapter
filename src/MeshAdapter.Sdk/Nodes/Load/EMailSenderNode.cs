@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Mail;
 using Markdig;
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -29,6 +31,7 @@ public class EMailSenderNode(
         public string? SenderEmail { get; init; }
         public required string Username { get; init; }
         public required string Password { get; init; }
+
         public required bool IsSslEnabled { get; init; }
         // ReSharper restore UnusedAutoPropertyAccessor.Local
     }
@@ -42,9 +45,6 @@ public class EMailSenderNode(
 
         try
         {
-            var session = await etlContext.TenantRepository.GetSessionAsync();
-            session.StartTransaction();
-
             if (!etlContext.GlobalConfiguration.IsDefined(c.ServerConfiguration))
             {
                 nodeContext.Error($"Server configuration '{c.ServerConfiguration}' not found");
@@ -53,7 +53,7 @@ public class EMailSenderNode(
 
             var eMailSenderConfiguration =
                 etlContext.GlobalConfiguration.GetValue<EMailSenderConfiguration>(c.ServerConfiguration);
-            
+
             var recipients = dataContext.GetSimpleArrayValueByPath<string>(c.ToPath);
             if (recipients == null)
             {
@@ -84,17 +84,32 @@ public class EMailSenderNode(
                     new NetworkCredential(eMailSenderConfiguration.Username, eMailSenderConfiguration.Password),
                 EnableSsl = eMailSenderConfiguration.IsSslEnabled
             };
-            
+
             var mailMessage = new MailMessage
             {
                 Subject = subject,
                 Body = bodyInHtml,
                 IsBodyHtml = true
             };
-            
+
             if (!string.IsNullOrWhiteSpace(eMailSenderConfiguration.SenderEmail))
             {
-                mailMessage.From = new MailAddress(eMailSenderConfiguration.SenderEmail);
+                mailMessage.From = new(eMailSenderConfiguration.SenderEmail);
+            }
+
+            var attachment = await GetAttachment(c, dataContext, nodeContext);
+
+            if (attachment != null)
+            {
+                if(c.AttachmentFileName == null || c.AttachmentContentType == null)
+                {
+                    nodeContext.Error("Attachment filename or content type is null");
+                    return;
+                }
+                
+                var attachmentData = attachment.Stream;
+                var attachmentItem = new Attachment(attachmentData, c.AttachmentFileName, c.AttachmentContentType);
+                mailMessage.Attachments.Add(attachmentItem);
             }
             
             foreach (var recipient in recipients)
@@ -104,6 +119,7 @@ public class EMailSenderNode(
                     mailMessage.To.Add(new MailAddress(recipient));
                 }
             }
+
             await client.SendMailAsync(mailMessage);
         }
         catch (Exception e)
@@ -112,5 +128,47 @@ public class EMailSenderNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    private async Task<IDownloadStreamHandler?> GetAttachment(
+        EMailSenderNodeConfiguration eMailSenderNodeConfiguration,
+        IDataContext dataContext, 
+        INodeContext nodeContext)
+    {
+        if (eMailSenderNodeConfiguration.AttachmentRtId == null &&
+            eMailSenderNodeConfiguration.AttachmentRtIdPath == null)
+        {
+            return null;
+        }
+        
+        var attachmentRtId = eMailSenderNodeConfiguration.AttachmentRtId ??
+                             dataContext.GetSimpleValueByPath<string>(eMailSenderNodeConfiguration
+                                 .AttachmentRtIdPath);
+        
+        if (string.IsNullOrWhiteSpace(attachmentRtId))
+        {
+            nodeContext.Error("No attachment RT ID found");
+            return null;
+        }
+
+        try
+        {
+            var tenantRepository = etlContext.TenantRepository;
+
+            using var session = await tenantRepository.GetSessionAsync().ConfigureAwait(false);
+            session.StartTransaction();
+
+            var streamHandler = await tenantRepository.DownloadLargeBinaryAsync(session,
+                OctoObjectId.Parse(attachmentRtId), CancellationToken.None);
+
+            await session.CommitTransactionAsync().ConfigureAwait(false);
+
+            return streamHandler;
+        }
+        catch (Exception e)
+        {
+            nodeContext.Error(e, "Error getting attachment {RtId}", attachmentRtId);
+            return null;
+        }
     }
 }

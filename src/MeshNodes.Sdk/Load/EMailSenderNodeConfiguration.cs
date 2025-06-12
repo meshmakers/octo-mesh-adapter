@@ -27,4 +27,24 @@ public record EMailSenderNodeConfiguration : PathNodeConfiguration
     /// Source path to Recipient email addresses
     /// </summary>
     public required string ToPath { get; set; }
+    
+    /// <summary>
+    /// The path the the attatchmet RtId
+    /// </summary>
+    public string? AttachmentRtIdPath { get; set; }
+    
+    /// <summary>
+    /// The RtId of the attachment
+    /// </summary>
+    public string? AttachmentRtId { get; set; }
+    
+    /// <summary>
+    /// The file name of the attachment
+    /// </summary>
+    public string? AttachmentFileName { get; set; }
+    
+    /// <summary>
+    /// Content type of the attachment.
+    /// </summary>
+    public string? AttachmentContentType { get; set; } = "application/octet-stream";
 }

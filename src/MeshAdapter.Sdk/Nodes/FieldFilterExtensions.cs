@@ -25,11 +25,17 @@ internal static class FieldFilterExtensions
                     {
                         if (t.Count == 1)
                         {
-                            comparisonValue = t.First();
+                            comparisonValue = GetComparisonValue(t.First());
                         }
                         else if (t.Count > 1)
                         {
-                            comparisonValue = t;
+                            List<object?> comparisonValues = new List<object?>();
+                            foreach (var jToken in t)
+                            {
+                                comparisonValues.Add(GetComparisonValue(jToken));
+                            }
+
+                            comparisonValue = comparisonValues;
                         }
                     }
                 }

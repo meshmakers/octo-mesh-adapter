@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes;
@@ -6,6 +7,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes;
 /// Update of a specific attribute
 /// </summary>
 // ReSharper disable once ClassNeverInstantiated.Global
+[DebuggerDisplay("AttributeName = {AttributeName}, ValuePath = {ValuePath}, Value = {Value}")]
 public class AttributeUpdateConfiguration
 {
     /// <summary>

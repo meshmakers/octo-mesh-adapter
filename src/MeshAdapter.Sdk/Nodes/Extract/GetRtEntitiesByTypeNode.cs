@@ -26,13 +26,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         }
 
         var dataQueryOperation = DataQueryOperation.Create();
-        if (c.FieldFilters != null)
-        {
-            foreach (var fieldFilter in c.FieldFilters)
-            {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributePath.ToPascalCase(), (FieldFilterOperator) fieldFilter.Operator, fieldFilter.ComparisonValue);
-            }
-        }
+        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();

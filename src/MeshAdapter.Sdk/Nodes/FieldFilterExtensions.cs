@@ -29,9 +29,7 @@ internal static class FieldFilterExtensions
                         }
                         else if (t.Count > 1)
                         {
-                            List<object?> comparisonValues = t.Select(GetComparisonValue).ToList();
-
-                            comparisonValue = comparisonValues;
+                            comparisonValue = t.Select(GetComparisonValue).ToList();
                         }
                     }
                 }

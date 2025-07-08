@@ -13,7 +13,12 @@ public enum UpdateKind
     /// <summary>
     /// Updates an existing rt entity
     /// </summary>
-    Update = 1
+    Update = 1,
+    
+    /// <summary>
+    /// Deletes an existing rt entity
+    /// </summary>
+    Delete = 2,
 }
 
 /// <summary>

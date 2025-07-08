@@ -43,13 +43,13 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         }
 
 
-        if (updateKind == UpdateKind.Update && rtId == null)
+        if ((updateKind is UpdateKind.Update or UpdateKind.Delete) && rtId == null)
         {
             nodeContext.Error("RtId is not set. Please provide a RtId or RtIdPath");
             return;
         }
 
-        if (c.AttributeUpdates == null || c.AttributeUpdates.Count == 0)
+        if ((c.AttributeUpdates == null || c.AttributeUpdates.Count == 0) && updateKind != UpdateKind.Delete) 
         {
             nodeContext.Error("AttributeUpdates is not set");
             return;
@@ -71,8 +71,8 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             RtWellKnownName = rtWellKnownName
         };
 
-        var hasUpdate = false;
-        foreach (var au in c.AttributeUpdates)
+        var hasUpdate = updateKind == UpdateKind.Delete; // if we are deleting, we have an update for sure
+        foreach (var au in c.AttributeUpdates ?? [])
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
             {
@@ -115,7 +115,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             EntityUpdateInfo<RtEntity>? updateItem;
             if (updateKind == UpdateKind.Update)
             {
-                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(c.CkTypeId, rtId!.Value), rtEntity);
+                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new(c.CkTypeId, rtId!.Value), rtEntity);
+            }
+            else if (updateKind == UpdateKind.Delete)
+            {
+                updateItem = EntityUpdateInfo<RtEntity>.CreateDelete(new(c.CkTypeId, rtId!.Value));
             }
             else
             {
@@ -203,7 +207,6 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 }
 
                 return recordChild;
-
             }
         }
 

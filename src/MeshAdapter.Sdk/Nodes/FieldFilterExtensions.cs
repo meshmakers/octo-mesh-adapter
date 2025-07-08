@@ -61,6 +61,11 @@ internal static class FieldFilterExtensions
             }
         }
 
+        if (comparisonValue is JArray jArray)
+        {
+            return jArray.Select(GetComparisonValue).ToList();
+        }
+
         return comparisonValue;
     }
 

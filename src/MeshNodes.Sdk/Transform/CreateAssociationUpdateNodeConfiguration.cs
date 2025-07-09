@@ -21,24 +21,24 @@ public record CreateAssociationUpdateNodeConfiguration : SourceTargetPathNodeCon
     
     
     /// <summary>
-    /// The path to the source RtId
+    /// The path to the origin RtId
     /// </summary>
-    public string? SourceRtIdPath { get; set; }
+    public string? OriginRtIdPath { get; set; }
 
     /// <summary>
-    /// The source RtId
+    /// The origin RtId
     /// </summary>
-    public OctoObjectId? SourceRtId { get; set; }
+    public OctoObjectId? OriginRtId { get; set; }
     
     /// <summary>
-    /// The path to the source CkTypeId
+    /// The path to the origin CkTypeId
     /// </summary>
-    public string? SourceCkTypeIdPath { get; set; }
+    public string? OriginCkTypeIdPath { get; set; }
     
     /// <summary>
-    /// The source CkTypeId
+    /// The origin CkTypeId
     /// </summary>
-    public CkId<CkTypeId>? SourceCkTypeId { get; set; }
+    public CkId<CkTypeId>? OriginCkTypeId { get; set; }
     
     
     /// <summary>

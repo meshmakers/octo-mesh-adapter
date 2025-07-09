@@ -6,6 +6,7 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -22,14 +23,14 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
     {
         var c = nodeContext.GetNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
 
-        var sourceRtId = GetSourceRtId(dataContext, nodeContext, c);
+        var originRtId = GetOriginRtId(dataContext, nodeContext, c);
         var targetRtId = GetTargetRtId(dataContext, nodeContext, c);
         var updateKind = GetUpdateKind(dataContext, nodeContext, c);
         var roleId = GetAssociationRoleId(dataContext, nodeContext, c);
 
         var updateItem = updateKind == AssociationUpdateKind.Create
-            ? AssociationUpdateInfo.CreateCreate(sourceRtId, targetRtId, roleId)
-            : AssociationUpdateInfo.CreateDelete(sourceRtId, targetRtId, roleId);
+            ? AssociationUpdateInfo.CreateCreate(originRtId, targetRtId, roleId)
+            : AssociationUpdateInfo.CreateDelete(originRtId, targetRtId, roleId);
 
         dataContext.SetValueByPath(c.TargetPath, updateItem, c.DocumentMode, c.TargetValueKind,
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
@@ -64,44 +65,31 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
         return roleId;
     }
 
-    private static RtEntityId GetSourceRtId(IDataContext dataContext, INodeContext nodeContext,
+    private static RtEntityId GetOriginRtId(IDataContext dataContext, INodeContext nodeContext,
         CreateAssociationUpdateNodeConfiguration config)
     {
-        if (config.SourceRtId == null && config.SourceRtIdPath == null)
+        if (config.OriginRtId == null && config.OriginRtIdPath == null)
         {
-            throw MeshAdapterPipelineExecutionException.SourceRtIdNotFound(nodeContext);
+            throw MeshAdapterPipelineExecutionException.OriginRtIdNotFound(nodeContext);
         }
 
-        if (config.SourceCkTypeId == null && config.SourceCkTypeIdPath == null)
-        {
-            throw MeshAdapterPipelineExecutionException.SourceCkTypeIdNotFound(nodeContext);
-        }
+        var originCkTypeId = CkTypeIdHelper.ResolveOriginCkTypeId(config.OriginCkTypeId, config.OriginCkTypeIdPath, dataContext, nodeContext);
 
         if (dataContext.Current == null)
         {
             throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
         }
 
-        var sourceRtId = config.SourceRtId ??
-                         dataContext.GetComplexObjectByPath<OctoObjectId?>(config.SourceRtIdPath,
+        var originRtId = config.OriginRtId ??
+                         dataContext.GetComplexObjectByPath<OctoObjectId?>(config.OriginRtIdPath,
                              RtNewtonsoftSerializer.DefaultSerializer);
 
-
-        var sourceCkTypeId = config.SourceCkTypeId ??
-                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.SourceCkTypeIdPath,
-                                 RtNewtonsoftSerializer.DefaultSerializer);
-
-        if (sourceRtId == null)
+        if (originRtId == null)
         {
-            throw MeshAdapterPipelineExecutionException.SourceRtIdValueNull(nodeContext);
+            throw MeshAdapterPipelineExecutionException.OriginRtIdValueNull(nodeContext);
         }
 
-        if (sourceCkTypeId == null)
-        {
-            throw MeshAdapterPipelineExecutionException.SourceCkTypeIdValueNull(nodeContext);
-        }
-
-        return new RtEntityId(sourceCkTypeId, sourceRtId.Value);
+        return new RtEntityId(originCkTypeId, originRtId.Value);
     }
 
     private static RtEntityId GetTargetRtId(IDataContext dataContext, INodeContext nodeContext,
@@ -112,10 +100,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
             throw MeshAdapterPipelineExecutionException.TargetRtIdNotFound(nodeContext);
         }
 
-        if (config.SourceCkTypeId == null && config.SourceCkTypeIdPath == null)
-        {
-            throw MeshAdapterPipelineExecutionException.SourceCkTypeIdNotFound(nodeContext);
-        }
+        var targetCkTypeId = CkTypeIdHelper.ResolveTargetCkTypeId(config.TargetCkTypeId, config.TargetCkTypeIdPath, dataContext, nodeContext);
 
         if (dataContext.Current == null)
         {
@@ -126,18 +111,9 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
                          dataContext.GetComplexObjectByPath<OctoObjectId?>(config.TargetRtIdPath,
                              RtNewtonsoftSerializer.DefaultSerializer);
 
-        var targetCkTypeId = config.TargetCkTypeId ??
-                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.TargetCkTypeIdPath,
-                                 RtNewtonsoftSerializer.DefaultSerializer);
-
         if (targetRtId == null)
         {
             throw MeshAdapterPipelineExecutionException.TargetRtIdValueNull(nodeContext);
-        }
-
-        if (targetCkTypeId == null)
-        {
-            throw MeshAdapterPipelineExecutionException.TargetCkTypeIdValueNull(nodeContext);
         }
 
         return new RtEntityId(targetCkTypeId, targetRtId.Value);

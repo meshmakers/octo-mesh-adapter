@@ -33,34 +33,15 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Invalid value: {jToken}");
     }
 
-    public static Exception SourceCkTypeIdNotFound(INodeContext nodeContext)
-    {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: sourceCkTypeId and sourceCkTypeIdPath is not set.");
-    }
-
-    public static Exception SourceCkTypeIdValueNull(INodeContext nodeContext)
-    {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of source CkTypeId is null.");
-    }
-
-    public static Exception SourceRtIdNotFound(INodeContext nodeContext)
-    {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: sourceRtId and sourceRtIdPath is not set.");
-    }
-
-    public static Exception SourceRtIdValueNull(INodeContext nodeContext)
-    {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of source RtId is null.");
-    }
-
     public static Exception TargetCkTypeIdNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: targetCkTypeId and targetCkTypeIdPath is not set.");
     }
 
-    public static Exception TargetCkTypeIdValueNull(INodeContext nodeContext)
+    public static Exception TargetCkTypeIdValueNull(INodeContext nodeContext, string? path = null)
     {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of target CkTypeId is null.");
+        var pathInfo = path != null ? $" at path '{path}'" : "";
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of target CkTypeId is null{pathInfo}.");
     }
 
     public static Exception TargetRtIdNotFound(INodeContext nodeContext)
@@ -103,9 +84,25 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Origin CkTypeId is not set. Please set originCkTypeId or originCkTypeIdPath.");
     }
 
+    public static Exception OriginCkTypeIdValueNull(INodeContext nodeContext, string? path = null)
+    {
+        var pathInfo = path != null ? $" at path '{path}'" : "";
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of origin CkTypeId is null{pathInfo}.");
+    }
+
     public static Exception OriginRtIdsNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Origin RtIds are not set. Please set originRtId or originRtIdPath.");
+    }
+    
+    public static Exception OriginRtIdNotFound(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: originRtId and originRtIdPath is not set.");
+    }
+    
+    public static Exception OriginRtIdValueNull(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of origin RtId is null.");
     }
 
     public static Exception ValueNotSet(INodeContext nodeContext, string? cValuePath)

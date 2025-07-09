@@ -38,6 +38,11 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     /// CkTypeId of query
     /// </summary>
     public CkId<CkTypeId>? CkTypeId { get; set; }
+    
+    /// <summary>
+    /// Gets or sets the JSON path to the CkTypeId
+    /// </summary>
+    public string? CkTypeIdPath { get; set; }
 
     /// <summary>
     /// Jsonpath to the timestamp property if available

@@ -1,4 +1,4 @@
-using Meshmakers.Common.Shared;
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -19,9 +19,17 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
     {
        var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
 
-        if (c.CkTypeId == null)
+        if (c.CkTypeId == null && c.CkTypeIdPath == null)
         {
             nodeContext.Error("CkTypeId is not set");
+            return;
+        }
+        
+        var ckTypeId = GetCkTypeId(c, dataContext);
+        
+        if (ckTypeId == null)
+        {
+            nodeContext.Error("No CkTypeId found");
             return;
         }
 
@@ -30,12 +38,32 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, c.CkTypeId, dataQueryOperation, c.Skip, c.Take);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, dataQueryOperation, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, r);
         
         
         await next(dataContext, nodeContext);
+    }
+    
+    private static CkId<CkTypeId>? GetCkTypeId(GetRtEntitiesByTypeNodeConfiguration c, IDataContext dataContext)
+    {
+        if (c.CkTypeId != null)
+        {
+            return c.CkTypeId;
+        }
+        
+        if (c.CkTypeIdPath != null)
+        {
+            var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(c.CkTypeIdPath);
+            if (ckTypeIdValue == null)
+            {
+                throw new InvalidOperationException($"No CkTypeId found at path '{c.CkTypeIdPath}'");
+            }
+            return new CkId<CkTypeId>(ckTypeIdValue);
+        }
+        
+        return null;
     }
 }

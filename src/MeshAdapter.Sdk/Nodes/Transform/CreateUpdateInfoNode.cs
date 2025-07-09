@@ -9,6 +9,7 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -29,12 +30,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         var rtId = GetRtId(dataContext, c);
         var updateKind = GetUpdateKind(dataContext, c);
         var rtWellKnownName = GetRtWellKnownName(dataContext, c);
-
-        if (c.CkTypeId == null)
-        {
-            nodeContext.Error("CkTypeId is not set");
-            return;
-        }
+        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         if (updateKind == null)
         {
@@ -63,11 +59,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             timeStamp = dataContext.GetSimpleValueByPath<DateTime>(c.TimestampPath);
         }
 
-        var ckTypeGraph = await etlContext.TenantRepository.GetCkTypeGraphAsync(c.CkTypeId);
+        var ckTypeGraph = await etlContext.TenantRepository.GetCkTypeGraphAsync(ckTypeId);
 
         var rtEntity = new RtEntity
         {
-            CkTypeId = c.CkTypeId,
+            CkTypeId = ckTypeId,
             RtWellKnownName = rtWellKnownName
         };
 
@@ -115,23 +111,23 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             EntityUpdateInfo<RtEntity>? updateItem;
             if (updateKind == UpdateKind.Update)
             {
-                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new(c.CkTypeId, rtId!.Value), rtEntity);
+                updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new(ckTypeId, rtId!.Value), rtEntity);
             }
             else if (updateKind == UpdateKind.Delete)
             {
-                updateItem = EntityUpdateInfo<RtEntity>.CreateDelete(new(c.CkTypeId, rtId!.Value));
+                updateItem = EntityUpdateInfo<RtEntity>.CreateDelete(new(ckTypeId, rtId!.Value));
             }
             else
             {
                 if (rtId != null)
                 {
                     rtEntity.RtId = rtId.Value;
-                    rtEntity.CkTypeId = c.CkTypeId;
+                    rtEntity.CkTypeId = ckTypeId;
                     updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(rtEntity);
                 }
                 else
                 {
-                    updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(c.CkTypeId, rtEntity);
+                    updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(ckTypeId, rtEntity);
                 }
             }
 

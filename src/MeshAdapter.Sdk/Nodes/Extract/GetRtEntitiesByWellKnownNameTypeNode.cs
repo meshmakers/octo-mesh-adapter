@@ -7,6 +7,7 @@ using Meshmakers.Octo.Sdk.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
@@ -23,9 +24,17 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
     {
        var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
 
-        if (c.CkTypeId == null)
+        if (c.CkTypeId == null && c.CkTypeIdPath == null)
         {
             nodeContext.Error("CkTypeId is not set");
+            return;
+        }
+        
+        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext);
+        
+        if (ckTypeId == null)
+        {
+            nodeContext.Error("No CkTypeId found");
             return;
         }
 
@@ -37,7 +46,7 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, c.CkTypeId, dataQueryOperation, c.Skip, c.Take);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, dataQueryOperation, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         List<string> handledRtWellKnownNames = new();
@@ -62,7 +71,7 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
             {
                 x.Value.ReplaceNested(c.RtIdTargetPath, OctoObjectId.GenerateNewId().ToString());
                 x.Value.ReplaceNested(c.ModOperationPath, (int)UpdateKind.Insert);
-                x.Value.ReplaceNested(c.CkTypeIdTargetPath, c.CkTypeId.ToString());
+                x.Value.ReplaceNested(c.CkTypeIdTargetPath, ckTypeId.ToString());
             });
         }
 

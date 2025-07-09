@@ -4,6 +4,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -25,7 +26,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
             return;
         }
         
-        var ckTypeId = GetCkTypeId(c, dataContext);
+        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext);
         
         if (ckTypeId == null)
         {
@@ -45,25 +46,5 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         
         
         await next(dataContext, nodeContext);
-    }
-    
-    private static CkId<CkTypeId>? GetCkTypeId(GetRtEntitiesByTypeNodeConfiguration c, IDataContext dataContext)
-    {
-        if (c.CkTypeId != null)
-        {
-            return c.CkTypeId;
-        }
-        
-        if (c.CkTypeIdPath != null)
-        {
-            var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(c.CkTypeIdPath);
-            if (ckTypeIdValue == null)
-            {
-                throw new InvalidOperationException($"No CkTypeId found at path '{c.CkTypeIdPath}'");
-            }
-            return new CkId<CkTypeId>(ckTypeIdValue);
-        }
-        
-        return null;
     }
 }

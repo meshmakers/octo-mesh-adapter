@@ -5,7 +5,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 
 /// <summary>
-/// Configuration for node get rt entities by type
+/// Configuration for node gets rt entities by type
 /// </summary>
 [NodeName("GetRtEntitiesByType", 1)]
 public record GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfiguration
@@ -16,12 +16,17 @@ public record GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfigu
     public CkId<CkTypeId>? CkTypeId { get; set; }
     
     /// <summary>
-    /// Amount of items to skip
+    /// Gets or sets the JSON path to the CkTypeId
+    /// </summary>
+    public string? CkTypeIdPath { get; set; }
+    
+    /// <summary>
+    /// Number of items to skip
     /// </summary>
     public int? Skip { get; set; }
     
     /// <summary>
-    /// Amount of items to take
+    /// Number of items to take
     /// </summary>
     public int? Take { get; set; }
     

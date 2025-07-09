@@ -1,5 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
@@ -14,9 +15,15 @@ public static class CkTypeIdHelper
     /// <param name="ckTypeId">Direct CkTypeId value (priority)</param>
     /// <param name="ckTypeIdPath">Path to CkTypeId in data context</param>
     /// <param name="dataContext">Data context to resolve path from</param>
-    /// <returns>Resolved CkTypeId or null if not found</returns>
-    public static CkId<CkTypeId>? ResolveCkTypeId(CkId<CkTypeId>? ckTypeId, string? ckTypeIdPath, IDataContext dataContext)
+    /// <param name="nodeContext">Node context for exception handling</param>
+    /// <returns>Resolved CkTypeId or throws exception if not found</returns>
+    public static CkId<CkTypeId> ResolveCkTypeId(CkId<CkTypeId>? ckTypeId, string? ckTypeIdPath, IDataContext dataContext, INodeContext nodeContext)
     {
+        if (ckTypeId == null && ckTypeIdPath == null)
+        {
+            throw MeshAdapterPipelineExecutionException.CkTypeIdNotSet(nodeContext);
+        }
+        
         if (ckTypeId != null)
         {
             return ckTypeId;
@@ -27,11 +34,11 @@ public static class CkTypeIdHelper
             var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(ckTypeIdPath);
             if (ckTypeIdValue == null)
             {
-                throw new InvalidOperationException($"No CkTypeId found at path '{ckTypeIdPath}'");
+                throw MeshAdapterPipelineExecutionException.CkTypeIdValueNull(nodeContext, ckTypeIdPath);
             }
             return new CkId<CkTypeId>(ckTypeIdValue);
         }
         
-        return null;
+        throw MeshAdapterPipelineExecutionException.CkTypeIdNotSet(nodeContext);
     }
 }

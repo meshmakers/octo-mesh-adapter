@@ -6,6 +6,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -17,9 +18,17 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
     {
         var c = nodeContext.GetNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
 
-        if (c.CkTypeId == null)
+        if (c.CkTypeId == null && c.CkTypeIdPath == null)
         {
             nodeContext.Error("CkTypeId is not set");
+            return;
+        }
+        
+        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext);
+        
+        if (ckTypeId == null)
+        {
+            nodeContext.Error("No CkTypeId found");
             return;
         }
 
@@ -40,7 +49,7 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             session = await etlContext.TenantRepository.GetSessionAsync();
             session.StartTransaction();
 
-            var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, c.CkTypeId,
+            var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId,
                 dataQueryOperation, 0, 1);
 
             if (r.TotalCount == 0)
@@ -49,7 +58,7 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
                 dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
                     TargetValueWriteModes.Overwrite, objectId);
                 dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, c.CkTypeId);
+                    TargetValueWriteModes.Overwrite, ckTypeId);
                 dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
                     TargetValueWriteModes.Overwrite, UpdateKind.Insert);
             }
@@ -59,7 +68,7 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
                     TargetValueWriteModes.Overwrite,
                     r.Items.First().RtId);
                 dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, c.CkTypeId);
+                    TargetValueWriteModes.Overwrite, ckTypeId);
                 dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
                     TargetValueWriteModes.Overwrite,
                     UpdateKind.Update);

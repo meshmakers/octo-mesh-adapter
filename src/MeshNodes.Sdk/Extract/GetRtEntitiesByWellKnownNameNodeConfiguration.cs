@@ -15,6 +15,11 @@ public record GetRtEntitiesByWellKnownNameNodeConfiguration : PathNodeConfigurat
     public CkId<CkTypeId>? CkTypeId { get; set; }
     
     /// <summary>
+    /// Gets or sets the json path to the CkTypeId
+    /// </summary>
+    public string? CkTypeIdPath { get; set; }
+    
+    /// <summary>
     /// Amount of items to skip
     /// </summary>
     public int? Skip { get; set; }

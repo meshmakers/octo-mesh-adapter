@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -22,9 +23,17 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
 
         var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
 
-        if (c.CkTypeId == null)
+        if (c.CkTypeId == null && c.CkTypeIdPath == null)
         {
             nodeContext.Error("CkTypeId is not set");
+            return;
+        }
+        
+        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext);
+        
+        if (ckTypeId == null)
+        {
+            nodeContext.Error("No CkTypeId found");
             return;
         }
 
@@ -47,7 +56,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, c.CkTypeId, rtIds,
+        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, ckTypeId, rtIds,
             dataQueryOperation, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 

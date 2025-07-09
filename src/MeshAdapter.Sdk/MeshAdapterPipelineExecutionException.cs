@@ -113,4 +113,14 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Value is not set. Please set value or valuePath. ValuePath: {cValuePath}");
     }
+    
+    public static Exception CkTypeIdNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: CkTypeId is not set. Please set ckTypeId or ckTypeIdPath.");
+    }
+    
+    public static Exception CkTypeIdValueNull(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: No CkTypeId found at path '{path}'.");
+    }
 }

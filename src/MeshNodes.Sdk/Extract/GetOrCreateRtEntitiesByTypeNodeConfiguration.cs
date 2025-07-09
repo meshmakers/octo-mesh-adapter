@@ -14,7 +14,7 @@ public record GetOrCreateRtEntitiesByTypeNodeConfiguration : NodeConfiguration
     /// <summary>
     /// The CkTypeId of the object
     /// </summary>
-    public required CkId<CkTypeId>? CkTypeId { get; set; }
+    public CkId<CkTypeId>? CkTypeId { get; set; }
     
     /// <summary>
     /// Gets or sets the json path to the CkTypeId

@@ -23,19 +23,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
 
         var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
 
-        if (c.CkTypeId == null && c.CkTypeIdPath == null)
-        {
-            nodeContext.Error("CkTypeId is not set");
-            return;
-        }
-        
-        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext);
-        
-        if (ckTypeId == null)
-        {
-            nodeContext.Error("No CkTypeId found");
-            return;
-        }
+        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         if (c.RtIds == null && c.RtIdsPath == null)
         {

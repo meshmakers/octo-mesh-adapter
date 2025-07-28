@@ -30,10 +30,14 @@ public class FromWatchRtEntityNode(ISystemContext systemContext) : ITriggerPipel
         {
             UpdateTypes = (UpdateTypes)c.UpdateTypes,
             RtId = c.RtId,
-            BeforeFieldFilters = c.BeforeFieldFilters?.Select(f =>
-                new FieldFilter(f.AttributePath.ToPascalCase(), (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList(),
-            FieldFilters = c.FieldFilters?.Select(f =>
-                new FieldFilter(f.AttributePath.ToPascalCase(), (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList(),
+            BeforeFieldFilterCriteria = c.BeforeFieldFilters != null
+                ? FieldFilterCriteria.Create().Fields(c.BeforeFieldFilters.Select(f =>
+                    new FieldFilter(f.AttributePath, (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList())
+                : null,
+            FieldFilterCriteria = c.FieldFilters != null
+                ? FieldFilterCriteria.Create().Fields(c.FieldFilters.Select(f =>
+                    new FieldFilter(f.AttributePath, (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList())
+                : null,
         };
 
         var tenantRepository = await systemContext.FindTenantRepositoryAsync(context.TenantId);

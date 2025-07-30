@@ -1,5 +1,6 @@
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
 
@@ -8,6 +9,7 @@ namespace Meshmakers.Octo.MeshAdapter.Services;
 internal class MeshAdapterService(
     ILogger<MeshAdapterService> logger,
     IPipelineRegistryService pipelineRegistryService,
+    ICkCacheService ckCacheService,
     IEventHubControl eventHubControl) : IAdapterService
 {
     public async Task<bool> StartupAsync(AdapterStartup adapterStartup, List<DeploymentUpdateErrorMessageDto> errorMessages,
@@ -16,9 +18,14 @@ internal class MeshAdapterService(
         logger.LogInformation("Startup of mesh adapter");
         try
         {
+            // Clean the cache for the tenant to ensure no stale data is present
+            logger.LogInformation("Unloading cache for tenant: {TenantId}", adapterStartup.TenantId);
+            ckCacheService.Unload(adapterStartup.TenantId);
+
+            // Register the adapter configuration
+            logger.LogInformation("Registering adapter configuration for tenant: {TenantId}", adapterStartup.TenantId);
             var success =await pipelineRegistryService.RegisterPipelinesAsync(adapterStartup.TenantId,
                 adapterStartup.Configuration.Pipelines, errorMessages);
-            await pipelineRegistryService.StartTriggerPipelineNodesAsync(adapterStartup.TenantId);
 
             await eventHubControl.StartAsync(stoppingToken);
             
@@ -36,10 +43,8 @@ internal class MeshAdapterService(
         try
         {
             logger.LogInformation("Shutdown of mesh adapter");
-            await pipelineRegistryService.StopTriggerPipelineNodesAsync(adapterShutdown.TenantId);
-            
-            pipelineRegistryService.UnregisterAllPipelines(adapterShutdown.TenantId);
             await eventHubControl.StopAsync(stoppingToken);
+            await pipelineRegistryService.UnregisterAllPipelinesAsync(adapterShutdown.TenantId);
             logger.LogInformation("Mesh Adapter service stopped");
         }
         catch (Exception e)

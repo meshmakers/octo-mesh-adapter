@@ -39,7 +39,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\MeshAdapter.Sdk\MeshAdapter.Sdk.csproj" />
-      <ProjectReference Include="..\octo-common-services\src\Infrastructure\Infrastructure.csproj" />
-      <ProjectReference Include="..\octo-common-services\src\Observability\Observability.csproj" />
+        <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Services.Observability" Version="$(OctoVersion)" />
     </ItemGroup>
 </Project>

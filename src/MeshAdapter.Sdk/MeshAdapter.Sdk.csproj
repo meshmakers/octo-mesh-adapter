@@ -31,9 +31,9 @@
     <ItemGroup>
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
-        <ProjectReference Include="..\octo-common-services\src\Notifications\Notifications.csproj" />
-        <ProjectReference Include="..\octo-common-services\src\octo-construction-kit-engine-mongodb\src\Runtime.Engine.MongoDb\Runtime.Engine.MongoDb.csproj"/>
-        <ProjectReference Include="..\octo-common-services\src\StreamData\StreamData.csproj" />
+        <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
     </ItemGroup>
 
 </Project>

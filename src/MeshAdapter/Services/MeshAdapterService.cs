@@ -20,7 +20,10 @@ internal class MeshAdapterService(
         {
             // Clean the cache for the tenant to ensure no stale data is present
             logger.LogInformation("Unloading cache for tenant: {TenantId}", adapterStartup.TenantId);
-            ckCacheService.Unload(adapterStartup.TenantId);
+            if (ckCacheService.IsTenantLoaded(adapterStartup.TenantId))
+            {
+                ckCacheService.Unload(adapterStartup.TenantId);
+            }
 
             // Register the adapter configuration
             logger.LogInformation("Registering adapter configuration for tenant: {TenantId}", adapterStartup.TenantId);

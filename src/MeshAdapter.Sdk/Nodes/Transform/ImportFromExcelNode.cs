@@ -398,9 +398,9 @@ public class ImportFromExcelNode(
                     continue;
                 }
 
-                // we already created this entity
+                // Get ck type id and name. Be aware of the layer for column import!
                 var ckTypeId = columnContext.GetCkTypeId(iLayer);
-                var name = columnContext.GetValueByPath<string>(entry, "name")!;
+                var name = columnContext.GetValueByPath<string>(entry, "name", iLayer)!;
 
                 var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
 

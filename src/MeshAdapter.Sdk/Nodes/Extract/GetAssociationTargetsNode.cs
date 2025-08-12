@@ -79,7 +79,8 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         {
             resultDto.Add(new MultipleRtEntityResultDto
             {
-                OriginRtId =  r.Key,
+                OriginRtId =  r.Key.RtId,
+                OriginCkTypeId = r.Key.CkTypeId,
                 TotalCount = r.Value.TotalCount,
                 Items = r.Value.Items
             });

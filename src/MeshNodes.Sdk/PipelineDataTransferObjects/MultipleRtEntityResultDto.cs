@@ -14,6 +14,11 @@ public record MultipleRtEntityResultDto
     public required OctoObjectId OriginRtId { get; init; }
 
     /// <summary>
+    /// Represents the origin CkTypeId for the entity extraction operation.
+    /// </summary>
+    public required CkId<CkTypeId> OriginCkTypeId { get; init; }
+
+    /// <summary>
     /// Returns the total count of entities extracted during the operation.
     /// </summary>
     public required long TotalCount { get; init; }

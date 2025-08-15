@@ -22,6 +22,7 @@ public class EMailSenderNode(
     IMeshEtlContext etlContext)
     : IPipelineNode
 {
+    private const string EmailSemaphoresKey = "EmailSenderNode.Semaphores";
     // ReSharper disable once ClassNeverInstantiated.Local
     private record EMailSenderConfiguration
     {
@@ -33,6 +34,7 @@ public class EMailSenderNode(
         public required string Password { get; init; }
 
         public required bool IsSslEnabled { get; init; }
+        public int MaxConcurrentEmails { get; init; } = 3;
         // ReSharper restore UnusedAutoPropertyAccessor.Local
     }
 
@@ -47,32 +49,49 @@ public class EMailSenderNode(
         {
             if (!etlContext.GlobalConfiguration.IsDefined(c.ServerConfiguration))
             {
-                nodeContext.Error($"Server configuration '{c.ServerConfiguration}' not found");
-                return;
+                throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(nodeContext,
+                    nameof(c.ServerConfiguration), c.ServerConfiguration);
             }
 
             var eMailSenderConfiguration =
                 etlContext.GlobalConfiguration.GetValue<EMailSenderConfiguration>(c.ServerConfiguration);
 
+            // Get or create semaphore dictionary in context
+            if (!etlContext.Properties.TryGetValue(EmailSemaphoresKey, out var semaphoresObj) || 
+                semaphoresObj is not Dictionary<string, SemaphoreSlim> semaphores)
+            {
+                semaphores = new Dictionary<string, SemaphoreSlim>();
+                etlContext.Properties[EmailSemaphoresKey] = semaphores;
+            }
+
+            // Get or create semaphore for this server configuration
+            if (!semaphores.TryGetValue(c.ServerConfiguration, out var emailSemaphore))
+            {
+                emailSemaphore = new SemaphoreSlim(
+                    eMailSenderConfiguration.MaxConcurrentEmails,
+                    eMailSenderConfiguration.MaxConcurrentEmails);
+                semaphores[c.ServerConfiguration] = emailSemaphore;
+            }
+
             var recipients = dataContext.GetSimpleArrayValueByPath<string>(c.ToPath);
             if (recipients == null)
             {
-                nodeContext.Error("No recipients found");
-                return;
+                throw MeshAdapterPipelineExecutionException.NoRecipientsFound(nodeContext,
+                    nameof(c.ToPath), c.ToPath);
             }
 
             var subject = dataContext.GetSimpleValueByPath<string>(c.SubjectPath);
             if (subject == null)
             {
-                nodeContext.Error("No subject found");
-                return;
+                throw MeshAdapterPipelineExecutionException.ValueNotSet(
+                    nodeContext, c.SubjectPath);
             }
 
             var body = dataContext.GetSimpleValueByPath<string>(c.Path);
             if (body == null)
             {
-                nodeContext.Error("No body found");
-                return;
+                throw MeshAdapterPipelineExecutionException.ValueNotSet(
+                    nodeContext, c.Path);
             }
             
 
@@ -104,8 +123,8 @@ public class EMailSenderNode(
             {
                 if(c.AttachmentFileName == null || c.AttachmentContentType == null)
                 {
-                    nodeContext.Error("Attachment filename or content type is null");
-                    return;
+                    throw MeshAdapterPipelineExecutionException.ValueNotSet(
+                        nodeContext, nameof(c.AttachmentFileName));
                 }
                 
                 var attachmentData = attachment.Stream;
@@ -115,12 +134,20 @@ public class EMailSenderNode(
             
             AddReciepients(dataContext, recipients, mailMessage, c);
 
-
-            await client.SendMailAsync(mailMessage);
+            await emailSemaphore.WaitAsync();
+            try
+            {
+                await client.SendMailAsync(mailMessage);
+            }
+            finally
+            {
+                emailSemaphore.Release();
+            }
         }
         catch (Exception e)
         {
-            nodeContext.Error(e, "Error sending email");
+            throw MeshAdapterPipelineExecutionException
+                .CannotSendMail(nodeContext, e);
         }
 
         await next(dataContext, nodeContext);

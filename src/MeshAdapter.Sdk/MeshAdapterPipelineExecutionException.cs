@@ -120,4 +120,22 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: No CkTypeId found at path '{path}'.");
     }
+
+    public static Exception GlobalConfigurationParameterNotFound(INodeContext nodeContext, string configurationName, string configurationValue)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration parameter '{configurationName}' with value '{configurationValue}' not found.");
+    }
+
+    public static Exception NoRecipientsFound(INodeContext nodeContext, string toPathName, string toPathValue)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No recipients found for path '{toPathName}' with value '{toPathValue}'. Please check the configuration.");
+    }
+
+    public static Exception CannotSendMail(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot send e-mail: {exception.Message}", exception);
+    }
 }

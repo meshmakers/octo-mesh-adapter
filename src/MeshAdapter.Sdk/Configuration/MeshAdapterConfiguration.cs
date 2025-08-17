@@ -14,7 +14,12 @@ public class MeshAdapterConfiguration
         StreamDataHost = "127.0.0.1";
         StreamDataUser = "crate";
     }
-    
+
+    /// <summary>
+    /// Internal URI to the reporting service.
+    /// </summary>
+    public string ReportingServiceUrl { get; set; } = "https://localhost:5007";
+
     /// <summary>
     /// Hostname of crate db server
     /// </summary>

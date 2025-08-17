@@ -138,4 +138,46 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Cannot send e-mail: {exception.Message}", exception);
     }
+
+    public static Exception PathParameterNameMissing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path parameter name is missing. Please set the Name property.");
+    }
+
+    public static Exception PathParameterValueMissing(INodeContext nodeContext, string pathParamName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Path parameter value is missing for parameter '{pathParamName}'. Please set the Value or ValuePath property.");
+    }
+
+    public static Exception FileSystemFolderUriMissing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: FileSystemFolderUri is missing. Please set the FileSystemFolderUri property.");
+    }
+
+    public static Exception ReportDefinitionUriMissing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: ReportDefinitionUri is missing. Please set the ReportDefinitionUri property.");
+    }
+
+    public static Exception ReportFileNamePrefixMissing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: ReportFileNamePrefix is missing. Please set the ReportFileNamePrefix property.");
+    }
+
+    public static Exception RtIdNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: RtId is not set. Please set rtId or rtIdPath.");
+    }
+
+    public static Exception DataContextIsNull(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Data context is null. Please ensure the data context is set before execution.");
+    }
+
+    public static Exception RtIdValueNull(INodeContext nodeContext, string? rtIdPath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Value of RtId is null. Please ensure the value is set at path '{rtIdPath}'.");
+    }
 }

@@ -47,6 +47,8 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<JoinNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MathNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SumAggregationNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
 
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();

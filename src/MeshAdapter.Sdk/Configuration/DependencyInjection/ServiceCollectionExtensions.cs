@@ -7,6 +7,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Aggregations;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
@@ -75,6 +76,7 @@ public static class ServiceCollectionExtensions
         services.AddOctoServiceInfrastructure();
 
         services.AddSingleton<IContextCreatorService, MeshContextCreatorService>();
+        services.AddScoped<IWellKnownNameLoader, WellKnownNameLoader>();
 
         // We want to ensure that all mesh adapters are using the same security configuration
         services.AddCors();

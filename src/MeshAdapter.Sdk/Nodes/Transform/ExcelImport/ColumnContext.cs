@@ -9,9 +9,13 @@ internal class ColumnContext
     {
         Ignore = 0,
         Scalar = 1,
-        Tree = 2,
-        ScalarDate = 3,
-        ScalarTime = 4,
+        Tree = 2
+    }
+
+    public enum ActionType
+    {
+        Create = 0,
+        AssignByWellKnownName = 1,
     }
 
     internal record ColumnIndex(
@@ -19,7 +23,7 @@ internal class ColumnContext
         string AttributePath,
         int Index,
         int Layer,
-        ColumnType? ColumnType);
+        ColumnType? ColumnType2, ActionType? Action);
 
     private readonly List<ColumnIndex> _columnIndexes = [];
 
@@ -53,7 +57,13 @@ internal class ColumnContext
                 columnType = (ColumnType)columnTypeValue.Value<int>();
             }
 
-            _columnIndexes.Add(new(new CkId<CkTypeId>(ckTypeId), attributePath, index, layer, columnType));
+            ActionType? actionType = null;
+            if (column.TryGetValue("actionType", StringComparison.InvariantCultureIgnoreCase, out var actionTypeValue))
+            {
+                actionType = (ActionType)actionTypeValue.Value<int>();
+            }
+
+            _columnIndexes.Add(new(new CkId<CkTypeId>(ckTypeId), attributePath, index, layer, columnType, actionType));
         }
     }
 
@@ -71,6 +81,11 @@ internal class ColumnContext
     public CkId<CkTypeId> GetCkTypeId(int layer = 1, string ckTypeId = "Basic/TreeNode")
     {
         return _columnIndexes.FirstOrDefault(x => x.Layer == layer)?.CkTypeId ?? new CkId<CkTypeId>(ckTypeId);
+    }
+
+    public ActionType GetActionType(int layer = 1)
+    {
+        return _columnIndexes.FirstOrDefault(x => x.Layer == layer)?.Action ?? ActionType.Create;
     }
 
     public IEnumerable<ColumnIndex> GetColumns(int layer = 1)

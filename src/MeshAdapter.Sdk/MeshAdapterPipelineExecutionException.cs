@@ -1,5 +1,6 @@
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter;
@@ -179,5 +180,48 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Value of RtId is null. Please ensure the value is set at path '{rtIdPath}'.");
+    }
+
+
+    public static Exception NoWellKnownNameValue(int layer, int lineNumber)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"No well-known name value found for layer {layer} at line {lineNumber}. Please ensure the well-known name is set correctly.");
+    }
+
+    public static Exception NoWellKnownNamesFound(int iLayer)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"No well-known names found for layer {iLayer}. Please ensure the well-known names are set correctly.");
+    }
+
+    public static Exception UnknownActionType(ColumnContext.ActionType actionType)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Unknown action type: {actionType}. Please ensure the action type is valid and supported.");
+    }
+
+    public static Exception NoWellKnownNamesFoundForLayer(int iLayer)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"No well-known names found for layer {iLayer}. Please ensure the well-known configuration are set correctly.");
+    }
+
+    public static Exception NoEntityFound(int iLayer, string name)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"No entity found for layer {iLayer} with name '{name}'. Please ensure the entity exists and is correctly configured.");
+    }
+
+    public static Exception ParentNotFound(int iLayer)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Parent not found for layer {iLayer}. Please ensure the parent entity is correctly configured and exists.");
+    }
+
+    public static Exception UnknownImportType(string importType)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Unknown import type: {importType}. Please ensure the import type is valid and supported.");
     }
 }

@@ -224,4 +224,22 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"Unknown import type: {importType}. Please ensure the import type is valid and supported.");
     }
+
+    public static Exception NotificationTemplateNotFound(INodeContext nodeContext, string templateName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Notification template '{templateName}' not found. Please ensure the template exists and is correctly configured.");
+    }
+
+    public static Exception NotificationTemplateNameNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Notification template name is not set. Please set NotificationTemplateName or NotificationTemplateNamePath.");
+    }
+
+    public static Exception NotificationTemplateNameValueNull(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No notification template name found at path '{path}'. Please ensure the value is set at the specified path.");
+    }
 }

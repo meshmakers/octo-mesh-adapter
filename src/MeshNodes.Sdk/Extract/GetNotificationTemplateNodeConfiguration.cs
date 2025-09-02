@@ -11,7 +11,12 @@ public record GetNotificationTemplateNodeConfiguration : TargetPathNodeConfigura
     /// <summary>
     /// Name of the notification template used for the email
     /// </summary>
-    public required string NotificationTemplateName { get; set; }
+    public string? NotificationTemplateName { get; set; }
+    
+    /// <summary>
+    /// Gets or sets the json path to the notification template name
+    /// </summary>
+    public string? NotificationTemplateNamePath { get; set; }
     
     /// <summary>
     /// The path where the subject of the notification template should be written

@@ -22,8 +22,10 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
     {
         var c = nodeContext.GetNodeConfiguration<GetNotificationTemplateNodeConfiguration>();
 
+        var notificationTemplateName = GetNotificationTemplateName(c, dataContext, nodeContext);
+
         var dataQueryOperation = DataQueryOperation.Create();
-        dataQueryOperation.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.Equals, c.NotificationTemplateName);
+        dataQueryOperation.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.Equals, notificationTemplateName);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
@@ -33,13 +35,32 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         var notificationTemplate = r.Items.FirstOrDefault();
         if (notificationTemplate == null)
         {
-            nodeContext.Error("Notification template not found");
-            return;
+            throw MeshAdapterPipelineExecutionException.NotificationTemplateNotFound(nodeContext, notificationTemplateName);
         }
 
         dataContext.SetValueByPath(c.SubjectTargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.SubjectTemplate);
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.BodyTemplate);
         
         await next(dataContext, nodeContext);
+    }
+
+    private static string GetNotificationTemplateName(GetNotificationTemplateNodeConfiguration c, IDataContext dataContext, INodeContext nodeContext)
+    {
+        if (!string.IsNullOrEmpty(c.NotificationTemplateName))
+        {
+            return c.NotificationTemplateName;
+        }
+        
+        if (!string.IsNullOrEmpty(c.NotificationTemplateNamePath))
+        {
+            var templateName = dataContext.GetSimpleValueByPath<string>(c.NotificationTemplateNamePath);
+            if (string.IsNullOrEmpty(templateName))
+            {
+                throw MeshAdapterPipelineExecutionException.NotificationTemplateNameValueNull(nodeContext, c.NotificationTemplateNamePath);
+            }
+            return templateName;
+        }
+        
+        throw MeshAdapterPipelineExecutionException.NotificationTemplateNameNotSet(nodeContext);
     }
 }

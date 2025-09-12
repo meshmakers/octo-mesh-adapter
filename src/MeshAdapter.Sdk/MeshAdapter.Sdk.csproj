@@ -33,13 +33,12 @@
         <PackageReference Include="IronOcr" Version="2025.9.7" />
         <PackageReference Include="IronOcr.MacOs" Version="2025.9.7" />
         <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.9.7" />
-        <PackageReference Include="Anthropic.SDK" Version="0.6.6" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
-        <PackageReference Include="MailKit" Version="4.3.0" />
+        <PackageReference Include="MailKit" Version="4.13.0" />
     </ItemGroup>
 
     <!-- Explicit runtime support for IronOCR native libraries -->

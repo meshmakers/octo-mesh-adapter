@@ -65,6 +65,84 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
                 
                 input["body"] = body;
             }
+            else if (context.Request.ContentType?.StartsWith("multipart/form-data") == true)
+            {
+                // Handle multipart/form-data (file uploads)
+                var files = new JArray();
+                var formData = new JObject();
+                
+                foreach (var file in context.Request.Form.Files)
+                {
+                    using var memoryStream = new MemoryStream();
+                    await file.CopyToAsync(memoryStream);
+                    var fileBytes = memoryStream.ToArray();
+                    
+                    files.Add(new JObject
+                    {
+                        ["fileName"] = file.FileName,
+                        ["contentType"] = file.ContentType,
+                        ["length"] = file.Length,
+                        ["data"] = Convert.ToBase64String(fileBytes),
+                        ["encoding"] = "base64"
+                    });
+                }
+                
+                foreach (var (formKey, formValue) in context.Request.Form)
+                {
+                    if (formValue.Count == 1)
+                    {
+                        formData[formKey] = formValue[0];
+                    }
+                    else
+                    {
+                        formData[formKey] = JToken.FromObject(formValue.ToArray());
+                    }
+                }
+                
+                if (files.Count > 0)
+                {
+                    input["files"] = files;
+                }
+                if (formData.Count > 0)
+                {
+                    input["formData"] = formData;
+                }
+                input["contentType"] = context.Request.ContentType;
+            }
+            else if (context.Request.ContentLength > 0)
+            {
+                // Handle binary data and other content types
+                using var memoryStream = new MemoryStream();
+                await context.Request.Body.CopyToAsync(memoryStream);
+                var bytes = memoryStream.ToArray();
+                
+                // Check if this might be text-based content
+                var contentType = context.Request.ContentType ?? string.Empty;
+                if (IsTextBasedContentType(contentType))
+                {
+                    // Try to decode as UTF-8 text
+                    try
+                    {
+                        var textBody = Encoding.UTF8.GetString(bytes);
+                        input["body"] = textBody;
+                    }
+                    catch
+                    {
+                        // If UTF-8 decoding fails, treat as binary
+                        input["body"] = Convert.ToBase64String(bytes);
+                        input["bodyEncoding"] = "base64";
+                    }
+                }
+                else
+                {
+                    // Binary content - encode as base64
+                    input["body"] = Convert.ToBase64String(bytes);
+                    input["bodyEncoding"] = "base64";
+                }
+                
+                input["contentType"] = context.Request.ContentType;
+                input["contentLength"] = context.Request.ContentLength;
+            }
         }
         
         if (context.Request.Query.Count > 0)
@@ -96,5 +174,22 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
     private string GetUri(string uri)
     {
         return $"/{adapterOptions.Value.TenantId?.ToLower()}{uri.ToLower()}";
+    }
+    
+    private static bool IsTextBasedContentType(string contentType)
+    {
+        if (string.IsNullOrEmpty(contentType))
+            return false;
+            
+        var lowerContentType = contentType.ToLowerInvariant();
+        
+        // Common text-based content types
+        return lowerContentType.Contains("text/") ||
+               lowerContentType.Contains("application/json") ||
+               lowerContentType.Contains("application/xml") ||
+               lowerContentType.Contains("application/javascript") ||
+               lowerContentType.Contains("application/x-www-form-urlencoded") ||
+               lowerContentType.Contains("+xml") ||
+               lowerContentType.Contains("+json");
     }
 }

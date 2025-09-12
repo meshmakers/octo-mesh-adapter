@@ -15,7 +15,7 @@ using Newtonsoft.Json.Linq;
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-/// Creates an update item for an existing RtEntity
+/// Creates an update item for a RtEntity
 /// </summary>
 [NodeConfiguration(typeof(CreateUpdateInfoNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global

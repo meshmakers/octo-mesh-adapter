@@ -38,6 +38,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetRtEntitiesByTypeNode>()
             .RegisterNode<GetRtEntitiesByIdNode>()
             .RegisterNode<CreateUpdateInfoNode>()
+            .RegisterNode<CreateFileSystemItemUpdateNode>()
             .RegisterNode<ApplyChangesNode>()
             .RegisterNode<ApplyChangesNode2>()
             .RegisterNode<FilterLatestUpdateInfoNode>()

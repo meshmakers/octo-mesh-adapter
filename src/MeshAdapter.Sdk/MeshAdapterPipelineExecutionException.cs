@@ -242,4 +242,47 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: No notification template name found at path '{path}'. Please ensure the value is set at the specified path.");
     }
+
+
+    public static Exception FileNameNull(INodeContext nodeContext, string? fileNamePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: File name is null. Please ensure the file name is set at path '{fileNamePath}'.");
+    }
+
+    public static Exception ContentTypeNull(INodeContext nodeContext, string? cContentTypePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Content type is null. Please ensure the content type is set at path '{cContentTypePath}'.");
+    }
+
+    public static Exception ContentLengthNull(INodeContext nodeContext, string? contentLengthPath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Content length is null. Please ensure the content length is set at path '{contentLengthPath}'.");
+    }
+
+    public static Exception RepositoryOperationFailed(Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Repository operation failed: {exception.Message}", exception);
+    }
+
+    public static Exception RootFolderNotFound(string rootFolderWellKnownName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Root folder with well-known name '{rootFolderWellKnownName}' not found. Please ensure the root folder exists and is correctly configured.");
+    }
+
+    public static Exception RepositoryUpdateOperationFailed(OperationResult operationResult)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Repository update operation failed: {operationResult}");
+    }
+
+    public static Exception RootFolderWellKnownNameNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Root folder well-known name is not set. Please ensure the RootFolderWellKnownName property is set.");
+    }
 }

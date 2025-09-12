@@ -39,6 +39,7 @@ public static class DataPipelineBuilderExtensions
         // Register transform nodes
         pipelineBuilder.RegisterNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<CreateFileSystemUpdateNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();

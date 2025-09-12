@@ -298,4 +298,10 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Context too large: {fullContextLength} tokens (max {i}). Please reduce the context size.");
     }
+
+    public static Exception FileTooLarge(INodeContext nodeContext, int pdfDataLength, int maxLength)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: File too large: {pdfDataLength} bytes (max {maxLength}). Please reduce the file size.");
+    }
 }

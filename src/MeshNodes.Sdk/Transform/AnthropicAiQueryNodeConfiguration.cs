@@ -63,9 +63,17 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// Whether to continue processing if the AI query fails
     /// </summary>
     public bool ContinueOnError { get; set; } = false;
-    
+
     /// <summary>
-    /// Timeout in seconds for the AI request
+    /// Sample JSON format for structured responses
     /// </summary>
-    public int TimeoutSeconds { get; set; } = 30;
+    public string JsonFormatSample { get; set; } = """
+    {
+      "transactionDate": "2024-01-15",
+      "companyAddress": "Main St, City, Country",
+      "grossTotal": 1200.00,
+      "netTotal": 1000.00,
+      "taxAmount": 200.00
+    }
+    """;
 }

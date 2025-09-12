@@ -95,7 +95,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next) : IPipelineNode
             nodeContext.Debug($"Querying Claude with {fullContext.Length} characters of context");
 
             // Build the prompt
-            var userPrompt = BuildUserPrompt(config.Question, fullContext, config.ResponseFormat);
+            var userPrompt = BuildUserPrompt(config.Question, fullContext, config.ResponseFormat, config.JsonFormatSample);
             
             // Create the API request
             var requestBody = new
@@ -199,7 +199,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static string BuildUserPrompt(string question, string context, string responseFormat)
+    private static string BuildUserPrompt(string question, string context, string responseFormat, string jsonExample)
     {
         var promptBuilder = new StringBuilder();
         
@@ -217,13 +217,21 @@ internal class AnthropicAiQueryNode(NodeDelegate next) : IPipelineNode
         if (responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             promptBuilder.AppendLine("Please provide your response in valid JSON format. For example:");
-            promptBuilder.AppendLine("{");
-            promptBuilder.AppendLine("  \"transactionDate\": \"2024-01-15\",");
-            promptBuilder.AppendLine("  \"companyAddress\": \"123 Main St, City, Country\",");
-            promptBuilder.AppendLine("  \"grossTotal\": 1200.00,");
-            promptBuilder.AppendLine("  \"netTotal\": 1000.00,");
-            promptBuilder.AppendLine("  \"taxAmount\": 200.00");
-            promptBuilder.AppendLine("}");
+            if (string.IsNullOrWhiteSpace(jsonExample))
+            {
+                promptBuilder.AppendLine("{");
+                promptBuilder.AppendLine("  \"transactionDate\": \"2024-01-15\",");
+                promptBuilder.AppendLine("  \"companyAddress\": \"123 Main St, City, Country\",");
+                promptBuilder.AppendLine("  \"grossTotal\": 1200.00,");
+                promptBuilder.AppendLine("  \"netTotal\": 1000.00,");
+                promptBuilder.AppendLine("  \"taxAmount\": 200.00");
+                promptBuilder.AppendLine("}");
+            }
+            else
+            {
+                promptBuilder.AppendLine(jsonExample);
+            }
+
         }
 
         return promptBuilder.ToString();

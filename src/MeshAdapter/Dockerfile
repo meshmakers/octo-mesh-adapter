@@ -4,7 +4,21 @@ EXPOSE 80
 EXPOSE 443
 
 # Install necessary packages
-RUN apt-get update && apt-get install -y apt-utils libgdiplus libc6-dev tesseract-ocr libtesseract-dev
+RUN apt-get update && apt-get install -y \
+    apt-utils \
+    libgdiplus \
+    libc6-dev \
+    libtesseract5 \
+    libtesseract-dev \
+    libleptonica-dev \
+    libgomp1 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install libpng12 (not available in Bookworm, needed by IronOcr)
+RUN wget http://archive.ubuntu.com/ubuntu/pool/main/libp/libpng/libpng12-0_1.2.54-1ubuntu1_amd64.deb \
+    && dpkg -i libpng12-0_1.2.54-1ubuntu1_amd64.deb || apt-get install -f -y \
+    && rm libpng12-0_1.2.54-1ubuntu1_amd64.deb
 
 FROM mcr.microsoft.com/dotnet/sdk:9.0-bookworm-slim AS build
 ARG BUILD_CONFIGURATION=Release

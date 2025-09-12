@@ -13,6 +13,7 @@
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <DocumentationFile>../../bin/$(Configuration)\$(AssemblyName).xml</DocumentationFile>
         <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
+        <PublishReadyToRun>false</PublishReadyToRun>
     </PropertyGroup>
 
     <ItemGroup>
@@ -29,12 +30,21 @@
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="IronOcr" Version="2025.9.7" />
+        <PackageReference Include="IronOcr.MacOs" Version="2025.9.7" />
+        <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.9.7" />
+        <PackageReference Include="Anthropic.SDK" Version="0.6.6" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
         <PackageReference Include="MailKit" Version="4.3.0" />
+    </ItemGroup>
+
+    <!-- Explicit runtime support for IronOCR native libraries -->
+    <ItemGroup>
+        <RuntimeHostConfigurationOption Include="System.Drawing.EnableUnixSupport" Value="true" />
     </ItemGroup>
 
 </Project>

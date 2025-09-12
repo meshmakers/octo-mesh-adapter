@@ -59,6 +59,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()
             .RegisterNode<GenerateAndStoreReportNode>()
+            .RegisterNode<PdfOcrExtractionNode>()
             .RegisterTriggerNode<FromExecutePipelineCommandNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()

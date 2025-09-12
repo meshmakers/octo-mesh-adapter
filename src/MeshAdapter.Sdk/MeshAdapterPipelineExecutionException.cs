@@ -286,4 +286,10 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Root folder well-known name is not set. Please ensure the RootFolderWellKnownName property is set.");
     }
+
+    public static Exception ProcessingError(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Processing error: {exception.Message}", exception);
+    }
 }

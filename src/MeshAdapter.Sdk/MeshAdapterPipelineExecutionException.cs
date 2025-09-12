@@ -292,4 +292,10 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Processing error: {exception.Message}", exception);
     }
+
+    public static Exception ContextTooLarge(INodeContext nodeContext, int fullContextLength, int i)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Context too large: {fullContextLength} tokens (max {i}). Please reduce the context size.");
+    }
 }

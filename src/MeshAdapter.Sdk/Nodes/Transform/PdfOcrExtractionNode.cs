@@ -31,7 +31,12 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
             var pdfData = Convert.FromBase64String(content);
 
             nodeContext.Debug($"Starting OCR extraction for PDF ({pdfData.Length} bytes)");
-            
+
+            if (pdfData.Length > 1_000_000)
+            {
+                throw MeshAdapterPipelineExecutionException.FileTooLarge(nodeContext, pdfData.Length, 1_000_000);
+            }
+
             // Initialize IronOCR with explicit configuration
             License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
             var ocr = new IronTesseract();

@@ -94,6 +94,11 @@ internal class AnthropicAiQueryNode(NodeDelegate next) : IPipelineNode
             
             nodeContext.Debug($"Querying Claude with {fullContext.Length} characters of context");
 
+            if (fullContext.Length > 3000)
+            {
+                throw MeshAdapterPipelineExecutionException.ContextTooLarge(nodeContext, fullContext.Length, 3000);
+            }
+
             // Build the prompt
             var userPrompt = BuildUserPrompt(config.Question, fullContext, config.ResponseFormat, config.JsonFormatSample);
             

@@ -11,15 +11,16 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 [NodeConfiguration(typeof(FromHttpRequestNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpRequestService httpRequestService) : ITriggerPipelineNode
+internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpRequestService httpRequestService)
+    : ITriggerPipelineNode
 {
     private HttpRouteHandle? _routeHandle;
-    
+
     public Task StartAsync(ITriggerContext context)
     {
         var c = context.NodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration>();
 
-        var requestOptions = new HttpRequestOptions(c.Path, c.Method,async input =>
+        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async input =>
         {
             try
             {
@@ -28,6 +29,7 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
                 {
                     return null;
                 }
+
                 return JToken.FromObject(result);
             }
             catch (Exception e)
@@ -37,7 +39,6 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
                 // Ensure we return an error response
                 throw;
             }
-
         });
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 

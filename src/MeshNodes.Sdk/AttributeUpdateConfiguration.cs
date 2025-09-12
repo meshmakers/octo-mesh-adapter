@@ -29,4 +29,5 @@ public class AttributeUpdateConfiguration
     /// Optionally constant value
     /// </summary>
     public object? Value { get; set; }
+
 }

@@ -34,6 +34,7 @@
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
+        <PackageReference Include="MailKit" Version="4.3.0" />
     </ItemGroup>
 
 </Project>

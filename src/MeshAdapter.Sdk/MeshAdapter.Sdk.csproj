@@ -31,6 +31,7 @@
 
     <ItemGroup>
         <PackageReference Include="IronOcr" Version="2025.9.7" />
+        <PackageReference Include="IronOcr.Linux" Version="2025.9.7" />
         <PackageReference Include="IronOcr.MacOs" Version="2025.9.7" />
         <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.9.7" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>

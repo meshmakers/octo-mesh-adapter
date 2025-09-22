@@ -19,12 +19,12 @@
     <ItemGroup>
         <None Include="..\..\assets\meshmakers64.png">
             <Pack>True</Pack>
-            <PackagePath/>
+            <PackagePath />
             <Link>meshmakers64.png</Link>
         </None>
         <None Include="..\..\LICENSE">
             <Pack>True</Pack>
-            <PackagePath/>
+            <PackagePath />
             <Link>LICENSE</Link>
         </None>
     </ItemGroup>
@@ -34,7 +34,9 @@
         <PackageReference Include="IronOcr.Linux" Version="2025.9.7" />
         <PackageReference Include="IronOcr.MacOs" Version="2025.9.7" />
         <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.9.7" />
-        <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)"/>
+        <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
+        <PackageReference Include="Microsoft.ML" Version="4.0.2" />
+        <PackageReference Include="Microsoft.ML.TimeSeries" Version="3.0.1" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />

@@ -61,6 +61,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GenerateAndStoreReportNode>()
             .RegisterNode<PdfOcrExtractionNode>()
             .RegisterNode<AnthropicAiQueryNode>()
+            .RegisterNode<AnomalyDetectionNode>()
+            .RegisterNode<TimeSeriesAnomalyDetectionNode>()
             .RegisterTriggerNode<FromExecutePipelineCommandNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()

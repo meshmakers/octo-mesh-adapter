@@ -52,6 +52,8 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<AnomalyDetectionNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<TimeSeriesAnomalyDetectionNodeConfiguration>();
 
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();

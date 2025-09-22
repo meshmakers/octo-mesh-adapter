@@ -5,6 +5,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// <summary>
 /// Configuration for time series anomaly detection using ML.NET
 /// </summary>
+[NodeName("TimeSeriesAnomalyDetection", 1)]
 public record TimeSeriesAnomalyDetectionNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>

@@ -5,6 +5,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// <summary>
 /// Configuration for anomaly detection node
 /// </summary>
+[NodeName("AnomalyDetection", 1)]
 public record AnomalyDetectionNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>

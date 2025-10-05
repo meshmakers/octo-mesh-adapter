@@ -14,14 +14,9 @@ public record AnomalyDetectionNodeConfiguration : SourceTargetPathNodeConfigurat
     public List<DetectorConfiguration> Detectors { get; set; } = new();
 
     /// <summary>
-    /// Stop pipeline execution if anomaly is detected
+    /// Reset statistics on each run (true = stateless, false = stateful)
     /// </summary>
-    public bool StopOnAnomaly { get; set; } = false;
-    
-    /// <summary>
-    /// Set empty results array even if no anomalies are detected
-    /// </summary>
-    public bool SetEmptyResults { get; set; } = false;
+    public bool ResetStatistics { get; set; } = false;
 }
 
 /// <summary>
@@ -30,6 +25,11 @@ public record AnomalyDetectionNodeConfiguration : SourceTargetPathNodeConfigurat
 // ReSharper disable once ClassNeverInstantiated.Global
 public record DetectorConfiguration
 {
+    /// <summary>
+    /// JSONPath to group by (empty = no grouping)
+    /// </summary>
+    public string? GroupByPath { get; set; }
+
     /// <summary>
     /// JSONPath to the value to monitor
     /// </summary>
@@ -64,11 +64,6 @@ public record DetectorConfiguration
     /// Window size for moving average method
     /// </summary>
     public int WindowSize { get; set; } = 10;
-    
-    /// <summary>
-    /// Optional key for statistics storage (defaults to Path if not specified)
-    /// </summary>
-    public string? StatisticsKey { get; set; }
 }
 
 /// <summary>

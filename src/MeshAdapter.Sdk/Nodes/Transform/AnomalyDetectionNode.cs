@@ -1,5 +1,6 @@
 using MassTransit.Internals;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -8,8 +9,8 @@ using Newtonsoft.Json.Linq;
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-/// Anomaly detection node using ML.NET for detecting outliers in numeric data streams.
-/// Supports both spike detection and change point detection.
+/// Anomaly detection node for detecting outliers in numeric data streams.
+/// Detects anomalies using various statistical methods such as Z-Score, IQR, Percent Change, and Moving Average.
 /// </summary>
 [NodeConfiguration(typeof(AnomalyDetectionNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -30,90 +31,110 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
 
         // Get or create statistics dictionary in context
         if (!meshEtlContext.Properties.TryGetValue(AnomalyDetectionStatistics, out var obj) ||
-            obj is not Dictionary<string, RunningStatistics> statisticsMap)
+            obj is not Dictionary<string, RunningStatistics> statisticsMap || c.ResetStatistics)
         {
             statisticsMap = new Dictionary<string, RunningStatistics>();
             meshEtlContext.Properties[AnomalyDetectionStatistics] = statisticsMap;
         }
 
+        var sourceData = dataContext.Current.SelectTokens(c.Path).ToArray();
+        if (sourceData == null)
+        {
+            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext, c.Path);
+        }
+
         var results = new JArray();
-        
+
         foreach (var detector in c.Detectors)
         {
-            var sourceTokens = dataContext.Current.SelectTokens(detector.Path).ToArray();
-            
-            if (!sourceTokens.Any())
+            if (!string.IsNullOrWhiteSpace(detector.GroupByPath))
             {
-                nodeContext.Warning("No data found at path '{0}'", detector.Path);
-                continue;
-            }
-
-            foreach (var sourceToken in sourceTokens)
-            {
-                var value = sourceToken.ToObject<double?>();
-                if (value == null)
+                var groupByTokens = sourceData.Select(x => x.SelectToken(detector.GroupByPath)).ToArray();
+                if (!groupByTokens.Any())
                 {
-                    nodeContext.Warning("No numeric value found at path '{0}'", detector.Path);
-                    continue;
+                    throw MeshAdapterPipelineExecutionException.GroupingOfDataFailed(nodeContext, detector.GroupByPath);
                 }
 
-                var anomalyResult = DetectAnomaly(statisticsMap, value.Value, detector);
-                
-                if (anomalyResult.IsAnomaly)
+                var groupBy = sourceData.GroupBy(x => x.SelectToken(detector.GroupByPath));
+                foreach (var group in groupBy)
                 {
-                    var resultObject = new JObject
-                    {
-                        ["path"] = detector.Path,
-                        ["value"] = value,
-                        ["isAnomaly"] = anomalyResult.IsAnomaly,
-                        ["score"] = anomalyResult.Score,
-                        ["method"] = anomalyResult.Method,
-                        ["reason"] = anomalyResult.Reason
-                    };
-                    
-                    // Add context data if specified
-                    if (!string.IsNullOrWhiteSpace(detector.ContextPath))
-                    {
-                        var contextValue = dataContext.GetSimpleValueByPath<object>(detector.ContextPath);
-                        resultObject["context"] = JToken.FromObject(contextValue ?? "");
-                    }
-                    
-                    results.Add(resultObject);
-                    
-                    nodeContext.Debug("Anomaly detected: {0} at path {1} with score {2}", 
-                        anomalyResult.Reason, detector.Path, anomalyResult.Score);
+                    var groupToken = group.Key?.Value<string>() ?? "";
+                    Calculate(nodeContext, statisticsMap, groupToken, group.ToArray(), detector, results);
                 }
             }
-        }
-        
-        // Set results
-        if (results.Any())
-        {
-            dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, 
-                c.TargetValueWriteMode, results);
-            
-            if (c.StopOnAnomaly)
+            else
             {
-                nodeContext.Warning("Anomalies detected, stopping pipeline execution");
-                return; // Don't call next
+                Calculate(nodeContext, statisticsMap, "", sourceData, detector, results);
             }
         }
-        else if (c.SetEmptyResults)
-        {
-            dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, 
-                c.TargetValueWriteMode, results);
-        }
-        
+
+        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode, results);
+
         await next(dataContext, nodeContext).ConfigureAwait(false);
     }
-    
-    private AnomalyResult DetectAnomaly(Dictionary<string, RunningStatistics> statisticsMap, double value, DetectorConfiguration detector)
+
+    private void Calculate(INodeContext nodeContext, Dictionary<string, RunningStatistics> statisticsMap, string key,
+        JToken[] sourceData, DetectorConfiguration detector, JArray results)
     {
-        var key = detector.StatisticsKey ?? detector.Path;
+        if (!sourceData.Any())
+        {
+            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+        }
+
+        foreach (var sourceDataItem in sourceData)
+        {
+            var sourceToken = sourceDataItem.SelectToken(detector.Path);
+            if (sourceToken == null)
+            {
+                throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext, detector.Path);
+            }
+            double value;
+            try
+            {
+                value = sourceToken.ToObject<double>();
+            }
+            catch (FormatException e)
+            {
+                throw MeshAdapterPipelineExecutionException.InputValueInvalidFormat(nodeContext, detector.Path, e);
+            }
+
+            var anomalyResult = DetectAnomaly(statisticsMap, key, value, detector);
+
+            if (anomalyResult.IsAnomaly)
+            {
+                var resultObject = new JObject
+                {
+                    ["path"] = detector.Path,
+                    ["value"] = value,
+                    ["isAnomaly"] = anomalyResult.IsAnomaly,
+                    ["score"] = anomalyResult.Score,
+                    ["method"] = anomalyResult.Method,
+                    ["reason"] = anomalyResult.Reason
+                };
+
+                // Add context data if specified
+                if (!string.IsNullOrWhiteSpace(detector.ContextPath))
+                {
+                    var contextValue = sourceDataItem.GetSimpleValueByPath<object>(detector.ContextPath);
+                    resultObject["context"] = JToken.FromObject(contextValue ?? "");
+                }
+
+                nodeContext.Debug("Anomaly detected: {0} at path {1} with score {2}",
+                    anomalyResult.Reason, detector.Path, anomalyResult.Score);
+
+                results.Add(resultObject);
+            }
+        }
+    }
+
+    private AnomalyResult DetectAnomaly(Dictionary<string, RunningStatistics> statisticsMap, string key, double value,
+        DetectorConfiguration detector)
+    {
         var stats = statisticsMap.GetOrAdd(key, _ => new RunningStatistics());
-        
+
         var result = new AnomalyResult { Method = detector.Method.ToString() };
-        
+
         switch (detector.Method)
         {
             case AnomalyDetectionMethod.ZScore:
@@ -124,8 +145,9 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
                     result.IsAnomaly = zScore > detector.Threshold;
                     result.Reason = $"Z-Score: {zScore:F2} (threshold: {detector.Threshold})";
                 }
+
                 break;
-                
+
             case AnomalyDetectionMethod.Iqr:
                 if (stats.Count > detector.MinSamples)
                 {
@@ -135,14 +157,16 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
                     var iqr = q3 - q1;
                     var lowerBound = q1 - iqrMultiplier * iqr;
                     var upperBound = q3 + iqrMultiplier * iqr;
-                    
+
                     result.IsAnomaly = value < lowerBound || value > upperBound;
-                    result.Score = result.IsAnomaly ?
-                        (float)(Math.Max(Math.Abs(value - lowerBound), Math.Abs(value - upperBound)) / iqr) : 0;
+                    result.Score = result.IsAnomaly
+                        ? (float)(Math.Max(Math.Abs(value - lowerBound), Math.Abs(value - upperBound)) / iqr)
+                        : 0;
                     result.Reason = $"Value outside IQR bounds [{lowerBound:F2}, {upperBound:F2}]";
                 }
+
                 break;
-                
+
             case AnomalyDetectionMethod.PercentChange:
                 if (stats is { Count: > 0, LastValue: not null })
                 {
@@ -151,8 +175,9 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
                     result.IsAnomaly = change > detector.Threshold;
                     result.Reason = $"Change: {change:F2}% (threshold: {detector.Threshold}%)";
                 }
+
                 break;
-                
+
             case AnomalyDetectionMethod.MovingAverage:
                 if (stats.Count >= detector.WindowSize)
                 {
@@ -162,21 +187,22 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
                     result.IsAnomaly = deviation > detector.Threshold;
                     result.Reason = $"Deviation from MA: {deviation:F2}% (threshold: {detector.Threshold}%)";
                 }
+
                 break;
         }
-        
+
         // Update statistics
         stats.Add(value);
-        
+
         // Clean up old statistics if needed
         if (detector.MaxSamples > 0 && stats.Count > detector.MaxSamples)
         {
             stats.RemoveOldest();
         }
-        
+
         return result;
     }
-    
+
     private class AnomalyResult
     {
         public bool IsAnomaly { get; set; }
@@ -184,7 +210,7 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
         public string Method { get; init; } = "";
         public string Reason { get; set; } = "";
     }
-    
+
     private class RunningStatistics
     {
         private readonly List<double> _values = new();
@@ -192,14 +218,14 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
         public double Mean { get; private set; }
         public double StandardDeviation { get; private set; }
         public double? LastValue { get; private set; }
-        
+
         public void Add(double value)
         {
             LastValue = _values.Count > 0 ? _values.Last() : null;
             _values.Add(value);
             UpdateStats();
         }
-        
+
         public void RemoveOldest()
         {
             if (_values.Count > 0)
@@ -208,25 +234,25 @@ public class AnomalyDetectionNode(NodeDelegate next, IMeshEtlContext meshEtlCont
                 UpdateStats();
             }
         }
-        
+
         private void UpdateStats()
         {
             if (_values.Count == 0) return;
-            
+
             Mean = _values.Average();
             var sumOfSquares = _values.Sum(v => Math.Pow(v - Mean, 2));
             StandardDeviation = Math.Sqrt(sumOfSquares / _values.Count);
         }
-        
+
         public double GetPercentile(int percentile)
         {
             if (_values.Count == 0) return 0;
-            
+
             var sorted = _values.OrderBy(v => v).ToList();
             var index = (int)Math.Ceiling(percentile / 100.0 * sorted.Count) - 1;
             return sorted[Math.Max(0, Math.Min(index, sorted.Count - 1))];
         }
-        
+
         public double GetMovingAverage(int windowSize)
         {
             var start = Math.Max(0, _values.Count - windowSize);

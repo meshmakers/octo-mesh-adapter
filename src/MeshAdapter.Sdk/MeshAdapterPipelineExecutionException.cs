@@ -25,6 +25,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Input value is null.");
     }
 
+    public static Exception InputValueNull(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
+    }
+
     public static Exception InvalidValue(JToken jToken)
     {
         return new MeshAdapterPipelineExecutionException($"Invalid value: {jToken}");
@@ -303,5 +308,17 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: File too large: {pdfDataLength} bytes (max {maxLength}). Please reduce the file size.");
+    }
+
+    public static Exception GroupingOfDataFailed(INodeContext nodeContext, string detectorGroupByPath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Grouping of data failed for path '{detectorGroupByPath}'. Please ensure the path is valid and the data can be grouped.");
+    }
+
+    public static Exception InputValueInvalidFormat(INodeContext nodeContext, string detectorPath, FormatException formatException)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Invalid format for value at path '{detectorPath}': {formatException.Message}", formatException);
     }
 }

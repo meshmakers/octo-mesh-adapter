@@ -321,4 +321,16 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Invalid format for value at path '{detectorPath}': {formatException.Message}", formatException);
     }
+
+    public static Exception SpikeDetectionFailed(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Spike detection failed: {exception.Message}", exception);
+    }
+
+    public static Exception ChangePointDetectionFailed(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Change point detection failed: {exception.Message}", exception);
+    }
 }

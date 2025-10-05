@@ -3,15 +3,15 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-/// Configuration for anomaly detection node
+/// Configuration for anomaly detection node using statistical methods
 /// </summary>
-[NodeName("AnomalyDetection", 1)]
-public record AnomalyDetectionNodeConfiguration : SourceTargetPathNodeConfiguration
+[NodeName("StatisticalAnomalyDetection", 1)]
+public record StatisticalAnomalyNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
     /// List of detector configurations for different fields
     /// </summary>
-    public List<DetectorConfiguration> Detectors { get; set; } = new();
+    public List<StatisticalDetectorConfiguration> Detectors { get; set; } = new();
 
     /// <summary>
     /// Reset statistics on each run (true = stateless, false = stateful)
@@ -23,7 +23,7 @@ public record AnomalyDetectionNodeConfiguration : SourceTargetPathNodeConfigurat
 /// Configuration for individual anomaly detector
 /// </summary>
 // ReSharper disable once ClassNeverInstantiated.Global
-public record DetectorConfiguration
+public record StatisticalDetectorConfiguration
 {
     /// <summary>
     /// JSONPath to group by (empty = no grouping)
@@ -31,9 +31,9 @@ public record DetectorConfiguration
     public string? GroupByPath { get; set; }
 
     /// <summary>
-    /// JSONPath to the value to monitor
+    /// JSONPath to the double value to monitor
     /// </summary>
-    public string Path { get; set; } = "";
+    public required string Path { get; set; }
     
     /// <summary>
     /// Optional path to context data to include with anomaly results

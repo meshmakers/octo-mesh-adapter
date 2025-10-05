@@ -9,9 +9,9 @@ using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class AnomalyDetectionNodeTests
+public class StatisticalAnomalyNodeTests
 {
-    private (IDataContext, INodeContext, IMeshEtlContext) PrepareTest(AnomalyDetectionNodeConfiguration config,
+    private (IDataContext, INodeContext, IMeshEtlContext) PrepareTest(StatisticalAnomalyNodeConfiguration config,
         JToken? testData)
     {
         var services = new ServiceCollection();
@@ -59,7 +59,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_ZScoreDetection_NoAnomalies_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -79,7 +79,7 @@ public class AnomalyDetectionNodeTests
             PrepareTest(config, CreateTestData(10.0, 11.0, 12.0, 11.5, 10.5));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -93,7 +93,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_ZScoreDetection_WithAnomalies_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -112,7 +112,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateTestData(10.0, 11.0, 12.0, 100.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -127,7 +127,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_IqrDetection_WithAnomalies_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -147,7 +147,7 @@ public class AnomalyDetectionNodeTests
             PrepareTest(config, CreateTestData(1.0, 2.0, 3.0, 4.0, 5.0, 100.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -162,7 +162,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_PercentChangeDetection_WithAnomalies_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -181,7 +181,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateTestData(10.0, 20.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -196,7 +196,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_MovingAverageDetection_WithAnomalies_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -216,7 +216,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateTestData(10.0, 11.0, 12.0, 50.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -231,7 +231,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_GroupedDetection_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.sensors[*]",
             TargetPath = "$.anomalies",
@@ -251,7 +251,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateGroupedTestData());
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -265,7 +265,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithContextPath_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -294,7 +294,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, testData);
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -309,7 +309,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_ResetStatistics_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -329,7 +329,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateTestData(10.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -340,7 +340,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_NullInput_ThrowsException()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -350,7 +350,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, null);
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(() => node.ProcessObjectAsync(dataContext, nodeContext));
         Assert.NotNull(exception);
@@ -359,7 +359,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_InvalidPath_ThrowsException()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.nonexistent[*]",
             TargetPath = "$.anomalies",
@@ -369,7 +369,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateTestData(10.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(() => node.ProcessObjectAsync(dataContext, nodeContext));
         Assert.NotNull(exception);
@@ -378,7 +378,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_InvalidValueFormat_ThrowsException()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -394,7 +394,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, testData);
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(() => node.ProcessObjectAsync(dataContext, nodeContext));
         Assert.NotNull(exception);
@@ -403,7 +403,7 @@ public class AnomalyDetectionNodeTests
     [Fact]
     public async Task ProcessObjectAsync_MultipleDetectors_OK()
     {
-        var config = new AnomalyDetectionNodeConfiguration
+        var config = new StatisticalAnomalyNodeConfiguration
         {
             Path = "$.measurements[*]",
             TargetPath = "$.anomalies",
@@ -430,7 +430,7 @@ public class AnomalyDetectionNodeTests
         var (dataContext, nodeContext, meshEtlContext) = PrepareTest(config, CreateTestData(10.0, 11.0, 12.0, 100.0));
 
         var next = A.Fake<NodeDelegate>();
-        var node = new AnomalyDetectionNode(next, meshEtlContext);
+        var node = new StatisticalAnomalyNode(next, meshEtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

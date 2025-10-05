@@ -6,6 +6,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshNodes.Sdk", "src\MeshNo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshAdapter.Sdk", "src\MeshAdapter.Sdk\MeshAdapter.Sdk.csproj", "{E8619496-272A-4545-BC94-246175B83E9A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshAdapter.Sdk.Tests", "tests\MeshAdapter.Sdk.Tests\MeshAdapter.Sdk.Tests.csproj", "{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -31,6 +33,12 @@ Global
 		{E8619496-272A-4545-BC94-246175B83E9A}.Release|Any CPU.Build.0 = Release|Any CPU
 		{E8619496-272A-4545-BC94-246175B83E9A}.DebugL|Any CPU.ActiveCfg = DebugL|Any CPU
 		{E8619496-272A-4545-BC94-246175B83E9A}.DebugL|Any CPU.Build.0 = DebugL|Any CPU
+		{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}.DebugL|Any CPU.ActiveCfg = Debug|Any CPU
+		{809F2B1E-1EBD-4D03-B6D1-2EE14C7D699D}.DebugL|Any CPU.Build.0 = Debug|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 	EndGlobalSection

@@ -48,8 +48,6 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetAssociationTargetsNode>()
             .RegisterNode<DataMappingNode>()
             .RegisterNode<ImportFromExcelNode>()
-            .RegisterNode<JoinNode>()
-            .RegisterNode<MathNode>()
             .RegisterNode<SumAggregationNode>()
             .RegisterNode<CreateAssociationUpdateNode>()
             .RegisterNode<GetNotificationTemplateNode>()

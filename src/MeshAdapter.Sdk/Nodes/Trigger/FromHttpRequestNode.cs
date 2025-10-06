@@ -1,4 +1,6 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects.ApiErrors;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
+using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -31,6 +33,13 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
                 }
 
                 return JToken.FromObject(result);
+            }
+            catch (RuntimeRepositoryException ex)
+            {
+                var messages = ex.OperationResult.GetMessages();
+                var o = new OperationFailedErrorDto(ex.Message,
+                    [new FailedDetailsDto { Code = null, Description = messages }]);
+                return JToken.FromObject(o);
             }
             catch (Exception e)
             {

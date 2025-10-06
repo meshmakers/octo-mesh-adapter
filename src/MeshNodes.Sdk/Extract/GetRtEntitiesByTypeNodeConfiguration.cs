@@ -34,4 +34,10 @@ public record GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfigu
     /// A list of field filters
     /// </summary>
     public ICollection<FieldFilterWithPathDto>? FieldFilters { get; set; }
+
+    /// <summary>
+    /// A list of sort orders
+    /// </summary>
+    public ICollection<SortOrderDto>? SortOrders { get; set; }
+
 }

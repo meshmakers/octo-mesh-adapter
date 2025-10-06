@@ -45,8 +45,6 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<JoinNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<MathNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SumAggregationNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();

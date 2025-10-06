@@ -20,11 +20,6 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
     }
 
-    public static Exception InputValueNull(INodeContext nodeContext)
-    {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Input value is null.");
-    }
-
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
@@ -112,12 +107,6 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of origin RtId is null.");
     }
 
-    public static Exception ValueNotSet(INodeContext nodeContext, string? cValuePath)
-    {
-        return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: Value is not set. Please set value or valuePath. ValuePath: {cValuePath}");
-    }
-    
     public static Exception CkTypeIdNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: CkTypeId is not set. Please set ckTypeId or ckTypeIdPath.");

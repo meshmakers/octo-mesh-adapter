@@ -6,7 +6,6 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Aggregations;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
@@ -48,7 +47,6 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetAssociationTargetsNode>()
             .RegisterNode<DataMappingNode>()
             .RegisterNode<ImportFromExcelNode>()
-            .RegisterNode<SumAggregationNode>()
             .RegisterNode<CreateAssociationUpdateNode>()
             .RegisterNode<GetNotificationTemplateNode>()
             .RegisterNode<PlaceholderReplaceNode>()

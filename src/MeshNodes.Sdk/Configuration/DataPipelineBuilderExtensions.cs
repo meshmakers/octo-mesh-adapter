@@ -1,7 +1,6 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.MeshAdapter.Nodes.Transform.Aggregations;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
@@ -45,7 +44,6 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<SumAggregationNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();

@@ -54,14 +54,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
 
         // Add field filters from the configuration
         c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
-
-        if (c.SortOrders != null && c.SortOrders.Any())
-        {
-            foreach (var s in c.SortOrders)
-            {
-                dataQueryOperation.SortOrder(s.AttributeName, GetSortOrder(s.SortOrder));
-            }
-        }
+        c.SortOrders.GetSortOrders(dataContext, dataQueryOperation);
 
         using var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
@@ -91,19 +84,6 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
 
         await next(dataContext, nodeContext);
     }
-
-    private SortOrders GetSortOrder(SortOrdersDto sortOrder)
-    {
-        return sortOrder switch
-        {
-            SortOrdersDto.Ascending => SortOrders.Ascending,
-            SortOrdersDto.Descending => SortOrders.Descending,
-            SortOrdersDto.Default => SortOrders.Default,
-            _ => throw new ArgumentOutOfRangeException(nameof(sortOrder), sortOrder, null)
-        };
-    }
-
-
 
     private CkId<CkTypeId>? GetOriginCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
     {

@@ -24,6 +24,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
 
         var dataQueryOperation = DataQueryOperation.Create();
         c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
+        c.SortOrders.GetSortOrders(dataContext, dataQueryOperation);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();

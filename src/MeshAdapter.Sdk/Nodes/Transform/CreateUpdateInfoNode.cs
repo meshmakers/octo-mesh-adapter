@@ -39,7 +39,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         }
 
 
-        if ((updateKind is UpdateKind.Update or UpdateKind.Delete) && rtId == null)
+        if (updateKind is UpdateKind.Update or UpdateKind.Delete && rtId == null)
         {
             nodeContext.Error("RtId is not set. Please provide a RtId or RtIdPath");
             return;

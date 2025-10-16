@@ -18,7 +18,7 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
     {
         var c = nodeContext.GetNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
 
-        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+        var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         if (c.FieldFilters == null || c.FieldFilters.Count == 0)
         {

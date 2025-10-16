@@ -20,7 +20,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
     {
        var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
 
-        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+        var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         var dataQueryOperation = DataQueryOperation.Create();
         c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);

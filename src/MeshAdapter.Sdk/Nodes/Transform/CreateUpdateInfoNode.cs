@@ -1,5 +1,4 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
@@ -30,7 +29,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         var rtId = GetRtId(dataContext, c);
         var updateKind = GetUpdateKind(dataContext, c);
         var rtWellKnownName = GetRtWellKnownName(dataContext, c);
-        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+        var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         if (updateKind == null)
         {
@@ -58,8 +57,6 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         {
             timeStamp = dataContext.GetSimpleValueByPath<DateTime>(c.TimestampPath);
         }
-
-        var ckTypeGraph = await etlContext.TenantRepository.GetCkTypeGraphAsync(ckTypeId);
 
         var rtEntity = new RtEntity
         {
@@ -92,11 +89,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     continue;
                 }
 
-                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, jTokens, rtEntity, ckTypeGraph);
+                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, jTokens, rtEntity);
             }
             else if (au.Value != null)
             {
-                if (!SetAttributeValueSingle(nodeContext, au.AttributeName, au.Value, rtEntity, ckTypeGraph))
+                if (!SetAttributeValueSingle(nodeContext, au.AttributeName, au.Value, rtEntity))
                 {
                     return;
                 }
@@ -140,7 +137,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     }
 
     private bool SetAttributeValue(INodeContext nodeContext, string attributeName, IEnumerable<JToken> jTokens,
-        RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+        RtTypeWithAttributes rtTypeWithAttributes)
     {
         bool hasUpdate = false;
         foreach (var jToken in jTokens)
@@ -148,7 +145,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             if (jToken is JValue jValue)
             {
                 if (!SetAttributeValueSingle(nodeContext, attributeName, jValue.Value,
-                        rtTypeWithAttributes, ckTypeWithAttributesGraph))
+                        rtTypeWithAttributes))
                 {
                     continue;
                 }
@@ -158,7 +155,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             else if (jToken is JObject jObject)
             {
                 if (!SetAttributeValueSingle(nodeContext, attributeName, jObject,
-                        rtTypeWithAttributes, ckTypeWithAttributesGraph))
+                        rtTypeWithAttributes))
                 {
                     continue;
                 }
@@ -186,7 +183,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     ckRecordIdObject["FullName"]!.ToObject<string>()!);
                 var recordChild = new RtRecord
                 {
-                    CkRecordId = ckRecordGraphChild.CkRecordId
+                    CkRecordId = ckRecordGraphChild.CkRecordId.ToRtCkId()
                 };
 
                 foreach (var jToken in attributesObject.Properties())
@@ -210,7 +207,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     }
 
     private bool SetAttributeValueSingle(INodeContext nodeContext, string attributeName, object? value,
-        RtTypeWithAttributes rtTypeWithAttributes, CkTypeWithAttributesGraph ckTypeWithAttributesGraph)
+        RtTypeWithAttributes rtTypeWithAttributes)
     {
         var convertedValue = GetAttributeValue(nodeContext, value);
 

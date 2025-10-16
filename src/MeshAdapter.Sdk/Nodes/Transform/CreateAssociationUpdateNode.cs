@@ -6,6 +6,7 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -29,7 +30,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
         var roleId = GetAssociationRoleId(dataContext, nodeContext, c);
 
         var updateItem = updateKind == AssociationUpdateKind.Create
-            ? AssociationUpdateInfo.CreateCreate(originRtId, targetRtId, roleId)
+            ? AssociationUpdateInfo.CreateInsert(originRtId, targetRtId, roleId)
             : AssociationUpdateInfo.CreateDelete(originRtId, targetRtId, roleId);
 
         dataContext.SetValueByPath(c.TargetPath, updateItem, c.DocumentMode, c.TargetValueKind,
@@ -38,7 +39,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
         await next(dataContext, nodeContext);
     }
 
-    private CkId<CkAssociationRoleId> GetAssociationRoleId(IDataContext dataContext, INodeContext nodeContext,
+    private RtCkId<CkAssociationRoleId> GetAssociationRoleId(IDataContext dataContext, INodeContext nodeContext,
         CreateAssociationUpdateNodeConfiguration config)
     {
         if (config.AssociationRoleId != null)
@@ -48,7 +49,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
 
         if (dataContext.Current == null)
         {
-            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+            throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
         if (config.AssociationRoleIdPath == null)
@@ -56,7 +57,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
             throw MeshAdapterPipelineExecutionException.AssociationRoleIdPathNotSet(nodeContext);
         }
 
-        var roleId = dataContext.GetSimpleValueByPath<CkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
+        var roleId = dataContext.GetSimpleValueByPath<RtCkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
         if (roleId == null)
         {
             throw MeshAdapterPipelineExecutionException.AssociationRoleIdValueNull(nodeContext);
@@ -77,7 +78,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
 
         if (dataContext.Current == null)
         {
-            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+            throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
         var originRtId = config.OriginRtId ??
@@ -104,7 +105,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
 
         if (dataContext.Current == null)
         {
-            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+            throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
         var targetRtId = config.TargetRtId ??
@@ -134,7 +135,7 @@ public class CreateAssociationUpdateNode(NodeDelegate next)
 
         if (dataContext.Current == null)
         {
-            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+            throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
         var updateKind =

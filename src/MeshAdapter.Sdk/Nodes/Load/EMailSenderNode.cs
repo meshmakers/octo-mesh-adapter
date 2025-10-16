@@ -7,6 +7,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -83,14 +84,14 @@ public class EMailSenderNode(
             var subject = dataContext.GetSimpleValueByPath<string>(c.SubjectPath);
             if (subject == null)
             {
-                throw MeshAdapterPipelineExecutionException.ValueNotSet(
+                throw PipelineExecutionException.ValueNotSet(
                     nodeContext, c.SubjectPath);
             }
 
             var body = dataContext.GetSimpleValueByPath<string>(c.Path);
             if (body == null)
             {
-                throw MeshAdapterPipelineExecutionException.ValueNotSet(
+                throw PipelineExecutionException.ValueNotSet(
                     nodeContext, c.Path);
             }
             
@@ -123,7 +124,7 @@ public class EMailSenderNode(
             {
                 if(c.AttachmentFileName == null || c.AttachmentContentType == null)
                 {
-                    throw MeshAdapterPipelineExecutionException.ValueNotSet(
+                    throw PipelineExecutionException.ValueNotSet(
                         nodeContext, nameof(c.AttachmentFileName));
                 }
                 

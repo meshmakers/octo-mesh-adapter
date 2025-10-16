@@ -19,7 +19,7 @@ internal class ColumnContext
     }
 
     internal record ColumnIndex(
-        CkId<CkTypeId>? CkTypeId,
+        RtCkId<CkTypeId>? CkTypeId,
         string AttributePath,
         int Index,
         int Layer,
@@ -63,7 +63,7 @@ internal class ColumnContext
                 actionType = (ActionType)actionTypeValue.Value<int>();
             }
 
-            _columnIndexes.Add(new(new CkId<CkTypeId>(ckTypeId), attributePath, index, layer, columnType, actionType));
+            _columnIndexes.Add(new(new RtCkId<CkTypeId>(ckTypeId), attributePath, index, layer, columnType, actionType));
         }
     }
 
@@ -78,9 +78,9 @@ internal class ColumnContext
         return row[index].Value<T>();
     }
 
-    public CkId<CkTypeId> GetCkTypeId(int layer = 1, string ckTypeId = "Basic/TreeNode")
+    public RtCkId<CkTypeId> GetCkTypeId(int layer = 1, string ckTypeId = "Basic/TreeNode")
     {
-        return _columnIndexes.FirstOrDefault(x => x.Layer == layer)?.CkTypeId ?? new CkId<CkTypeId>(ckTypeId);
+        return _columnIndexes.FirstOrDefault(x => x.Layer == layer)?.CkTypeId ?? new RtCkId<CkTypeId>(ckTypeId);
     }
 
     public ActionType GetActionType(int layer = 1)

@@ -4,6 +4,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -25,7 +26,7 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
             var content = dataContext.GetSimpleValueByPath<string>(config.Path);
             if (string.IsNullOrEmpty(content))
             {
-                throw MeshAdapterPipelineExecutionException.ValueNotSet(nodeContext, config.Path);
+                throw PipelineExecutionException.ValueNotSet(nodeContext, config.Path);
             }
 
             var pdfData = Convert.FromBase64String(content);

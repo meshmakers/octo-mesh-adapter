@@ -4,7 +4,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 
 internal record HierarchicalEntity
 {
-    public HierarchicalEntity(CkId<CkTypeId> ckTypeId, string name, string? parentName, CkId<CkTypeId>? parentCkTypeId)
+    public HierarchicalEntity(RtCkId<CkTypeId> ckTypeId, string name, string? parentName, RtCkId<CkTypeId>? parentCkTypeId)
     {
         CkTypeId = ckTypeId;
         Name = name;
@@ -12,7 +12,7 @@ internal record HierarchicalEntity
         ParentCkTypeId = parentCkTypeId;
     }
 
-    public HierarchicalEntity(OctoObjectId rtId, CkId<CkTypeId> ckTypeId, string parentName, CkId<CkTypeId> parentCkTypeId)
+    public HierarchicalEntity(OctoObjectId rtId, RtCkId<CkTypeId> ckTypeId, string parentName, RtCkId<CkTypeId> parentCkTypeId)
     {
         IsObjectInRepository = true;
         RtId = rtId;
@@ -25,10 +25,10 @@ internal record HierarchicalEntity
     public bool IsObjectInRepository { get; init; }
     public OctoObjectId? RtId { get; set; }
     public List<Tuple<string, string>> Attributes { get; set; } = [];
-    public CkId<CkTypeId> CkTypeId { get; init; }
+    public RtCkId<CkTypeId> CkTypeId { get; init; }
     public string? Name { get; init; }
     public string? ParentName { get; init; }
-    public CkId<CkTypeId>? ParentCkTypeId { get; init; }
+    public RtCkId<CkTypeId>? ParentCkTypeId { get; init; }
 
-    public CkId<CkAssociationRoleId> AssociationRoleId { get; init; } = new("System/ParentChild");
+    public RtCkId<CkAssociationRoleId> AssociationRoleId { get; init; } = new("System/ParentChild");
 }

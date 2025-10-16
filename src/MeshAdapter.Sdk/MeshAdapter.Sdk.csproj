@@ -30,18 +30,18 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="IronOcr" Version="2025.9.7" />
-        <PackageReference Include="IronOcr.Linux" Version="2025.9.7" />
-        <PackageReference Include="IronOcr.MacOs" Version="2025.9.7" />
-        <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.9.7" />
+        <PackageReference Include="IronOcr" Version="2025.10.11" />
+        <PackageReference Include="IronOcr.Linux" Version="2025.10.11" />
+        <PackageReference Include="IronOcr.MacOs" Version="2025.10.11" />
+        <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.10.11" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
         <PackageReference Include="Microsoft.ML" Version="4.0.2" />
-        <PackageReference Include="Microsoft.ML.TimeSeries" Version="3.0.1" />
+        <PackageReference Include="Microsoft.ML.TimeSeries" Version="4.0.2" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
-        <PackageReference Include="MailKit" Version="4.13.0" />
+        <PackageReference Include="MailKit" Version="4.14.1" />
     </ItemGroup>
 
     <!-- Explicit runtime support for IronOCR native libraries -->

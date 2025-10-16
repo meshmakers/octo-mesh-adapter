@@ -85,7 +85,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         await next(dataContext, nodeContext);
     }
 
-    private CkId<CkTypeId>? GetOriginCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
+    private RtCkId<CkTypeId>? GetOriginCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
     {
         if (config.OriginCkTypeId == null && config.OriginCkTypeIdPath == null || dataContext.Current == null)
         {
@@ -93,13 +93,13 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         }
 
         var sourceCkTypeId = config.OriginCkTypeId ??
-                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.OriginCkTypeIdPath,
+                             dataContext.GetComplexObjectByPath<RtCkId<CkTypeId>?>(config.OriginCkTypeIdPath,
                                  RtNewtonsoftSerializer.DefaultSerializer);
 
         return sourceCkTypeId;
     }
 
-    private CkId<CkAssociationRoleId>? GetAssociationRoleId(IDataContext dataContext,
+    private RtCkId<CkAssociationRoleId>? GetAssociationRoleId(IDataContext dataContext,
         GetAssociationTargetsNodeConfiguration config)
     {
         if (config.AssociationRoleId != null)
@@ -112,7 +112,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             return null;
         }
 
-        var roleId = dataContext.GetSimpleValueByPath<CkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
+        var roleId = dataContext.GetSimpleValueByPath<RtCkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
         return roleId;
     }
 
@@ -139,7 +139,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         return null;
     }
 
-    private static CkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext,
+    private static RtCkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext,
         GetAssociationTargetsNodeConfiguration config)
     {
         if (config.TargetCkTypeId == null && config.TargetCkTypeIdPath == null || dataContext.Current == null)
@@ -148,7 +148,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         }
 
         var targetCkTypeId = config.TargetCkTypeId ??
-                             dataContext.GetComplexObjectByPath<CkId<CkTypeId>?>(config.TargetCkTypeIdPath,
+                             dataContext.GetComplexObjectByPath<RtCkId<CkTypeId>?>(config.TargetCkTypeIdPath,
                                  RtNewtonsoftSerializer.DefaultSerializer);
 
         return targetCkTypeId;

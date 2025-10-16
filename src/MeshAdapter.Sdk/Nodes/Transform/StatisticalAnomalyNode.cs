@@ -4,6 +4,7 @@ using Meshmakers.Octo.Sdk.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -25,7 +26,7 @@ public class StatisticalAnomalyNode(NodeDelegate next, IMeshEtlContext meshEtlCo
 
         if (dataContext.Current == null)
         {
-            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+            throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
 
@@ -73,7 +74,7 @@ public class StatisticalAnomalyNode(NodeDelegate next, IMeshEtlContext meshEtlCo
     {
         if (!sourceData.Any())
         {
-            throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext);
+            throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
         foreach (var sourceDataItem in sourceData)

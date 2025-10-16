@@ -12,9 +12,9 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 public record GetOrCreateRtEntitiesByTypeNodeConfiguration : NodeConfiguration
 {
     /// <summary>
-    /// The CkTypeId of the object
+    /// Runtime construction kit type id to filter by (use either CkTypeId or CkTypeIdPath)
     /// </summary>
-    public CkId<CkTypeId>? CkTypeId { get; set; }
+    public RtCkId<CkTypeId>? CkTypeId { get; set; }
     
     /// <summary>
     /// Gets or sets the json path to the CkTypeId

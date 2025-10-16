@@ -36,9 +36,9 @@ public record CreateAssociationUpdateNodeConfiguration : SourceTargetPathNodeCon
     public string? OriginCkTypeIdPath { get; set; }
     
     /// <summary>
-    /// The origin CkTypeId
+    /// The origin runtime construction kit type id
     /// </summary>
-    public CkId<CkTypeId>? OriginCkTypeId { get; set; }
+    public RtCkId<CkTypeId>? OriginCkTypeId { get; set; }
     
     
     /// <summary>
@@ -57,9 +57,9 @@ public record CreateAssociationUpdateNodeConfiguration : SourceTargetPathNodeCon
     public string? TargetCkTypeIdPath { get; set; }
     
     /// <summary>
-    /// The target CkTypeId
+    /// The target runtime construction kit type id
     /// </summary>
-    public CkId<CkTypeId>? TargetCkTypeId { get; set; }
+    public RtCkId<CkTypeId>? TargetCkTypeId { get; set; }
     
     
     /// <summary>
@@ -70,5 +70,5 @@ public record CreateAssociationUpdateNodeConfiguration : SourceTargetPathNodeCon
     /// <summary>
     /// The role id of the association
     /// </summary>
-    public CkId<CkAssociationRoleId>? AssociationRoleId { get; set; }
+    public RtCkId<CkAssociationRoleId>? AssociationRoleId { get; set; }
 }

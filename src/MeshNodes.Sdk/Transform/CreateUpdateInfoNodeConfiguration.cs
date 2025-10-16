@@ -35,9 +35,9 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     public bool GenerateRtId { get; set; } = false;
 
     /// <summary>
-    /// CkTypeId of query
+    /// The runtime construction kit type id (use either this or CkTypeIdPath)
     /// </summary>
-    public CkId<CkTypeId>? CkTypeId { get; set; }
+    public RtCkId<CkTypeId>? CkTypeId { get; set; }
     
     /// <summary>
     /// Gets or sets the JSON path to the CkTypeId

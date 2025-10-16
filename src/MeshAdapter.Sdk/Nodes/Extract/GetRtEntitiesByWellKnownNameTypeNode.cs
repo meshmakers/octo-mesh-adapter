@@ -24,7 +24,7 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
     {
        var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
 
-        var ckTypeId = CkTypeIdHelper.ResolveCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+        var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         var token = dataContext.SelectByPath(c.Path);
         var source = token.ToDictionary(k => k.SelectToken(c.WellKnownNamePath)!.Value<string>()!, v => v);

@@ -19,7 +19,7 @@ public record FromWatchRtEntityNodeConfiguration : TriggerNodeConfiguration
     /// <summary>
     /// The type identifier of the object to be watched.
     /// </summary>
-    public required CkId<CkTypeId> CkTypeId { get; set; }
+    public required RtCkId<CkTypeId> CkTypeId { get; set; }
 
     /// <summary>
     /// Gets or sets the runtime identifier of an object to filter by (optional).

@@ -12,22 +12,22 @@ public static class CkTypeIdHelper
     /// <summary>
     /// Resolves CkTypeId from either the direct value or a path in the data context
     /// </summary>
-    /// <param name="ckTypeId">Direct CkTypeId value (priority)</param>
+    /// <param name="rtCkTypeId">Direct CkTypeId value (priority)</param>
     /// <param name="ckTypeIdPath">Path to CkTypeId in data context</param>
     /// <param name="dataContext">Data context to resolve the path from</param>
     /// <param name="nodeContext">Node context for exception handling</param>
     /// <returns>Resolved CkTypeId or throws exception if not found</returns>
-    public static CkId<CkTypeId> ResolveCkTypeId(CkId<CkTypeId>? ckTypeId, string? ckTypeIdPath,
+    public static RtCkId<CkTypeId> ResolveRtCkTypeId(RtCkId<CkTypeId>? rtCkTypeId, string? ckTypeIdPath,
         IDataContext dataContext, INodeContext nodeContext)
     {
-        if (ckTypeId == null && ckTypeIdPath == null)
+        if (rtCkTypeId == null && ckTypeIdPath == null)
         {
             throw MeshAdapterPipelineExecutionException.CkTypeIdNotSet(nodeContext);
         }
         
-        if (ckTypeId != null)
+        if (rtCkTypeId != null)
         {
-            return ckTypeId;
+            return rtCkTypeId;
         }
         
         if (ckTypeIdPath != null)
@@ -37,7 +37,7 @@ public static class CkTypeIdHelper
             {
                 throw MeshAdapterPipelineExecutionException.CkTypeIdValueNull(nodeContext, ckTypeIdPath);
             }
-            return new CkId<CkTypeId>(ckTypeIdValue);
+            return new RtCkId<CkTypeId>(ckTypeIdValue);
         }
         
         throw MeshAdapterPipelineExecutionException.CkTypeIdNotSet(nodeContext);
@@ -92,7 +92,7 @@ public static class CkTypeIdHelper
     /// <param name="dataContext">Data context to resolve path from</param>
     /// <param name="nodeContext">Node context for exception handling</param>
     /// <returns>Resolved OriginCkTypeId or throws exception if not found</returns>
-    public static CkId<CkTypeId> ResolveOriginCkTypeId(CkId<CkTypeId>? originCkTypeId, string? originCkTypeIdPath,
+    public static RtCkId<CkTypeId> ResolveOriginCkTypeId(RtCkId<CkTypeId>? originCkTypeId, string? originCkTypeIdPath,
         IDataContext dataContext, INodeContext nodeContext)
     {
         if (originCkTypeId == null && originCkTypeIdPath == null)
@@ -112,7 +112,7 @@ public static class CkTypeIdHelper
             {
                 throw MeshAdapterPipelineExecutionException.OriginCkTypeIdValueNull(nodeContext, originCkTypeIdPath);
             }
-            return new CkId<CkTypeId>(ckTypeIdValue);
+            return new RtCkId<CkTypeId>(ckTypeIdValue);
         }
         
         throw MeshAdapterPipelineExecutionException.OriginCkTypeIdNotSet(nodeContext);
@@ -126,7 +126,7 @@ public static class CkTypeIdHelper
     /// <param name="dataContext">Data context to resolve path from</param>
     /// <param name="nodeContext">Node context for exception handling</param>
     /// <returns>Resolved TargetCkTypeId or throws exception if not found</returns>
-    public static CkId<CkTypeId> ResolveTargetCkTypeId(CkId<CkTypeId>? targetCkTypeId, string? targetCkTypeIdPath, IDataContext dataContext, INodeContext nodeContext)
+    public static RtCkId<CkTypeId> ResolveTargetCkTypeId(RtCkId<CkTypeId>? targetCkTypeId, string? targetCkTypeIdPath, IDataContext dataContext, INodeContext nodeContext)
     {
         if (targetCkTypeId == null && targetCkTypeIdPath == null)
         {
@@ -145,7 +145,7 @@ public static class CkTypeIdHelper
             {
                 throw MeshAdapterPipelineExecutionException.TargetCkTypeIdValueNull(nodeContext, targetCkTypeIdPath);
             }
-            return new CkId<CkTypeId>(ckTypeIdValue);
+            return new RtCkId<CkTypeId>(ckTypeIdValue);
         }
         
         throw MeshAdapterPipelineExecutionException.TargetCkTypeIdNotSet(nodeContext);

@@ -16,7 +16,7 @@ public record MultipleRtEntityResultDto
     /// <summary>
     /// Represents the origin CkTypeId for the entity extraction operation.
     /// </summary>
-    public required CkId<CkTypeId> OriginCkTypeId { get; init; }
+    public required RtCkId<CkTypeId> OriginCkTypeId { get; init; }
 
     /// <summary>
     /// Returns the total count of entities extracted during the operation.

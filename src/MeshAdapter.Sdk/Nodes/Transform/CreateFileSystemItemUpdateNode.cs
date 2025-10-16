@@ -1,4 +1,3 @@
-using System.Text;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v1;
@@ -11,6 +10,7 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -22,16 +22,13 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext etlContext)
     : IPipelineNode
 {
-    private static readonly CkId<CkAssociationRoleId> CkAssociationIdParentChild = new(SystemCkIds.ModelId,
-        SystemCkIds.ParentChild);
-
-    private static readonly CkId<CkTypeId> CkTypeIdFileSystemItem =
+    private static readonly RtCkId<CkTypeId> RtCkTypeIdFileSystemItem =
         new("System.Reporting", "FileSystemItem");
 
     internal record FileSystemItemResult
     {
         public required OctoObjectId RtId { get; init; }
-        public required CkId<CkTypeId> CkTypeId { get; init; }
+        public required RtCkId<CkTypeId> CkTypeId { get; init; }
         public required string FileName { get; init; }
     }
 
@@ -71,7 +68,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         var folder = await GetFolderRootAsync(etlContext.TenantRepository, c.RootFolderWellKnownName);
 
-        var rtFileSystemItem = await etlContext.TenantRepository.CreateTransientRtEntityAsync(CkTypeIdFileSystemItem);
+        var rtFileSystemItem = await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(RtCkTypeIdFileSystemItem);
         if (rtId != null)
         {
             rtFileSystemItem.RtId = rtId.Value;
@@ -100,11 +97,11 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             AttributeValueTypesDto.BinaryLinked, entityBinaryInfo);
         rtFileSystemItem.SetAttributeValue("Name", AttributeValueTypesDto.String, fileName);
 
-        var updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(CkTypeIdFileSystemItem, rtFileSystemItem);
+        var updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(RtCkTypeIdFileSystemItem, rtFileSystemItem);
         entityUpdateInfoList.Add(updateItem);
         assocUpdateInfoList.Add(
-            AssociationUpdateInfo.CreateCreate(rtFileSystemItem.ToRtEntityId(), folder.ToRtEntityId(),
-                CkAssociationIdParentChild));
+            AssociationUpdateInfo.CreateInsert(rtFileSystemItem.ToRtEntityId(), folder.ToRtEntityId(),
+                SystemCkIds.RtCkParentChildRoleId));
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
@@ -121,7 +118,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         dataContext.SetValueByPath(c.TargetPath,
             new FileSystemItemResult
-                { CkTypeId = CkTypeIdFileSystemItem, RtId = rtFileSystemItem.RtId, FileName = fileName },
+                { CkTypeId = RtCkTypeIdFileSystemItem, RtId = rtFileSystemItem.RtId, FileName = fileName },
             c.DocumentMode, c.TargetValueKind,
             c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
 
@@ -174,7 +171,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         if (string.IsNullOrWhiteSpace(pathValue))
         {
-            throw MeshAdapterPipelineExecutionException
+            throw PipelineExecutionException
                 .ValueNotSet(nodeContext, nameof(config.Path));
         }
 

@@ -12,14 +12,14 @@ internal class WellKnownNameLoader(IMeshEtlContext etlContext) : IWellKnownNameL
 {
     public async Task<IDictionary<string, RtEntity>> LoadAsync(
         IEnumerable<string> wellKnownNames,
-        CkId<CkTypeId> ckTypeId)
+        RtCkId<CkTypeId> rtCkTypeId)
     {
         var dataOperation = DataQueryOperation.Create().FieldIn(nameof(RtEntity.RtWellKnownName), wellKnownNames);
 
         using var session = etlContext.TenantRepository.GetSession();
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
-            ckTypeId, dataOperation);
+            rtCkTypeId, dataOperation);
 
         await session.CommitTransactionAsync();
 

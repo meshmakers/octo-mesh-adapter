@@ -155,7 +155,7 @@ public class ImportFromExcelNode(
                     var name = columnContext.GetValueByPath<string>(entry, "name", iLayer)!;
                     var parentName = ParentNameParser.ParseLayerBasedName(columnContext, entry, iLayer);
 
-                    CkId<CkTypeId>? parentCkTypeId = null;
+                    RtCkId<CkTypeId>? parentCkTypeId = null;
                     if (!string.IsNullOrWhiteSpace(parentName))
                     {
                         parentCkTypeId = columnContext.GetCkTypeId(iLayer - 1);
@@ -276,7 +276,7 @@ public class ImportFromExcelNode(
 
             if (entity.IsObjectInRepository && entity.RtId.HasValue && entity.ParentCkTypeId != entity.CkTypeId)
             {
-                var association = AssociationUpdateInfo.CreateCreate(new RtEntityId(entity.CkTypeId, entity.RtId.Value),
+                var association = AssociationUpdateInfo.CreateInsert(new RtEntityId(entity.CkTypeId, entity.RtId.Value),
                     new RtEntityId(entityParent?.CkTypeId ?? "Basic/Tree", entityParent?.RtId ?? rootId),
                     entity.AssociationRoleId);
 
@@ -291,11 +291,11 @@ public class ImportFromExcelNode(
                     entityParent.RtId = OctoObjectId.GenerateNewId();
                 }
 
-                var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityAsync(entity.CkTypeId);
+                var rtEntity = await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(entity.CkTypeId);
                 rtEntity.RtId = entity.RtId.Value;
                 rtEntity.RtWellKnownName = entity.Name;
 
-                var ckTypeGraph = ckCacheService.GetCkType(etlContext.TenantId, entity.CkTypeId);
+                var ckTypeGraph = ckCacheService.GetRtCkType(etlContext.TenantId, entity.CkTypeId);
 
                 foreach (var attribute in entity.Attributes)
                 {
@@ -311,7 +311,7 @@ public class ImportFromExcelNode(
 
                 entities.Add(insert);
 
-                var association = AssociationUpdateInfo.CreateCreate(new RtEntityId(entity.CkTypeId, entity.RtId.Value),
+                var association = AssociationUpdateInfo.CreateInsert(new RtEntityId(entity.CkTypeId, entity.RtId.Value),
                     new RtEntityId(entityParent?.CkTypeId ?? "Basic/Tree", entityParent?.RtId ?? rootId),
                     entity.AssociationRoleId);
 

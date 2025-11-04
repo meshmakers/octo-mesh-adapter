@@ -24,12 +24,12 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
 
         var notificationTemplateName = GetNotificationTemplateName(c, dataContext, nodeContext);
 
-        var dataQueryOperation = DataQueryOperation.Create();
-        dataQueryOperation.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.Equals, notificationTemplateName);
+        var queryOptions = RtEntityQueryOptions.Create();
+        queryOptions.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.Equals, notificationTemplateName);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync<RtNotificationTemplate>(session, dataQueryOperation);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync<RtNotificationTemplate>(session, queryOptions);
         await session.CommitTransactionAsync();
         
         var notificationTemplate = r.Items.FirstOrDefault();

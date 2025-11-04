@@ -22,19 +22,20 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-       var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
 
         var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
         var token = dataContext.SelectByPath(c.Path);
         var source = token.ToDictionary(k => k.SelectToken(c.WellKnownNamePath)!.Value<string>()!, v => v);
 
-        var dataQueryOperation = DataQueryOperation.Create();
-        dataQueryOperation.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.In, source.Keys);
+        var queryOptions = RtEntityQueryOptions.Create()
+            .FieldIn(nameof(RtEntity.RtWellKnownName), source.Keys);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, dataQueryOperation, c.Skip, c.Take);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip,
+            c.Take);
         await session.CommitTransactionAsync();
 
         List<string> handledRtWellKnownNames = new();
@@ -44,11 +45,12 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
             {
                 continue;
             }
+
             if (source.TryGetValue(rtEntity.RtWellKnownName, out var sourceToken))
             {
                 sourceToken.ReplaceNested(c.RtIdTargetPath, rtEntity.RtId.ToString());
                 sourceToken.ReplaceNested(c.CkTypeIdTargetPath, rtEntity.CkTypeId!.ToString());
-                sourceToken.ReplaceNested(c.ModOperationPath, (int) UpdateKind.Update);
+                sourceToken.ReplaceNested(c.ModOperationPath, (int)UpdateKind.Update);
                 handledRtWellKnownNames.Add(rtEntity.RtWellKnownName!);
             }
         }

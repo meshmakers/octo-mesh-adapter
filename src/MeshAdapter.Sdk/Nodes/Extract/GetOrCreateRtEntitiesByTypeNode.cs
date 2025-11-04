@@ -26,9 +26,9 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             return;
         }
 
-        var dataQueryOperation = DataQueryOperation.Create();
+        var queryOptions = RtEntityQueryOptions.Create();
         // Add field filters from the configuration
-        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
+        c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
         IOctoSession? session = null;
 
@@ -38,7 +38,7 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             session.StartTransaction();
 
             var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId,
-                dataQueryOperation, 0, 1);
+                queryOptions, 0, 1);
 
             if (r.TotalCount == 0)
             {

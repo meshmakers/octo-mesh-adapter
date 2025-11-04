@@ -68,7 +68,8 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         var folder = await GetFolderRootAsync(etlContext.TenantRepository, c.RootFolderWellKnownName);
 
-        var rtFileSystemItem = await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(RtCkTypeIdFileSystemItem);
+        var rtFileSystemItem =
+            await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(RtCkTypeIdFileSystemItem);
         if (rtId != null)
         {
             rtFileSystemItem.RtId = rtId.Value;
@@ -247,11 +248,11 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             var session = await tenantRepository.GetSessionAsync();
             session.StartTransaction();
 
-            DataQueryOperation queryOperation = DataQueryOperation.Create();
-            queryOperation.FieldEquals(nameof(RtEntity.RtWellKnownName), rootFolderWellKnownName);
+            var queryOptions = RtEntityQueryOptions.Create()
+                .FieldEquals(nameof(RtEntity.RtWellKnownName), rootFolderWellKnownName);
 
             var r = await tenantRepository.GetRtEntitiesByTypeAsync(session, "System.Reporting/FolderRoot",
-                queryOperation);
+                queryOptions);
 
             await session.CommitTransactionAsync();
             if (r.Items.Count() == 1)

@@ -39,13 +39,13 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             return;
         }
 
-        var dataQueryOperation = DataQueryOperation.Create();
-        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
+        var queryOptions = RtEntityQueryOptions.Create();
+        c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, ckTypeId, rtIds,
-            dataQueryOperation, c.Skip, c.Take);
+            queryOptions, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, r);

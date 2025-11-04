@@ -11,7 +11,7 @@ internal static class FieldFilterExtensions
 {
     internal static void GetFieldFilter(this ICollection<FieldFilterWithPathDto>? fieldFilters,
         IDataContext dataContext,
-        DataQueryOperation dataQueryOperation)
+        RtEntityQueryOptions queryOptions)
     {
         if (fieldFilters != null)
         {
@@ -34,7 +34,7 @@ internal static class FieldFilterExtensions
                     }
                 }
 
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributePath, GetOperator(fieldFilter.Operator),
+                queryOptions.AddFieldFilter(fieldFilter.AttributePath, GetOperator(fieldFilter.Operator),
                     comparisonValue);
             }
         }

@@ -50,17 +50,17 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             throw MeshAdapterPipelineExecutionException.GraphDirectionNotSet(nodeContext);
         }
 
-        var dataQueryOperation = DataQueryOperation.Create();
+        var queryOptions = RtEntityQueryOptions.Create();
 
         // Add field filters from the configuration
-        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
-        c.SortOrders.GetSortOrders(dataContext, dataQueryOperation);
+        c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
+        c.SortOrders.GetSortOrders(queryOptions);
 
         using var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
 
         var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, originRtIds,
-            originCkTypeId, associationRoleId, targetCkTypeId, graphDirection.Value, null, dataQueryOperation);
+            originCkTypeId, associationRoleId, targetCkTypeId, graphDirection.Value, null, queryOptions);
 
         if (result.Count == 0)
         {

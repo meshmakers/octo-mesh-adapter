@@ -22,13 +22,13 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
 
         var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
-        var dataQueryOperation = DataQueryOperation.Create();
-        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
-        c.SortOrders.GetSortOrders(dataContext, dataQueryOperation);
+        var queryOptions = RtEntityQueryOptions.Create();
+        c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
+        c.SortOrders.GetSortOrders(queryOptions);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, dataQueryOperation, c.Skip, c.Take);
+        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, r);

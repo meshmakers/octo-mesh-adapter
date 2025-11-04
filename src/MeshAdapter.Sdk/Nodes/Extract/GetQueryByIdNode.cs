@@ -40,36 +40,36 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
             return;
         }
 
-        var dataQueryOperation = DataQueryOperation.Create();
+        var queryOptions = RtEntityQueryOptions.Create();
         if (rtQuery.FieldFilter != null)
         {
             foreach (var fieldFilter in rtQuery.FieldFilter)
             {
-                dataQueryOperation.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator)fieldFilter.Operator,
+                queryOptions.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator)fieldFilter.Operator,
                     fieldFilter.ComparisonValue);
             }
         }
 
         // Add field filters from the configuration
-        c.FieldFilters.GetFieldFilter(dataContext, dataQueryOperation);
+        c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
         if (rtQuery.Sorting != null)
         {
             foreach (var orderItemRecord in rtQuery.Sorting)
             {
-                dataQueryOperation.SortOrder(orderItemRecord.AttributePath, (SortOrders)orderItemRecord.SortOrder);
+                queryOptions.SortOrder(orderItemRecord.AttributePath, (SortOrders)orderItemRecord.SortOrder);
             }
         }
 
         if (rtQuery.AttributeSearchFilter != null)
         {
-            dataQueryOperation.AttributeSearch(rtQuery.AttributeSearchFilter.AttributePaths,
+            queryOptions.AttributeSearch(rtQuery.AttributeSearchFilter.AttributePaths,
                 rtQuery.AttributeSearchFilter.SearchValue);
         }
 
         if (rtQuery.TextSearchFilter != null)
         {
-            dataQueryOperation.TextSearch(rtQuery.TextSearchFilter.SearchValue);
+            queryOptions.TextSearch(rtQuery.TextSearchFilter.SearchValue);
         }
 
         var roleIdDirectionPairs = RtPathEvaluator.TokenizeAndGetNavigationPairs(ckCacheService,
@@ -77,7 +77,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
             rtQuery.Columns);
 
         var resultSet = await context.TenantRepository.GetRtEntitiesGraphByTypeAsync(session, rtQuery.QueryCkTypeId,
-            dataQueryOperation, roleIdDirectionPairs, c.Skip, c.Take);
+            queryOptions, roleIdDirectionPairs, c.Skip, c.Take);
 
         await session.CommitTransactionAsync();
 

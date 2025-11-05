@@ -12,7 +12,8 @@ internal class MeshAdapterService(
     ICkCacheService ckCacheService,
     IEventHubControl eventHubControl) : IAdapterService
 {
-    public async Task<bool> StartupAsync(AdapterStartup adapterStartup, List<DeploymentUpdateErrorMessageDto> errorMessages,
+    public async Task<bool> StartupAsync(AdapterStartup adapterStartup,
+        List<DeploymentUpdateErrorMessageDto> errorMessages,
         CancellationToken stoppingToken)
     {
         logger.LogInformation("Startup of mesh adapter");
@@ -27,11 +28,11 @@ internal class MeshAdapterService(
 
             // Register the adapter configuration
             logger.LogInformation("Registering adapter configuration for tenant: {TenantId}", adapterStartup.TenantId);
-            var success =await pipelineRegistryService.RegisterPipelinesAsync(adapterStartup.TenantId,
+            var success = await pipelineRegistryService.RegisterPipelinesAsync(adapterStartup.TenantId,
                 adapterStartup.Configuration.Pipelines, errorMessages);
 
             await eventHubControl.StartAsync(stoppingToken);
-            
+
             return success;
         }
         catch (Exception e)

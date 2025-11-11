@@ -30,13 +30,13 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="IronOcr" Version="2025.10.11" />
-        <PackageReference Include="IronOcr.Linux" Version="2025.10.11" />
-        <PackageReference Include="IronOcr.MacOs" Version="2025.10.11" />
-        <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.10.11" />
+        <PackageReference Include="IronOcr" Version="2025.11.31" />
+        <PackageReference Include="IronOcr.Linux" Version="2025.11.31" />
+        <PackageReference Include="IronOcr.MacOs" Version="2025.11.31" />
+        <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.11.31" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
-        <PackageReference Include="Microsoft.ML" Version="4.0.2" />
-        <PackageReference Include="Microsoft.ML.TimeSeries" Version="4.0.2" />
+        <PackageReference Include="Microsoft.ML" Version="5.0.0" />
+        <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />

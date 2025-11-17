@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS base
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS base
 WORKDIR /app
 EXPOSE 80
 EXPOSE 443
@@ -20,7 +20,7 @@ RUN wget http://archive.ubuntu.com/ubuntu/pool/main/libp/libpng/libpng12-0_1.2.5
     && dpkg -i libpng12-0_1.2.54-1ubuntu1_amd64.deb || apt-get install -f -y \
     && rm libpng12-0_1.2.54-1ubuntu1_amd64.deb
 
-FROM mcr.microsoft.com/dotnet/sdk:9.0-bookworm-slim AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS build
 ARG BUILD_CONFIGURATION=Release
 ARG OCTO_PRIVATE_NUGET_SERVICE
 ARG OCTO_PRIVATE_NUGET_CERTIFICATE

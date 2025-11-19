@@ -51,6 +51,13 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
                 sourceToken.ReplaceNested(c.RtIdTargetPath, rtEntity.RtId.ToString());
                 sourceToken.ReplaceNested(c.CkTypeIdTargetPath, rtEntity.CkTypeId!.ToString());
                 sourceToken.ReplaceNested(c.ModOperationPath, (int)UpdateKind.Update);
+
+                if (!string.IsNullOrEmpty(c.AttributeTargetPath))
+                {
+                    var attributesDictionary = rtEntity.Attributes.ToDictionary();
+                    sourceToken.ReplaceNested(c.AttributeTargetPath, JToken.FromObject(attributesDictionary));
+                }
+
                 handledRtWellKnownNames.Add(rtEntity.RtWellKnownName!);
             }
         }
@@ -62,6 +69,12 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
                 x.Value.ReplaceNested(c.RtIdTargetPath, OctoObjectId.GenerateNewId().ToString());
                 x.Value.ReplaceNested(c.ModOperationPath, (int)UpdateKind.Insert);
                 x.Value.ReplaceNested(c.CkTypeIdTargetPath, ckTypeId.ToString());
+
+                if (!string.IsNullOrEmpty(c.AttributeTargetPath))
+                {
+                    // For new entities, set an empty dictionary since we don't have attributes yet
+                    x.Value.ReplaceNested(c.AttributeTargetPath, JToken.FromObject(new Dictionary<string, object>()));
+                }
             });
         }
 

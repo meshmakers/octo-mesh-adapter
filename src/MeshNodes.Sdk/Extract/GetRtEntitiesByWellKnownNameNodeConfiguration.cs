@@ -53,4 +53,9 @@ public record GetRtEntitiesByWellKnownNameNodeConfiguration : PathNodeConfigurat
     /// If true, the mod operation will be generated if the RtEntity is not found in the database
     /// </summary>
     public bool GenerateInsertOperation { get; set; } = false;
+
+    /// <summary>
+    /// Optional target path where the entity attributes should be written as a dictionary
+    /// </summary>
+    public string? AttributeTargetPath { get; set; }
 }

@@ -38,7 +38,7 @@ public record GenerateAndStoreReportNodeConfiguration : TargetPathNodeConfigurat
     /// <summary>
     /// Optional CkTypeId of related CkTypeId, comes with <see cref="RelatedRtId"/> or <see cref="RelatedRtIdPath"/>.
     /// </summary>
-    public CkId<CkTypeId>? RelatedCkTypeId { get; set; }
+    public RtCkId<CkTypeId>? RelatedCkTypeId { get; set; }
 
     /// <summary>
     /// Optional path to the CkTypeId of the related CkTypeId, comes with <see cref="RelatedRtId"/> or <see cref="RelatedRtIdPath"/>.

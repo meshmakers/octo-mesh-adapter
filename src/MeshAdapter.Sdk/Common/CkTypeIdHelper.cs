@@ -47,24 +47,23 @@ public static class CkTypeIdHelper
     /// Tries to resolve CkTypeId from either the direct value or a path in the data context.
     /// If both are null, returns false and sets resolvedCkTypeId to null.
     /// </summary>
-    /// <param name="ckTypeId">Direct CkTypeId value (priority)</param>
+    /// <param name="rtCkTypeId">Direct runtime CkTypeId value (priority)</param>
     /// <param name="ckTypeIdPath">Path to CkTypeId in data context</param>
     /// <param name="dataContext">Data context to resolve the path from</param>
-    /// <param name="nodeContext">Node context for exception handling</param>
-    /// <param name="resolvedCkTypeId">Resolved CkTypeId if found, null otherwise</param>
+    /// <param name="resolvedRtCkTypeId">Resolved CkTypeId if found, null otherwise</param>
     /// <returns>true if CkTypeId was resolved successfully, false otherwise</returns>
-    public static bool TryResolveCkTypeId(CkId<CkTypeId>? ckTypeId, string? ckTypeIdPath,
-        IDataContext dataContext, INodeContext nodeContext, out CkId<CkTypeId>? resolvedCkTypeId)
+    public static bool TryResolveRtCkTypeId(RtCkId<CkTypeId>? rtCkTypeId, string? ckTypeIdPath,
+        IDataContext dataContext, out RtCkId<CkTypeId>? resolvedRtCkTypeId)
     {
-        if (ckTypeId == null && ckTypeIdPath == null)
+        if (rtCkTypeId == null && ckTypeIdPath == null)
         {
-            resolvedCkTypeId = null;
+            resolvedRtCkTypeId = null;
             return false;
         }
 
-        if (ckTypeId != null)
+        if (rtCkTypeId != null)
         {
-            resolvedCkTypeId = ckTypeId;
+            resolvedRtCkTypeId = rtCkTypeId;
             return true;
         }
 
@@ -73,14 +72,14 @@ public static class CkTypeIdHelper
             var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(ckTypeIdPath);
             if (ckTypeIdValue == null)
             {
-                resolvedCkTypeId = null;
+                resolvedRtCkTypeId = null;
                 return false;
             }
-            resolvedCkTypeId = new CkId<CkTypeId>(ckTypeIdValue);
+            resolvedRtCkTypeId = new RtCkId<CkTypeId>(ckTypeIdValue);
             return true;
         }
 
-        resolvedCkTypeId = null;
+        resolvedRtCkTypeId = null;
         return false;
     }
     

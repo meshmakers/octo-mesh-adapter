@@ -42,7 +42,7 @@ public class GenerateAndStoreReportNode(
 
         try
         {
-            var isRelatedCkTypeConfigured = CkTypeIdHelper.TryResolveCkTypeId(c.RelatedCkTypeId, c.RelatedCkTypeIdPath, dataContext, nodeContext,
+            var isRelatedCkTypeConfigured = CkTypeIdHelper.TryResolveRtCkTypeId(c.RelatedCkTypeId, c.RelatedCkTypeIdPath, dataContext,
                 out var relatedCkTypeId);
             var isRtIdConfigured = RtIdHelper.TryResolveRtId(c.RelatedRtId, c.RelatedRtIdPath, dataContext, nodeContext,
                 out var relatedRtId);

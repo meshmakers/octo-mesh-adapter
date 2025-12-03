@@ -19,23 +19,17 @@ public class DistinctNode(NodeDelegate next) : IPipelineNode
     {
         var c = nodeContext.GetNodeConfiguration<DistinctNodeConfiguration>();
 
-        // Get the array from the source path
         var sourceArray = dataContext.GetComplexObjectByPath<List<object>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
 
         if (sourceArray != null && sourceArray.Any())
         {
-            // Use a HashSet to track unique values of the specified property
             var seenValues = new HashSet<object>();
             var distinctObjects = new List<object>();
 
-            foreach (var item in sourceArray)
+            foreach (JObject item in sourceArray.Where(e => e is JObject))
             {
-                if (item is not JObject jobj)
-                    continue;
-
-                // Get the value of the distinct attribute from the JSON object
-                var token = jobj.SelectToken(c.DistinctValuePath);
+                var token = item.SelectToken(c.DistinctValuePath);
                 if (token == null)
                     continue;
 
@@ -50,14 +44,12 @@ public class DistinctNode(NodeDelegate next) : IPipelineNode
                     _ => token.ToString()
                 };
 
-                // If the value is unique, add the object to the result
                 if (uniqueValue != null && seenValues.Add(uniqueValue))
                 {
                     distinctObjects.Add(item);
                 }
             }
 
-            // Write the distinct array to the target path
             dataContext.SetValueByPath(c.TargetPath, distinctObjects, c.DocumentMode, c.TargetValueKind,
                 c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
         }

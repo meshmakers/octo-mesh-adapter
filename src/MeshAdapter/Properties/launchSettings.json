@@ -65,6 +65,16 @@
         "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
+    },
+    "meshadapteer (tenant octogrid)": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "OCTO_ADAPTER__TENANTID": "octogrid",
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
+        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+      },
+      "applicationUrl": "https://localhost:5020;http://localhost:5021"
     }
   }
 }

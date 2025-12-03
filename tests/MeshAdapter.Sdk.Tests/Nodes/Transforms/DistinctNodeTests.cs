@@ -277,7 +277,7 @@ public class DistinctNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_EmptyArray_WritesEmptyResult()
+    public async Task ProcessObjectAsync_EmptyArray_DoesNotWriteResult()
     {
         var config = new DistinctNodeConfiguration
         {

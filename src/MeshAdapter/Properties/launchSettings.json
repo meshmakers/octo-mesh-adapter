@@ -68,6 +68,7 @@
     },
     "meshadapter (tenant octogrid)": {
       "commandName": "Project",
+      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "octogrid",

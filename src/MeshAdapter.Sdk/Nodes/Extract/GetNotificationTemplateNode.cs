@@ -4,7 +4,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v1;
+using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 

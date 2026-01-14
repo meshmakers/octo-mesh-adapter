@@ -30,20 +30,20 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
         var session = await context.TenantRepository.GetSessionAsync();
         session.StartTransaction();
 
-        var rtQuery =
+        var simpleQuery =
             await context.TenantRepository.GetRtEntityByRtIdAsync<RtSimpleRtQuery>(
                 session, c.QueryRtId);
 
-        if (rtQuery == null)
+        if (simpleQuery == null)
         {
             nodeContext.Error("Query '{0}' not found", c.QueryRtId);
             return;
         }
 
         var queryOptions = RtEntityQueryOptions.Create();
-        if (rtQuery.FieldFilter != null)
+        if (simpleQuery.FieldFilter != null)
         {
-            foreach (var fieldFilter in rtQuery.FieldFilter)
+            foreach (var fieldFilter in simpleQuery.FieldFilter)
             {
                 queryOptions.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator)fieldFilter.Operator,
                     fieldFilter.ComparisonValue);
@@ -53,42 +53,42 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
         // Add field filters from the configuration
         c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
-        if (rtQuery.Sorting != null)
+        if (simpleQuery.Sorting != null)
         {
-            foreach (var orderItemRecord in rtQuery.Sorting)
+            foreach (var orderItemRecord in simpleQuery.Sorting)
             {
                 queryOptions.SortOrder(orderItemRecord.AttributePath, (SortOrders)orderItemRecord.SortOrder);
             }
         }
 
-        if (rtQuery.AttributeSearchFilter != null)
+        if (simpleQuery.AttributeSearchFilter != null)
         {
-            queryOptions.AttributeSearch(rtQuery.AttributeSearchFilter.AttributePaths,
-                rtQuery.AttributeSearchFilter.SearchValue);
+            queryOptions.AttributeSearch(simpleQuery.AttributeSearchFilter.AttributePaths,
+                simpleQuery.AttributeSearchFilter.SearchValue);
         }
 
-        if (rtQuery.TextSearchFilter != null)
+        if (simpleQuery.TextSearchFilter != null)
         {
-            queryOptions.TextSearch(rtQuery.TextSearchFilter.SearchValue);
+            queryOptions.TextSearch(simpleQuery.TextSearchFilter.SearchValue);
         }
 
         var roleIdDirectionPairs = RtPathEvaluator.TokenizeAndGetNavigationPairs(ckCacheService,
-            context.TenantRepository.TenantId, rtQuery.QueryCkTypeId,
-            rtQuery.Columns);
+            context.TenantRepository.TenantId, simpleQuery.QueryCkTypeId,
+            simpleQuery.Columns);
 
-        var resultSet = await context.TenantRepository.GetRtEntitiesGraphByTypeAsync(session, rtQuery.QueryCkTypeId,
+        var resultSet = await context.TenantRepository.GetRtEntitiesGraphByTypeAsync(session, simpleQuery.QueryCkTypeId,
             queryOptions, roleIdDirectionPairs, c.Skip, c.Take);
 
         await session.CommitTransactionAsync();
 
         QueryResult queryResult = new();
-        queryResult.Columns.AddRange(rtQuery.Columns.Select(column => new QueryResultColumns
+        queryResult.Columns.AddRange(simpleQuery.Columns.Select(column => new QueryResultColumns
             { Header = column }));
         queryResult.Rows.AddRange(resultSet.Items.Select(entity => new QueryResultRow
         {
             RtId = entity.RtId,
             CkTypeId = entity.CkTypeId ?? throw new Exception("CkTypeId is null"),
-            Values = rtQuery.Columns.Select(column =>
+            Values = simpleQuery.Columns.Select(column =>
                 entity.GetAttributeValueByAccessPath(ckCacheService, context.TenantId, column)).ToList()
         }));
 

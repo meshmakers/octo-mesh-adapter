@@ -68,7 +68,7 @@ public static class ServiceCollectionExtensions
             .RegisterEtlContext<IMeshEtlContext>();
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
-        services.AddCkModelSystemNotificationV1();
+        services.AddCkModelSystemNotificationV2();
 
         services.AddRuntimeEngine()
             .AddMongoDbRuntimeRepository();

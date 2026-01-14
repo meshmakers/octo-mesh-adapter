@@ -1,6 +1,6 @@
 using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
-using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v1;
+using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -31,7 +31,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
         session.StartTransaction();
 
         var rtQuery =
-            await context.TenantRepository.GetRtEntityByRtIdAsync<RtQuery>(
+            await context.TenantRepository.GetRtEntityByRtIdAsync<RtSimpleRtQuery>(
                 session, c.QueryRtId);
 
         if (rtQuery == null)

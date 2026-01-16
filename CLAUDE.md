@@ -2,9 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Important**: This file must be kept up-to-date when the codebase changes. When adding new nodes, services, or modifying the architecture, update the relevant sections accordingly. Also update `docs/developer-guide.md` for comprehensive changes.
+
 ## Project Overview
 
-This is the Octo Mesh Adapter project - an adapter that manages and executes mesh pipelines. It's a .NET 9.0 solution consisting of three main projects:
+This is the Octo Mesh Adapter project - an adapter that manages and executes mesh pipelines. It's a .NET 10.0 solution consisting of three main projects:
 
 - **MeshAdapter**: The main executable service
 - **MeshAdapter.Sdk**: SDK containing pipeline nodes and services
@@ -74,7 +76,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 The solution uses:
 - **Directory.Build.props**: Central MSBuild configuration
 - Three build configurations: Debug, Release, DebugL (for local development)
-- Target framework: .NET 9.0
+- Target framework: .NET 10.0
 - OctoVersion: Managed via Directory.Build.props (3.2.* for public, 0.1.* for private server)
 
 ### Key Dependencies

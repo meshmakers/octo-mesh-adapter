@@ -185,7 +185,7 @@ The node provides detailed logging at different levels:
 
 - **IronOCR**: Version 2025.9.7 or later
 - **Meshmakers.Octo.Sdk.Common.EtlDataPipeline**: For pipeline integration
-- **.NET 9.0**: Runtime requirement
+- **.NET 10.0**: Runtime requirement
 
 ## Limitations
 

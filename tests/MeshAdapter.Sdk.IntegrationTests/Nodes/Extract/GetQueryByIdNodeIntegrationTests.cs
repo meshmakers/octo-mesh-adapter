@@ -257,7 +257,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         }
 
         // Assert - no exception should be thrown
-        caughtException.Should().BeNull($"ProcessObjectAsync should not throw, but threw: {caughtException.Message}");
+        caughtException.Should().BeNull($"ProcessObjectAsync should not throw, but threw: {caughtException?.Message}");
 
         // Assert - next should be called when query is found
         nextCalled.Should().BeTrue("next should be called when query is found");
@@ -269,6 +269,18 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         // Assert - result should be set when query is found
         var result = dataContext.Current?["queryResult"];
         result.Should().NotBeNull();
+
+        // Assert - validate the QueryResult structure and content
+        // The QueryResult is internal but accessible via InternalsVisibleTo
+        var queryResult = capturedValue as Meshmakers.Octo.Sdk.MeshAdapter.Nodes.QueryResult;
+        queryResult.Should().NotBeNull("capturedValue should be a QueryResult");
+
+        // Verify columns match what we defined in CreateQueryEntityAsync
+        queryResult!.Columns.Should().HaveCount(3, "we defined 3 columns: RtId, CkTypeId, RtWellKnownName");
+        queryResult.Columns.Select(c => c.Header).Should().ContainInOrder("RtId", "CkTypeId", "RtWellKnownName");
+
+        // Verify that the query returned results (at least the query entity itself since we query for RtSimpleRtQuery)
+        queryResult.Rows.Should().NotBeEmpty("the query should return at least one result");
     }
 
     [Fact]

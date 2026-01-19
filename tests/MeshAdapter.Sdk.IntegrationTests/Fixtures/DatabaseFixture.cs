@@ -38,8 +38,7 @@ public class DatabaseFixture : ConfigurationFixture
         else
         {
             // Start MongoDB test container with replica set (required for transactions)
-            _mongoDbContainer = new MongoDbBuilder()
-                .WithImage(Options.MongoDbImage)
+            _mongoDbContainer = new MongoDbBuilder(Options.MongoDbImage)
                 .WithReplicaSet()
                 .WithName($"mongodb-meshadapter-test-{Guid.NewGuid():N}")
                 .WithUsername(Options.AdminUser)

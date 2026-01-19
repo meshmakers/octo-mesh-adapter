@@ -17,6 +17,10 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <InternalsVisibleTo Include="MeshAdapter.Sdk.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <None Include="..\..\assets\meshmakers64.png">
             <Pack>True</Pack>
             <PackagePath />

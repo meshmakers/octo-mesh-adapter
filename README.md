@@ -65,6 +65,7 @@ The adapter provides four categories of pipeline nodes:
 
 - [Developer Guide](docs/developer-guide.md) - Architecture, nodes, services, and configuration
 - [Test Concept](docs/test-concept.md) - Unit and integration testing strategy
+- [Integration Test Concept](docs/integration-test-concept.md) - Testcontainers-based integration testing
 - [PDF OCR Extraction](docs/pdf-ocr-extraction.md) - PDF text extraction with IronOCR
 
 ### Examples

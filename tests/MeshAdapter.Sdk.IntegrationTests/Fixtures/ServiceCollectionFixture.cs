@@ -1,0 +1,101 @@
+using MartinCostello.Logging.XUnit;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace MeshAdapter.Sdk.IntegrationTests.Fixtures;
+
+/// <summary>
+/// Base fixture that provides dependency injection and service collection setup.
+/// Follows the same pattern as Runtime.Engine.MongoDb.IntegrationTests.
+/// </summary>
+public abstract class ServiceCollectionFixture : ITestOutputHelperAccessor, IAsyncLifetime
+{
+    private bool _isInitialized;
+
+    protected ServiceCollectionFixture()
+    {
+        Services = new ServiceCollection();
+
+        // Register runtime engine and MongoDB repository
+        Services.AddRuntimeEngine()
+            .AddMongoDbRuntimeRepository();
+
+        // Register Construction Kit model (System 2.0.0)
+        Services.AddCkModelSystemV2();
+
+        // Configure logging
+        Services.AddLogging(loggingBuilder =>
+        {
+            loggingBuilder.ClearProviders();
+            loggingBuilder.SetMinimumLevel(LogLevel.Trace);
+            loggingBuilder.AddXUnit(this);
+        });
+    }
+
+    public ServiceCollection Services { get; }
+
+    public ServiceProvider? Provider { get; private set; }
+
+    public ITestOutputHelper? OutputHelper { get; set; }
+
+    public void EnsureInitialized()
+    {
+        if (!_isInitialized)
+        {
+            throw new InvalidOperationException("Fixture is not initialized. Call InitializeAsync first.");
+        }
+    }
+
+    public async Task DisposeAsync()
+    {
+        await DisposeServicesAsync();
+
+        if (Provider is not null)
+        {
+            await Provider.DisposeAsync();
+        }
+    }
+
+    public async Task InitializeAsync()
+    {
+        if (_isInitialized)
+        {
+            return;
+        }
+
+        await InitializeServicesAsync();
+    }
+
+    protected virtual Task InitializeServicesAsync()
+    {
+        Provider = Services.BuildServiceProvider();
+        _isInitialized = true;
+
+        return Task.CompletedTask;
+    }
+
+    protected abstract Task DisposeServicesAsync();
+
+    public T GetService<T>() where T : notnull
+    {
+        if (Provider == null)
+        {
+            throw new InvalidOperationException("Provider is not initialized. Call InitializeAsync first.");
+        }
+
+        return Provider.GetRequiredService<T>();
+    }
+
+    public ISystemContext GetSystemContext()
+    {
+        if (Provider == null)
+        {
+            throw new InvalidOperationException("Provider is not initialized. Call InitializeAsync first.");
+        }
+
+        return Provider.GetRequiredService<ISystemContext>();
+    }
+}

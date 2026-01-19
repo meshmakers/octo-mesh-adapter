@@ -1,4 +1,5 @@
 using Meshmakers.Common.Shared;
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -72,7 +73,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
             queryOptions.TextSearch(rtQuery.TextSearchFilter.SearchValue);
         }
 
-        var roleIdDirectionPairs = RtPathEvaluator.TokenizeAndGetNavigationPairs(ckCacheService,
+        var roleIdDirectionPairs = RtPathEvaluator.TokenizeAndGetNavigationPairsByRtCkId(ckCacheService,
             context.TenantRepository.TenantId, rtQuery.QueryCkTypeId,
             rtQuery.Columns);
 

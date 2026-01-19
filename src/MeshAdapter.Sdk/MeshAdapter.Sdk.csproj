@@ -18,6 +18,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="MeshAdapter.Sdk.Tests" />
+        <InternalsVisibleTo Include="MeshAdapter.Sdk.IntegrationTests" />
     </ItemGroup>
 
     <ItemGroup>

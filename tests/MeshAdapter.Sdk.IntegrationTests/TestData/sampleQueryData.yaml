@@ -1,0 +1,53 @@
+$schema: https://schemas.meshmakers.cloud/runtime-model.schema.json
+dependencies:
+  - System-2.0.0
+entities:
+  # Test query entity for querying runtime entities
+  - rtId: 6680000000000000000a0001
+    ckTypeId: System/RtSimpleRtQuery
+    rtWellKnownName: TestQuery001
+    attributes:
+      - id: System/RtSimpleRtQuery.QueryCkTypeId
+        value: System/RtRuntimeEntity
+      - id: System/RtSimpleRtQuery.Columns
+        value:
+          - RtId
+          - CkTypeId
+          - RtWellKnownName
+
+  # Test query entity with field filters
+  - rtId: 6680000000000000000a0002
+    ckTypeId: System/RtSimpleRtQuery
+    rtWellKnownName: TestQueryWithFilter
+    attributes:
+      - id: System/RtSimpleRtQuery.QueryCkTypeId
+        value: System/RtRuntimeEntity
+      - id: System/RtSimpleRtQuery.Columns
+        value:
+          - RtId
+          - CkTypeId
+
+  # Test query entity with sorting
+  - rtId: 6680000000000000000a0003
+    ckTypeId: System/RtSimpleRtQuery
+    rtWellKnownName: TestQueryWithSorting
+    attributes:
+      - id: System/RtSimpleRtQuery.QueryCkTypeId
+        value: System/RtRuntimeEntity
+      - id: System/RtSimpleRtQuery.Columns
+        value:
+          - RtId
+          - RtWellKnownName
+
+  # Sample runtime entities to query
+  - rtId: 6680000000000000000b0001
+    ckTypeId: System/RtRuntimeEntity
+    rtWellKnownName: SampleEntity1
+
+  - rtId: 6680000000000000000b0002
+    ckTypeId: System/RtRuntimeEntity
+    rtWellKnownName: SampleEntity2
+
+  - rtId: 6680000000000000000b0003
+    ckTypeId: System/RtRuntimeEntity
+    rtWellKnownName: SampleEntity3

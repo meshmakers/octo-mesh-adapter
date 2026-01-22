@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
@@ -13,13 +14,14 @@ internal class MeshAdapterTriggerContext(
     string tenantId,
     OctoObjectId dataPipelineRtId,
     RtEntityId pipelineRtEntityId,
-    INodeContext nodeContext, IGlobalConfiguration globalConfiguration) 
+    INodeContext nodeContext, IGlobalConfiguration globalConfiguration)
     : TriggerContext(tenantId, dataPipelineRtId, pipelineRtEntityId, nodeContext, globalConfiguration)
 {
     private readonly ILogger<MeshAdapterTriggerContext> _logger = serviceProvider.GetRequiredService<ILogger<MeshAdapterTriggerContext>>();
     private readonly IPipelineRegistryService _pipelineRegistryService = serviceProvider.GetRequiredService<IPipelineRegistryService>();
     private readonly IEtlDataOrchestrator _etlDataOrchestrator = serviceProvider.GetRequiredService<IEtlDataOrchestrator>();
     private readonly IContextCreatorService _contextCreatorService = serviceProvider.GetRequiredService<IContextCreatorService>();
+    private readonly IPipelineExecutionReporter? _executionReporter = serviceProvider.GetService<IPipelineExecutionReporter>();
 
     /// <inheritdoc />
     public override async Task<Guid> StartExecutePipelineAsync(ExecutePipelineOptions executePipelineOptions, object? value = null)
@@ -31,13 +33,13 @@ internal class MeshAdapterTriggerContext(
             _logger.LogError("[{TenantId}] Pipeline {Id} not found", PipelineRtEntityId, TenantId);
             throw PipelineExecutionException.PipelineNotFound(TenantId, PipelineRtEntityId);
         }
-        
-        
+
+
         var pipelineExecutionId = Guid.NewGuid();
         _logger.LogDebug("[{TenantId}] Running pipeline for pipeline {PipelineRtEntityId} as run with execution id {PipelineExecutionId}", TenantId,
             PipelineRtEntityId, pipelineExecutionId);
         var etlContext = await _contextCreatorService.CreateEtlContext<IMeshEtlContext>(pipelineRegistration, executePipelineOptions, pipelineExecutionId);
-        
+
         IPipelineDebugger? debugger = null;
         if (pipelineRegistration.IsDebuggingEnabled)
         {
@@ -47,8 +49,19 @@ internal class MeshAdapterTriggerContext(
             debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
             debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
         }
-        
+
         DateTime startedDateTime = DateTime.UtcNow;
+
+        // Report execution start to communication controller
+        if (_executionReporter != null)
+        {
+            await _executionReporter.ReportExecutionStartAsync(
+                PipelineRtEntityId,
+                pipelineExecutionId,
+                executePipelineOptions.TriggerType,
+                startedDateTime,
+                executePipelineOptions.InputData);
+        }
 
         Task<object?> task = Task.Run(async () =>
         {
@@ -59,7 +72,7 @@ internal class MeshAdapterTriggerContext(
             return r;
         });
         pipelineRegistration.RegisterExecution(pipelineExecutionId, startedDateTime, task);
-        
+
         return pipelineExecutionId;
     }
 
@@ -73,10 +86,43 @@ internal class MeshAdapterTriggerContext(
             _logger.LogError("[{TenantId}] Pipeline {Id} not found", PipelineRtEntityId, TenantId);
             throw PipelineExecutionException.PipelineNotFound(TenantId, PipelineRtEntityId);
         }
-        
-        var result  = await pipelineRegistration.UnregisterExecutionAsync(pipelineExecutionId);
-        _logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId}", TenantId,
-            PipelineRtEntityId);
+
+        var startedAt = pipelineRegistration.GetExecutionStartTime(pipelineExecutionId) ?? DateTime.UtcNow;
+        var completedAt = DateTime.UtcNow;
+        var durationMs = (int)(completedAt - startedAt).TotalMilliseconds;
+
+        var status = PipelineExecutionStatus.Running;
+        string? errorMessage = null;
+        object? result = null;
+
+        try
+        {
+            result = await pipelineRegistration.UnregisterExecutionAsync(pipelineExecutionId);
+            status = PipelineExecutionStatus.Completed;
+        }
+        catch (Exception ex)
+        {
+            status = PipelineExecutionStatus.Failed;
+            errorMessage = ex.Message;
+            throw;
+        }
+        finally
+        {
+            // Report execution end to communication controller
+            if (_executionReporter != null)
+            {
+                await _executionReporter.ReportExecutionEndAsync(
+                    pipelineExecutionId,
+                    status,
+                    completedAt,
+                    durationMs,
+                    errorMessage);
+            }
+
+            _logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId} with status {Status}",
+                TenantId, PipelineRtEntityId, status);
+        }
+
         return result;
     }
 }

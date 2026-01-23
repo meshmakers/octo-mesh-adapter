@@ -20,11 +20,35 @@ public class GetPipelineConfigByCkTypeIdNode(NodeDelegate next, IMeshEtlContext 
     {
         var c = nodeContext.GetNodeConfiguration<GetPipelineConfigByCkTypeIdNodeConfiguration>();
 
-        var rawJsonValues = etlContext.GlobalConfiguration.GetAllRawJsonByCkTypeId(c.CkTypeId);
+        var ckTypeId = ResolveCkTypeId(c, dataContext, nodeContext);
+
+        var rawJsonValues = etlContext.GlobalConfiguration.GetAllRawJsonByCkTypeId(ckTypeId);
         var configurationsArray = new JArray(rawJsonValues.Select(JToken.Parse));
 
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, configurationsArray);
 
         await next(dataContext, nodeContext);
+    }
+
+    private static string ResolveCkTypeId(GetPipelineConfigByCkTypeIdNodeConfiguration c,
+        IDataContext dataContext, INodeContext nodeContext)
+    {
+        if (c.CkTypeId == null && c.CkTypeIdPath == null)
+        {
+            throw MeshAdapterPipelineExecutionException.CkTypeIdNotSet(nodeContext);
+        }
+
+        if (c.CkTypeId != null)
+        {
+            return c.CkTypeId;
+        }
+
+        var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(c.CkTypeIdPath!);
+        if (ckTypeIdValue == null)
+        {
+            throw MeshAdapterPipelineExecutionException.CkTypeIdValueNull(nodeContext, c.CkTypeIdPath!);
+        }
+
+        return ckTypeIdValue;
     }
 }

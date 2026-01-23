@@ -20,17 +20,41 @@ public class GetPipelineConfigByWellKnownNameNode(NodeDelegate next, IMeshEtlCon
     {
         var c = nodeContext.GetNodeConfiguration<GetPipelineConfigByWellKnownNameNodeConfiguration>();
 
-        if (!etlContext.GlobalConfiguration.IsDefined(c.WellKnownName))
+        var wellKnownName = ResolveWellKnownName(c, dataContext, nodeContext);
+
+        if (!etlContext.GlobalConfiguration.IsDefined(wellKnownName))
         {
             throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
-                nodeContext, nameof(c.WellKnownName), c.WellKnownName);
+                nodeContext, nameof(c.WellKnownName), wellKnownName);
         }
 
-        var rawJson = etlContext.GlobalConfiguration.GetRawJson(c.WellKnownName);
+        var rawJson = etlContext.GlobalConfiguration.GetRawJson(wellKnownName);
         var pipelineConfigJson = JToken.Parse(rawJson);
 
         dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, pipelineConfigJson);
 
         await next(dataContext, nodeContext);
+    }
+
+    private static string ResolveWellKnownName(GetPipelineConfigByWellKnownNameNodeConfiguration c,
+        IDataContext dataContext, INodeContext nodeContext)
+    {
+        if (c.WellKnownName == null && c.WellKnownNamePath == null)
+        {
+            throw MeshAdapterPipelineExecutionException.WellKnownNameNotSet(nodeContext);
+        }
+
+        if (c.WellKnownName != null)
+        {
+            return c.WellKnownName;
+        }
+
+        var wellKnownNameValue = dataContext.GetSimpleValueByPath<string>(c.WellKnownNamePath!);
+        if (wellKnownNameValue == null)
+        {
+            throw MeshAdapterPipelineExecutionException.WellKnownNameValueNull(nodeContext, c.WellKnownNamePath!);
+        }
+
+        return wellKnownNameValue;
     }
 }

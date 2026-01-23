@@ -123,6 +123,18 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Global configuration parameter '{configurationName}' with value '{configurationValue}' not found.");
     }
 
+    public static Exception WellKnownNameNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: WellKnownName is not set. Please set wellKnownName or wellKnownNamePath.");
+    }
+
+    public static Exception WellKnownNameValueNull(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No WellKnownName found at path '{path}'. Please ensure the value is set at the specified path.");
+    }
+
     public static Exception NoRecipientsFound(INodeContext nodeContext, string toPathName, string toPathValue)
     {
         return new MeshAdapterPipelineExecutionException(

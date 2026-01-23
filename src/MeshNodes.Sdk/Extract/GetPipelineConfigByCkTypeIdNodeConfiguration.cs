@@ -10,7 +10,12 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 public record GetPipelineConfigByCkTypeIdNodeConfiguration : TargetPathNodeConfiguration
 {
     /// <summary>
-    /// The CkTypeId to search for
+    /// The CkTypeId to search for (static value)
     /// </summary>
-    public required string CkTypeId { get; init; }
+    public string? CkTypeId { get; init; }
+
+    /// <summary>
+    /// JSON path to get the CkTypeId from the input data
+    /// </summary>
+    public string? CkTypeIdPath { get; init; }
 }

@@ -10,7 +10,12 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 public record GetPipelineConfigByWellKnownNameNodeConfiguration : TargetPathNodeConfiguration
 {
     /// <summary>
-    /// The well known name of the pipeline configuration 
+    /// The well known name of the pipeline configuration (static value)
     /// </summary>
-    public required string WellKnownName { get; init; }
+    public string? WellKnownName { get; init; }
+
+    /// <summary>
+    /// JSON path to get the well known name from the input data
+    /// </summary>
+    public string? WellKnownNamePath { get; init; }
 }

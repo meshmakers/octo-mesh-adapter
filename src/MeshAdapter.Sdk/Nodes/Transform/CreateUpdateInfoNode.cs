@@ -179,8 +179,8 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         {
             if (jObject.TryGetValue("Attributes", out var attributes) && attributes is JObject attributesObject)
             {
-                var ckRecordGraphChild = ckCacheService.GetCkRecord(etlContext.TenantId,
-                    ckRecordIdObject["FullName"]!.ToObject<string>()!);
+                var ckRecordGraphChild = ckCacheService.GetRtCkRecord(etlContext.TenantId,
+                    ckRecordIdObject["SemanticVersionedFullName"]!.ToObject<string>()!);
                 var recordChild = new RtRecord
                 {
                     CkRecordId = ckRecordGraphChild.CkRecordId.ToRtCkId()

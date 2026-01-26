@@ -53,6 +53,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<PlaceholderReplaceNode>()
             .RegisterNode<EMailSenderNode>()
             .RegisterNode<GetQueryByIdNode>()
+            .RegisterNode<GetPipelineConfigByWellKnownNameNode>()
+            .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()
             .RegisterNode<GenerateAndStoreReportNode>()

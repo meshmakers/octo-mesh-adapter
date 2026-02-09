@@ -47,8 +47,14 @@ internal class MeshAdapterService(
         try
         {
             logger.LogInformation("Shutdown of mesh adapter");
-            await eventHubControl.StopAsync(stoppingToken);
+
+            // Unregister pipelines first to stop trigger nodes before stopping the bus.
+            // Trigger nodes (e.g. FromSchedule) fire on timers and send MassTransit messages.
+            // If the bus is stopped first, it waits for in-flight consumers to complete,
+            // but running triggers keep sending new messages, preventing the bus from stopping.
             await pipelineRegistryService.UnregisterAllPipelinesAsync(adapterShutdown.TenantId);
+            await eventHubControl.StopAsync(stoppingToken);
+
             logger.LogInformation("Mesh Adapter service stopped");
         }
         catch (Exception e)

@@ -30,7 +30,9 @@ internal class MeshAdapterTriggerContext(
                 // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
                 out var pipelineRegistration) || pipelineRegistration == null)
         {
-            _logger.LogError("[{TenantId}] Pipeline {Id} not found", PipelineRtEntityId, TenantId);
+            _logger.LogWarning(
+                "[{TenantId}] Pipeline {PipelineRtEntityId} no longer registered (adapter may be reconfiguring), skipping execution start",
+                TenantId, PipelineRtEntityId);
             throw PipelineExecutionException.PipelineNotFound(TenantId, PipelineRtEntityId);
         }
 
@@ -83,8 +85,10 @@ internal class MeshAdapterTriggerContext(
                 // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
                 out var pipelineRegistration) || pipelineRegistration == null)
         {
-            _logger.LogError("[{TenantId}] Pipeline {Id} not found", PipelineRtEntityId, TenantId);
-            throw PipelineExecutionException.PipelineNotFound(TenantId, PipelineRtEntityId);
+            _logger.LogWarning(
+                "[{TenantId}] Pipeline {PipelineRtEntityId} no longer registered (adapter may be reconfiguring), skipping execution end for {PipelineExecutionId}",
+                TenantId, PipelineRtEntityId, pipelineExecutionId);
+            return null;
         }
 
         var startedAt = pipelineRegistration.GetExecutionStartTime(pipelineExecutionId) ?? DateTime.UtcNow;

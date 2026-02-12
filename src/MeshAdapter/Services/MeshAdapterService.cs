@@ -16,7 +16,7 @@ internal class MeshAdapterService(
         List<DeploymentUpdateErrorMessageDto> errorMessages,
         CancellationToken stoppingToken)
     {
-        logger.LogInformation("Startup of mesh adapter");
+        logger.LogInformation("Startup of mesh adapter (StartEventHub={StartEventHub})", adapterStartup.StartEventHub);
         try
         {
             // Clean the cache for the tenant to ensure no stale data is present
@@ -31,7 +31,16 @@ internal class MeshAdapterService(
             var success = await pipelineRegistryService.RegisterPipelinesAsync(adapterStartup.TenantId,
                 adapterStartup.Configuration.Pipelines, errorMessages);
 
-            await eventHubControl.StartAsync(stoppingToken);
+            if (adapterStartup.StartEventHub)
+            {
+                logger.LogInformation("Starting event hub for tenant: {TenantId}", adapterStartup.TenantId);
+                await eventHubControl.StartAsync(stoppingToken);
+            }
+            else
+            {
+                logger.LogInformation("Skipping event hub start for tenant: {TenantId} (configuration update)",
+                    adapterStartup.TenantId);
+            }
 
             return success;
         }
@@ -46,14 +55,25 @@ internal class MeshAdapterService(
     {
         try
         {
-            logger.LogInformation("Shutdown of mesh adapter");
+            logger.LogInformation("Shutdown of mesh adapter (StopEventHub={StopEventHub})",
+                adapterShutdown.StopEventHub);
 
             // Unregister pipelines first to stop trigger nodes before stopping the bus.
             // Trigger nodes (e.g. FromSchedule) fire on timers and send MassTransit messages.
             // If the bus is stopped first, it waits for in-flight consumers to complete,
             // but running triggers keep sending new messages, preventing the bus from stopping.
             await pipelineRegistryService.UnregisterAllPipelinesAsync(adapterShutdown.TenantId);
-            await eventHubControl.StopAsync(stoppingToken);
+
+            if (adapterShutdown.StopEventHub)
+            {
+                logger.LogInformation("Stopping event hub for tenant: {TenantId}", adapterShutdown.TenantId);
+                await eventHubControl.StopAsync(stoppingToken);
+            }
+            else
+            {
+                logger.LogInformation("Skipping event hub stop for tenant: {TenantId} (configuration update)",
+                    adapterShutdown.TenantId);
+            }
 
             logger.LogInformation("Mesh Adapter service stopped");
         }

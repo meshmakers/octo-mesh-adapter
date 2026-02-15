@@ -45,7 +45,12 @@ public class FromWatchRtEntityNode(ISystemContext systemContext) : ITriggerPipel
         _updateStream = await tenantRepository.WatchRtEntitiesAsync(c.CkTypeId, filter);
         _updateStream.GetUpdates()
             .Select(u =>
-                Observable.FromAsync(() => context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), u)))
+                Observable.FromAsync(() => context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), u))
+                    .Catch<object?, Exception>(ex =>
+                    {
+                        context.NodeContext.Error(ex, "Pipeline execution failed for watched entity update");
+                        return Observable.Empty<object?>();
+                    }))
             .Concat()
             .Subscribe();
     }

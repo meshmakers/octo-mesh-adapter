@@ -33,6 +33,9 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
                     var pipelineExecutionId =
                         await context.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow), input);
                     await responseFunc(new ExecuteMeshPipelineResponse(true, null, pipelineExecutionId, startDateTime));
+
+                    // Wait for pipeline completion and report execution end to communication controller
+                    await context.EndExecutePipelineAsync(pipelineExecutionId);
                 }
                 catch (Exception ex)
                 {

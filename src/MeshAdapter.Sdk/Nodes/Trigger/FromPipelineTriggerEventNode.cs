@@ -25,7 +25,15 @@ internal class FromPipelineTriggerEventNode(IEventHubControl eventHubControl)
             {
                 context.NodeContext.Info("[{TenantId}] Received", message.TenantId);
 
-                await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow));
+                try
+                {
+                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow));
+                }
+                catch (Exception ex)
+                {
+                    context.NodeContext.Error(ex,
+                        "[{TenantId}] Pipeline execution failed for trigger event", message.TenantId);
+                }
             });
 
         return Task.CompletedTask;

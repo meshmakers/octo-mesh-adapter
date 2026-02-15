@@ -2,8 +2,8 @@ name: $(MajorVersion).$(MinorVersion).$(date:yyMM).$(DayOfMonth)$(rev:rrr)-$(Bui
 
 resources:
   pipelines:
-    - pipeline: octo-sdk
-      source: octo-sdk-CI
+    - pipeline: octo-common-services
+      source: octo-common-services-CI
       trigger:
         branches:
           include:

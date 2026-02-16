@@ -62,6 +62,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<AnthropicAiQueryNode>()
             .RegisterNode<StatisticalAnomalyNode>()
             .RegisterNode<MachineLearningAnomalyNode>()
+            .RegisterNode<MinMaxNode>()
             .RegisterTriggerNode<FromExecutePipelineCommandNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()

@@ -48,6 +48,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<MinMaxNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<StatisticalAnomalyNodeConfiguration>();

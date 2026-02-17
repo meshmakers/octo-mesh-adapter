@@ -12,7 +12,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
 [NodeConfiguration(typeof(SaveInTimeSeriesNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContext, IStreamDataDatabaseClient streamDataDatabaseClient)
+internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContext, IStreamDataDatabaseClient streamDataDatabaseClient, IStreamDataDatabaseManagementClient streamDataDatabaseManagementClient)
     : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -26,6 +26,12 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
         {
             var tenantId = etlContext.TenantId;
             
+            var tableExists = await streamDataDatabaseManagementClient.StreamDataTableExistsAsync(tenantId);
+            if (!tableExists)
+            {
+                throw MeshAdapterPipelineExecutionException.StreamDataNotEnabled(nodeContext, tenantId);
+            }
+
             var toInsert = new List<DataPointDto>();
 
             foreach (var datapoint in data)

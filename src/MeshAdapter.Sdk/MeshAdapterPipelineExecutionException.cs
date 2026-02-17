@@ -334,4 +334,10 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Change point detection failed: {exception.Message}", exception);
     }
+
+    public static Exception StreamDataNotEnabled(INodeContext nodeContext, string tenantId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Stream data is not enabled for tenant '{tenantId}'. Please enable stream data for this tenant before writing time series data.");
+    }
 }

@@ -25,12 +25,8 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
         if (data != null && data.Count != 0)
         {
             var tenantId = etlContext.TenantId;
-            
-            var tableExists = await streamDataDatabaseManagementClient.StreamDataTableExistsAsync(tenantId);
-            if (!tableExists)
-            {
-                throw MeshAdapterPipelineExecutionException.StreamDataNotEnabled(nodeContext, tenantId);
-            }
+
+            await streamDataDatabaseManagementClient.CreateStreamDataTableIfNotExistAsync(tenantId);
 
             var toInsert = new List<DataPointDto>();
 

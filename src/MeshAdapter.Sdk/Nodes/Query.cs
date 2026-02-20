@@ -19,7 +19,7 @@ internal class QueryResultRow
 {
     [Newtonsoft.Json.JsonConverter(typeof(NewtonOctoObjectIdConverter))]
     public required OctoObjectId RtId { get; set; }
-    [Newtonsoft.Json.JsonConverter(typeof(NewtonCkTypeIdConverter))]
+    [Newtonsoft.Json.JsonConverter(typeof(NewtonRtCkTypeIdConverter))]
     public required RtCkId<CkTypeId> CkTypeId { get; set; }
     public List<object?> Values { get; set; } = new();
 }

@@ -38,7 +38,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
             return;
         }
 
-        var queryOptions = RtEntityQueryOptions.Create();
+        var queryOptions = RtEntityQueryOptions.Create().WithCachingDisabled();
         if (rtQuery.FieldFilter != null)
         {
             foreach (var fieldFilter in rtQuery.FieldFilter)

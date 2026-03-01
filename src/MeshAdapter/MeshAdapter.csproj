@@ -42,4 +42,9 @@
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.Observability" Version="$(OctoVersion)" />
     </ItemGroup>
+
+    <Target Name="GeneratePipelineSchema" AfterTargets="Build">
+        <Exec Command="dotnet run --project &quot;$(MSBuildProjectFullPath)&quot; --no-build -c $(Configuration) -- --generate-pipeline-schema &quot;$(OutputPath)pipeline-schema.json&quot;" />
+        <Message Importance="high" Text="Pipeline schema generated at $(OutputPath)pipeline-schema.json" />
+    </Target>
 </Project>

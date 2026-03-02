@@ -591,6 +591,35 @@ All components are registered via `ServiceCollectionExtensions.cs`:
 
 ---
 
+## Pipeline Schema Generation
+
+The build process auto-generates a `pipeline-schema.json` file that provides a JSON Schema describing all available pipeline node configurations. This schema can be used for editor autocompletion and validation when authoring pipeline definitions.
+
+### How It Works
+
+- The `GeneratePipelineSchema` MSBuild target runs automatically after Build
+- It executes `dotnet exec "$(TargetPath)" --generate-pipeline-schema <output-path>` to invoke the adapter's built-in schema generator
+- The `NodeSchemaRegistry` discovers all registered pipeline nodes and produces a complete JSON Schema
+- The schema is only regenerated when the binary changes (incremental build)
+
+### Output
+
+- **File**: `pipeline-schema.json` in the build output directory
+- **Format**: Standard JSON Schema
+- **Enum values**: All enums use CONSTANT_CASE format (e.g. `NOT_EQUALS`, `DATE_TIME`)
+
+### Opting Out
+
+To disable automatic schema generation, set the MSBuild property:
+
+```xml
+<PropertyGroup>
+  <GeneratePipelineSchema>false</GeneratePipelineSchema>
+</PropertyGroup>
+```
+
+---
+
 ## Key Technologies & Dependencies
 
 | Technology | Purpose |

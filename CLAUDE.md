@@ -86,6 +86,15 @@ The solution uses:
 - MongoDB for data persistence
 - SignalR for real-time communication
 
+## Pipeline Schema Generation
+
+The build automatically generates a `pipeline-schema.json` file in the build output directory. This JSON Schema describes all available pipeline node configurations and can be used for editor autocompletion and validation.
+
+- **Output**: `pipeline-schema.json` in the build output directory
+- **Trigger**: The `GeneratePipelineSchema` MSBuild target runs after Build via `dotnet exec "$(TargetPath)" --generate-pipeline-schema <output-path>`
+- **Incremental**: Only regenerates when the binary changes
+- **Opt-out**: Set MSBuild property `GeneratePipelineSchema=false` to disable
+
 ## Development Notes
 
 - All projects have nullable reference types enabled

@@ -46,7 +46,7 @@
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
-        <PackageReference Include="MailKit" Version="4.14.1" />
+        <PackageReference Include="MailKit" Version="4.15.1" />
     </ItemGroup>
 
     <!-- Explicit runtime support for IronOCR native libraries -->

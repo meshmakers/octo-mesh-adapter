@@ -34,6 +34,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
         
         // Register transform nodes

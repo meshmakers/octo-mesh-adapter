@@ -52,6 +52,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetNotificationTemplateNode>()
             .RegisterNode<PlaceholderReplaceNode>()
             .RegisterNode<EMailSenderNode>()
+            .RegisterNode<SftpUploadNode>()
             .RegisterNode<GetQueryByIdNode>()
             .RegisterNode<GetPipelineConfigByWellKnownNameNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()

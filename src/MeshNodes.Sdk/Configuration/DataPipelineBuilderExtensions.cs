@@ -57,6 +57,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MachineLearningAnomalyNodeConfiguration>();
 
         // Register trigger nodes
+        pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();

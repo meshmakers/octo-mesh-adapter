@@ -65,6 +65,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<StatisticalAnomalyNode>()
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<MinMaxNode>()
+            .RegisterTriggerNode<FromEmailNode>()
             .RegisterTriggerNode<FromExecutePipelineCommandNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()

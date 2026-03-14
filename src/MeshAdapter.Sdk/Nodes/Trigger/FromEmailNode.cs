@@ -15,7 +15,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 [NodeConfiguration(typeof(FromEmailNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FromEmailNode(ILogger<FromEmailNode> logger, IMeshEtlContext etlContext) : ITriggerPipelineNode
+internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNode
 {
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
@@ -29,7 +29,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IMeshEtlContext etlC
         public required int Port { get; init; }
         public required string Username { get; init; }
         public required string Password { get; init; }
-        public required bool UseSsl { get; init; }
+        public required bool IsSslEnabled { get; init; }
         public string Folder { get; init; } = "INBOX";
         // ReSharper restore UnusedAutoPropertyAccessor.Local
     }
@@ -38,15 +38,15 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IMeshEtlContext etlC
     {
         var c = context.NodeContext.GetNodeConfiguration<FromEmailNodeConfiguration>();
         
-        if (!etlContext.GlobalConfiguration.IsDefined(c.ServerConfiguration))
+        if (!context.GlobalConfiguration.IsDefined(c.ServerConfiguration))
         {
             throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
                 context.NodeContext,
-                nameof(c.ServerConfiguration), 
+                nameof(c.ServerConfiguration),
                 c.ServerConfiguration);
         }
 
-        var serverConfig = etlContext.GlobalConfiguration.GetValue<EmailServerConfiguration>(c.ServerConfiguration);
+        var serverConfig = context.GlobalConfiguration.GetValue<EmailServerConfiguration>(c.ServerConfiguration);
         
         _cancellationTokenSource = new CancellationTokenSource();
         _imapClient = new ImapClient();
@@ -62,7 +62,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IMeshEtlContext etlC
     {
         try
         {
-            if (config.UseSsl)
+            if (config.IsSslEnabled)
             {
                 await _imapClient!.ConnectAsync(config.Host, config.Port, SecureSocketOptions.SslOnConnect);
             }
@@ -136,10 +136,23 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IMeshEtlContext etlC
                         HtmlBody = message.HtmlBody,
                         TextBody = message.TextBody,
                         MessageId = message.MessageId,
-                        Attachments = message.Attachments?.Select(a => new AttachmentData
+                        Attachments = message.Attachments?.Select(a =>
                         {
-                            FileName = a.ContentDisposition?.FileName ?? "unknown",
-                            ContentType = a.ContentType?.MimeType ?? "application/octet-stream"
+                            var attachment = new AttachmentData
+                            {
+                                FileName = a.ContentDisposition?.FileName ?? "unknown",
+                                ContentType = a.ContentType?.MimeType ?? "application/octet-stream"
+                            };
+
+                            if (a is MimePart { Content: not null } mimePart)
+                            {
+                                using var memoryStream = new MemoryStream();
+                                mimePart.Content.DecodeTo(memoryStream);
+                                attachment.Data = Convert.ToBase64String(memoryStream.ToArray());
+                                attachment.Length = memoryStream.Length;
+                            }
+
+                            return attachment;
                         }).ToList() ?? new List<AttachmentData>()
                     };
                     
@@ -286,11 +299,21 @@ public class AttachmentData
     /// Attachment file name
     /// </summary>
     public string FileName { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// MIME content type
     /// </summary>
     public string ContentType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Base64-encoded attachment content
+    /// </summary>
+    public string? Data { get; set; }
+
+    /// <summary>
+    /// Content length in bytes
+    /// </summary>
+    public long Length { get; set; }
 }
 
 /// <summary>

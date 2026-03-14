@@ -35,10 +35,11 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="IronOcr" Version="2025.12.3" />
-        <PackageReference Include="IronOcr.Linux" Version="2025.12.3" />
-        <PackageReference Include="IronOcr.MacOs" Version="2025.12.3" />
-        <PackageReference Include="IronOcr.MacOs.ARM" Version="2025.12.3" />
+        <PackageReference Include="IronOcr" Version="2026.3.3" />
+        <PackageReference Include="IronOcr.Languages.German" Version="2020.11.2" />
+        <PackageReference Include="IronOcr.Linux" Version="2026.3.3" />
+        <PackageReference Include="IronOcr.MacOs" Version="2026.3.3" />
+        <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.3.3" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />

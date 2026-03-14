@@ -45,6 +45,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DistinctNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ImportFromCsvNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();

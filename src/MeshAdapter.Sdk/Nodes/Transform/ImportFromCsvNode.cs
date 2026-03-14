@@ -294,6 +294,18 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
             ? CultureInfo.InvariantCulture
             : CultureInfo.GetCultureInfo(cultureName);
 
+        var numberFormat = culture.NumberFormat;
+        var decimalSeparator = numberFormat.NumberDecimalSeparator;
+        var groupSeparator = numberFormat.NumberGroupSeparator;
+
+        // Normalize common thousands separators (e.g. '.' in CSV data) to the culture's
+        // actual group separator. ICU updates may change the group separator (e.g. from '.'
+        // to narrow no-break space for de-AT), but real-world CSV files still use '.'.
+        if (decimalSeparator == "," && value.Contains('.') && groupSeparator != ".")
+        {
+            value = value.Replace(".", groupSeparator);
+        }
+
         return double.Parse(value, NumberStyles.Number, culture);
     }
 

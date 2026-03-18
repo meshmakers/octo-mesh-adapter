@@ -15,7 +15,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Meshmakers.Octo.Sdk.Common.Web" Version="$(OctoVersion)"/>
+        <PackageReference Include="Meshmakers.Octo.Sdk.Common.Web" Version="3.3.59" />
     </ItemGroup>
 
     <ItemGroup>
@@ -39,8 +39,8 @@
 
     <ItemGroup>
       <ProjectReference Include="..\MeshAdapter.Sdk\MeshAdapter.Sdk.csproj" />
-        <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
-        <PackageReference Include="Meshmakers.Octo.Services.Observability" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="3.3.59" />
+        <PackageReference Include="Meshmakers.Octo.Services.Observability" Version="3.3.59" />
     </ItemGroup>
 
     <Target Name="GeneratePipelineSchema" AfterTargets="Build" Condition="'$(GeneratePipelineSchema)' != 'false' and '$(DesignTimeBuild)' != 'true'" Inputs="$(TargetPath)" Outputs="$(TargetDir)pipeline-schema.json">

@@ -57,6 +57,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - ApplyChangesNode/ApplyChangesNode2
    - SaveInTimeSeries
    - EMailSenderNode
+   - SftpUploadNode
 
 4. **Trigger Nodes** (`src/MeshAdapter.Sdk/Nodes/Trigger/`): Pipeline initiation nodes
    - FromHttpRequestNode

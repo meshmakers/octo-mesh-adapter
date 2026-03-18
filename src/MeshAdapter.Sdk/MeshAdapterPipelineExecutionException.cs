@@ -147,6 +147,54 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Cannot send e-mail: {exception.Message}", exception);
     }
 
+    public static Exception CannotUploadViaSftp(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot upload file via SFTP: {exception.Message}", exception);
+    }
+
+    public static Exception NoFileSourceSpecified(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No file source specified. Set either Path for string content or FileRtId/FileRtIdPath for binary files.");
+    }
+
+    public static Exception AmbiguousFileSource(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Multiple file sources specified. Set either Path for string content or FileRtId/FileRtIdPath for binary files, not both.");
+    }
+
+    public static Exception FileNameNotConfigured(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: File name is not configured. Set either FileName or FileNamePath.");
+    }
+
+    public static Exception InvalidFileName(INodeContext nodeContext, string fileName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Invalid file name '{fileName}'. Path components are stripped to the final segment; traversal segments such as '..' are not allowed.");
+    }
+
+    public static Exception SftpAuthNotConfigured(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No SFTP authentication configured. Set either Password or PrivateKey in the server configuration.");
+    }
+
+    public static Exception InvalidMaxConcurrentConnections(string serverConfigurationName, int value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
+    }
+
+    public static Exception BinaryNotFound(INodeContext nodeContext, string rtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Binary file with RtId '{rtId}' not found in storage.");
+    }
+
     public static Exception PathParameterNameMissing(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path parameter name is missing. Please set the Name property.");

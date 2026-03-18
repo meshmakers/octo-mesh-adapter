@@ -34,6 +34,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
         
         // Register transform nodes
@@ -44,6 +45,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DistinctNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ImportFromCsvNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
@@ -55,6 +57,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MachineLearningAnomalyNodeConfiguration>();
 
         // Register trigger nodes
+        pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();

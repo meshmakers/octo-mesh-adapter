@@ -345,6 +345,35 @@ Sends emails with optional Markdown-to-HTML conversion.
 - Markdown to HTML conversion
 - Multiple recipients support
 
+#### SftpUploadNode
+
+Uploads files to an SFTP server. Supports both binary files from MongoDB storage and string content (e.g., CSV) from the pipeline data context.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference for SFTP server |
+| `RemoteDirectory` | string | Target directory on the SFTP server |
+| `FileName` | string | Static file name (required: set `FileName` or `FileNamePath`) |
+| `FileNamePath` | string | Dynamic file name from data context (required: set `FileName` or `FileNamePath`; takes precedence over `FileName`) |
+| `FileRtId` | string | Static RtId of binary file (content source; exactly one source required) |
+| `FileRtIdPath` | string | Dynamic RtId path in data context (content source; takes precedence over `FileRtId`) |
+| `Path` | string | Data context path for string content (content source; exactly one source required) |
+
+**Configuration rules**:
+- You **must** configure a file name using either `FileName` (static) or `FileNamePath` (dynamic). If both are set, `FileNamePath` takes precedence.
+- You **must** configure **exactly one** content source:
+  - Binary content: `FileRtId` (static) or `FileRtIdPath` (dynamic).
+  - String content: `Path` (data context path for the file contents).
+- Providing no content source or both binary and string sources will cause a validation error at runtime.
+
+**Features**:
+- Password and private key authentication (at least one must be configured)
+- Concurrent connection limit control (semaphore-based, thread-safe)
+- Automatic remote directory creation
+- Binary file upload from MongoDB large binary storage
+- String content upload as file (e.g., CSV data)
+- File name sanitization to prevent path traversal
+
 ---
 
 ### Trigger Nodes
@@ -492,7 +521,7 @@ IEtlDataOrchestrator.ExecutePipelineAsync()
 Execute Node Pipeline:
   ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, etc.)
   ├─ Transform Nodes (DataMapping, CreateUpdateInfo, MakeHttpRequest, etc.)
-  └─ Load Nodes (ApplyChanges, SaveInTimeSeries, EMailSender)
+  └─ Load Nodes (ApplyChanges, SaveInTimeSeries, EMailSender, SftpUpload)
         ↓
 Return Result / Store in Time-Series / Send Notifications
 ```

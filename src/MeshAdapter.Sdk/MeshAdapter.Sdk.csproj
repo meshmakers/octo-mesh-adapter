@@ -40,13 +40,13 @@
         <PackageReference Include="IronOcr.Linux" Version="2026.3.3" />
         <PackageReference Include="IronOcr.MacOs" Version="2026.3.3" />
         <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.3.3" />
-        <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="3.3.59" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
-        <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
-        <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="$(OctoVersion)" />
-        <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="3.3.59" />
+        <PackageReference Include="Meshmakers.Octo.Services.StreamData" Version="3.3.59" />
+        <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="3.3.59" />
         <PackageReference Include="MailKit" Version="4.15.1" />
         <PackageReference Include="SSH.NET" Version="2025.1.0" />
     </ItemGroup>

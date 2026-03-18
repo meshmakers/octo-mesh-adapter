@@ -32,7 +32,7 @@
     </ItemGroup>
     
     <ItemGroup>
-        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoVersion)"/>
+        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="3.3.59" />
     </ItemGroup>
 
 </Project>

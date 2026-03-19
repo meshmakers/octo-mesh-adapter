@@ -65,6 +65,25 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public bool ContinueOnError { get; set; } = false;
 
     /// <summary>
+    /// Optional URL of the OctoMesh MCP server (e.g. "https://localhost:5017").
+    /// When set, Claude can use MCP tools to query live OctoMesh data instead of relying on static context.
+    /// The tenant ID is appended automatically: {McpServerUrl}/{tenantId}/mcp
+    /// </summary>
+    public string? McpServerUrl { get; set; }
+
+    /// <summary>
+    /// Maximum number of tool use rounds to prevent infinite loops (default: 10)
+    /// </summary>
+    public int MaxToolRounds { get; set; } = 10;
+
+    /// <summary>
+    /// Optional JSON path to conversation history array.
+    /// Each entry should have "role" (user/assistant) and "content" fields.
+    /// When set, previous messages are included for multi-turn conversations.
+    /// </summary>
+    public string? ConversationHistoryPath { get; set; }
+
+    /// <summary>
     /// Sample JSON format for structured responses
     /// </summary>
     public string JsonFormatSample { get; set; } = """

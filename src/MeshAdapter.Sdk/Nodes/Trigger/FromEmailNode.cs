@@ -130,6 +130,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                     {
                         Subject = message.Subject,
                         From = message.From?.ToString(),
+                        FromAddress = message.From?.Mailboxes?.FirstOrDefault()?.Address,
                         To = message.To?.ToString(),
                         Date = message.Date.DateTime,
                         Body = message.TextBody ?? message.HtmlBody,
@@ -250,9 +251,14 @@ public class EmailData
     public string? Subject { get; set; }
     
     /// <summary>
-    /// Email sender
+    /// Email sender (display name and address)
     /// </summary>
     public string? From { get; set; }
+
+    /// <summary>
+    /// Email sender address only (e.g. user@example.com)
+    /// </summary>
+    public string? FromAddress { get; set; }
     
     /// <summary>
     /// Email recipients

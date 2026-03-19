@@ -39,6 +39,8 @@ public static class DataPipelineBuilderExtensions
         
         // Register transform nodes
         pipelineBuilder.RegisterNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<CheckDuplicateNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ComputeFileHashNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateFileSystemUpdateNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
@@ -53,11 +55,13 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MinMaxNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ReplyToTeamsChannelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<StatisticalAnomalyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MachineLearningAnomalyNodeConfiguration>();
 
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromMicrosoftGraphNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();

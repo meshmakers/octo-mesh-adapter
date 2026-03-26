@@ -8,7 +8,7 @@ public class IntegrationTestOptions
     /// <summary>
     /// MongoDB Docker image to use for test containers.
     /// </summary>
-    public string MongoDbImage { get; set; } = "mongo:7.0";
+    public string MongoDbImage { get; set; } = "mongo:8.0";
 
     /// <summary>
     /// Whether to use a local MongoDB instance instead of Testcontainers.

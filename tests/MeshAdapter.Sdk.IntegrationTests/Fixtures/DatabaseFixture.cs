@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using MeshAdapter.Sdk.IntegrationTests.Configuration;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +38,11 @@ public class DatabaseFixture : ConfigurationFixture
         }
         else
         {
+            // Workaround: .NET 10 introduced a default regex match timeout that causes
+            // Testcontainers' MatchImage regex to time out when parsing Docker image names.
+            // Set a generous timeout until Testcontainers fixes this upstream.
+            AppDomain.CurrentDomain.SetData("REGEX_DEFAULT_MATCH_TIMEOUT", TimeSpan.FromSeconds(10));
+
             // Start MongoDB test container with replica set (required for transactions)
             _mongoDbContainer = new MongoDbBuilder(Options.MongoDbImage)
                 .WithReplicaSet()

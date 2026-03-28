@@ -68,6 +68,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<ReplyToTeamsChannelNode>()
             .RegisterNode<MinMaxNode>()
+            .RegisterNode<GrafanaProvisionTenantNode>()
+            .RegisterNode<GrafanaDeprovisionTenantNode>()
             .RegisterTriggerNode<FromEmailNode>()
             .RegisterTriggerNode<FromMicrosoftGraphNode>()
             .RegisterTriggerNode<FromExecutePipelineCommandNode>()

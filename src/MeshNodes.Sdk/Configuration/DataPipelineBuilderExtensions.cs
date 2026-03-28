@@ -36,7 +36,9 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
-        
+        pipelineBuilder.RegisterNodeConfiguration<GrafanaProvisionTenantNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GrafanaDeprovisionTenantNodeConfiguration>();
+
         // Register transform nodes
         pipelineBuilder.RegisterNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CheckDuplicateNodeConfiguration>();

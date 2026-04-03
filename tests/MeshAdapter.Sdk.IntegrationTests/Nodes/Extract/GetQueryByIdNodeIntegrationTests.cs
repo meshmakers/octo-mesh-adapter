@@ -459,7 +459,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         return new MeshEtlContext(
             tenantId: tenantRepository.TenantId,
             tenantRepository: tenantRepository,
-            dataPipelineRtId: pipelineId,
+            dataFlowRtId: pipelineId,
             pipelineExecutionId: executionId,
             pipelineRtEntityId: new RtEntityId("System/RtDataPipeline", pipelineId),
             adapterReceivedDateTime: DateTime.UtcNow,

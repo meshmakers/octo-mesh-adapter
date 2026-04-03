@@ -18,7 +18,7 @@ internal class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
     public Task StartAsync(ITriggerContext context)
     {
         var address =
-            $"{QueueNames.ExecuteMeshPipelineCommand.ToLower()}-{context.TenantId.ToLower()}-data-pipeline-{context.DataPipelineRtId.ToString()?.ToLower()}";
+            $"{QueueNames.ExecuteMeshPipelineCommand.ToLower()}-{context.TenantId.ToLower()}-data-pipeline-{context.DataFlowRtId.ToString()?.ToLower()}";
 
         _endpointHandle = eventHubControl.RegisterCommandConsumer<ExecuteMeshPipelineRequest>(address,
             async (message, responseFunc) =>

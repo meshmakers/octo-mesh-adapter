@@ -13,10 +13,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 // ReSharper disable once ClassWithVirtualMembersNeverInherited.Global
 internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCacheService ckCacheService, ISystemContext systemContext) : IContextCreatorService
 {
-    public ITriggerContext CreateTriggerContext(string tenantId, OctoObjectId dataPipelineRtId, 
+    public ITriggerContext CreateTriggerContext(string tenantId, OctoObjectId dataFlowRtId,
         RtEntityId pipelineRtEntityId, INodeContext nodeContext, IGlobalConfiguration globalConfiguration)
     {
-        return new MeshAdapterTriggerContext(serviceProvider, tenantId, dataPipelineRtId, pipelineRtEntityId, 
+        return new MeshAdapterTriggerContext(serviceProvider, tenantId, dataFlowRtId, pipelineRtEntityId,
             nodeContext, globalConfiguration);
     }
 
@@ -27,7 +27,7 @@ internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCa
         var tenantRepository = await systemContext.FindTenantRepositoryAsync(pipelineRegistration.TenantId);
         await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
 
-        var context = new MeshEtlContext(pipelineRegistration.TenantId, tenantRepository, pipelineRegistration.DataPipelineRtId,
+        var context = new MeshEtlContext(pipelineRegistration.TenantId, tenantRepository, pipelineRegistration.DataFlowRtId,
             pipelineExecutionId,
             pipelineRegistration.PipelineRtEntityId, executePipelineOptions.TransactionStartedDateTime,
             executePipelineOptions.ExternalReceivedDateTime, pipelineRegistration.GlobalConfiguration,

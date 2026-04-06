@@ -270,7 +270,7 @@ public abstract class IntegrationTestBase : IClassFixture<MongoDbFixture>, IAsyn
         return new MeshEtlContext(
             tenantId: TenantId,
             tenantRepository: TenantRepository,
-            dataPipelineRtId: TestPipelineId,
+            dataFlowRtId: TestPipelineId,
             pipelineExecutionId: Guid.NewGuid(),
             pipelineRtEntityId: new RtEntityId(TenantId, TestPipelineId),
             adapterReceivedDateTime: DateTime.UtcNow,

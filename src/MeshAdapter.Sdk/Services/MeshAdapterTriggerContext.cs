@@ -12,10 +12,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 internal class MeshAdapterTriggerContext(
     IServiceProvider serviceProvider,
     string tenantId,
-    OctoObjectId dataPipelineRtId,
+    OctoObjectId dataFlowRtId,
     RtEntityId pipelineRtEntityId,
     INodeContext nodeContext, IGlobalConfiguration globalConfiguration)
-    : TriggerContext(tenantId, dataPipelineRtId, pipelineRtEntityId, nodeContext, globalConfiguration)
+    : TriggerContext(tenantId, dataFlowRtId, pipelineRtEntityId, nodeContext, globalConfiguration)
 {
     private readonly ILogger<MeshAdapterTriggerContext> _logger = serviceProvider.GetRequiredService<ILogger<MeshAdapterTriggerContext>>();
     private readonly IPipelineRegistryService _pipelineRegistryService = serviceProvider.GetRequiredService<IPipelineRegistryService>();

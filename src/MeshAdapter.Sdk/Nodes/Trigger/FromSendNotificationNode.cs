@@ -18,7 +18,7 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
     public Task StartAsync(ITriggerContext context)
     {
         var address =
-            $"{QueueNames.SendNotificationCommand.ToLower()}-{context.TenantId.ToLower()}-data-pipeline-{context.DataFlowRtId.ToString()?.ToLower()}";
+            $"{QueueNames.SendNotificationCommand.ToLower()}-{context.TenantId.ToLower()}-data-flow-{context.DataFlowRtId.ToString()?.ToLower()}";
 
         _endpointHandle = eventHubControl.RegisterCommandConsumer<SendNotificationsRequest>(address,
             async (message, responseFunc) =>

@@ -108,6 +108,7 @@ internal class MeshAdapterTriggerContext(
             errorMessage = ex.Message;
             _logger.LogError(ex, "[{TenantId}] Pipeline execution failed for pipeline {PipelineRtEntityId}",
                 TenantId, PipelineRtEntityId);
+            throw;
         }
         finally
         {

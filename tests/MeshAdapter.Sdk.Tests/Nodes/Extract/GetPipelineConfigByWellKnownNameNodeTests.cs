@@ -1,10 +1,9 @@
 using FakeItEasy;
-using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Sdk.MeshAdapter;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Extracts;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
 
@@ -12,12 +11,12 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
 public class GetPipelineConfigByWellKnownNameNodeTests
 {
-    private readonly IMeshEtlContext _etlContext;
+    private readonly IEtlContext _etlContext;
     private readonly IGlobalConfiguration _globalConfiguration;
 
     public GetPipelineConfigByWellKnownNameNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
+        _etlContext = A.Fake<IEtlContext>();
         _globalConfiguration = A.Fake<IGlobalConfiguration>();
         A.CallTo(() => _etlContext.GlobalConfiguration).Returns(_globalConfiguration);
     }
@@ -124,7 +123,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
 
         var node = new GetPipelineConfigByWellKnownNameNode(next, _etlContext);
 
-        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+        await Assert.ThrowsAsync<PipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
@@ -139,7 +138,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
 
         var node = new GetPipelineConfigByWellKnownNameNode(next, _etlContext);
 
-        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+        await Assert.ThrowsAsync<PipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 }

@@ -3,8 +3,8 @@ using Meshmakers.Octo.Common.DistributionEventHub.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
-using Meshmakers.Octo.Services.Contracts.DistributionEventHub.Commands;
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Trigger;
 
@@ -12,7 +12,7 @@ public class FromExecutePipelineCommandNodeTests
 {
     private readonly IEventHubControl _eventHubControl;
     private readonly ITriggerContext _triggerContext;
-    private ExecuteCommandHandler<ExecuteMeshPipelineRequest>? _capturedHandler;
+    private ExecuteCommandHandler<ExecutePipelineRequest>? _capturedHandler;
 
     public FromExecutePipelineCommandNodeTests()
     {
@@ -25,8 +25,8 @@ public class FromExecutePipelineCommandNodeTests
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>._,
-                A<ExecuteCommandHandler<ExecuteMeshPipelineRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<ExecuteMeshPipelineRequest> handler) =>
+                A<ExecuteCommandHandler<ExecutePipelineRequest>>._))
+            .Invokes((string _, ExecuteCommandHandler<ExecutePipelineRequest> handler) =>
             {
                 _capturedHandler = handler;
             })
@@ -42,7 +42,7 @@ public class FromExecutePipelineCommandNodeTests
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>.That.Contains("test-tenant"),
-                A<ExecuteCommandHandler<ExecuteMeshPipelineRequest>>._))
+                A<ExecuteCommandHandler<ExecutePipelineRequest>>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -60,11 +60,11 @@ public class FromExecutePipelineCommandNodeTests
         await node.StartAsync(_triggerContext);
         Assert.NotNull(_capturedHandler);
 
-        var request = new ExecuteMeshPipelineRequest("test-tenant", null);
-        ExecuteMeshPipelineResponse? capturedResponse = null;
+        var request = new ExecutePipelineRequest("test-tenant", null);
+        ExecutePipelineResponse? capturedResponse = null;
         Task ResponseFunc(object response)
         {
-            capturedResponse = response as ExecuteMeshPipelineResponse;
+            capturedResponse = response as ExecutePipelineResponse;
             return Task.CompletedTask;
         }
 
@@ -97,7 +97,7 @@ public class FromExecutePipelineCommandNodeTests
         await node.StartAsync(_triggerContext);
         Assert.NotNull(_capturedHandler);
 
-        var request = new ExecuteMeshPipelineRequest("test-tenant", "{\"key\":\"value\"}");
+        var request = new ExecutePipelineRequest("test-tenant", "{\"key\":\"value\"}");
         await _capturedHandler(request, _ => Task.CompletedTask);
 
         Assert.NotNull(capturedInput);
@@ -115,13 +115,13 @@ public class FromExecutePipelineCommandNodeTests
         await node.StartAsync(_triggerContext);
         Assert.NotNull(_capturedHandler);
 
-        var request = new ExecuteMeshPipelineRequest("test-tenant", null);
-        ExecuteMeshPipelineResponse? capturedResponse = null;
+        var request = new ExecutePipelineRequest("test-tenant", null);
+        ExecutePipelineResponse? capturedResponse = null;
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await _capturedHandler(request, response =>
             {
-                capturedResponse = response as ExecuteMeshPipelineResponse;
+                capturedResponse = response as ExecutePipelineResponse;
                 return Task.CompletedTask;
             }));
 
@@ -150,7 +150,7 @@ public class FromExecutePipelineCommandNodeTests
         await node.StartAsync(_triggerContext);
         Assert.NotNull(_capturedHandler);
 
-        var request = new ExecuteMeshPipelineRequest("test-tenant", null);
+        var request = new ExecutePipelineRequest("test-tenant", null);
         await _capturedHandler(request, _ =>
         {
             callOrder.Add("Response");

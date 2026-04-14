@@ -4,6 +4,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.Services.Contracts.DistributionEventHub.Commands;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Trigger;
@@ -61,10 +62,10 @@ public class FromSendNotificationNodeTests
         Assert.NotNull(_capturedHandler);
 
         var request = new SendNotificationsRequest("test-tenant");
-        ExecuteMeshPipelineResponse? capturedResponse = null;
+        ExecutePipelineResponse? capturedResponse = null;
         Task ResponseFunc(object response)
         {
-            capturedResponse = response as ExecuteMeshPipelineResponse;
+            capturedResponse = response as ExecutePipelineResponse;
             return Task.CompletedTask;
         }
 
@@ -93,12 +94,12 @@ public class FromSendNotificationNodeTests
         Assert.NotNull(_capturedHandler);
 
         var request = new SendNotificationsRequest("test-tenant");
-        ExecuteMeshPipelineResponse? capturedResponse = null;
+        ExecutePipelineResponse? capturedResponse = null;
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await _capturedHandler(request, response =>
             {
-                capturedResponse = response as ExecuteMeshPipelineResponse;
+                capturedResponse = response as ExecutePipelineResponse;
                 return Task.CompletedTask;
             }));
 

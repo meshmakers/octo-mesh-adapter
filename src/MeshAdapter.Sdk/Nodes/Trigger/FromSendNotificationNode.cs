@@ -3,6 +3,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.Services.Contracts.DistributionEventHub.Commands;
 using Newtonsoft.Json.Linq;
 
@@ -32,14 +33,14 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
                     var startDateTime = DateTime.UtcNow;
                     var pipelineExecutionId =
                         await context.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow), input);
-                    await responseFunc(new ExecuteMeshPipelineResponse(true, null, pipelineExecutionId, startDateTime));
+                    await responseFunc(new ExecutePipelineResponse(true, null, pipelineExecutionId, startDateTime));
 
                     // Wait for pipeline completion and report execution end to communication controller
                     await context.EndExecutePipelineAsync(pipelineExecutionId);
                 }
                 catch (Exception ex)
                 {
-                    await responseFunc(new ExecuteMeshPipelineResponse(false, ex.Message, null, null));
+                    await responseFunc(new ExecutePipelineResponse(false, ex.Message, null, null));
 
                     context.NodeContext.Error(ex, "[{TenantId}] Error processing pipeline: '{PipelineId}'",
                         message.TenantId, context.PipelineRtEntityId);

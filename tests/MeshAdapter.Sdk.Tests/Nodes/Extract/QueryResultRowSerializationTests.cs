@@ -87,7 +87,7 @@ public class QueryResultRowSerializationTests
         }
 
         // CkTypeId.SemanticVersionedFullName omits version suffix for version 1
-        Assert.Equal("System/Person", deserialized.Rows[0].CkTypeId.SemanticVersionedFullName);
-        Assert.Equal("Energy/Device-2", deserialized.Rows[1].CkTypeId.SemanticVersionedFullName);
+        Assert.Equal("System/Person", deserialized.Rows[0].CkTypeId!.SemanticVersionedFullName);
+        Assert.Equal("Energy/Device-2", deserialized.Rows[1].CkTypeId!.SemanticVersionedFullName);
     }
 }

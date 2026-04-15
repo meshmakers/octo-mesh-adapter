@@ -12,10 +12,12 @@ public record GetPipelineConfigByCkTypeIdNodeConfiguration : TargetPathNodeConfi
     /// <summary>
     /// The CkTypeId to search for (static value)
     /// </summary>
+    [PropertyGroup("Entity", 0, "ckTypeSelector")]
     public string? CkTypeId { get; init; }
 
     /// <summary>
     /// JSON path to get the CkTypeId from the input data
     /// </summary>
+    [PropertyGroup("Entity", 1, "jsonpath")]
     public string? CkTypeIdPath { get; init; }
 }

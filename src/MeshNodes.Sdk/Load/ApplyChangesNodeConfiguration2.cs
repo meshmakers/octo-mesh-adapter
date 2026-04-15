@@ -11,10 +11,12 @@ public record ApplyChangesNodeConfiguration2 : NodeConfiguration
     /// <summary>
     /// The path to the entity update
     /// </summary>
+    [PropertyGroup("Paths", 0, "jsonpath")]
     public string? EntityUpdatesPath { get; init; }
-    
+
     /// <summary>
     /// The path to the association update
     /// </summary>
+    [PropertyGroup("Paths", 1, "jsonpath")]
     public string? AssociationUpdatesPath { get; init; }
 }

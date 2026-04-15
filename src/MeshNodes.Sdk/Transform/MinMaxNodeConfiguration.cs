@@ -29,10 +29,12 @@ public record MinMaxNodeConfiguration : SourceTargetPathNodeConfiguration
     /// The path to the value used for comparison within each object in the array.
     /// This value must be a numeric type (int, double) or DateTime.
     /// </summary>
+    [PropertyGroup("Query", 0, "jsonpath")]
     public required string ValuePath { get; set; }
 
     /// <summary>
     /// The mode of operation: find the minimum or maximum value. Defaults to <see cref="MinMaxMode.Min"/>.
     /// </summary>
+    [PropertyGroup("Options", 0)]
     public MinMaxMode Mode { get; set; } = MinMaxMode.Min;
 }

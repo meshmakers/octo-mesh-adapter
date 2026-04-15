@@ -12,5 +12,6 @@ public record DistinctNodeConfiguration : SourceTargetPathNodeConfiguration
     /// The path to the value that defines uniqueness within the array.
     /// This value must be a simple type (int, double, string, bool, datetime).
     /// </summary>
+    [PropertyGroup("Query", 0, "jsonpath")]
     public required string DistinctValuePath { get; set; }
 }

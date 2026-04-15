@@ -419,6 +419,310 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
             "both test entities should be visible on repeated execution - query result cache must be bypassed");
     }
 
+    #region Aggregation Query Tests
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationQuery_CallsNext()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+
+        // Create test data: simple query entities to aggregate over
+        await CreateQueryEntityAsync(tenantRepository, "AggCallsNext_Entity1");
+        await CreateQueryEntityAsync(tenantRepository, "AggCallsNext_Entity2");
+
+        // Create an aggregation query that counts RtWellKnownName on RtSimpleRtQuery
+        var queryId = await CreateAggregationQueryEntityAsync(tenantRepository, "AggCallsNext_Query",
+            ("RtWellKnownName", RtAggregationTypesEnum.Count));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult"
+        };
+
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+
+        bool nextCalled = false;
+        Task TrackingNext(IDataContext dc, INodeContext nc) { nextCalled = true; return Task.CompletedTask; }
+
+        var result = await ExecuteNodeAndGetQueryResult(config, meshEtlContext, ckCacheService, TrackingNext);
+
+        // Assert
+        nextCalled.Should().BeTrue("next should be called for a valid aggregation query");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationQuery_ReturnsSingleRowWithAggregatedValues()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+
+        // Create test data
+        var testMarker = $"AggResult_{Guid.NewGuid().ToString("N")[..8]}";
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E1");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E2");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E3");
+
+        // Create aggregation query counting RtWellKnownName, filtered to our test entities
+        var queryId = await CreateAggregationQueryEntityAsync(tenantRepository, $"{testMarker}_Query",
+            ("RtWellKnownName", RtAggregationTypesEnum.Count));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult",
+            FieldFilters =
+            [
+                new FieldFilterWithPathDto
+                {
+                    AttributePath = "RtWellKnownName",
+                    Operator = FieldFilterOperatorDto.Like,
+                    ComparisonValue = $"*{testMarker}_E*"
+                }
+            ]
+        };
+
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+        var result = await ExecuteNodeAndGetQueryResult(config, meshEtlContext, ckCacheService);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Columns.Should().HaveCount(1);
+        result.Columns[0].Header.Should().Be("RtWellKnownName");
+
+        // Aggregation produces a single row
+        result.Rows.Should().HaveCount(1);
+        result.Rows[0].RtId.Should().BeNull("aggregation rows have no entity RtId");
+
+        // Count should be 3 (the 3 test entities we created)
+        var countValue = Convert.ToInt64(result.Rows[0].Values[0]);
+        countValue.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationQuery_SkipTakeNotPassedToDatabase()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+
+        var testMarker = $"AggSkip_{Guid.NewGuid().ToString("N")[..8]}";
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E1");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E2");
+
+        var queryId = await CreateAggregationQueryEntityAsync(tenantRepository, $"{testMarker}_Query",
+            ("RtWellKnownName", RtAggregationTypesEnum.Count));
+
+        // Skip/Take should be ignored for aggregation queries
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult",
+            Skip = 0,
+            Take = 1,
+            FieldFilters =
+            [
+                new FieldFilterWithPathDto
+                {
+                    AttributePath = "RtWellKnownName",
+                    Operator = FieldFilterOperatorDto.Like,
+                    ComparisonValue = $"*{testMarker}_E*"
+                }
+            ]
+        };
+
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+        var result = await ExecuteNodeAndGetQueryResult(config, meshEtlContext, ckCacheService);
+
+        // Assert - aggregation still returns all data aggregated (skip/take not applied to DB)
+        result.Should().NotBeNull();
+        result!.Rows.Should().HaveCount(1, "aggregation always returns a single row");
+        var countValue = Convert.ToInt64(result.Rows[0].Values[0]);
+        countValue.Should().Be(2, "all matching entities should be counted regardless of skip/take");
+    }
+
+    #endregion
+
+    #region Grouped Aggregation Query Tests
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithGroupedAggregationQuery_CallsNext()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+
+        var testMarker = $"GrpCallsNext_{Guid.NewGuid().ToString("N")[..8]}";
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E1");
+
+        var queryId = await CreateGroupingAggregationQueryEntityAsync(
+            tenantRepository, $"{testMarker}_Query",
+            ["CkTypeId"],
+            ("RtWellKnownName", RtAggregationTypesEnum.Count));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult"
+        };
+
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+
+        bool nextCalled = false;
+        Task TrackingNext(IDataContext dc, INodeContext nc) { nextCalled = true; return Task.CompletedTask; }
+
+        await ExecuteNodeAndGetQueryResult(config, meshEtlContext, ckCacheService, TrackingNext);
+
+        // Assert
+        nextCalled.Should().BeTrue("next should be called for a valid grouped aggregation query");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithGroupedAggregationQuery_ReturnsGroupedRows()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+
+        var testMarker = $"GrpRows_{Guid.NewGuid().ToString("N")[..8]}";
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E1");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E2");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_E3");
+
+        // Group by CkTypeId, count RtWellKnownName — all entities are RtSimpleRtQuery, so 1 group
+        var queryId = await CreateGroupingAggregationQueryEntityAsync(
+            tenantRepository, $"{testMarker}_Query",
+            ["CkTypeId"],
+            ("RtWellKnownName", RtAggregationTypesEnum.Count));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult",
+            FieldFilters =
+            [
+                new FieldFilterWithPathDto
+                {
+                    AttributePath = "RtWellKnownName",
+                    Operator = FieldFilterOperatorDto.Like,
+                    ComparisonValue = $"*{testMarker}_E*"
+                }
+            ]
+        };
+
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+        var result = await ExecuteNodeAndGetQueryResult(config, meshEtlContext, ckCacheService);
+
+        // Assert
+        result.Should().NotBeNull();
+
+        // Columns: groupBy column first, then aggregation column
+        result!.Columns.Should().HaveCount(2);
+        result.Columns[0].Header.Should().Be("CkTypeId");
+        result.Columns[1].Header.Should().Be("RtWellKnownName");
+
+        // All test entities have the same CkTypeId, so there should be 1 group
+        result.Rows.Should().HaveCount(1);
+        result.Rows[0].RtId.Should().BeNull("grouped aggregation rows have no entity RtId");
+
+        // The group key should be the CkTypeId of RtSimpleRtQuery
+        result.Rows[0].Values[0].Should().NotBeNull("group key should be present");
+
+        // The count should be 3
+        var countValue = Convert.ToInt64(result.Rows[0].Values[1]);
+        countValue.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithGroupedAggregationQuery_AppliesInMemoryPaging()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+
+        var testMarker = $"GrpPage_{Guid.NewGuid().ToString("N")[..8]}";
+        // Create entities with different well-known names to get multiple groups
+        // when grouping by RtWellKnownName
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_A");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_B");
+        await CreateQueryEntityAsync(tenantRepository, $"{testMarker}_C");
+
+        var queryId = await CreateGroupingAggregationQueryEntityAsync(
+            tenantRepository, $"{testMarker}_Query",
+            ["RtWellKnownName"],
+            ("RtWellKnownName", RtAggregationTypesEnum.Count));
+
+        // First, run without paging to get the full count
+        var configAll = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult",
+            FieldFilters =
+            [
+                new FieldFilterWithPathDto
+                {
+                    AttributePath = "RtWellKnownName",
+                    Operator = FieldFilterOperatorDto.Like,
+                    ComparisonValue = $"*{testMarker}_*"
+                }
+            ]
+        };
+
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+        var resultAll = await ExecuteNodeAndGetQueryResult(configAll, meshEtlContext, ckCacheService);
+
+        // Each entity has a unique name, so grouping by name should give us one group per entity
+        // (excluding the query entity itself which also matches the pattern)
+        resultAll.Should().NotBeNull();
+        var totalGroups = resultAll!.Rows.Count;
+        totalGroups.Should().BeGreaterThanOrEqualTo(3, "at least 3 groups for our 3 unique-named entities");
+
+        // Now run with Take=2 — in-memory paging should limit the result
+        var configPaged = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryId,
+            TargetPath = "$.queryResult",
+            Take = 2,
+            FieldFilters =
+            [
+                new FieldFilterWithPathDto
+                {
+                    AttributePath = "RtWellKnownName",
+                    Operator = FieldFilterOperatorDto.Like,
+                    ComparisonValue = $"*{testMarker}_*"
+                }
+            ]
+        };
+
+        var resultPaged = await ExecuteNodeAndGetQueryResult(configPaged, meshEtlContext, ckCacheService);
+
+        resultPaged.Should().NotBeNull();
+        resultPaged!.Rows.Should().HaveCount(2, "Take=2 should limit grouped results to 2 rows");
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -475,7 +779,8 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
     private async Task<QueryResult?> ExecuteNodeAndGetQueryResult(
         GetQueryByIdNodeConfiguration config,
         MeshEtlContext meshEtlContext,
-        ICkCacheService ckCacheService)
+        ICkCacheService ckCacheService,
+        NodeDelegate? customNext = null)
     {
         QueryResult? capturedResult = null;
 
@@ -497,12 +802,91 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         var rootContext = NodeContext.CreateRootNodeContext(fixture.Provider!, logger, dataContext);
         var nodeContext = rootContext.RegisterChildNode("GetQueryById", 0, config, dataContext);
 
-        Task Next(IDataContext dc, INodeContext nc) => Task.CompletedTask;
-        var node = new GetQueryByIdNode(Next, meshEtlContext, ckCacheService);
+        Task DefaultNext(IDataContext dc, INodeContext nc) => Task.CompletedTask;
+        var node = new GetQueryByIdNode(customNext ?? DefaultNext, meshEtlContext, ckCacheService);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         return capturedResult;
+    }
+
+    /// <summary>
+    /// Gets the runtime CkTypeId string for RtSimpleRtQuery by creating a transient instance.
+    /// </summary>
+    private async Task<string> GetSimpleQueryCkTypeIdAsync(ITenantRepository tenantRepository)
+    {
+        var transient = await tenantRepository.CreateTransientRtEntityAsync<RtSimpleRtQuery>();
+        return transient.CkTypeId?.ToString()!;
+    }
+
+    /// <summary>
+    /// Creates an RtAggregationRtQuery entity in the database for testing.
+    /// </summary>
+    private async Task<OctoObjectId> CreateAggregationQueryEntityAsync(
+        ITenantRepository tenantRepository, string queryName,
+        params (string attributePath, RtAggregationTypesEnum aggregationType)[] columns)
+    {
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+        await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
+
+        using var session = await tenantRepository.GetSessionAsync();
+        session.StartTransaction();
+
+        var rtQuery = await tenantRepository.CreateTransientRtEntityAsync<RtAggregationRtQuery>();
+        rtQuery.RtWellKnownName = queryName;
+        rtQuery.Name = queryName;
+        rtQuery.QueryCkTypeId = await GetSimpleQueryCkTypeIdAsync(tenantRepository);
+
+        foreach (var (attributePath, aggregationType) in columns)
+        {
+            var column = new RtAggregationQueryColumnRecord
+            {
+                AttributePath = attributePath,
+                AggregationType = aggregationType
+            };
+            rtQuery.Columns.Add(column);
+        }
+
+        await tenantRepository.InsertOneRtEntityAsync(session, rtQuery);
+        await session.CommitTransactionAsync();
+
+        return rtQuery.RtId;
+    }
+
+    /// <summary>
+    /// Creates an RtGroupingAggregationRtQuery entity in the database for testing.
+    /// </summary>
+    private async Task<OctoObjectId> CreateGroupingAggregationQueryEntityAsync(
+        ITenantRepository tenantRepository, string queryName,
+        string[] groupingColumns,
+        params (string attributePath, RtAggregationTypesEnum aggregationType)[] columns)
+    {
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+        await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
+
+        using var session = await tenantRepository.GetSessionAsync();
+        session.StartTransaction();
+
+        var rtQuery = await tenantRepository.CreateTransientRtEntityAsync<RtGroupingAggregationRtQuery>();
+        rtQuery.RtWellKnownName = queryName;
+        rtQuery.Name = queryName;
+        rtQuery.QueryCkTypeId = await GetSimpleQueryCkTypeIdAsync(tenantRepository);
+        rtQuery.GroupingColumns = new AttributeStringValueList(groupingColumns.ToList());
+
+        foreach (var (attributePath, aggregationType) in columns)
+        {
+            var column = new RtAggregationQueryColumnRecord
+            {
+                AttributePath = attributePath,
+                AggregationType = aggregationType
+            };
+            rtQuery.Columns.Add(column);
+        }
+
+        await tenantRepository.InsertOneRtEntityAsync(session, rtQuery);
+        await session.CommitTransactionAsync();
+
+        return rtQuery.RtId;
     }
 
     private (IDataContext dataContext, INodeContext nodeContext, NodeDelegate next) CreateNodeTestContext<TConfig>(

@@ -12,6 +12,7 @@ public record PlaceholderReplaceNodeConfiguration : SourceTargetPathNodeConfigur
     /// Defines mappings for placeholders and their values
     /// </summary>
     // ReSharper disable once CollectionNeverUpdated.Global
+    [PropertyGroup("Data Mapping", 0)]
     public required List<PlaceholderRule> ReplaceRules { get; set; }
 }
 

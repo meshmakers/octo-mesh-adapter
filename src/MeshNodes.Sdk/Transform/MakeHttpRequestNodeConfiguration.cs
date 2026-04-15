@@ -53,34 +53,41 @@ public record HttpPathParameter
         /// <summary>
         /// the HTTP method to use for the request (values: GET, POST, PUT, DELETE)
         /// </summary>
+        [PropertyGroup("Connection", 0)]
         public required string Method { get; set; } = "GET";
         /// <summary>
         /// The path to the body of the request
         /// </summary>
+        [PropertyGroup("Data Mapping", 0, "jsonpath")]
         public string? BodyPath { get; set; }
 
         /// <summary>
         /// The body of the request as a string
         /// </summary>
+        [PropertyGroup("Data Mapping", 1)]
         public string? Body { get; set; }
 
         /// <summary>
         /// the path to the URL of the request
         /// </summary>
+        [PropertyGroup("Connection", 1, "jsonpath")]
         public string? UrlPath { get; set; }
 
         /// <summary>
         /// The URL of the request
         /// </summary>
+        [PropertyGroup("Connection", 2)]
         public string? Url { get; set; }
 
         /// <summary>
         /// Path parameters to be replaced in the URL
         /// </summary>
+        [PropertyGroup("Connection", 3)]
         public List<HttpPathParameter> PathParameters { get; set; } = new();
 
         /// <summary>
         /// Header parameters to be included in the HTTP request
         /// </summary>
+        [PropertyGroup("Connection", 4)]
         public List<HttpHeaderParameter> HeaderParameters { get; set; } = new();
     }

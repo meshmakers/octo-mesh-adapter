@@ -12,17 +12,20 @@ public record DataMappingNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// The target value type
     /// </summary>
+    [PropertyGroup("Data Mapping", 0)]
     public required AttributeValueTypesDto TargetValueType { get; set; }
-    
+
     /// <summary>
     /// The source value type
     /// </summary>
+    [PropertyGroup("Data Mapping", 1)]
     public required AttributeValueTypesDto SourceValueType { get; set; }
 
     /// <summary>
     /// Defines the target type
     /// </summary>
     // ReSharper disable once CollectionNeverUpdated.Global
+    [PropertyGroup("Data Mapping", 2)]
     public required List<MappingEntry> Mappings { get; set; }
 }
 

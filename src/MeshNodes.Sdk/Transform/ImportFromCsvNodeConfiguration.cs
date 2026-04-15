@@ -11,31 +11,37 @@ public record ImportFromCsvNodeConfiguration : TargetPathNodeConfiguration
     /// <summary>
     /// Index of the file in $.files[] array (set by FromHttpRequest@1 for multipart/form-data uploads)
     /// </summary>
+    [PropertyGroup("General", 1)]
     public int FileIndex { get; set; }
 
     /// <summary>
     /// Column delimiter character
     /// </summary>
+    [PropertyGroup("Options", 0)]
     public string Delimiter { get; set; } = ";";
 
     /// <summary>
     /// File encoding (e.g. utf-8, utf-16le)
     /// </summary>
+    [PropertyGroup("Options", 1)]
     public string Encoding { get; set; } = "utf-8";
 
     /// <summary>
     /// Whether the first data row contains column headers
     /// </summary>
+    [PropertyGroup("Options", 2)]
     public bool HasHeaderRow { get; set; } = true;
 
     /// <summary>
     /// Number of rows to skip before the header/data rows
     /// </summary>
+    [PropertyGroup("Options", 3)]
     public int SkipRows { get; set; }
 
     /// <summary>
     /// Column-to-property mappings
     /// </summary>
+    [PropertyGroup("Data Mapping", 0)]
     public required ICollection<CsvColumnMapping> ColumnMappings { get; set; }
 }
 

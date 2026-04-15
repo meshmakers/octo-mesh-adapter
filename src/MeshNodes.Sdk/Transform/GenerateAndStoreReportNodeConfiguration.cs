@@ -12,41 +12,49 @@ public record GenerateAndStoreReportNodeConfiguration : TargetPathNodeConfigurat
     /// <summary>
     /// The uri of the folder in the file system where the report should be stored, e.g., /demo under the root folder of Reports.
     /// </summary>
+    [PropertyGroup("Paths", 2)]
     public string? FileSystemFolderUri { get; set; } = "/";
 
     /// <summary>
     /// The uri of the report definition, e.g. /demo/report.trdp under the root folder of Report definitions.
     /// </summary>
+    [PropertyGroup("Paths", 3)]
     public string? ReportDefinitionUri { get; set; }
 
     /// <summary>
     /// The prefix of the report file name, e.g. 'report-'. To the prefix the date and time are added in format yyyyMMdd-HHmmssFFF
     /// </summary>
+    [PropertyGroup("Output", 0)]
     public string? ReportFileNamePrefix { get; set; }
 
     /// <summary>
     /// The (optional) runtime id of an entity that is set related to the report comes with <see cref="RelatedRtId"/> or <see cref="RelatedRtIdPath"/>.
     /// </summary>
+    [PropertyGroup("Entity", 0, "jsonpath")]
     public string? RelatedRtIdPath { get; set; }
 
     /// <summary>
     /// The (optional) runtime id of an entity that is set related to the report comes with <see cref="RelatedCkTypeId"/> or <see cref="RelatedCkTypeIdPath"/>.
     /// </summary>
+    [PropertyGroup("Entity", 1)]
     public OctoObjectId? RelatedRtId { get; set; }
 
 
     /// <summary>
     /// Optional CkTypeId of related CkTypeId, comes with <see cref="RelatedRtId"/> or <see cref="RelatedRtIdPath"/>.
     /// </summary>
+    [PropertyGroup("Entity", 2, "ckTypeSelector")]
     public RtCkId<CkTypeId>? RelatedCkTypeId { get; set; }
 
     /// <summary>
     /// Optional path to the CkTypeId of the related CkTypeId, comes with <see cref="RelatedRtId"/> or <see cref="RelatedRtIdPath"/>.
     /// </summary>
+    [PropertyGroup("Entity", 3, "jsonpath")]
     public string? RelatedCkTypeIdPath { get; set; }
 
     /// <summary>
     /// Path parameters to be replaced in the URL
     /// </summary>
+    [PropertyGroup("Data Mapping", 0)]
     public List<HttpPathParameter> ReportParameters { get; set; } = new();
 }

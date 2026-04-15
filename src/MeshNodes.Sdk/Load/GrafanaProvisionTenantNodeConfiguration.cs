@@ -13,10 +13,12 @@ public record GrafanaProvisionTenantNodeConfiguration : TargetPathNodeConfigurat
     /// <summary>
     /// Name of the global GrafanaConfiguration entity containing Grafana connection parameters
     /// </summary>
+    [PropertyGroup("Connection", 0)]
     public required string ServerConfiguration { get; set; }
 
     /// <summary>
     /// Path to the tenant ID in the data context. If not set, the pipeline's tenant ID is used.
     /// </summary>
+    [PropertyGroup("Paths", 2, "jsonpath")]
     public string? TenantIdPath { get; set; }
 }

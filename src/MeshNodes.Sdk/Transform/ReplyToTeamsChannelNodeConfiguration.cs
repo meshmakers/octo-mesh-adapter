@@ -11,35 +11,42 @@ public record ReplyToTeamsChannelNodeConfiguration : NodeConfiguration
     /// <summary>
     /// The Teams Incoming Webhook URL (static value)
     /// </summary>
+    [PropertyGroup("Connection", 0)]
     public string? WebhookUrl { get; set; }
 
     /// <summary>
     /// JSON path to the webhook URL in the data context (alternative to WebhookUrl)
     /// </summary>
+    [PropertyGroup("Connection", 1, "jsonpath")]
     public string? WebhookUrlPath { get; set; }
 
     /// <summary>
     /// JSON path to the reply message body (HTML or plain text)
     /// </summary>
+    [PropertyGroup("Data Mapping", 0, "jsonpath")]
     public string? MessageBodyPath { get; set; }
 
     /// <summary>
     /// Static reply message body with ${jsonPath} placeholder support
     /// </summary>
+    [PropertyGroup("Data Mapping", 1, "textarea")]
     public string? MessageBody { get; set; }
 
     /// <summary>
     /// Optional title displayed as a header in the Teams message card
     /// </summary>
+    [PropertyGroup("Output", 0)]
     public string? Title { get; set; }
 
     /// <summary>
     /// Theme color for the message card (hex without #, e.g. "0076D7")
     /// </summary>
+    [PropertyGroup("Output", 1)]
     public string ThemeColor { get; set; } = "0076D7";
 
     /// <summary>
     /// Whether to continue pipeline execution if sending the message fails
     /// </summary>
+    [PropertyGroup("Options", 0)]
     public bool ContinueOnError { get; set; } = true;
 }

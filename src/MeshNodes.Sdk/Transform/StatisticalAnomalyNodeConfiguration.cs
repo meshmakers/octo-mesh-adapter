@@ -11,11 +11,13 @@ public record StatisticalAnomalyNodeConfiguration : SourceTargetPathNodeConfigur
     /// <summary>
     /// List of detector configurations for different fields
     /// </summary>
+    [PropertyGroup("AI Configuration", 0)]
     public List<StatisticalDetectorConfiguration> Detectors { get; set; } = new();
 
     /// <summary>
     /// Reset statistics on each run (true = stateless, false = stateful)
     /// </summary>
+    [PropertyGroup("Options", 0)]
     public bool ResetStatistics { get; set; } = false;
 }
 

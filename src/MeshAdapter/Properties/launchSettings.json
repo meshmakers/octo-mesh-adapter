@@ -2,100 +2,82 @@
   "profiles": {
     "meshadapter (tenant meshtest)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "meshtest",
-        "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant octosystem)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "octosystem",
-        "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant sbeg)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "sbeg",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant dankl)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "dankl",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant processautomationdemo)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "processautomationdemo",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant maco)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "maco",
-        "OCTO_ADAPTER__ADAPTERRTID": "667ac108ef60ca86e830e47e",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "667ac108ef60ca86e830e47e"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant octogrid)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "octogrid",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant voest)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "voest",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
     "meshadapter (tenant energyiqdemo)": {
       "commandName": "Project",
-      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "energyiqdemo",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261",
-        "OCTO_ADAPTER__ADAPTERCKTYPEID": "System.Communication/MeshAdapter"
+        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     }

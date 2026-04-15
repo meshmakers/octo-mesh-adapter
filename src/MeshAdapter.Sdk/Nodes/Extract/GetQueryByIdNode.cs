@@ -35,8 +35,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
 
         if (rtQuery == null)
         {
-            nodeContext.Error("Query '{0}' not found", c.QueryRtId);
-            return;
+            throw MeshAdapterPipelineExecutionException.QueryNotFound(nodeContext, c.QueryRtId);
         }
 
         var queryOptions = RtEntityQueryOptions.Create().WithCachingDisabled();
@@ -70,8 +69,8 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
                 break;
 
             default:
-                nodeContext.Error("Unsupported query type '{0}'", rtQuery.GetType().Name);
-                return;
+                throw MeshAdapterPipelineExecutionException.UnsupportedQueryType(nodeContext,
+                    rtQuery.GetType().Name);
         }
 
         // Add field filters from the pipeline configuration
@@ -104,8 +103,8 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
             case RtAggregationRtQuery aggregationQuery:
                 if (resultSet.AggregationResult == null)
                 {
-                    nodeContext.Error("Aggregation result is null for query '{0}'", c.QueryRtId);
-                    return;
+                    throw MeshAdapterPipelineExecutionException.AggregationResultNull(nodeContext,
+                        c.QueryRtId);
                 }
 
                 BuildAggregationQueryResult(aggregationQuery, resultSet.AggregationResult, queryResult);
@@ -114,8 +113,8 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
             case RtGroupingAggregationRtQuery groupedQuery:
                 if (resultSet.FieldAggregationResult == null)
                 {
-                    nodeContext.Error("Field aggregation result is null for query '{0}'", c.QueryRtId);
-                    return;
+                    throw MeshAdapterPipelineExecutionException.FieldAggregationResultNull(nodeContext,
+                        c.QueryRtId);
                 }
 
                 BuildGroupingAggregationQueryResult(groupedQuery, resultSet.FieldAggregationResult,

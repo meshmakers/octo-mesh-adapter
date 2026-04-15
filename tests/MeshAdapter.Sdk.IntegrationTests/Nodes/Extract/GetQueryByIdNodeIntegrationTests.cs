@@ -11,6 +11,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
@@ -28,7 +29,7 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Extract;
 public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClassFixture<SampleDataFixture>
 {
     [Fact]
-    public async Task ProcessObjectAsync_WithNonExistentQuery_DoesNotCallNext()
+    public async Task ProcessObjectAsync_WithNonExistentQuery_Throws()
     {
         // Arrange
         fixture.EnsureInitialized();
@@ -47,51 +48,14 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         var meshEtlContext = CreateMeshEtlContext(tenantRepository);
         var (dataContext, nodeContext, _) = CreateNodeTestContext(config);
 
-        bool nextCalled = false;
-
-        Task TrackingNext(IDataContext dataContext1, INodeContext nodeContext1)
-        {
-            nextCalled = true;
-            return Task.CompletedTask;
-        }
+        Task TrackingNext(IDataContext dataContext1, INodeContext nodeContext1) => Task.CompletedTask;
 
         var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService);
 
-        // Act
-        await node.ProcessObjectAsync(dataContext, nodeContext);
-
-        // Assert - next should NOT be called when query is not found
-        nextCalled.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task ProcessObjectAsync_WithNonExistentQuery_DoesNotSetResult()
-    {
-        // Arrange
-        fixture.EnsureInitialized();
-
-        var queryId = new OctoObjectId("000000000000000000000002");
-        var config = new GetQueryByIdNodeConfiguration
-        {
-            QueryRtId = queryId,
-            TargetPath = "$.queryResult"
-        };
-
-        var systemContext = fixture.GetSystemContext();
-        var tenantRepository = systemContext.GetSystemTenantRepository();
-        var ckCacheService = fixture.GetService<ICkCacheService>();
-
-        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
-        var (dataContext, nodeContext, next) = CreateNodeTestContext(config);
-
-        var node = new GetQueryByIdNode(next, meshEtlContext, ckCacheService);
-
-        // Act
-        await node.ProcessObjectAsync(dataContext, nodeContext);
-
-        // Assert - result should not be set when query is not found
-        var result = dataContext.Current?["queryResult"];
-        result.Should().BeNull();
+        // Act & Assert - should throw when query is not found
+        var act = () => node.ProcessObjectAsync(dataContext, nodeContext);
+        await act.Should().ThrowAsync<PipelineExecutionException>()
+            .WithMessage($"*'{queryId}'*not found*");
     }
 
     [Fact]
@@ -114,7 +78,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_WithEmptyQueryId_DoesNotCallNext()
+    public async Task ProcessObjectAsync_WithEmptyQueryId_Throws()
     {
         // Arrange
         fixture.EnsureInitialized();
@@ -134,21 +98,13 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         var meshEtlContext = CreateMeshEtlContext(tenantRepository);
         var (dataContext, nodeContext, _) = CreateNodeTestContext(config);
 
-        bool nextCalled = false;
-
-        Task TrackingNext(IDataContext dataContext1, INodeContext nodeContext1)
-        {
-            nextCalled = true;
-            return Task.CompletedTask;
-        }
+        Task TrackingNext(IDataContext dataContext1, INodeContext nodeContext1) => Task.CompletedTask;
 
         var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService);
 
-        // Act
-        await node.ProcessObjectAsync(dataContext, nodeContext);
-
-        // Assert - next should NOT be called when query is not found
-        nextCalled.Should().BeFalse();
+        // Act & Assert - should throw when query is not found
+        var act = () => node.ProcessObjectAsync(dataContext, nodeContext);
+        await act.Should().ThrowAsync<PipelineExecutionException>();
     }
 
     [Fact]

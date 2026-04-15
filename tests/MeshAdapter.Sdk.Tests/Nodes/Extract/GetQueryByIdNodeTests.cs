@@ -149,7 +149,7 @@ public class GetQueryByIdNodeTests
     #region Query Not Found
 
     [Fact]
-    public async Task ProcessObjectAsync_WithNonExistentQuery_DoesNotCallNext()
+    public async Task ProcessObjectAsync_WithNonExistentQuery_Throws()
     {
         var config = CreateConfig();
         var (dataContext, nodeContext, next) = PrepareTest(config);
@@ -157,9 +157,9 @@ public class GetQueryByIdNodeTests
         SetupQueryEntityNotFound();
 
         var node = CreateNode(next);
-        await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
     #endregion
@@ -325,7 +325,7 @@ public class GetQueryByIdNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_WithAggregationQuery_NullResult_DoesNotCallNext()
+    public async Task ProcessObjectAsync_WithAggregationQuery_NullResult_Throws()
     {
         var config = CreateConfig();
         var (dataContext, nodeContext, next) = PrepareTest(config);
@@ -337,9 +337,9 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(aggregationResult: null));
 
         var node = CreateNode(next);
-        await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
     [Fact]
@@ -590,7 +590,7 @@ public class GetQueryByIdNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_WithGroupedAggregationQuery_NullResult_DoesNotCallNext()
+    public async Task ProcessObjectAsync_WithGroupedAggregationQuery_NullResult_Throws()
     {
         var config = CreateConfig();
         var (dataContext, nodeContext, next) = PrepareTest(config);
@@ -603,9 +603,9 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(fieldAggregationResult: null));
 
         var node = CreateNode(next);
-        await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
     #endregion

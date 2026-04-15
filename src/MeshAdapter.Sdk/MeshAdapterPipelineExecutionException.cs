@@ -359,6 +359,30 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: File too large: {pdfDataLength} bytes (max {maxLength}). Please reduce the file size.");
     }
 
+    public static Exception QueryNotFound(INodeContext nodeContext, OctoObjectId queryRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Query with RtId '{queryRtId}' not found.");
+    }
+
+    public static Exception UnsupportedQueryType(INodeContext nodeContext, string queryTypeName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Unsupported query type '{queryTypeName}'.");
+    }
+
+    public static Exception AggregationResultNull(INodeContext nodeContext, OctoObjectId queryRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Aggregation result is null for query '{queryRtId}'.");
+    }
+
+    public static Exception FieldAggregationResultNull(INodeContext nodeContext, OctoObjectId queryRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Field aggregation result is null for query '{queryRtId}'.");
+    }
+
     public static Exception GroupingOfDataFailed(INodeContext nodeContext, string detectorGroupByPath)
     {
         return new MeshAdapterPipelineExecutionException(

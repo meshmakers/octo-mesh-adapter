@@ -2,13 +2,13 @@ using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Meshmakers.Octo.Services.StreamData;
-using Meshmakers.Octo.Services.StreamData.Dtos;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -21,8 +21,9 @@ public class SaveInTimeSeriesNodeTests
     private const string DataPath = "$.updateInfos";
 
     private readonly IMeshEtlContext _etlContext;
-    private readonly IStreamDataDatabaseClient _streamDataClient;
-    private readonly IStreamDataDatabaseManagementClient _streamDataManagementClient;
+    private readonly ISystemContext _systemContext;
+    private readonly ITenantContext _tenantContext;
+    private readonly IStreamDataRepository _streamDataRepository;
 
     public SaveInTimeSeriesNodeTests()
     {
@@ -30,8 +31,12 @@ public class SaveInTimeSeriesNodeTests
         A.CallTo(() => _etlContext.TenantId).Returns(TenantId);
         A.CallTo(() => _etlContext.TransactionStartedDateTime).Returns(new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc));
 
-        _streamDataClient = A.Fake<IStreamDataDatabaseClient>();
-        _streamDataManagementClient = A.Fake<IStreamDataDatabaseManagementClient>();
+        _systemContext = A.Fake<ISystemContext>();
+        _tenantContext = A.Fake<ITenantContext>();
+        _streamDataRepository = A.Fake<IStreamDataRepository>();
+
+        A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
+        A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
     }
 
     private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
@@ -61,7 +66,7 @@ public class SaveInTimeSeriesNodeTests
 
     private SaveInTimeSeriesNode CreateNode(NodeDelegate next)
     {
-        return new SaveInTimeSeriesNode(next, _etlContext, _streamDataClient, _streamDataManagementClient);
+        return new SaveInTimeSeriesNode(next, _etlContext, _systemContext);
     }
 
     private static RtEntity CreateRtEntity(DateTime? changedDateTime = null, string? wellKnownName = null)
@@ -105,7 +110,7 @@ public class SaveInTimeSeriesNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_WithData_CallsCreateStreamDataTableIfNotExist()
+    public async Task ProcessObjectAsync_WithData_CallsEnsureDatabaseCreated()
     {
         var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath };
         var (dataContext, nodeContext, next) = PrepareTest(config);
@@ -116,7 +121,7 @@ public class SaveInTimeSeriesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _streamDataManagementClient.CreateStreamDataTableIfNotExistAsync(TenantId))
+        A.CallTo(() => _streamDataRepository.EnsureDatabaseCreatedAsync())
             .MustHaveHappenedOnceExactly();
     }
 
@@ -136,8 +141,8 @@ public class SaveInTimeSeriesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _streamDataClient.InsertDataAsync(TenantId,
-                A<IEnumerable<DataPointDto>>.That.Matches(d => d.Count() == 2)))
+        A.CallTo(() => _streamDataRepository.InsertAsync(
+                A<IEnumerable<StreamDataPoint>>.That.Matches(d => d.Count() == 2)))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -153,8 +158,8 @@ public class SaveInTimeSeriesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _streamDataClient.InsertDataAsync(TenantId,
-                A<IEnumerable<DataPointDto>>.That.Matches(d => d.Count() == 1)))
+        A.CallTo(() => _streamDataRepository.InsertAsync(
+                A<IEnumerable<StreamDataPoint>>.That.Matches(d => d.Count() == 1)))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -170,7 +175,7 @@ public class SaveInTimeSeriesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _streamDataClient.InsertDataAsync(A<string>._, A<IEnumerable<DataPointDto>>._))
+        A.CallTo(() => _streamDataRepository.InsertAsync(A<IEnumerable<StreamDataPoint>>._))
             .MustNotHaveHappened();
     }
 
@@ -185,9 +190,9 @@ public class SaveInTimeSeriesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _streamDataManagementClient.CreateStreamDataTableIfNotExistAsync(A<string>._))
+        A.CallTo(() => _streamDataRepository.EnsureDatabaseCreatedAsync())
             .MustNotHaveHappened();
-        A.CallTo(() => _streamDataClient.InsertDataAsync(A<string>._, A<IEnumerable<DataPointDto>>._))
+        A.CallTo(() => _streamDataRepository.InsertAsync(A<IEnumerable<StreamDataPoint>>._))
             .MustNotHaveHappened();
     }
 
@@ -202,7 +207,7 @@ public class SaveInTimeSeriesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _streamDataManagementClient.CreateStreamDataTableIfNotExistAsync(A<string>._))
+        A.CallTo(() => _streamDataRepository.EnsureDatabaseCreatedAsync())
             .MustNotHaveHappened();
     }
 
@@ -241,24 +246,19 @@ public class SaveInTimeSeriesNodeTests
         var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
-        // One valid insert and one insert with null entity (via the Delete factory which has no entity)
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo(),
-            CreateDeleteUpdateInfo() // Has null RtEntity but Insert-like for testing the null check
+            CreateDeleteUpdateInfo() // Has null RtEntity, won't pass the switch (Delete mod option)
         };
-
-        // Override: create a mixed list where one entry has ModOption=Insert but RtEntity=null
-        // The delete entry has RtEntity=null but ModOption=Delete, so it won't pass the switch.
-        // For the null-entity test, we just verify that the single valid insert is inserted.
         SetupDataContext(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // Only 1 insert should happen (the valid one), the delete is skipped by mod option
-        A.CallTo(() => _streamDataClient.InsertDataAsync(TenantId,
-                A<IEnumerable<DataPointDto>>.That.Matches(d => d.Count() == 1)))
+        A.CallTo(() => _streamDataRepository.InsertAsync(
+                A<IEnumerable<StreamDataPoint>>.That.Matches(d => d.Count() == 1)))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -273,9 +273,9 @@ public class SaveInTimeSeriesNodeTests
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(entity) };
         SetupDataContext(dataContext, DataPath, data);
 
-        IEnumerable<DataPointDto>? capturedDataPoints = null;
-        A.CallTo(() => _streamDataClient.InsertDataAsync(TenantId, A<IEnumerable<DataPointDto>>._))
-            .Invokes((string _, IEnumerable<DataPointDto> dps) => capturedDataPoints = dps.ToList());
+        IEnumerable<StreamDataPoint>? capturedDataPoints = null;
+        A.CallTo(() => _streamDataRepository.InsertAsync(A<IEnumerable<StreamDataPoint>>._))
+            .Invokes((IEnumerable<StreamDataPoint> dps) => capturedDataPoints = dps.ToList());
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -295,9 +295,9 @@ public class SaveInTimeSeriesNodeTests
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(entity) };
         SetupDataContext(dataContext, DataPath, data);
 
-        IEnumerable<DataPointDto>? capturedDataPoints = null;
-        A.CallTo(() => _streamDataClient.InsertDataAsync(TenantId, A<IEnumerable<DataPointDto>>._))
-            .Invokes((string _, IEnumerable<DataPointDto> dps) => capturedDataPoints = dps.ToList());
+        IEnumerable<StreamDataPoint>? capturedDataPoints = null;
+        A.CallTo(() => _streamDataRepository.InsertAsync(A<IEnumerable<StreamDataPoint>>._))
+            .Invokes((IEnumerable<StreamDataPoint> dps) => capturedDataPoints = dps.ToList());
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);

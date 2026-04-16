@@ -11,7 +11,6 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Meshmakers.Octo.Sdk.SimulationNodes;
-using Meshmakers.Octo.Services.StreamData.Extensions;
 
 // ReSharper disable once CheckNamespace
 namespace Microsoft.Extensions.DependencyInjection;
@@ -81,9 +80,8 @@ public static class ServiceCollectionExtensions
         services.AddCkModelSystemNotificationV2();
 
         services.AddRuntimeEngine()
-            .AddMongoDbRuntimeRepository();
-
-        services.AddStreamDataDatabase<ConfigureStreamDataConfiguration>();
+            .AddMongoDbRuntimeRepository()
+            .AddCrateDbStreamDataRepository<ConfigureStreamDataConfiguration>();
 
         services.AddOctoServiceInfrastructure();
 

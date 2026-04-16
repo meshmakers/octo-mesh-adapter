@@ -1,24 +1,27 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Services.StreamData;
-using Meshmakers.Octo.Services.StreamData.Dtos;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
 [NodeConfiguration(typeof(SaveInTimeSeriesNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContext, IStreamDataDatabaseClient streamDataDatabaseClient, IStreamDataDatabaseManagementClient streamDataDatabaseManagementClient)
+internal class SaveInTimeSeriesNode(
+    NodeDelegate next,
+    IMeshEtlContext etlContext,
+    ISystemContext systemContext)
     : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
-        
+
         var data = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
 
@@ -26,9 +29,16 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
         {
             var tenantId = etlContext.TenantId;
 
-            await streamDataDatabaseManagementClient.CreateStreamDataTableIfNotExistAsync(tenantId);
+            // Get the stream data repository via the engine tenant context
+            var tenantContext = await systemContext.FindTenantContextAsync(tenantId);
+            var streamDataRepo = tenantContext.GetStreamDataRepository()
+                ?? throw new InvalidOperationException(
+                    $"Stream data repository is not available for tenant '{tenantId}'. " +
+                    "Ensure AddCrateDbStreamDataRepository() was called during startup.");
 
-            var toInsert = new List<DataPointDto>();
+            await streamDataRepo.EnsureDatabaseCreatedAsync();
+
+            var toInsert = new List<StreamDataPoint>();
 
             foreach (var datapoint in data)
             {
@@ -42,15 +52,22 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
                     case EntityModOptions.Replace:
                     case EntityModOptions.Update:
                     case EntityModOptions.Insert:
-                        var dataPointDto = new DataPointDto(datapoint.RtEntity.Attributes.ToDictionary())
+                        // datapoint.RtId is null for inserts (no ID assigned yet by repository)
+                        // so we fall back to the entity's own RtId.
+                        var rtId = datapoint.RtId ?? datapoint.RtEntity.RtId;
+
+                        var streamDataPoint = new StreamDataPoint
                         {
-                            Timestamp = datapoint.RtEntity.RtChangedDateTime ?? etlContext.ExternalReceivedDateTime ?? etlContext.TransactionStartedDateTime,
-                            RtId = datapoint.RtId,
+                            Timestamp = datapoint.RtEntity.RtChangedDateTime
+                                ?? etlContext.ExternalReceivedDateTime
+                                ?? etlContext.TransactionStartedDateTime,
+                            RtId = rtId,
                             RtWellKnownName = datapoint.RtEntity.RtWellKnownName,
                             CkTypeId = datapoint.CkTypeId,
+                            Attributes = datapoint.RtEntity.Attributes.ToDictionary()
                         };
 
-                        toInsert.Add(dataPointDto);
+                        toInsert.Add(streamDataPoint);
                         break;
 
                     // we don't delete data that comes over the broker
@@ -63,7 +80,7 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
             if (toInsert.Count != 0)
             {
                 nodeContext.Debug($"Inserting {toInsert.Count} data points into the stream data database");
-                await streamDataDatabaseClient.InsertDataAsync(tenantId, toInsert);
+                await streamDataRepo.InsertAsync(toInsert);
             }
         }
         else
@@ -71,7 +88,6 @@ internal class SaveInTimeSeriesNode(NodeDelegate next, IMeshEtlContext etlContex
             nodeContext.Warning("No update infos found");
         }
 
-        
         await next(dataContext, nodeContext);
     }
 }

@@ -80,14 +80,35 @@ public record ToDiscordNodeConfiguration : TargetPathNodeConfiguration
     public string? EmbedColorPath { get; set; }
 
     /// <summary>
-    /// Literal RtId of a binary attachment in MongoDB large binary storage.
+    /// RtId of a <c>System.Reporting/FileSystemItem</c> whose bound binary is posted as the message's
+    /// single attachment. The node resolves the binary via <c>Content.BinaryId</c>. The filename sent
+    /// to Discord is picked by precedence:
+    /// <list type="number">
+    /// <item><see cref="AttachmentFilename"/> / <see cref="AttachmentFilenamePath"/> when set.</item>
+    /// <item>The FileSystemItem's <c>Name</c> attribute — the intentional, renameable display label.</item>
+    /// <item>The FileSystemItem's <c>Content.Filename</c> — the ingest-time blob metadata (fallback).</item>
+    /// </list>
+    /// Requires the <c>System.Reporting</c> CK package to be loaded on the tenant.
     /// </summary>
-    public string? AttachmentRtId { get; set; }
+    public string? AttachmentFileSystemItemRtId { get; set; }
 
     /// <summary>
-    /// JSONPath to resolve the attachment RtId from the data context.
+    /// JSONPath to resolve the FileSystemItem RtId from the data context.
     /// </summary>
-    public string? AttachmentRtIdPath { get; set; }
+    public string? AttachmentFileSystemItemRtIdPath { get; set; }
+
+    /// <summary>
+    /// Optional override for the multipart filename sent to Discord. When set, takes precedence over
+    /// both the FileSystemItem's <c>Name</c> and <c>Content.Filename</c>. Useful when the caller knows
+    /// the user-facing name from domain metadata (e.g. an invoice number) that isn't reflected on the
+    /// FileSystemItem itself.
+    /// </summary>
+    public string? AttachmentFilename { get; set; }
+
+    /// <summary>
+    /// JSONPath to resolve the attachment filename override from the data context.
+    /// </summary>
+    public string? AttachmentFilenamePath { get; set; }
 
     /// <summary>
     /// Controls which mentions in the message are allowed to ping recipients.

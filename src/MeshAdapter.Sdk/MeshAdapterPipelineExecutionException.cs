@@ -195,6 +195,20 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Binary file with RtId '{rtId}' not found in storage.");
     }
 
+    public static Exception FileSystemItemNotFound(INodeContext nodeContext, string rtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: FileSystemItem with RtId '{rtId}' not found. " +
+            "Ensure the RtId points to a System.Reporting/FileSystemItem entity on this tenant.");
+    }
+
+    public static Exception FileSystemItemMissingBinary(INodeContext nodeContext, string rtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: FileSystemItem '{rtId}' has no Content.BinaryId set. " +
+            "The entity exists but is not bound to a binary payload.");
+    }
+
     public static Exception PathParameterNameMissing(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path parameter name is missing. Please set the Name property.");

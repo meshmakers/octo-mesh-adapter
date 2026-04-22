@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -24,6 +26,9 @@ public class ToDiscordNode(
     IHttpClientFactory httpClientFactory) : IPipelineNode
 {
     private const string DiscordApiBase = "https://discord.com/api/v10";
+
+    private static readonly RtCkId<CkTypeId> FileSystemItemCkTypeId =
+        new("System.Reporting/FileSystemItem");
 
     /// <summary>
     /// Discord server configuration resolved from global configuration by name.
@@ -60,13 +65,16 @@ public class ToDiscordNode(
         var embedTitle = ResolveStringValue(dataContext, c.EmbedTitlePath, c.EmbedTitle);
         var embedDescription = ResolveStringValue(dataContext, c.EmbedDescriptionPath, c.EmbedDescription);
         var embedColor = ResolveEmbedColor(dataContext, c, nodeContext);
-        var attachmentRtId = ResolveStringValue(dataContext, c.AttachmentRtIdPath, c.AttachmentRtId);
+        var fileSystemItemRtId = ResolveStringValue(
+            dataContext, c.AttachmentFileSystemItemRtIdPath, c.AttachmentFileSystemItemRtId);
+        var filenameOverride = ResolveStringValue(
+            dataContext, c.AttachmentFilenamePath, c.AttachmentFilename);
         var allowedMentions = ResolveAllowedMentions(dataContext, c, nodeContext);
 
         var hasBody = !string.IsNullOrWhiteSpace(content)
             || !string.IsNullOrWhiteSpace(embedTitle)
             || !string.IsNullOrWhiteSpace(embedDescription)
-            || !string.IsNullOrWhiteSpace(attachmentRtId);
+            || !string.IsNullOrWhiteSpace(fileSystemItemRtId);
         if (!hasBody)
         {
             throw MeshAdapterPipelineExecutionException.InputValueNull(
@@ -93,9 +101,10 @@ public class ToDiscordNode(
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bot", cfg.BotToken);
 
-        if (!string.IsNullOrWhiteSpace(attachmentRtId))
+        if (!string.IsNullOrWhiteSpace(fileSystemItemRtId))
         {
-            var (stream, filename, contentType) = await DownloadAttachmentAsync(attachmentRtId!, nodeContext);
+            var (stream, filename, contentType) =
+                await DownloadAttachmentAsync(fileSystemItemRtId!, filenameOverride, nodeContext);
             var multipart = new MultipartFormDataContent();
             multipart.Add(new StringContent(payload.ToString(Newtonsoft.Json.Formatting.None),
                 Encoding.UTF8, "application/json"), "payload_json");
@@ -216,21 +225,68 @@ public class ToDiscordNode(
         return true;
     }
 
+    /// <summary>
+    /// Resolves a FileSystemItem's bound binary and chooses the attachment filename.
+    /// Precedence: <paramref name="filenameOverride"/> ▶ FileSystemItem.Name ▶ Content.Filename.
+    /// </summary>
     private async Task<(Stream Stream, string Filename, string ContentType)> DownloadAttachmentAsync(
-        string rtId, INodeContext nodeContext)
+        string fileSystemItemRtId, string? filenameOverride, INodeContext nodeContext)
     {
         var tenantRepository = etlContext.TenantRepository;
-        using var session = await tenantRepository.GetSessionAsync().ConfigureAwait(false);
-        session.StartTransaction();
+
+        EntityBinaryInfo? content;
+        string? entityName;
+        using (var session = await tenantRepository.GetSessionAsync().ConfigureAwait(false))
+        {
+            session.StartTransaction();
+            var result = await tenantRepository.GetRtEntitiesByIdAsync(
+                session,
+                FileSystemItemCkTypeId,
+                new List<OctoObjectId> { OctoObjectId.Parse(fileSystemItemRtId) },
+                RtEntityQueryOptions.Create(),
+                skip: 0,
+                take: 1);
+            await session.CommitTransactionAsync().ConfigureAwait(false);
+
+            var fsItem = result.Items.FirstOrDefault();
+            if (fsItem == null)
+            {
+                throw MeshAdapterPipelineExecutionException.FileSystemItemNotFound(
+                    nodeContext, fileSystemItemRtId);
+            }
+
+            content = fsItem.GetAttributeValueOrDefault("Content") as EntityBinaryInfo;
+            entityName = fsItem.GetAttributeValueOrDefault("Name") as string;
+        }
+
+        if (content?.BinaryId == null)
+        {
+            throw MeshAdapterPipelineExecutionException.FileSystemItemMissingBinary(
+                nodeContext, fileSystemItemRtId);
+        }
+
+        var filename = FirstNonBlank(filenameOverride, entityName, content.Filename)
+                       ?? "attachment";
+
+        using var downloadSession = await tenantRepository.GetSessionAsync().ConfigureAwait(false);
+        downloadSession.StartTransaction();
         var handler = await tenantRepository.DownloadLargeBinaryAsync(
-            session, OctoObjectId.Parse(rtId), CancellationToken.None);
-        await session.CommitTransactionAsync().ConfigureAwait(false);
+            downloadSession, content.BinaryId.Value, CancellationToken.None);
+        await downloadSession.CommitTransactionAsync().ConfigureAwait(false);
 
         if (handler == null)
         {
-            throw MeshAdapterPipelineExecutionException.BinaryNotFound(nodeContext, rtId);
+            throw MeshAdapterPipelineExecutionException.BinaryNotFound(
+                nodeContext, content.BinaryId.Value.ToString()!);
         }
 
-        return (handler.Stream, handler.Filename, handler.ContentType);
+        var contentType = !string.IsNullOrWhiteSpace(handler.ContentType)
+            ? handler.ContentType
+            : (content.ContentType ?? "application/octet-stream");
+
+        return (handler.Stream, filename, contentType);
     }
+
+    private static string? FirstNonBlank(params string?[] candidates) =>
+        candidates.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c));
 }

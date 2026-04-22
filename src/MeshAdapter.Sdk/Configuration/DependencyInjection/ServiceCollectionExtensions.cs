@@ -58,6 +58,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<PlaceholderReplaceNode>()
             .RegisterNode<EMailSenderNode>()
             .RegisterNode<SftpUploadNode>()
+            .RegisterNode<ToDiscordNode>()
             .RegisterNode<GetQueryByIdNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
@@ -112,6 +113,7 @@ public static class ServiceCollectionExtensions
 
         // the MakeHttpRequestNode requires an HttpClient to make requests
         services.AddHttpClient();
+        services.AddHttpClient("Discord");
 
         return dataPipelineBuilder;
     }

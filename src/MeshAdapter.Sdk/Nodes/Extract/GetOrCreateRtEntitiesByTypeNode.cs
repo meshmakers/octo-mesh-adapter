@@ -40,13 +40,17 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId,
                 queryOptions, 0, 1);
 
+            // Store CkTypeId as a string (SemanticVersionedFullName) so downstream nodes
+            // like CreateUpdateInfo can read it via GetSimpleValueByPath<string>.
+            var ckTypeIdString = ckTypeId.SemanticVersionedFullName;
+
             if (r.TotalCount == 0)
             {
                 var objectId = OctoObjectId.GenerateNewId();
                 dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
                     TargetValueWriteModes.Overwrite, objectId);
                 dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, ckTypeId);
+                    TargetValueWriteModes.Overwrite, ckTypeIdString);
                 dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
                     TargetValueWriteModes.Overwrite, UpdateKind.Insert);
             }
@@ -56,7 +60,7 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
                     TargetValueWriteModes.Overwrite,
                     r.Items.First().RtId);
                 dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, ckTypeId);
+                    TargetValueWriteModes.Overwrite, ckTypeIdString);
                 dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
                     TargetValueWriteModes.Overwrite,
                     UpdateKind.Update);

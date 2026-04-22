@@ -1,5 +1,8 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
+using Microsoft.Extensions.Options;
+using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
+using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
@@ -10,6 +13,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
+using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Meshmakers.Octo.Sdk.SimulationNodes;
 
 // ReSharper disable once CheckNamespace
@@ -47,7 +51,6 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetOrCreateRtEntitiesByTypeNode>()
             .RegisterNode<GetAssociationTargetsNode>()
             .RegisterNode<DataMappingNode>()
-            .RegisterNode<DistinctNode>()
             .RegisterNode<ImportFromCsvNode>()
             .RegisterNode<ImportFromExcelNode>()
             .RegisterNode<CreateAssociationUpdateNode>()
@@ -66,6 +69,10 @@ public static class ServiceCollectionExtensions
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<ReplyToTeamsChannelNode>()
             .RegisterNode<MinMaxNode>()
+            .RegisterNode<ApplyDataPointMappingsNode>()
+            .RegisterNode<BuildMappingTargetsNode>()
+            .RegisterNode<DeployPipelineNode>()
+            .RegisterNode<MapToRecordArrayNode>()
             .RegisterNode<GrafanaProvisionTenantNode>()
             .RegisterNode<GrafanaDeprovisionTenantNode>()
             .RegisterTriggerNode<FromEmailNode>()
@@ -77,6 +84,18 @@ public static class ServiceCollectionExtensions
             .RegisterEtlContext<IMeshEtlContext>();
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
+        services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+
+        // Register CommunicationServicesClient for DeployDataFlow node
+        services.AddOptions<CommunicationServiceClientOptions>()
+            .Configure<IOptions<AdapterOptions>>((options, adapterOptions) =>
+            {
+                options.EndpointUri = adapterOptions.Value.CommunicationControllerServicesUri;
+                options.TenantId = adapterOptions.Value.TenantId;
+            });
+        services.AddSingleton<ICommunicationServicesClient, CommunicationServicesClient>();
+        services.AddSingleton<ICommunicationServiceClientAccessToken>(provider =>
+            (ICommunicationServiceClientAccessToken)provider.GetRequiredService<IServiceClientAccessToken>());
         services.AddCkModelSystemNotificationV2();
 
         services.AddRuntimeEngine()

@@ -46,8 +46,9 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<CreateAssociationUpdateNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateFileSystemUpdateNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<BuildMappingTargetsNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<MapToRecordArrayNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<DistinctNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromCsvNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromExcelNodeConfiguration>();

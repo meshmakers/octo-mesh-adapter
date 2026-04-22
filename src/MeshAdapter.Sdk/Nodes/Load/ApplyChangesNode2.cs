@@ -46,12 +46,16 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
             var resultAssocUpdate =
                 associationUpdates.Where(x => x.ModOption == AssociationModOptionsDto.Create).ToList();
 
-            // first we reverse the list because we are interested in the last update for each entity.
-            var tempEntities = entityUpdates.Where(x => x.ModOption != EntityModOptions.Insert).Reverse();
-            var tempAssoc = associationUpdates.Where(x => x.ModOption != AssociationModOptionsDto.Create).Reverse();
+            // Merge multiple update-items for the same entity into a single update
+            // by combining their attribute changes. Later updates win on attribute conflicts.
+            var nonInsertUpdates = entityUpdates.Where(x => x.ModOption != EntityModOptions.Insert);
+            var mergedByEntity = nonInsertUpdates
+                .GroupBy(x => x.GetRtEntityId())
+                .Select(g => MergeEntityUpdates(g.ToList(), nodeContext));
+            resultUpdateInfos.AddRange(mergedByEntity);
 
-            // then we are throwing away duplicates because we only want to update each entity once.
-            resultUpdateInfos.AddRange(tempEntities.DistinctBy(x => x.GetRtEntityId()));
+            // Associations: dedupe by origin+target (last one wins)
+            var tempAssoc = associationUpdates.Where(x => x.ModOption != AssociationModOptionsDto.Create).Reverse();
             resultAssocUpdate.AddRange(tempAssoc.DistinctBy(ConcatOriginAndTarget));
 
             try
@@ -114,5 +118,48 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
     private static string ConcatOriginAndTarget(AssociationUpdateInfo updateInfo)
     {
         return string.Format($"{updateInfo.Origin}{updateInfo.Target}");
+    }
+
+    /// <summary>
+    /// Merges multiple EntityUpdateInfo instances for the same entity into a single update
+    /// by combining their attribute changes. Later updates win on attribute conflicts.
+    /// All updates in <paramref name="updates"/> must target the same entity.
+    /// </summary>
+    private static EntityUpdateInfo<RtEntity> MergeEntityUpdates(IReadOnlyList<EntityUpdateInfo<RtEntity>> updates,
+        INodeContext nodeContext)
+    {
+        if (updates.Count == 1)
+        {
+            return updates[0];
+        }
+
+        var last = updates[^1];
+        var lastEntity = last.RtEntity;
+        if (lastEntity == null) return last;
+
+        // Merge all attributes — later updates win on conflicts
+        var mergedAttributes = new Dictionary<string, object?>();
+        foreach (var update in updates)
+        {
+            if (update.RtEntity == null) continue;
+            foreach (var kvp in update.RtEntity.Attributes)
+            {
+                if (mergedAttributes.TryGetValue(kvp.Key, out var existing) && !Equals(existing, kvp.Value))
+                {
+                    nodeContext.Warning(
+                        $"Merging entity {last.GetRtEntityId()}: attribute '{kvp.Key}' has conflicting values " +
+                        $"('{existing}' vs '{kvp.Value}') — later value wins");
+                }
+                mergedAttributes[kvp.Key] = kvp.Value;
+            }
+        }
+
+        var mergedEntity = new RtEntity(lastEntity.CkTypeId!, last.GetRtEntityId().RtId, mergedAttributes)
+        {
+            RtChangedDateTime = lastEntity.RtChangedDateTime,
+            RtWellKnownName = lastEntity.RtWellKnownName
+        };
+
+        return EntityUpdateInfo<RtEntity>.CreateUpdate(last.GetRtEntityId(), mergedEntity);
     }
 }

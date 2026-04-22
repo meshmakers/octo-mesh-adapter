@@ -1,4 +1,5 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
@@ -89,6 +90,24 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     continue;
                 }
 
+                // For String target attributes: serialize JObject/JArray values as JSON strings
+                // so complex nested structures can be stored in a single String attribute.
+                if (au.AttributeValueType == AttributeValueTypesDto.String)
+                {
+                    var materialized = jTokens.ToList();
+                    if (materialized.Count == 1 && materialized[0] is JContainer container)
+                    {
+                        var jsonString = container.ToString(Newtonsoft.Json.Formatting.None);
+                        if (SetAttributeValueSingle(nodeContext, au.AttributeName, jsonString, rtEntity))
+                        {
+                            hasUpdate = true;
+                        }
+                        continue;
+                    }
+
+                    jTokens = materialized;
+                }
+
                 hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, jTokens, rtEntity);
             }
             else if (au.Value != null)
@@ -162,6 +181,22 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
                 hasUpdate = true;
             }
+            else if (jToken is JArray jArray)
+            {
+                // Convert JArray items: JValues stay as primitives, JObjects get converted
+                // via GetAttributeValue (which handles CkRecordId → RtRecord conversion).
+                var list = jArray.Select(item => item switch
+                {
+                    JValue v => v.Value,
+                    _ => GetAttributeValue(nodeContext, item)
+                }).ToList();
+                if (!SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
+                {
+                    continue;
+                }
+
+                hasUpdate = true;
+            }
             else
             {
                 nodeContext.Error($"Value {jToken} is not a valid type");
@@ -174,6 +209,22 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
     private object? GetAttributeValue(INodeContext nodeContext, object? value)
     {
+        // Minimal expression support (quick-fix, see issue #3917 for full framework).
+        // Expressions start with '=' — currently supports: =now(), =utcNow(), =today(), =newGuid(), =epoch()
+        if (value is string strValue && strValue.StartsWith('='))
+        {
+            var expr = strValue.Substring(1).Trim();
+            return expr switch
+            {
+                "now" or "now()" or "utcNow" or "utcNow()" => DateTime.UtcNow,
+                "today" or "today()" => DateTime.UtcNow.Date,
+                "newGuid" or "newGuid()" => Guid.NewGuid().ToString(),
+                "epoch" or "epoch()" => DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                "epochMs" or "epochMs()" => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                _ => throw MeshAdapterPipelineExecutionException.InvalidValue(strValue)
+            };
+        }
+
         if (value is JObject jObject && jObject.TryGetValue("CkRecordId", out var ckRecordIdToken) &&
             ckRecordIdToken is JObject ckRecordIdObject)
         {

@@ -52,12 +52,16 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - ImportFromExcelNode
    - PdfOcrExtractionNode (uses IronOCR for PDF processing)
    - GenerateAndStoreReportNode
+   - **ApplyDataPointMappingsNode** — Evaluates `System.Communication/DataPointMapping` entities for a source entity, applies mXparser expressions, produces update items for target entities. Supports state-name filtering via `sourceStateNamePath`. See [DataPointMapping concept](../octo-communication-controller-services/docs/concepts/DataPointMapping.md).
+   - **BuildMappingTargetsNode** — Resolves all active DataPointMappings into `MappingTarget` records for data acquisition. Generic for any adapter (Loxone, MQTT, OPC-UA, Modbus). Supports sub-state resolution via RecordArray lookup.
+   - **MapToRecordArrayNode** — Converts a JSON key/value map into a CK RecordArray. Configurable `ckRecordId`, `keyAttributeName`, `valueAttributeName`.
 
 3. **Load Nodes** (`src/MeshAdapter.Sdk/Nodes/Load/`): Data persistence nodes
    - ApplyChangesNode/ApplyChangesNode2
    - SaveInTimeSeries
    - EMailSenderNode
    - SftpUploadNode
+   - **DeployPipelineNode** — Deploys a specific pipeline within the same data flow via the Communication Controller REST API. Uses `ServiceAccountConfiguration` for OAuth2 authentication. Safety: cannot deploy self, must be in same data flow.
 
 4. **Trigger Nodes** (`src/MeshAdapter.Sdk/Nodes/Trigger/`): Pipeline initiation nodes
    - FromHttpRequestNode
@@ -71,6 +75,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 - **MeshEtlContext**: ETL context implementation providing access to repositories and pipeline state
 - **HttpRequestService**: Handles dynamic HTTP routing and request processing
 - **MeshContextCreatorService**: Creates contexts for pipeline execution
+- **ServiceAccountTokenService**: Acquires OAuth2 tokens from `ServiceAccountConfiguration` entities for service-to-service REST calls (used by `DeployPipelineNode`)
 
 ### Configuration
 

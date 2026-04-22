@@ -2,10 +2,13 @@ using System.Net;
 using System.Net.Http;
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -346,30 +349,82 @@ public class ToDiscordNodeTests
             () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
-    [Fact]
-    public async Task ProcessObjectAsync_WithAttachment_PostsMultipart()
-    {
-        const string attachmentRtId = "000000000000000000000042";
+    private static readonly RtCkId<CkTypeId> FileSystemItemCkTypeId =
+        new("System.Reporting/FileSystemItem");
 
+    /// <summary>
+    /// Wires the repository fakes so that fetching <paramref name="fsItemRtId"/> returns a
+    /// FileSystemItem whose <c>Content</c> points at <paramref name="binaryRtId"/> and whose
+    /// <c>Name</c>/<c>Content.Filename</c> carry the supplied values; the subsequent binary
+    /// download returns the given bytes.
+    /// </summary>
+    private void SetupFileSystemItem(
+        string fsItemRtId,
+        string binaryRtId,
+        string? name,
+        string? contentFilename,
+        string contentType,
+        byte[] bytes)
+    {
         var session = A.Fake<IOctoSession>();
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
 
-        var handler = A.Fake<IDownloadStreamHandler>();
-        var pdfBytes = System.Text.Encoding.UTF8.GetBytes("hello pdf");
-        A.CallTo(() => handler.Stream).Returns(new MemoryStream(pdfBytes));
-        A.CallTo(() => handler.Filename).Returns("report.pdf");
-        A.CallTo(() => handler.ContentType).Returns("application/pdf");
+        var fsItem = new RtEntity(FileSystemItemCkTypeId, new OctoObjectId(fsItemRtId));
+        fsItem.SetAttributeValue("Content", AttributeValueTypesDto.BinaryLinked, new EntityBinaryInfo
+        {
+            BinaryId = new OctoObjectId(binaryRtId),
+            Filename = contentFilename!,
+            ContentType = contentType,
+            Size = bytes.Length,
+        });
+        if (name != null)
+        {
+            fsItem.SetAttributeValue("Name", AttributeValueTypesDto.String, name);
+        }
+
+        var resultSet = A.Fake<IResultSet<RtEntity>>();
+        A.CallTo(() => resultSet.Items).Returns(new[] { fsItem });
+        A.CallTo(() => resultSet.TotalCount).Returns(1);
+
+        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+                A<IOctoSession>._,
+                FileSystemItemCkTypeId,
+                A<IReadOnlyList<OctoObjectId>>.That.Matches(ids =>
+                    ids.Count == 1 && ids[0].ToString() == fsItemRtId),
+                A<RtEntityQueryOptions>._,
+                A<int?>._,
+                A<int?>._))
+            .Returns(Task.FromResult<IResultSet<RtEntity>>(resultSet));
+
+        var downloadHandler = A.Fake<IDownloadStreamHandler>();
+        A.CallTo(() => downloadHandler.Stream).Returns(new MemoryStream(bytes));
+        A.CallTo(() => downloadHandler.Filename).Returns(contentFilename!);
+        A.CallTo(() => downloadHandler.ContentType).Returns(contentType);
 
         A.CallTo(() => _tenantRepository.DownloadLargeBinaryAsync(
-                session, A<OctoObjectId>._, A<CancellationToken>._))
-            .Returns(Task.FromResult(handler));
+                A<IOctoSession>._,
+                A<OctoObjectId>.That.Matches(id => id.ToString() == binaryRtId),
+                A<CancellationToken>._))
+            .Returns(Task.FromResult(downloadHandler));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithFileSystemItemAttachment_PostsMultipartUsingEntityName()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        const string binaryRtId = "000000000000000000000099";
+        SetupFileSystemItem(fsItemRtId, binaryRtId,
+            name: "Invoice March.pdf",
+            contentFilename: "aaaa-bbbb-cccc.pdf",
+            contentType: "application/pdf",
+            bytes: "hello pdf"u8.ToArray());
 
         var config = new ToDiscordNodeConfiguration
         {
             ServerConfiguration = ServerConfig,
             ChannelId = ChannelId,
             Content = "see attached",
-            AttachmentRtId = attachmentRtId
+            AttachmentFileSystemItemRtId = fsItemRtId
         };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var node = CreateNode(next);
@@ -378,7 +433,157 @@ public class ToDiscordNodeTests
 
         Assert.StartsWith("multipart/form-data", _handler.LastContentType);
         Assert.Contains("\"content\":\"see attached\"", _handler.LastBody);
-        Assert.Contains("filename=report.pdf", _handler.LastBody);
+        // Name wins over content.filename when no override is set.
+        Assert.Contains("filename=\"Invoice March.pdf\"", _handler.LastBody);
+        Assert.DoesNotContain("aaaa-bbbb-cccc.pdf", _handler.LastBody);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_AttachmentFilename_OverridesFileSystemItemName()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        const string binaryRtId = "000000000000000000000099";
+        SetupFileSystemItem(fsItemRtId, binaryRtId,
+            name: "Invoice March.pdf",
+            contentFilename: "aaaa-bbbb-cccc.pdf",
+            contentType: "application/pdf",
+            bytes: "hi"u8.ToArray());
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            ChannelId = ChannelId,
+            Content = "see attached",
+            AttachmentFileSystemItemRtId = fsItemRtId,
+            AttachmentFilename = "custom-override.pdf"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var node = CreateNode(next);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("filename=custom-override.pdf", _handler.LastBody);
+        Assert.DoesNotContain("Invoice March.pdf", _handler.LastBody);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_AttachmentFilenamePath_OverridesFileSystemItemName()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        const string binaryRtId = "000000000000000000000099";
+        SetupFileSystemItem(fsItemRtId, binaryRtId,
+            name: "Invoice March.pdf",
+            contentFilename: "aaaa-bbbb-cccc.pdf",
+            contentType: "application/pdf",
+            bytes: "hi"u8.ToArray());
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            ChannelId = ChannelId,
+            Content = "see attached",
+            AttachmentFileSystemItemRtId = fsItemRtId,
+            AttachmentFilenamePath = "$.desiredName"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.desiredName"))
+            .Returns("inv-2025-09-30-abc.pdf");
+        var node = CreateNode(next);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("filename=inv-2025-09-30-abc.pdf", _handler.LastBody);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_BlankFileSystemItemName_FallsBackToContentFilename()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        const string binaryRtId = "000000000000000000000099";
+        SetupFileSystemItem(fsItemRtId, binaryRtId,
+            name: null, // no Name on the entity
+            contentFilename: "fallback.pdf",
+            contentType: "application/pdf",
+            bytes: "hi"u8.ToArray());
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            ChannelId = ChannelId,
+            Content = "see attached",
+            AttachmentFileSystemItemRtId = fsItemRtId
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var node = CreateNode(next);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("filename=fallback.pdf", _handler.LastBody);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_FileSystemItemNotFound_Throws()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        var session = A.Fake<IOctoSession>();
+        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
+
+        var emptyResult = A.Fake<IResultSet<RtEntity>>();
+        A.CallTo(() => emptyResult.Items).Returns(Array.Empty<RtEntity>());
+        A.CallTo(() => emptyResult.TotalCount).Returns(0);
+        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+                A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<IReadOnlyList<OctoObjectId>>._,
+                A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .Returns(Task.FromResult<IResultSet<RtEntity>>(emptyResult));
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            ChannelId = ChannelId,
+            Content = "hi",
+            AttachmentFileSystemItemRtId = fsItemRtId
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var node = CreateNode(next);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("FileSystemItem", ex.Message);
+        Assert.Contains(fsItemRtId, ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_FileSystemItemWithoutBinary_Throws()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        var session = A.Fake<IOctoSession>();
+        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
+
+        // Entity exists but has no Content attribute.
+        var fsItem = new RtEntity(FileSystemItemCkTypeId, new OctoObjectId(fsItemRtId));
+        fsItem.SetAttributeValue("Name", AttributeValueTypesDto.String, "orphan.pdf");
+
+        var result = A.Fake<IResultSet<RtEntity>>();
+        A.CallTo(() => result.Items).Returns(new[] { fsItem });
+        A.CallTo(() => result.TotalCount).Returns(1);
+        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+                A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<IReadOnlyList<OctoObjectId>>._,
+                A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .Returns(Task.FromResult<IResultSet<RtEntity>>(result));
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            ChannelId = ChannelId,
+            Content = "hi",
+            AttachmentFileSystemItemRtId = fsItemRtId
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var node = CreateNode(next);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("no Content.BinaryId", ex.Message);
     }
 
     [Fact]

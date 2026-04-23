@@ -29,15 +29,13 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
 
         try
         {
-            if (string.IsNullOrEmpty(config.Path))
+            // Resolve API key: prefer ApiKeyConfigurationName over direct ApiKey
+            var apiKey = ResolveApiKey(config, etlContext, nodeContext);
+            if (string.IsNullOrEmpty(apiKey))
             {
-                throw MeshAdapterPipelineExecutionException.PathParameterValueMissing(nodeContext,
-                    nameof(config.Path));
-            }
-
-            if (string.IsNullOrEmpty(config.ApiKey))
-            {
-                throw new ArgumentException("ApiKey is required", nameof(config.ApiKey));
+                throw new ArgumentException(
+                    "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node.",
+                    nameof(config.ApiKey));
             }
 
             if (string.IsNullOrEmpty(config.Question))
@@ -45,12 +43,18 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
                 throw new ArgumentException("Question is required", nameof(config.Question));
             }
 
+            // Resolve MCP server URL from AiConfiguration if available
+            var mcpServerUrl = ResolveMcpServerUrl(config, etlContext, nodeContext);
+
             nodeContext.Debug("Starting Anthropic AI query");
 
-            // Get the main content from the configured path
-            var mainContentToken = dataContext.Current?.SelectToken(config.Path);
+            // Get the main content from the configured path (optional when using MCP tools)
+            var mainContentToken = !string.IsNullOrEmpty(config.Path)
+                ? dataContext.Current?.SelectToken(config.Path)
+                : null;
             var mainContent = mainContentToken?.ToString();
-            if (string.IsNullOrEmpty(mainContent))
+
+            if (string.IsNullOrEmpty(mainContent) && string.IsNullOrEmpty(mcpServerUrl))
             {
                 nodeContext.Warning($"No content found at path: {config.Path}");
                 await next(dataContext, nodeContext);
@@ -59,9 +63,12 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
 
             // Build the context from additional data paths
             var contextBuilder = new StringBuilder();
-            contextBuilder.AppendLine("Main Content:");
-            contextBuilder.AppendLine(mainContent);
-            contextBuilder.AppendLine();
+            if (!string.IsNullOrEmpty(mainContent))
+            {
+                contextBuilder.AppendLine("Main Content:");
+                contextBuilder.AppendLine(mainContent);
+                contextBuilder.AppendLine();
+            }
 
             if (config.DataPaths is { Length: > 0 })
             {
@@ -110,9 +117,19 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
 
             // Load MCP tools if configured
             List<JsonElement>? mcpTools = null;
-            if (!string.IsNullOrEmpty(config.McpServerUrl))
+            if (!string.IsNullOrEmpty(mcpServerUrl))
             {
-                mcpTools = await LoadMcpToolsAsync(config.McpServerUrl, etlContext.TenantId, nodeContext);
+                mcpTools = await LoadMcpToolsAsync(mcpServerUrl, etlContext.TenantId, nodeContext);
+
+                // Filter tools if mcpToolNames is specified
+                if (mcpTools != null && config.McpToolNames is { Length: > 0 })
+                {
+                    var allowedNames = new HashSet<string>(config.McpToolNames, StringComparer.OrdinalIgnoreCase);
+                    mcpTools = mcpTools.Where(t =>
+                        t.TryGetProperty("name", out var name) && allowedNames.Contains(name.GetString() ?? "")
+                    ).ToList();
+                }
+
                 nodeContext.Info($"Loaded {mcpTools?.Count ?? 0} MCP tools from OctoMesh");
             }
 
@@ -139,7 +156,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, userPrompt, mcpTools, nodeContext, historyMessages);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -189,8 +206,61 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         await next(dataContext, nodeContext);
     }
 
-    private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config,
-        string userPrompt, List<JsonElement>? mcpTools, INodeContext nodeContext,
+    private static string? ResolveApiKey(AnthropicAiQueryNodeConfiguration config, IMeshEtlContext etlContext,
+        INodeContext nodeContext)
+    {
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName))
+        {
+            if (etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+            {
+                var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
+                if (rawJson != null)
+                {
+                    var configDoc = JObject.Parse(rawJson);
+                    var key = configDoc.Value<string>("apiKey");
+                    if (!string.IsNullOrEmpty(key))
+                    {
+                        nodeContext.Debug(
+                            $"API key loaded from configuration '{config.ApiKeyConfigurationName}'");
+                        return key;
+                    }
+                }
+            }
+
+            nodeContext.Warning(
+                $"AiConfiguration '{config.ApiKeyConfigurationName}' not found or has no ApiKey. " +
+                "Ensure the pipeline has a 'Uses' association to the AiConfiguration entity.");
+        }
+
+        return config.ApiKey;
+    }
+
+    private static string? ResolveMcpServerUrl(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        // Try loading from AiConfiguration first
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
+            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        {
+            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
+            if (rawJson != null)
+            {
+                var configDoc = JObject.Parse(rawJson);
+                var url = configDoc.Value<string>("mcpServerUrl");
+                if (!string.IsNullOrEmpty(url))
+                {
+                    nodeContext.Debug(
+                        $"MCP server URL loaded from configuration '{config.ApiKeyConfigurationName}'");
+                    return url;
+                }
+            }
+        }
+
+        return config.McpServerUrl;
+    }
+
+    private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
+        string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools, INodeContext nodeContext,
         List<object>? historyMessages = null)
     {
         using var client = httpClientFactory.CreateClient();
@@ -228,7 +298,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             {
                 Content = new StringContent(jsonRequest, Encoding.UTF8, "application/json")
             };
-            request.Headers.Add("x-api-key", config.ApiKey);
+            request.Headers.Add("x-api-key", apiKey);
             request.Headers.Add("anthropic-version", "2023-06-01");
 
             using var response = await client.SendAsync(request);
@@ -265,13 +335,24 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
                         var toolName = block.GetProperty("name").GetString()!;
                         var toolInput = block.GetProperty("input");
 
-                        nodeContext.Debug($"Executing MCP tool: {toolName}");
+                        nodeContext.Debug($"Executing MCP tool: {toolName}, input: {toolInput.GetRawText()[..Math.Min(200, toolInput.GetRawText().Length)]}");
 
                         try
                         {
                             var toolResult =
-                                await ExecuteMcpToolAsync(config.McpServerUrl!, etlContext.TenantId,
+                                await ExecuteMcpToolAsync(mcpServerUrl!, etlContext.TenantId,
                                     toolName, toolInput);
+
+                            // Truncate tool results to prevent exceeding context window
+                            const int maxToolResultLength = 50_000;
+                            if (toolResult.Length > maxToolResultLength)
+                            {
+                                nodeContext.Warning(
+                                    $"MCP tool '{toolName}' result truncated from {toolResult.Length} to {maxToolResultLength} chars. " +
+                                    "Use attributePaths parameter to reduce response size.");
+                                toolResult = toolResult[..maxToolResultLength] +
+                                             "\n\n[TRUNCATED - result too large. Use attributePaths parameter to request only needed fields.]";
+                            }
 
                             toolResults.Add(new
                             {
@@ -322,21 +403,30 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             $"Claude exceeded maximum tool rounds ({config.MaxToolRounds})");
     }
 
+    /// <summary>
+    /// MCP session ID for the current pipeline execution. Set during LoadMcpToolsAsync (initialize handshake).
+    /// </summary>
+    private string? _mcpSessionId;
+
     private async Task<List<JsonElement>?> LoadMcpToolsAsync(string mcpServerUrl, string tenantId,
         INodeContext nodeContext)
     {
         try
         {
+            var url = $"{mcpServerUrl}/{tenantId}/mcp";
+
+            // Step 1: Initialize MCP session
+            _mcpSessionId = await InitializeMcpSessionAsync(url, nodeContext);
+
+            // Step 2: List tools with session ID
             using var client = httpClientFactory.CreateClient();
-            // MCP tools/list via JSON-RPC
             var rpcRequest = new
             {
                 jsonrpc = "2.0",
-                id = 1,
+                id = 2,
                 method = "tools/list"
             };
 
-            var url = $"{mcpServerUrl}/{tenantId}/mcp";
             var request = new HttpRequestMessage(HttpMethod.Post, url)
             {
                 Content = new StringContent(JsonSerializer.Serialize(rpcRequest), Encoding.UTF8,
@@ -344,6 +434,10 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             };
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+            if (_mcpSessionId != null)
+            {
+                request.Headers.Add("Mcp-Session-Id", _mcpSessionId);
+            }
 
             using var response = await client.SendAsync(request);
             var responseText = await response.Content.ReadAsStringAsync();
@@ -403,6 +497,54 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         }
     }
 
+    private async Task<string?> InitializeMcpSessionAsync(string url, INodeContext nodeContext)
+    {
+        using var client = httpClientFactory.CreateClient();
+        var initRequest = new
+        {
+            jsonrpc = "2.0",
+            id = 1,
+            method = "initialize",
+            @params = new
+            {
+                protocolVersion = "2025-03-26",
+                capabilities = new { },
+                clientInfo = new
+                {
+                    name = "OctoMesh-AnthropicAiQueryNode",
+                    version = "1.0.0"
+                }
+            }
+        };
+
+        var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(initRequest, JsonOptions), Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+        using var response = await client.SendAsync(request);
+        var responseText = await response.Content.ReadAsStringAsync();
+
+        // Extract session ID from response header
+        string? sessionId = null;
+        if (response.Headers.TryGetValues("Mcp-Session-Id", out var sessionIds))
+        {
+            sessionId = sessionIds.FirstOrDefault();
+        }
+
+        nodeContext.Debug($"MCP initialize: status={response.StatusCode}, sessionId={sessionId ?? "(none)"}");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            nodeContext.Warning($"MCP initialize failed: {responseText[..Math.Min(300, responseText.Length)]}");
+        }
+
+        return sessionId;
+    }
+
     private async Task<string> ExecuteMcpToolAsync(string mcpServerUrl, string tenantId, string toolName,
         JsonElement toolInput)
     {
@@ -428,6 +570,10 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         };
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+        if (_mcpSessionId != null)
+        {
+            request.Headers.Add("Mcp-Session-Id", _mcpSessionId);
+        }
 
         using var response = await client.SendAsync(request);
         var responseText = await response.Content.ReadAsStringAsync();

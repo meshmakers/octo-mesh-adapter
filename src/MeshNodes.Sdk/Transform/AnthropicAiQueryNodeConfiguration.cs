@@ -9,11 +9,19 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
-    /// The Anthropic API key for authentication
+    /// Name of the AiConfiguration entity in GlobalConfiguration to load the API key from.
+    /// When set, the API key is read from the configuration entity and never exposed in the data context.
+    /// Takes precedence over <see cref="ApiKey"/>.
     /// </summary>
-    [PropertyGroup("Connection", 0, "password")]
-    public required string ApiKey { get; set; } =
-        "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";
+    [PropertyGroup("Connection", 0)]
+    public string? ApiKeyConfigurationName { get; set; }
+
+    /// <summary>
+    /// The Anthropic API key for authentication.
+    /// Prefer using <see cref="ApiKeyConfigurationName"/> to avoid exposing the key in pipeline definitions.
+    /// </summary>
+    [PropertyGroup("Connection", 1, "password")]
+    public string? ApiKey { get; set; }
 
     /// <summary>
     /// The Claude model to use (e.g., "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307")
@@ -88,6 +96,13 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("AI Configuration", 5)]
     public int MaxToolRounds { get; set; } = 10;
+
+    /// <summary>
+    /// Optional list of MCP tool names to expose to Claude. If set, only these tools are available.
+    /// Reduces context size by excluding unused tools (e.g., ["query_entities_simple", "navigate_associations"]).
+    /// </summary>
+    [PropertyGroup("Connection", 2)]
+    public string[]? McpToolNames { get; set; }
 
     /// <summary>
     /// Optional JSON path to conversation history array.

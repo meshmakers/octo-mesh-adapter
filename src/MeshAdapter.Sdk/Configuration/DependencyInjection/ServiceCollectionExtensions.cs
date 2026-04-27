@@ -74,6 +74,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<BuildMappingTargetsNode>()
             .RegisterNode<DeployPipelineNode>()
             .RegisterNode<MapToRecordArrayNode>()
+            .RegisterNode<UpdateRecordArrayItemNode>()
             .RegisterNode<GrafanaProvisionTenantNode>()
             .RegisterNode<GrafanaDeprovisionTenantNode>()
             .RegisterTriggerNode<FromEmailNode>()

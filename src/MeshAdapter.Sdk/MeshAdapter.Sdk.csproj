@@ -46,6 +46,7 @@
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
         <PackageReference Include="Meshmakers.Octo.Services.Notifications" Version="$(OctoVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Runtime.Engine.CrateDb" Version="$(OctoVersion)" />
         <PackageReference Include="MailKit" Version="4.16.0" />
         <PackageReference Include="SSH.NET" Version="2025.1.0" />
     </ItemGroup>

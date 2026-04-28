@@ -1,3 +1,4 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
@@ -22,6 +23,14 @@ internal class SaveInTimeSeriesNode(
     {
         var c = nodeContext.GetNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
 
+        if (string.IsNullOrWhiteSpace(c.ArchiveRtId))
+        {
+            throw new InvalidOperationException(
+                "SaveInTimeSeries: archiveRtId is required (concept §6 / §8 T9). Configure the node with the runtime id of the target CkArchive.");
+        }
+
+        var archiveRtId = new OctoObjectId(c.ArchiveRtId);
+
         var data = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
             RtNewtonsoftSerializer.DefaultSerializer);
 
@@ -36,6 +45,8 @@ internal class SaveInTimeSeriesNode(
                     $"Stream data repository is not available for tenant '{tenantId}'. " +
                     "Ensure AddCrateDbStreamDataRepository() was called during startup.");
 
+            // Tenant-level table provisioning stays for now; per-archive table creation runs via
+            // the lifecycle service when an archive is activated.
             await streamDataRepo.EnsureDatabaseCreatedAsync();
 
             var toInsert = new List<StreamDataPoint>();
@@ -79,8 +90,9 @@ internal class SaveInTimeSeriesNode(
 
             if (toInsert.Count != 0)
             {
-                nodeContext.Debug($"Inserting {toInsert.Count} data points into the stream data database");
-                await streamDataRepo.InsertAsync(toInsert);
+                nodeContext.Debug(
+                    $"Inserting {toInsert.Count} data points into archive '{archiveRtId}'");
+                await streamDataRepo.InsertAsync(archiveRtId, toInsert);
             }
         }
         else

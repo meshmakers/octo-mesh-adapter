@@ -41,7 +41,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - GetRtEntitiesByIdNode
    - GetRtEntitiesByTypeNode
    - GetQueryByIdNode
-   - EnrichWithMongoDataNode
+   - BackfillFromRtEntityNode
    - GetAssociationTargetsNode
 
 2. **Transform Nodes** (`src/MeshAdapter.Sdk/Nodes/Transform/`): Data processing nodes
@@ -58,7 +58,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 
 3. **Load Nodes** (`src/MeshAdapter.Sdk/Nodes/Load/`): Data persistence nodes
    - ApplyChangesNode/ApplyChangesNode2
-   - SaveInTimeSeries
+   - SaveStreamDataInArchive
    - EMailSenderNode
    - SftpUploadNode
    - **DeployPipelineNode** — Deploys a specific pipeline within the same data flow via the Communication Controller REST API. Uses `ServiceAccountConfiguration` for OAuth2 authentication. Safety: cannot deploy self, must be in same data flow.

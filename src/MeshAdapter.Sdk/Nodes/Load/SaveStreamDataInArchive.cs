@@ -11,9 +11,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
-[NodeConfiguration(typeof(SaveInTimeSeriesNodeConfiguration))]
+[NodeConfiguration(typeof(SaveStreamDataInArchiveNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class SaveInTimeSeriesNode(
+internal class SaveStreamDataInArchiveNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
     ISystemContext systemContext)
@@ -21,12 +21,12 @@ internal class SaveInTimeSeriesNode(
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = nodeContext.GetNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
 
         if (string.IsNullOrWhiteSpace(c.ArchiveRtId))
         {
             throw new InvalidOperationException(
-                "SaveInTimeSeries: archiveRtId is required (concept §6 / §8 T9). Configure the node with the runtime id of the target CkArchive.");
+                "SaveStreamDataInArchive: archiveRtId is required (concept §6 / §8 T9). Configure the node with the runtime id of the target CkArchive.");
         }
 
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);

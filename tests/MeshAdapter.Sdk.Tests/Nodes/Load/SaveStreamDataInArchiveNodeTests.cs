@@ -15,7 +15,7 @@ using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class SaveInTimeSeriesNodeTests
+public class SaveStreamDataInArchiveNodeTests
 {
     private const string TenantId = "test-tenant";
     private const string DataPath = "$.updateInfos";
@@ -27,7 +27,7 @@ public class SaveInTimeSeriesNodeTests
     private readonly ITenantContext _tenantContext;
     private readonly IStreamDataRepository _streamDataRepository;
 
-    public SaveInTimeSeriesNodeTests()
+    public SaveStreamDataInArchiveNodeTests()
     {
         _etlContext = A.Fake<IMeshEtlContext>();
         A.CallTo(() => _etlContext.TenantId).Returns(TenantId);
@@ -42,7 +42,7 @@ public class SaveInTimeSeriesNodeTests
     }
 
     private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        SaveInTimeSeriesNodeConfiguration config, JToken? testData = null)
+        SaveStreamDataInArchiveNodeConfiguration config, JToken? testData = null)
     {
         var services = new ServiceCollection();
         var logger = A.Fake<IPipelineLogger>();
@@ -56,7 +56,7 @@ public class SaveInTimeSeriesNodeTests
             dataContext);
 
         var nodeContext = rootNodeContext.RegisterChildNode(
-            "SaveInTimeSeries",
+            "SaveStreamDataInArchive",
             0,
             config,
             dataContext);
@@ -66,9 +66,9 @@ public class SaveInTimeSeriesNodeTests
         return (dataContext, nodeContext, next);
     }
 
-    private SaveInTimeSeriesNode CreateNode(NodeDelegate next)
+    private SaveStreamDataInArchiveNode CreateNode(NodeDelegate next)
     {
-        return new SaveInTimeSeriesNode(next, _etlContext, _systemContext);
+        return new SaveStreamDataInArchiveNode(next, _etlContext, _systemContext);
     }
 
     private static RtEntity CreateRtEntity(DateTime? changedDateTime = null, string? wellKnownName = null)
@@ -114,7 +114,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithData_CallsEnsureDatabaseCreated()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
@@ -130,7 +130,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithInsertData_InsertsDataPoints()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
@@ -152,7 +152,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithUpdateData_InsertsDataPoints()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateUpdateUpdateInfo() };
@@ -170,7 +170,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithDeleteModOption_DoesNotInsert()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateDeleteUpdateInfo() };
@@ -186,7 +186,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithNullData_DoesNotCreateTable()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         SetupDataContext(dataContext, DataPath, null);
@@ -203,7 +203,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithEmptyData_DoesNotCreateTable()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         SetupDataContext(dataContext, DataPath, new List<EntityUpdateInfo<RtEntity>>());
@@ -218,7 +218,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithData_CallsNext()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
@@ -233,7 +233,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_WithNullData_CallsNext()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         SetupDataContext(dataContext, DataPath, null);
@@ -247,7 +247,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_NullRtEntity_SkipsDataPoint()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
@@ -270,7 +270,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_UsesRtChangedDateTimeAsTimestamp()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var changedDateTime = new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
@@ -293,7 +293,7 @@ public class SaveInTimeSeriesNodeTests
     [Fact]
     public async Task ProcessObjectAsync_NoRtChangedDateTime_FallsBackToTransactionDateTime()
     {
-        var config = new SaveInTimeSeriesNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var entity = CreateRtEntity(changedDateTime: null);

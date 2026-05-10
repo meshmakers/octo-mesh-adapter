@@ -126,7 +126,7 @@ Fetches existing entities or creates them if not found (idempotent retrieval).
 
 Executes pre-defined queries stored in the system.
 
-#### EnrichWithMongoDataNode
+#### BackfillFromRtEntityNode
 
 Supplements entities with additional data from MongoDB.
 
@@ -312,7 +312,7 @@ Applies entity updates to MongoDB.
 
 Alternative implementation with different transaction strategy.
 
-#### SaveInTimeSeriesNode
+#### SaveStreamDataInArchiveNode
 
 Persists entity data to CrateDB time-series database.
 
@@ -521,7 +521,7 @@ IEtlDataOrchestrator.ExecutePipelineAsync()
 Execute Node Pipeline:
   ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, etc.)
   ├─ Transform Nodes (DataMapping, CreateUpdateInfo, MakeHttpRequest, etc.)
-  └─ Load Nodes (ApplyChanges, SaveInTimeSeries, EMailSender, SftpUpload)
+  └─ Load Nodes (ApplyChanges, SaveStreamDataInArchive, EMailSender, SftpUpload)
         ↓
 Return Result / Store in Time-Series / Send Notifications
 ```
@@ -600,7 +600,7 @@ All components are registered via `ServiceCollectionExtensions.cs`:
 
 ### Data Enrichment
 
-- MongoDB to MongoDB (EnrichWithMongoDataNode)
+- MongoDB to MongoDB (BackfillFromRtEntityNode)
 - External API integration (MakeHttpRequestNode)
 - AI-powered content analysis (AnthropicAiQueryNode)
 

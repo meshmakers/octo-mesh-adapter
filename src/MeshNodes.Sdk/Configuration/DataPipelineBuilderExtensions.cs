@@ -21,7 +21,7 @@ public static class DataPipelineBuilderExtensions
         // Control nodes are for edge and mesh! Implement them in SDK!!
 
         // Register extract nodes
-        pipelineBuilder.RegisterNodeConfiguration<EnrichWithMongoDataConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<BackfillFromRtEntityNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetAssociationTargetsNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetNotificationTemplateNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetOrCreateRtEntitiesByTypeNodeConfiguration>();
@@ -35,7 +35,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
-        pipelineBuilder.RegisterNodeConfiguration<SaveInTimeSeriesNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GrafanaProvisionTenantNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GrafanaDeprovisionTenantNodeConfiguration>();
 

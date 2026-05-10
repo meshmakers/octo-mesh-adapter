@@ -3,7 +3,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 
 /// <summary>
-/// SaveInTimeSeries node configuration. Routes the source entities into a single archive
+/// SaveStreamDataInArchive node configuration. Routes the source entities into a single archive
 /// (per-node — no auto fan-out) identified by <see cref="ArchiveRtId"/>.
 /// </summary>
 /// <remarks>
@@ -11,8 +11,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 /// status <c>Activated</c> at runtime; otherwise the underlying repository call throws
 /// <c>ArchiveNotActivatedException</c> and the pipeline surface that as a node-level error.
 /// </remarks>
-[NodeName("SaveInTimeSeries", 2)]
-public record SaveInTimeSeriesNodeConfiguration : PathNodeConfiguration
+[NodeName("SaveStreamDataInArchive", 1)]
+public record SaveStreamDataInArchiveNodeConfiguration : PathNodeConfiguration
 {
     /// <summary>
     /// Runtime id of the <c>CkArchive</c> entity that receives the data points produced by this

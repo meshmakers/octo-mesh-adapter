@@ -30,7 +30,7 @@ public class BackfillFromRtEntityNodeTests
     private readonly ITenantContext _tenantContext;
     private readonly ITenantRepository _tenantRepository;
     private readonly IOctoSession _session;
-    private readonly ICkArchiveRuntimeStore _archiveStore;
+    private readonly IArchiveRuntimeStore _archiveStore;
 
     public BackfillFromRtEntityNodeTests()
     {
@@ -39,13 +39,13 @@ public class BackfillFromRtEntityNodeTests
         _tenantContext = A.Fake<ITenantContext>();
         _tenantRepository = A.Fake<ITenantRepository>();
         _session = A.Fake<IOctoSession>();
-        _archiveStore = A.Fake<ICkArchiveRuntimeStore>();
+        _archiveStore = A.Fake<IArchiveRuntimeStore>();
 
         A.CallTo(() => _etlContext.TenantId).Returns(TenantId);
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
         A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
-        A.CallTo(() => _tenantContext.GetCkArchiveRuntimeStore()).Returns(_archiveStore);
+        A.CallTo(() => _tenantContext.GetArchiveRuntimeStore()).Returns(_archiveStore);
     }
 
     private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
@@ -67,13 +67,13 @@ public class BackfillFromRtEntityNodeTests
 
     private void ConfigureArchive(params (string Path, bool Indexed, bool Required)[] columns)
     {
-        var snapshot = new CkArchiveSnapshot(
+        var snapshot = new ArchiveSnapshot(
             ArchiveRtId,
             TestCkTypeId,
             CkArchiveStatus.Activated,
             "TestArchive",
             columns.Select(c => new CkArchiveColumnSpec(c.Path, c.Indexed, c.Required)).ToArray());
-        A.CallTo(() => _archiveStore.GetAsync(ArchiveRtId)).Returns(Task.FromResult<CkArchiveSnapshot?>(snapshot));
+        A.CallTo(() => _archiveStore.GetAsync(ArchiveRtId)).Returns(Task.FromResult<ArchiveSnapshot?>(snapshot));
     }
 
     private static EntityUpdateInfo<RtEntity> CreateUpdateInfo(OctoObjectId rtId,
@@ -200,7 +200,7 @@ public class BackfillFromRtEntityNodeTests
     [Fact]
     public async Task ProcessObjectAsync_ArchiveNotFound_Throws()
     {
-        A.CallTo(() => _archiveStore.GetAsync(ArchiveRtId)).Returns(Task.FromResult<CkArchiveSnapshot?>(null));
+        A.CallTo(() => _archiveStore.GetAsync(ArchiveRtId)).Returns(Task.FromResult<ArchiveSnapshot?>(null));
 
         var rtId = new OctoObjectId("000000000000000000000004");
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateUpdateInfo(rtId) };

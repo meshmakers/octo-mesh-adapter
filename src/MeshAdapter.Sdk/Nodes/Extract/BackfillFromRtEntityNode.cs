@@ -39,7 +39,7 @@ internal class BackfillFromRtEntityNode(
 
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);
         var tenantContext = await systemContext.FindTenantContextAsync(etlContext.TenantId);
-        var archiveStore = tenantContext.GetCkArchiveRuntimeStore();
+        var archiveStore = tenantContext.GetArchiveRuntimeStore();
         var archive = await archiveStore.GetAsync(archiveRtId)
             ?? throw new InvalidOperationException(
                 $"BackfillFromRtEntity: archive '{archiveRtId}' not found in tenant '{etlContext.TenantId}'.");

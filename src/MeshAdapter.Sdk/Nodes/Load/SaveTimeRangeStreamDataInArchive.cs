@@ -122,12 +122,41 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
     }
 
     /// <summary>
-    /// Extracts a DateTime value from the attribute dictionary by key, removes it (so it doesn't
-    /// reappear as a user column), and normalises common JSON-serialised string variants to
-    /// DateTime. Returns false when the key is absent or the value can't be coerced to a
-    /// DateTime, leaving the dictionary untouched.
+    /// Extracts a DateTime value from the attribute dictionary by key path, removes it (so it
+    /// doesn't reappear as a user column), and normalises common JSON-serialised string variants to
+    /// DateTime. Supports nested traversal of record-typed attribute values via dot notation, e.g.
+    /// <c>"TimeRange.From"</c> reads <c>From</c> off the <c>TimeRange</c> record and strips that
+    /// inner key (leaving the rest of the record in place, which the storage layer will then drop
+    /// alongside any other unknown columns). Returns false when the key path can't be resolved or
+    /// the leaf value can't be coerced to a DateTime, leaving the dictionary untouched.
     /// </summary>
-    private static bool TryPopDateTime(IDictionary<string, object?> attrs, string key, out DateTime value)
+    private static bool TryPopDateTime(IDictionary<string, object?> attrs, string keyPath, out DateTime value)
+    {
+        var parts = keyPath.Split('.');
+        if (parts.Length == 1)
+        {
+            return TryPopFromLeaf(attrs, parts[0], out value);
+        }
+
+        if (!attrs.TryGetValue(parts[0], out var nested) || nested is null)
+        {
+            value = default;
+            return false;
+        }
+
+        switch (nested)
+        {
+            case RtRecord record:
+                return TryPopFromRtRecord(record, parts, 1, out value);
+            case IDictionary<string, object?> dict:
+                return TryPopFromDictPath(dict, parts, 1, out value);
+            default:
+                value = default;
+                return false;
+        }
+    }
+
+    private static bool TryPopFromLeaf(IDictionary<string, object?> attrs, string key, out DateTime value)
     {
         if (!attrs.TryGetValue(key, out var raw) || raw is null)
         {
@@ -135,26 +164,95 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
             return false;
         }
 
+        if (TryCoerceDateTime(raw, out value))
+        {
+            attrs.Remove(key);
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static bool TryPopFromDictPath(IDictionary<string, object?> dict, string[] parts, int idx,
+        out DateTime value)
+    {
+        if (idx == parts.Length - 1)
+        {
+            return TryPopFromLeaf(dict, parts[idx], out value);
+        }
+
+        if (!dict.TryGetValue(parts[idx], out var nested) || nested is null)
+        {
+            value = default;
+            return false;
+        }
+
+        return nested switch
+        {
+            RtRecord r => TryPopFromRtRecord(r, parts, idx + 1, out value),
+            IDictionary<string, object?> d => TryPopFromDictPath(d, parts, idx + 1, out value),
+            _ => Fail(out value)
+        };
+    }
+
+    private static bool TryPopFromRtRecord(RtRecord record, string[] parts, int idx, out DateTime value)
+    {
+        // RtRecord.Attributes is IReadOnlyDictionary; we need to mutate via SetAttributeRawValue
+        // when stripping the leaf. For the SaveTimeRangeStreamDataInArchive use case the record
+        // contains only the window boundaries, so leaving the record-shell behind (after stripping
+        // From/To) is fine — the storage layer drops unknown user columns with a WARN log.
+        if (!record.Attributes.TryGetValue(parts[idx], out var raw) || raw is null)
+        {
+            value = default;
+            return false;
+        }
+
+        if (idx == parts.Length - 1)
+        {
+            if (TryCoerceDateTime(raw, out value))
+            {
+                record.SetAttributeRawValue(parts[idx], null);
+                return true;
+            }
+
+            value = default;
+            return false;
+        }
+
+        return raw switch
+        {
+            RtRecord r => TryPopFromRtRecord(r, parts, idx + 1, out value),
+            IDictionary<string, object?> d => TryPopFromDictPath(d, parts, idx + 1, out value),
+            _ => Fail(out value)
+        };
+    }
+
+    private static bool TryCoerceDateTime(object raw, out DateTime value)
+    {
         switch (raw)
         {
             case DateTime dt:
-                attrs.Remove(key);
                 value = dt;
                 return true;
             case DateTimeOffset dto:
-                attrs.Remove(key);
                 value = dto.UtcDateTime;
                 return true;
             case string s when DateTime.TryParse(
                 s, System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
                 out var parsed):
-                attrs.Remove(key);
                 value = parsed;
                 return true;
             default:
                 value = default;
                 return false;
         }
+    }
+
+    private static bool Fail(out DateTime value)
+    {
+        value = default;
+        return false;
     }
 }

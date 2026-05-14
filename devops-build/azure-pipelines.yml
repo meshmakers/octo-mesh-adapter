@@ -8,6 +8,12 @@ resources:
         branches:
           include:
             - main
+  repositories:
+    - repository: helmChartBuild
+      type: github
+      name: meshmakers/helm-chart-build
+      endpoint: meshmakers-access-token
+      ref: refs/heads/main
 
 trigger:
   batch: true
@@ -95,6 +101,20 @@ stages:
               PrivateRegistryName: $(DockerRegistryPrivateUri)
               Repository: meshmakers/octo-mesh-adapter
               Dockerfile: src/MeshAdapter/Dockerfile
+          - task: HelmDeploy@0
+            displayName: 'helm package octo-mesh-adapter'
+            inputs:
+              command: package
+              chartPath: '$(System.DefaultWorkingDirectory)/src/charts/octo-mesh-adapter'
+              chartVersion: '$(BuildNumberShort)'
+              destination: '$(Build.artifactstagingdirectory)'
+              arguments: '--app-version $(Build.BuildNumber) --dependency-update'
+          - template: ci-templates/publish-helm-chart.yml@helmChartBuild
+            parameters:
+              chartName: octo-mesh-adapter
+              chartVersion: $(BuildNumberShort)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(BuildNumberShort).tgz
+              githubTokenVariable: HelmChartBuildGhToken
           - template: handle-artifacts.yml
             parameters:
               apiDocumentationPaths:

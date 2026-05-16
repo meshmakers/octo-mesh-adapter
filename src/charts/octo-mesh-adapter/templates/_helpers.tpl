@@ -98,3 +98,57 @@ Check if a mandadory value exists
 {{- fail (printf "Value %s does not exist. Please define a corresponding value." .name) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Render an env var entry whose value is a secret. The input value supports
+two shapes:
+
+  1. string (legacy): the chart packs it into the chart-owned `<fullname>-backend`
+     Secret and renders a `valueFrom.secretKeyRef` pointing at that Secret with
+     the legacyKey as the key name.
+  2. map with `valueFrom`: rendered straight through, so the caller can point
+     at an externally-managed Secret (operator-managed `<release>-octo-secrets`,
+     External Secrets, etc.).
+
+Anything else fails the template — silent acceptance would mask typos.
+
+Usage:
+  {{ include "octo-mesh.secretEnv" (dict
+       "envName"   "OCTO_SYSTEM__DATABASEUSERPASSWORD"
+       "value"     .Values.secrets.databaseUser
+       "legacyKey" "databaseUser"
+       "context"   .
+  ) }}
+*/}}
+{{- define "octo-mesh.secretEnv" -}}
+- name: {{ .envName }}
+{{- if kindIs "map" .value }}
+  {{- if hasKey .value "valueFrom" }}
+  {{- toYaml .value | nindent 2 }}
+  {{- else }}
+  {{- fail (printf "secrets.%s must be a string or a {valueFrom: secretKeyRef: ...} map" .legacyKey) }}
+  {{- end }}
+{{- else if .value }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ printf "%s-backend" (include "octo-mesh.fullname" .context) }}
+      key: {{ .legacyKey }}
+{{- else }}
+  {{- fail (printf "secrets.%s must be set (either a plaintext string or a valueFrom map)" .legacyKey) }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Returns "true" when any of the secret fields used by the chart-owned
+`<fullname>-backend` Secret is a plaintext string. Used by secret.yaml to
+skip emitting the resource entirely when every value is sourced
+externally via valueFrom.
+*/}}
+{{- define "octo-mesh.hasPlaintextBackendSecret" -}}
+{{- $s := .Values.secrets -}}
+{{- if and $s.databaseUser (not (kindIs "map" $s.databaseUser)) -}}true
+{{- else if and $s.databaseAdmin (not (kindIs "map" $s.databaseAdmin)) -}}true
+{{- else if and $s.rabbitmq (not (kindIs "map" $s.rabbitmq)) -}}true
+{{- else if and $s.streamDataPassword (not (kindIs "map" $s.streamDataPassword)) -}}true
+{{- end -}}
+{{- end -}}

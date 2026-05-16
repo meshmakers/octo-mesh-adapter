@@ -1,15 +1,20 @@
 
 {{/*
-Create a default fully qualified app name for adapters
-We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
-If release name contains chart name it will be used as a full name.
+Fully qualified app name for adapters.
+
+Under the operator-driven deploy path, .Release.Name is already
+`{tenantId}-{workloadName}` (DNS-sanitized and globally unique per
+tenant), so the historical `{release}-{chart}-{tenantId}-{adapterRtId}`
+suffix was just adding noise to every Pod / Service / Deployment name.
+We now use Release.Name verbatim (still truncated to 63 chars for the
+DNS-1123 limit). `fullnameOverride` stays as an escape hatch for
+out-of-band installs that need a fixed name.
 */}}
 {{- define "octo-mesh.adapterFullname" -}}
     {{- if .Values.fullnameOverride }}
-        {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+        {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" | lower }}
     {{- else }}
-        {{- $name := default "mesh-adapter" .Values.nameOverride  }}
-        {{- printf "%s-%s-%s-%s" .Release.Name $name .Values.tenantId .Values.adapterRtId | lower | trunc 63 | trimSuffix "-" | lower }}
+        {{- .Release.Name | trunc 63 | trimSuffix "-" | lower }}
     {{- end }}
 {{- end }}
 
@@ -21,31 +26,22 @@ Expand the name of the chart.
 {{- end }}
 
 {{/*
-Create a default fully qualified app name.
-We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
-If release name contains chart name it will be used as a full name.
+Conventional Helm fullname helper. Aliased to adapterFullname so every
+chart-owned resource (Deployment, Service, Ingress, chart-managed Secret)
+shares the same DNS-1123 stem and Pods don't end up with three layers
+of redundant prefixes.
 */}}
 {{- define "octo-mesh.fullname" -}}
-{{- $name := default .Chart.Name .Values.nameOverride }}
-{{- if contains $name .Release.Name }}
-{{- .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
-{{- end }}
+{{- include "octo-mesh.adapterFullname" . -}}
 {{- end }}
 
 {{/*
-Create a default fully qualified app name of a service
-We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
-If release name contains chart name it will be used as a full name.
+Service name. Same simplification as octo-mesh.adapterFullname — the
+service shares the deployment's name so the selector labels are stable
+without an extra suffix.
 */}}
 {{- define "octo-mesh.service-fullname" -}}
-    {{- if .Values.fullnameOverride }}
-        {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
-    {{- else }}
-        {{- $name := default "meshAdapter" .Values.nameOverride  }}
-        {{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" | lower }}
-    {{- end }}
+{{- include "octo-mesh.adapterFullname" . -}}
 {{- end }}
 
 {{/*

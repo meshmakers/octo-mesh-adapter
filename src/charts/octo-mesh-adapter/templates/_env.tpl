@@ -5,16 +5,8 @@
 - name: OCTO_SYSTEM__REPLICASETNAME
   value: {{ .Values.clusterDependencies.mongodbReplicaSet }}
 {{- end }}
-- name: OCTO_SYSTEM__DATABASEUSERPASSWORD
-  valueFrom:
-    secretKeyRef:
-        name: {{ printf "%s-backend" (include "octo-mesh.fullname" .) }}
-        key: databaseUser
-- name: OCTO_SYSTEM__ADMINUSERPASSWORD
-  valueFrom:
-    secretKeyRef:
-      name: {{ printf "%s-backend" (include "octo-mesh.fullname" .) }}
-      key: databaseAdmin          
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
 {{- end }}
 
 {{- define "octo-mesh.broker-env" -}}
@@ -22,11 +14,7 @@
   value: {{ .global.Values.clusterDependencies.rabbitMqHost }}
 - name: {{ printf "%s__BROKERUSERNAME" (upper .name) }}
   value: {{ .global.Values.clusterDependencies.rabbitMqUser }}
-- name: {{ printf "%s__BROKERPASSWORD" (upper .name) }}
-  valueFrom:
-    secretKeyRef:
-      name: {{ printf "%s-backend" (include "octo-mesh.fullname" .global) }}
-      key: rabbitmq     
+{{ include "octo-mesh.secretEnv" (dict "envName" (printf "%s__BROKERPASSWORD" (upper .name)) "value" .global.Values.secrets.rabbitmq "legacyKey" "rabbitmq" "context" .global) }}
 {{- end }}
 
 {{- define "octo-mesh.streamdata-env" -}}
@@ -34,11 +22,7 @@
   value: {{ .global.Values.clusterDependencies.streamDataHost }}
 - name: {{ printf "%s__STREAMDATAUSER" (upper .name) }}
   value: {{ .global.Values.clusterDependencies.streamDataUser }}
-- name: {{ printf "%s__STREAMDATAPASSWORD" (upper .name) }}
-  valueFrom:
-    secretKeyRef:
-      name: {{ printf "%s-backend" (include "octo-mesh.fullname" .global) }}
-      key: streamDataPassword     
+{{ include "octo-mesh.secretEnv" (dict "envName" (printf "%s__STREAMDATAPASSWORD" (upper .name)) "value" .global.Values.secrets.streamDataPassword "legacyKey" "streamDataPassword" "context" .global) }}
 {{- end }}
 
 

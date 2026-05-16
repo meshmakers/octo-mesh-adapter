@@ -101,19 +101,24 @@ stages:
               PrivateRegistryName: $(DockerRegistryPrivateUri)
               Repository: meshmakers/octo-mesh-adapter
               Dockerfile: src/MeshAdapter/Dockerfile
+          # Chart version uses Build.BuildId (Azure-DevOps-wide monotonic) as
+          # the patch so each run gets a unique 3-segment SemVer. BuildNumberShort
+          # is only month-granular (Major.Minor.yyMM) and collides on the second
+          # build of the month — the publish template refuses to re-publish an
+          # existing version, so the chart-package step would fail.
           - task: HelmDeploy@0
             displayName: 'helm package octo-mesh-adapter'
             inputs:
               command: package
               chartPath: '$(System.DefaultWorkingDirectory)/src/charts/octo-mesh-adapter'
-              chartVersion: '$(BuildNumberShort)'
+              chartVersion: '$(MajorVersion).$(MinorVersion).$(Build.BuildId)'
               destination: '$(Build.artifactstagingdirectory)'
               arguments: '--app-version $(Build.BuildNumber) --dependency-update'
           - template: ci-templates/publish-helm-chart.yml@helmChartBuild
             parameters:
               chartName: octo-mesh-adapter
-              chartVersion: $(BuildNumberShort)
-              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(BuildNumberShort).tgz
+              chartVersion: $(MajorVersion).$(MinorVersion).$(Build.BuildId)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(MajorVersion).$(MinorVersion).$(Build.BuildId).tgz
               githubTokenVariable: HelmChartBuildGhToken
           - template: handle-artifacts.yml
             parameters:

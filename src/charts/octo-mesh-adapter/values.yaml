@@ -36,6 +36,11 @@ clusterDependencies:
   rabbitMqUser: "octo-mq-user"
   streamDataHost: "crate-octo-crate.cratedb.svc.cluster.local"
   streamDataUser: "octo-system"
+  # Instance-level StreamData kill switch (StreamDataInstanceConfiguration.Enabled).
+  # Default false → matches the C# default, feature is opt-in per cluster. Set to
+  # true in clusters that run CrateDB and want adapter nodes such as
+  # SaveStreamDataInArchive to be functional.
+  streamDataEnabled: false
 
 image:
   repository: meshmakers/octo-mesh-adapter

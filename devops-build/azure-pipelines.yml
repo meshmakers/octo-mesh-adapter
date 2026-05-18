@@ -54,6 +54,9 @@ stages:
           name: meshmakers-ci-agents
         steps:
           - template: update-build-number.yml
+          # Sets $(ChartVersion) — 3-segment SemVer derived from
+          # Build.BuildNumber. See helm-chart-build's docs/PUBLISHING.md.
+          - template: ci-templates/derive-chart-version.yml@helmChartBuild
           - checkout: self
             clean: true
             submodules: recursive
@@ -101,25 +104,38 @@ stages:
               PrivateRegistryName: $(DockerRegistryPrivateUri)
               Repository: meshmakers/octo-mesh-adapter
               Dockerfile: src/MeshAdapter/Dockerfile
-          # Chart version uses Build.BuildId (Azure-DevOps-wide monotonic) as
-          # the patch so each run gets a unique 3-segment SemVer. BuildNumberShort
-          # is only month-granular (Major.Minor.yyMM) and collides on the second
-          # build of the month — the publish template refuses to re-publish an
-          # existing version, so the chart-package step would fail.
+          # Chart version is $(ChartVersion) — derived by derive-chart-version.yml
+          # from Build.BuildNumber. On main: 0.1.<yyMM><DDxxx> (e.g. 0.1.260518002);
+          # on r-tags: <Major>.<Minor>.<Patch>. Strict 3-segment SemVer for Helm.
           - task: HelmDeploy@0
             displayName: 'helm package octo-mesh-adapter'
             inputs:
               command: package
               chartPath: '$(System.DefaultWorkingDirectory)/src/charts/octo-mesh-adapter'
-              chartVersion: '$(MajorVersion).$(MinorVersion).$(Build.BuildId)'
+              chartVersion: '$(ChartVersion)'
               destination: '$(Build.artifactstagingdirectory)'
               arguments: '--app-version $(Build.BuildNumber) --dependency-update'
+          # Dev (rolling) publish — every main build lands in
+          # helm-chart-build's gh-pages catalog.
           - template: ci-templates/publish-helm-chart.yml@helmChartBuild
             parameters:
+              channel: dev
               chartName: octo-mesh-adapter
-              chartVersion: $(MajorVersion).$(MinorVersion).$(Build.BuildId)
-              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(MajorVersion).$(MinorVersion).$(Build.BuildId).tgz
+              chartVersion: $(ChartVersion)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
               githubTokenVariable: HelmChartBuildGhToken
+              condition: and(succeeded(), eq(variables.isMain, true))
+          # Release publish — only on r* tag, lands in
+          # meshmakers.github.io/charts/ alongside the other platform charts.
+          - template: ci-templates/publish-helm-chart.yml@helmChartBuild
+            parameters:
+              channel: release
+              chartCategory: adapter
+              chartName: octo-mesh-adapter
+              chartVersion: $(ChartVersion)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
+              githubTokenVariable: HelmChartBuildGhToken
+              condition: and(succeeded(), eq(variables.isRelease, true))
           - template: handle-artifacts.yml
             parameters:
               apiDocumentationPaths:

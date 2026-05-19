@@ -263,7 +263,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools, INodeContext nodeContext,
         List<object>? historyMessages = null)
     {
-        using var client = httpClientFactory.CreateClient();
+        using var client = httpClientFactory.CreateClient("Anthropic");
 
         var messages = new List<object>();
 

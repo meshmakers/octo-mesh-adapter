@@ -119,6 +119,16 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient();
         services.AddHttpClient("Discord");
 
+        // Named HttpClient for OctoMesh MCP server calls — allows self-signed certs
+        // because the MCP server typically runs locally with the same dev cert as the
+        // Communication Controller. SSL validation is still enforced for all external
+        // calls (e.g. Anthropic API) which use the default unnamed client.
+        services.AddHttpClient("OctoMcp")
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            });
+
         return dataPipelineBuilder;
     }
 }

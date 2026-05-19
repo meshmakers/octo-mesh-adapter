@@ -419,7 +419,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             _mcpSessionId = await InitializeMcpSessionAsync(url, nodeContext);
 
             // Step 2: List tools with session ID
-            using var client = httpClientFactory.CreateClient();
+            using var client = httpClientFactory.CreateClient("OctoMcp");
             var rpcRequest = new
             {
                 jsonrpc = "2.0",
@@ -499,7 +499,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
 
     private async Task<string?> InitializeMcpSessionAsync(string url, INodeContext nodeContext)
     {
-        using var client = httpClientFactory.CreateClient();
+        using var client = httpClientFactory.CreateClient("OctoMcp");
         var initRequest = new
         {
             jsonrpc = "2.0",
@@ -548,7 +548,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
     private async Task<string> ExecuteMcpToolAsync(string mcpServerUrl, string tenantId, string toolName,
         JsonElement toolInput)
     {
-        using var client = httpClientFactory.CreateClient();
+        using var client = httpClientFactory.CreateClient("OctoMcp");
 
         var rpcRequest = new
         {

@@ -3,6 +3,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -73,7 +74,8 @@ internal class MeshAdapterTriggerContext(
 
             return r;
         });
-        pipelineRegistration.RegisterExecution(pipelineExecutionId, startedDateTime, task);
+        var execution = pipelineRegistration.RegisterExecution(pipelineExecutionId, startedDateTime, task);
+        execution.Properties["EtlContext"] = etlContext;
 
         return pipelineExecutionId;
     }
@@ -92,6 +94,10 @@ internal class MeshAdapterTriggerContext(
         }
 
         var startedAt = pipelineRegistration.GetExecutionStartTime(pipelineExecutionId) ?? DateTime.UtcNow;
+
+        // Retrieve the EtlContext stored during StartExecutePipelineAsync so we can
+        // read any OutputData that a SetPipelineExecutionResult node wrote to it.
+        var etlContext = pipelineRegistration.GetExecutionPropertyValue<IMeshEtlContext>(pipelineExecutionId, "EtlContext");
 
         var status = PipelineExecutionStatus.Running;
         string? errorMessage = null;
@@ -119,12 +125,22 @@ internal class MeshAdapterTriggerContext(
             // Report execution end to communication controller
             if (_executionReporter != null)
             {
+                // Only include OutputData if explicitly set by SetPipelineExecutionResult node
+                string? outputData = null;
+                if (etlContext?.Properties.TryGetValue(
+                        SetPipelineExecutionResultNode.ExecutionResultPropertyKey, out var resultValue) == true
+                    && resultValue is string resultString)
+                {
+                    outputData = resultString;
+                }
+
                 await _executionReporter.ReportExecutionEndAsync(
                     pipelineExecutionId,
                     status,
                     completedAt,
                     durationMs,
-                    errorMessage);
+                    errorMessage,
+                    outputData);
             }
 
             _logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId} with status {Status}",

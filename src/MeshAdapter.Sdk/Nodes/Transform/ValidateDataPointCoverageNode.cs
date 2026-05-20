@@ -53,7 +53,10 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         }
 
         var rootCkTypeId = new RtCkId<CkTypeId>(c.RootCkTypeId);
-        var childCkTypeId = new RtCkId<CkTypeId>(c.ChildCkTypeId);
+        // `c.ChildCkTypeId` is retained on the config for documentation purposes
+        // — it tells the operator which CK type the role is *intended* to link.
+        // We no longer pass it to the engine filter because polymorphism doesn't
+        // work there (see comment in the BFS loop below).
         var childRoleId = new RtCkId<CkAssociationRoleId>(c.ChildRoleId);
         var mappingRoleId = new RtCkId<CkAssociationRoleId>(c.MappingRoleId);
         var mappingCkTypeId = new RtCkId<CkTypeId>(c.MappingCkTypeId);
@@ -100,27 +103,45 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
 
             if (depth >= c.MaxDepth) continue;
 
-            // Inbound ParentChild → children of `current`
+            // Inbound ParentChild → children of `current`.
+            //
+            // We deliberately do NOT pass `targetTypeId: childCkTypeId` here:
+            // the MongoDB engine's relatedRtCkTypeId filter is strict and does
+            // not match derived types. A Site's child Buildings declare their
+            // concrete ckType (EnergyIQ/Building, not Basic/TreeNode), so a
+            // strict filter on Basic/TreeNode returns zero rows. We accept any
+            // origin type and read its concrete ckTypeId from the association,
+            // then load each entity batch under its own type.
             var childAssocs = await etlContext.TenantRepository.GetRtAssociationsAsync(
                 session,
                 new RtEntityId(currentCkTypeId, current.RtId),
-                RtAssociationExtendedQueryOptions.Create(GraphDirections.Inbound, childRoleId,
-                    targetTypeId: childCkTypeId));
+                RtAssociationExtendedQueryOptions.Create(GraphDirections.Inbound, childRoleId));
 
-            var childIds = childAssocs.Items
-                .Select(a => a.OriginRtId)
-                .Where(id => visited.Add(id))
-                .ToList();
-
-            if (childIds.Count == 0) continue;
-
-            // Load all children in one query to avoid N+1 round trips.
-            var childrenResult = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(
-                session, childCkTypeId, childIds, RtEntityQueryOptions.Create());
-
-            foreach (var child in childrenResult.Items)
+            // Group child ids by their concrete origin ckTypeId — we need the
+            // right type to look the entity up in its MongoDB collection.
+            var childrenByType = new Dictionary<RtCkId<CkTypeId>, List<OctoObjectId>>();
+            foreach (var assoc in childAssocs.Items)
             {
-                queue.Enqueue((child, childCkTypeId, depth + 1));
+                if (assoc.OriginCkTypeId == null) continue;
+                if (!visited.Add(assoc.OriginRtId)) continue;
+                if (!childrenByType.TryGetValue(assoc.OriginCkTypeId, out var bucket))
+                {
+                    bucket = new List<OctoObjectId>();
+                    childrenByType[assoc.OriginCkTypeId] = bucket;
+                }
+                bucket.Add(assoc.OriginRtId);
+            }
+
+            if (childrenByType.Count == 0) continue;
+
+            foreach (var (ckType, ids) in childrenByType)
+            {
+                var childrenResult = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(
+                    session, ckType, ids, RtEntityQueryOptions.Create());
+                foreach (var child in childrenResult.Items)
+                {
+                    queue.Enqueue((child, ckType, depth + 1));
+                }
             }
         }
 

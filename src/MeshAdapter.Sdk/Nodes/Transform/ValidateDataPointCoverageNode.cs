@@ -87,16 +87,20 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         // BFS over the hierarchy (root + children via inbound ParentChild).
         // Tuple carries the entity's ck type explicitly so we never depend on the
         // (nullable) CkTypeId property that the engine model marks as optional.
-        var queue = new Queue<(RtEntity entity, RtCkId<CkTypeId> ckTypeId, int depth)>();
-        queue.Enqueue((rootEntity, rootCkTypeId, 0));
+        // ParentRtId is null for the root; for every enqueued child it is the
+        // rtId of the entity that surfaced it — this lets the consumer roll up
+        // the worst descendant status per subtree (so an "info" Site with a
+        // red Space underneath actually shows red in the tree).
+        var queue = new Queue<(RtEntity entity, RtCkId<CkTypeId> ckTypeId, int depth, string? parentRtId)>();
+        queue.Enqueue((rootEntity, rootCkTypeId, 0, null));
         var visited = new HashSet<OctoObjectId> { rootEntity.RtId };
 
         while (queue.Count > 0)
         {
-            var (current, currentCkTypeId, depth) = queue.Dequeue();
+            var (current, currentCkTypeId, depth, parentRtId) = queue.Dequeue();
 
             var nodeReport = await BuildReportAsync(
-                session, current, currentCkTypeId, depth, rulesByCkType,
+                session, current, currentCkTypeId, depth, parentRtId, rulesByCkType,
                 mappingRoleId, mappingCkTypeId, c.IncludeDisabledMappings);
             nodes.Add(nodeReport);
             summary.Increment(nodeReport.Status);
@@ -134,13 +138,14 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
 
             if (childrenByType.Count == 0) continue;
 
+            var currentRtIdStr = current.RtId.ToString();
             foreach (var (ckType, ids) in childrenByType)
             {
                 var childrenResult = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(
                     session, ckType, ids, RtEntityQueryOptions.Create());
                 foreach (var child in childrenResult.Items)
                 {
-                    queue.Enqueue((child, ckType, depth + 1));
+                    queue.Enqueue((child, ckType, depth + 1, currentRtIdStr));
                 }
             }
         }
@@ -213,6 +218,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         RtEntity entity,
         RtCkId<CkTypeId> entityCkTypeId,
         int depth,
+        string? parentRtId,
         IReadOnlyDictionary<string, CoverageRule> rulesByCkType,
         RtCkId<CkAssociationRoleId> mappingRoleId,
         RtCkId<CkTypeId> mappingCkTypeId,
@@ -262,6 +268,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             name,
             evaluation.Status,
             depth,
+            parentRtId,
             evaluation.Required,
             evaluation.Recommended,
             present.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
@@ -330,6 +337,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             ["name"] = r.Name,
             ["status"] = r.Status,
             ["depth"] = r.Depth,
+            ["parentRtId"] = r.ParentRtId,
             ["required"] = JArray.FromObject(r.Required),
             ["recommended"] = JArray.FromObject(r.Recommended),
             ["present"] = JArray.FromObject(r.Present),
@@ -345,6 +353,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         string Name,
         string Status,
         int Depth,
+        string? ParentRtId,
         IReadOnlyList<string> Required,
         IReadOnlyList<string> Recommended,
         IReadOnlyList<string> Present,

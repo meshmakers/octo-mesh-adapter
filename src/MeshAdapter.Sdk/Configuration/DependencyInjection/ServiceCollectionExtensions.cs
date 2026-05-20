@@ -75,6 +75,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<MinMaxNode>()
             .RegisterNode<ApplyDataPointMappingsNode>()
             .RegisterNode<BuildMappingTargetsNode>()
+            .RegisterNode<GenerateDataPointMappingsNode>()
+            .RegisterNode<ValidateDataPointCoverageNode>()
             .RegisterNode<DeployPipelineNode>()
             .RegisterNode<MapToRecordArrayNode>()
             .RegisterNode<UpdateRecordArrayItemNode>()

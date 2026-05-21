@@ -4,7 +4,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
 /// A single coverage rule: for entities of the given CK type, declare which target
-/// attribute paths a DataPointMapping must (or should) cover.
+/// attribute paths a DataPointMapping must (or should) cover, plus optionally which
+/// child entities must be associated via specific roles.
 /// </summary>
 public record CoverageRule
 {
@@ -25,6 +26,39 @@ public record CoverageRule
     /// produce status="warning" (only relevant when no required attributes are missing).
     /// </summary>
     public List<string> RecommendedAttributes { get; set; } = new();
+
+    /// <summary>
+    /// Associations that MUST exist from this entity (e.g. a Space must have an
+    /// associated TemperatureSensor via the EnergyIQ/SpaceSensors role). Missing
+    /// required associations produce status="error".
+    ///
+    /// Used in v2-style models where measurements live on sensor / actuator entities
+    /// reached via dedicated association roles, not as inline attributes — the
+    /// presence of those entities is the actual coverage signal, not a DataPointMapping
+    /// to an attribute path.
+    /// </summary>
+    public List<RequiredAssociation> RequiredAssociations { get; set; } = new();
+}
+
+/// <summary>
+/// A required association from an entity to a child of a specific CK type via a
+/// specific role. Used by <see cref="CoverageRule.RequiredAssociations"/>.
+/// </summary>
+public record RequiredAssociation
+{
+    /// <summary>
+    /// Fully qualified association role id (e.g. "EnergyIQ/SpaceSensors").
+    /// Looked up INBOUND from the entity — i.e. the queried entity is the target of
+    /// the association, and children of the role's CkTypeId are the origin side.
+    /// </summary>
+    public required string AssociationRoleId { get; set; }
+
+    /// <summary>
+    /// CK type id of the child entity that must be present (e.g.
+    /// "EnergyIQ/TemperatureSensor"). The check is for at least one entity of this
+    /// type via the role; multiplicity beyond that isn't enforced here.
+    /// </summary>
+    public required string TargetCkTypeId { get; set; }
 }
 
 /// <summary>

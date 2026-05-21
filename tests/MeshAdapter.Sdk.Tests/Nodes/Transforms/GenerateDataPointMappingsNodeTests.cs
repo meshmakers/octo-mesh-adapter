@@ -383,6 +383,130 @@ public class GenerateDataPointMappingsNodeTests
         Assert.Equal("CurrentValue", captured.Value![0]["sourceAttributePath"]!.ToString());
     }
 
+    [Fact]
+    public async Task ProcessObjectAsync_ChildTargetCkTypeId_ResolvesSensorInsideMatchedSpace()
+    {
+        // EnergyIQ v2: a Loxone IRoomController.tempActual state should map to a
+        // TemperatureSensor that lives inside the matched Space via SpaceSensors,
+        // not to the Space itself.
+        var sensorType = new RtCkId<CkTypeId>("EnergyIQ/TemperatureSensor");
+        var spaceSensorsRole = new RtCkId<CkAssociationRoleId>("EnergyIQ/SpaceSensors");
+
+        var space = CreateEntity(SpaceType, "5cace1", ("Name", "Wohnzimmer"));
+        var room = CreateEntity(RoomType, "100001", ("Name", "Wohnzimmer"));
+        var category = CreateEntity(CategoryType, "ca7001", ("Name", "Klima"));
+        var control = CreateControlWithStates("c0c001", "Raumregler WZ", "IRoomControllerV2",
+            ("tempActual", "uuid-tempA"));
+        var sensor = CreateEntity(sensorType, "5e1501", ("Name", "Temp-Wohnzimmer"));
+
+        SetupGetByType(RoomType, room);
+        SetupGetByType(SpaceType, space);
+        SetupInboundAssoc(room, CategoryType, new[] { ("ca7001", category) });
+        SetupInboundAssoc(category, ControlType, new[] { ("c0c001", control) });
+        // Space contains the TemperatureSensor via SpaceSensors (inbound from Space's perspective).
+        SetupInboundAssoc(space, sensorType, new[] { ("5e1501", sensor) }, spaceSensorsRole);
+
+        var config = new GenerateDataPointMappingsNodeConfiguration
+        {
+            SourceContainerCkTypeId = "Loxone/Room",
+            SourceControlCkTypeId = "Loxone/Control",
+            SourceCategoryCkTypeId = "Loxone/Category",
+            TargetCkTypeId = "EnergyIQ/Space",
+            TargetPath = "$.mappingSuggestions",
+            ContainerMatchingStrategies = new List<ContainerMatchingStrategyConfiguration>
+            {
+                new() { Kind = ContainerMatchingStrategyKind.ExactName }
+            },
+            ControlMappingRules = new List<ControlMappingRuleConfiguration>
+            {
+                new()
+                {
+                    Id = "rc-tempActual-to-sensor",
+                    When = new ControlMappingRuleWhen { ControlType = "IRoomControllerV2", StateName = "tempActual" },
+                    Map = new ControlMappingRuleMap
+                    {
+                        TargetAttribute = "Temperature",
+                        ChildTargetCkTypeId = "EnergyIQ/TemperatureSensor",
+                        ChildTargetAssociationRoleId = "EnergyIQ/SpaceSensors"
+                    }
+                }
+            }
+        };
+
+        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(captured.Value);
+        Assert.Single(captured.Value!);
+        var suggestion = captured.Value![0];
+        // The suggestion's target ids must be the sensor's, not the space's.
+        Assert.Equal(sensor.RtId.ToString(), suggestion["spaceRtId"]!.ToString());
+        Assert.Equal("EnergyIQ/TemperatureSensor", suggestion["spaceCkTypeId"]!.ToString());
+        Assert.Equal("Temperature", suggestion["targetAttributePath"]!.ToString());
+        // controlRtId still points at the Loxone control.
+        Assert.Equal(control.RtId.ToString(), suggestion["controlRtId"]!.ToString());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ChildTargetCkTypeId_NoChildFound_ProducesNoSuggestion()
+    {
+        // Same v2 setup but the Space has no TemperatureSensor associated — the rule
+        // must be skipped silently (zero suggestions) rather than emitting a sensor-less
+        // mapping or crashing.
+        var sensorType = new RtCkId<CkTypeId>("EnergyIQ/TemperatureSensor");
+        var spaceSensorsRole = new RtCkId<CkAssociationRoleId>("EnergyIQ/SpaceSensors");
+
+        var space = CreateEntity(SpaceType, "5cace1", ("Name", "Wohnzimmer"));
+        var room = CreateEntity(RoomType, "100001", ("Name", "Wohnzimmer"));
+        var category = CreateEntity(CategoryType, "ca7001", ("Name", "Klima"));
+        var control = CreateControlWithStates("c0c001", "Raumregler WZ", "IRoomControllerV2",
+            ("tempActual", "uuid-tempA"));
+
+        SetupGetByType(RoomType, room);
+        SetupGetByType(SpaceType, space);
+        SetupInboundAssoc(room, CategoryType, new[] { ("ca7001", category) });
+        SetupInboundAssoc(category, ControlType, new[] { ("c0c001", control) });
+        // No TemperatureSensor under the Space — explicit empty.
+        SetupInboundAssoc(space, sensorType, Array.Empty<(string, RtEntity)>(), spaceSensorsRole);
+
+        var config = new GenerateDataPointMappingsNodeConfiguration
+        {
+            SourceContainerCkTypeId = "Loxone/Room",
+            SourceControlCkTypeId = "Loxone/Control",
+            SourceCategoryCkTypeId = "Loxone/Category",
+            TargetCkTypeId = "EnergyIQ/Space",
+            TargetPath = "$.mappingSuggestions",
+            ContainerMatchingStrategies = new List<ContainerMatchingStrategyConfiguration>
+            {
+                new() { Kind = ContainerMatchingStrategyKind.ExactName }
+            },
+            ControlMappingRules = new List<ControlMappingRuleConfiguration>
+            {
+                new()
+                {
+                    Id = "rc-tempActual-to-sensor",
+                    When = new ControlMappingRuleWhen { ControlType = "IRoomControllerV2", StateName = "tempActual" },
+                    Map = new ControlMappingRuleMap
+                    {
+                        TargetAttribute = "Temperature",
+                        ChildTargetCkTypeId = "EnergyIQ/TemperatureSensor",
+                        ChildTargetAssociationRoleId = "EnergyIQ/SpaceSensors"
+                    }
+                }
+            }
+        };
+
+        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(captured.Value);
+        Assert.Empty(captured.Value!);
+    }
+
     // ───────────────────────────── Test setup helpers ─────────────────────────────
 
     private static RtEntity CreateEntity(RtCkId<CkTypeId> ckTypeId, string rtId,
@@ -439,8 +563,10 @@ public class GenerateDataPointMappingsNodeTests
     }
 
     private void SetupInboundAssoc(RtEntity parent, RtCkId<CkTypeId> childCkTypeId,
-        (string childRtId, RtEntity childEntity)[] children)
+        (string childRtId, RtEntity childEntity)[] children,
+        RtCkId<CkAssociationRoleId>? roleId = null)
     {
+        var role = roleId ?? ParentChild;
         var assocSet = A.Fake<IResultSet<RtAssociation>>();
         var assocs = children.Select(c => new RtAssociation
         {
@@ -448,7 +574,7 @@ public class GenerateDataPointMappingsNodeTests
             OriginCkTypeId = childCkTypeId,
             TargetRtId = parent.RtId,
             TargetCkTypeId = parent.CkTypeId!,
-            AssociationRoleId = ParentChild
+            AssociationRoleId = role
         }).ToList();
         A.CallTo(() => assocSet.Items).Returns(assocs);
         A.CallTo(() => assocSet.TotalCount).Returns(assocs.Count);

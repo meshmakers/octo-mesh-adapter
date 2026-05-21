@@ -255,6 +255,11 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
                 case IDictionary<string, object?> rw:
                     if (!rw.TryGetValue(part, out current)) return null;
                     break;
+                case RtTypeWithAttributes typed:
+                    // Record-typed attribute (RtRecord) or RtEntity — step into the typed
+                    // Attributes map so the documented "Record.Field" syntax works.
+                    if (!typed.Attributes.TryGetValue(part, out current)) return null;
+                    break;
                 case Newtonsoft.Json.Linq.JObject jo:
                     var token = jo[part];
                     if (token == null) return null;
@@ -267,9 +272,17 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
             if (current == null) return null;
         }
 
+        // Normalise to UTC so candidate-vs-DB comparisons are independent of the kind/offset
+        // each side happens to carry. Unspecified kind is treated as UTC to match the
+        // AssumeUniversal/AdjustToUniversal semantics applied to string values below.
         return current switch
         {
-            DateTime dt => DateTime.SpecifyKind(dt, DateTimeKind.Utc),
+            DateTime dt => dt.Kind switch
+            {
+                DateTimeKind.Utc => dt,
+                DateTimeKind.Local => dt.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(dt, DateTimeKind.Utc)
+            },
             DateTimeOffset dto => dto.UtcDateTime,
             string s when DateTime.TryParse(s, CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,

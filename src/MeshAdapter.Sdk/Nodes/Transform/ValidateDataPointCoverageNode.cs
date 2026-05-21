@@ -260,7 +260,33 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
 
         // Resolve which rule applies — exact CK type id match.
         rulesByCkType.TryGetValue(entityCkTypeId.ToString(), out var rule);
-        var evaluation = EvaluateCoverage(rule, present);
+
+        // v2 association coverage: for each RequiredAssociation declared on the rule,
+        // probe whether the entity has at least one association of the configured role
+        // pointing at an entity of the configured CK type. Used when measurements live
+        // on dedicated child entities (e.g. EnergyIQ/Space → EnergyIQ/TemperatureSensor
+        // via EnergyIQ/SpaceSensors) rather than as inline DataPointMapping targets.
+        var presentAssociations = new HashSet<string>(StringComparer.Ordinal);
+        if (rule?.RequiredAssociations is { Count: > 0 } requiredAssocs)
+        {
+            foreach (var req in requiredAssocs)
+            {
+                var roleId = new RtCkId<CkAssociationRoleId>(req.AssociationRoleId);
+                var targetType = new RtCkId<CkTypeId>(req.TargetCkTypeId);
+                var assocs = await etlContext.TenantRepository.GetRtAssociationsAsync(
+                    session,
+                    new RtEntityId(entityCkTypeId, entity.RtId),
+                    RtAssociationExtendedQueryOptions.Create(GraphDirections.Inbound, roleId,
+                        targetTypeId: targetType));
+
+                if (assocs.Items.Any())
+                {
+                    presentAssociations.Add(FormatAssociationKey(req));
+                }
+            }
+        }
+
+        var evaluation = EvaluateCoverage(rule, present, presentAssociations);
 
         return new NodeReport(
             entity.RtId.ToString(),
@@ -274,25 +300,40 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             present.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
             evaluation.MissingRequired,
             evaluation.MissingRecommended,
+            evaluation.RequiredAssociations,
+            evaluation.PresentAssociations,
+            evaluation.MissingRequiredAssociations,
             mappingCount);
     }
 
     /// <summary>
-    /// Pure-function coverage evaluator. Given the rule for an entity's CK type and the
-    /// set of target attribute paths currently mapped onto it, computes the coverage
-    /// status, plus the lists of required/recommended attributes (split into present and
-    /// missing).
+    /// Canonical key used to compare a configured RequiredAssociation against the set of
+    /// associations actually present on an entity. Format: "role→targetCkTypeId".
+    /// </summary>
+    internal static string FormatAssociationKey(RequiredAssociation req) =>
+        $"{req.AssociationRoleId}→{req.TargetCkTypeId}";
+
+    /// <summary>
+    /// Pure-function coverage evaluator. Given the rule for an entity's CK type, the
+    /// set of target attribute paths currently mapped onto it, and the set of required
+    /// associations actually present, computes the coverage status plus the per-category
+    /// breakdown (present / missing for both attributes and associations).
     /// </summary>
     /// <remarks>Status rules:
     /// <list type="bullet">
     /// <item><c>info</c> — no rule for this CK type.</item>
-    /// <item><c>error</c> — at least one required attribute missing.</item>
+    /// <item><c>error</c> — at least one required attribute OR required association missing.</item>
     /// <item><c>warning</c> — required complete, at least one recommended missing.</item>
-    /// <item><c>ok</c> — all required and recommended attributes present.</item>
+    /// <item><c>ok</c> — all required and recommended items present.</item>
     /// </list>
     /// </remarks>
-    internal static CoverageEvaluation EvaluateCoverage(CoverageRule? rule, ISet<string> present)
+    internal static CoverageEvaluation EvaluateCoverage(
+        CoverageRule? rule,
+        ISet<string> present,
+        ISet<string>? presentAssociations = null)
     {
+        presentAssociations ??= new HashSet<string>(StringComparer.Ordinal);
+
         if (rule == null)
         {
             return new CoverageEvaluation(
@@ -300,7 +341,10 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
                 Required: Array.Empty<string>(),
                 Recommended: Array.Empty<string>(),
                 MissingRequired: Array.Empty<string>(),
-                MissingRecommended: Array.Empty<string>());
+                MissingRecommended: Array.Empty<string>(),
+                RequiredAssociations: Array.Empty<string>(),
+                PresentAssociations: Array.Empty<string>(),
+                MissingRequiredAssociations: Array.Empty<string>());
         }
 
         var required = rule.RequiredAttributes ?? new List<string>();
@@ -308,8 +352,14 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         var missingRequired = required.Where(a => !present.Contains(a)).ToList();
         var missingRecommended = recommended.Where(a => !present.Contains(a)).ToList();
 
+        var requiredAssociations = (rule.RequiredAssociations ?? new List<RequiredAssociation>())
+            .Select(FormatAssociationKey)
+            .ToList();
+        var presentAssociationsList = requiredAssociations.Where(presentAssociations.Contains).ToList();
+        var missingRequiredAssociations = requiredAssociations.Where(a => !presentAssociations.Contains(a)).ToList();
+
         string status;
-        if (missingRequired.Count > 0) status = "error";
+        if (missingRequired.Count > 0 || missingRequiredAssociations.Count > 0) status = "error";
         else if (missingRecommended.Count > 0) status = "warning";
         else status = "ok";
 
@@ -318,7 +368,10 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             Required: required,
             Recommended: recommended,
             MissingRequired: missingRequired,
-            MissingRecommended: missingRecommended);
+            MissingRecommended: missingRecommended,
+            RequiredAssociations: requiredAssociations,
+            PresentAssociations: presentAssociationsList,
+            MissingRequiredAssociations: missingRequiredAssociations);
     }
 
     internal record CoverageEvaluation(
@@ -326,7 +379,10 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         IReadOnlyList<string> Required,
         IReadOnlyList<string> Recommended,
         IReadOnlyList<string> MissingRequired,
-        IReadOnlyList<string> MissingRecommended);
+        IReadOnlyList<string> MissingRecommended,
+        IReadOnlyList<string> RequiredAssociations,
+        IReadOnlyList<string> PresentAssociations,
+        IReadOnlyList<string> MissingRequiredAssociations);
 
     private static JObject SerialiseNode(NodeReport r)
     {
@@ -343,6 +399,9 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             ["present"] = JArray.FromObject(r.Present),
             ["missingRequired"] = JArray.FromObject(r.MissingRequired),
             ["missingRecommended"] = JArray.FromObject(r.MissingRecommended),
+            ["requiredAssociations"] = JArray.FromObject(r.RequiredAssociations),
+            ["presentAssociations"] = JArray.FromObject(r.PresentAssociations),
+            ["missingRequiredAssociations"] = JArray.FromObject(r.MissingRequiredAssociations),
             ["mappingCount"] = r.MappingCount,
         };
     }
@@ -359,6 +418,9 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         IReadOnlyList<string> Present,
         IReadOnlyList<string> MissingRequired,
         IReadOnlyList<string> MissingRecommended,
+        IReadOnlyList<string> RequiredAssociations,
+        IReadOnlyList<string> PresentAssociations,
+        IReadOnlyList<string> MissingRequiredAssociations,
         int MappingCount);
 
     private sealed class SummaryCounters

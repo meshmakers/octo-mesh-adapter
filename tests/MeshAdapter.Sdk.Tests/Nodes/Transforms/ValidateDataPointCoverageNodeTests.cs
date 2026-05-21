@@ -115,4 +115,81 @@ public class ValidateDataPointCoverageNodeTests
 
         Assert.Equal("ok", result.Status);
     }
+
+    [Fact]
+    public void EvaluateCoverage_RequiredAssociationPresent_ReturnsOk()
+    {
+        // v2 use case: EnergyIQ/Space requires an EnergyIQ/TemperatureSensor via
+        // EnergyIQ/SpaceSensors. The association IS present → ok status.
+        var rule = new CoverageRule
+        {
+            CkTypeId = "EnergyIQ/Space",
+            RequiredAssociations = new List<RequiredAssociation>
+            {
+                new() { AssociationRoleId = "EnergyIQ/SpaceSensors", TargetCkTypeId = "EnergyIQ/TemperatureSensor" }
+            }
+        };
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var presentAssoc = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "EnergyIQ/SpaceSensors→EnergyIQ/TemperatureSensor"
+        };
+
+        var result = ValidateDataPointCoverageNode.EvaluateCoverage(rule, present, presentAssoc);
+
+        Assert.Equal("ok", result.Status);
+        Assert.Empty(result.MissingRequiredAssociations);
+        Assert.Single(result.PresentAssociations);
+        Assert.Equal("EnergyIQ/SpaceSensors→EnergyIQ/TemperatureSensor", result.PresentAssociations[0]);
+    }
+
+    [Fact]
+    public void EvaluateCoverage_RequiredAssociationMissing_ReturnsError()
+    {
+        var rule = new CoverageRule
+        {
+            CkTypeId = "EnergyIQ/Space",
+            RequiredAssociations = new List<RequiredAssociation>
+            {
+                new() { AssociationRoleId = "EnergyIQ/SpaceSensors", TargetCkTypeId = "EnergyIQ/TemperatureSensor" },
+                new() { AssociationRoleId = "EnergyIQ/SpaceSensors", TargetCkTypeId = "EnergyIQ/CO2Sensor" }
+            }
+        };
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var presentAssoc = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "EnergyIQ/SpaceSensors→EnergyIQ/TemperatureSensor"   // CO2Sensor association is missing
+        };
+
+        var result = ValidateDataPointCoverageNode.EvaluateCoverage(rule, present, presentAssoc);
+
+        Assert.Equal("error", result.Status);
+        Assert.Single(result.MissingRequiredAssociations);
+        Assert.Equal("EnergyIQ/SpaceSensors→EnergyIQ/CO2Sensor", result.MissingRequiredAssociations[0]);
+    }
+
+    [Fact]
+    public void EvaluateCoverage_RequiredAttrPresent_RequiredAssocMissing_StillError()
+    {
+        // Mixing both kinds of requirements: attribute side is complete but
+        // an association is missing — status is still error (associations are
+        // weighted equally to attributes for error severity).
+        var rule = new CoverageRule
+        {
+            CkTypeId = "EnergyIQ/Space",
+            RequiredAttributes = new List<string> { "OperatingMode" },
+            RequiredAssociations = new List<RequiredAssociation>
+            {
+                new() { AssociationRoleId = "EnergyIQ/SpaceSensors", TargetCkTypeId = "EnergyIQ/TemperatureSensor" }
+            }
+        };
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "OperatingMode" };
+        var presentAssoc = new HashSet<string>(StringComparer.Ordinal); // empty
+
+        var result = ValidateDataPointCoverageNode.EvaluateCoverage(rule, present, presentAssoc);
+
+        Assert.Equal("error", result.Status);
+        Assert.Empty(result.MissingRequired);
+        Assert.Single(result.MissingRequiredAssociations);
+    }
 }

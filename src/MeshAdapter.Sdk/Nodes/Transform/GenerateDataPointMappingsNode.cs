@@ -73,6 +73,10 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
             var controls = await LoadControlsAsync(
                 session, container, controlCkTypeId, categoryCkTypeId, hierarchyRoleId);
 
+            // Per-container cache of child-target resolutions (e.g. Space → TemperatureSensor).
+            // Cleared on every container so different rooms resolve to different sensors.
+            var childTargetCache = new Dictionary<string, RtEntity?>(StringComparer.Ordinal);
+
             foreach (var (control, category) in controls)
             {
                 foreach (var rule in c.ControlMappingRules)
@@ -82,7 +86,36 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
                         continue;
                     }
 
-                    var emitted = TryEmitRule(rule, control, category, target, containerName, c, suggestions);
+                    // Resolve the actual emission target. v1 rules emit against the matched
+                    // container target; v2-style rules with ChildTargetCkTypeId resolve a
+                    // child entity (e.g. the TemperatureSensor inside the Space).
+                    var actualTarget = target;
+                    var actualTargetCkTypeId = c.TargetCkTypeId;
+
+                    if (!string.IsNullOrWhiteSpace(rule.Map.ChildTargetCkTypeId))
+                    {
+                        var childKey = rule.Map.ChildTargetCkTypeId!;
+                        if (!childTargetCache.TryGetValue(childKey, out var resolved))
+                        {
+                            resolved = await ResolveChildTargetAsync(
+                                session, target,
+                                childKey,
+                                rule.Map.ChildTargetAssociationRoleId ?? c.HierarchyAssociationRoleId);
+                            childTargetCache[childKey] = resolved;
+                        }
+
+                        if (resolved == null)
+                        {
+                            // No child of that type in this container — rule does not apply.
+                            continue;
+                        }
+
+                        actualTarget = resolved;
+                        actualTargetCkTypeId = childKey;
+                    }
+
+                    var emitted = TryEmitRule(rule, control, category, actualTarget, actualTargetCkTypeId,
+                        containerName, c, suggestions);
                     if (emitted > 0)
                     {
                         rulesHitByRuleId[rule.Id!] = rulesHitByRuleId.GetValueOrDefault(rule.Id!) + emitted;
@@ -192,6 +225,41 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
     }
 
     /// <summary>
+    /// Resolves a single child entity reachable from the matched container target via the
+    /// given association role (inbound from the target). Used by v2-style rules where the
+    /// real mapping target lives one association hop deeper than the matched container
+    /// (e.g. EnergyIQ/Space contains a TemperatureSensor via the SpaceSensors role).
+    ///
+    /// Returns the first child entity of the configured type, or null when no such child
+    /// exists. If multiple children of the same type exist, the first one returned by the
+    /// repository wins — for richer disambiguation use additional rule filters or extend
+    /// the schema.
+    /// </summary>
+    private async Task<RtEntity?> ResolveChildTargetAsync(
+        IOctoSession session,
+        RtEntity container,
+        string childCkTypeIdStr,
+        string roleIdStr)
+    {
+        var childCkTypeId = new RtCkId<CkTypeId>(childCkTypeIdStr);
+        var roleId = new RtCkId<CkAssociationRoleId>(roleIdStr);
+
+        var assocs = await etlContext.TenantRepository.GetRtAssociationsAsync(
+            session,
+            new RtEntityId(container.CkTypeId!, container.RtId),
+            RtAssociationExtendedQueryOptions.Create(GraphDirections.Inbound, roleId,
+                targetTypeId: childCkTypeId));
+
+        var first = assocs.Items.FirstOrDefault();
+        if (first == null) return null;
+
+        var load = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(
+            session, childCkTypeId, new[] { first.OriginRtId },
+            RtEntityQueryOptions.Create());
+        return load.Items.FirstOrDefault();
+    }
+
+    /// <summary>
     /// Evaluates a single rule against a control. Returns the number of suggestions emitted
     /// (0 if the rule does not match; 1 for a matching rule).
     /// </summary>
@@ -200,6 +268,7 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
         RtEntity control,
         RtEntity? category,
         RtEntity target,
+        string targetCkTypeId,
         string containerName,
         GenerateDataPointMappingsNodeConfiguration c,
         JArray suggestions)
@@ -265,8 +334,12 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
             ["name"] = name,
             ["controlRtId"] = controlRtId,
             ["controlCkTypeId"] = c.SourceControlCkTypeId,
+            // Output field name "spaceRtId" / "spaceCkTypeId" is historical (matches the
+            // AnthropicAiQueryNode contract); when a rule resolves a child target, these
+            // fields carry the child's identity (e.g. a TemperatureSensor), not the
+            // container's. Downstream pipelines see the correct mapping target either way.
             ["spaceRtId"] = target.RtId.ToString(),
-            ["spaceCkTypeId"] = c.TargetCkTypeId,
+            ["spaceCkTypeId"] = targetCkTypeId,
             ["sourceAttributePath"] = sourceAttributePath,
             ["targetAttributePath"] = rule.Map.TargetAttribute,
             ["mappingExpression"] = rule.Map.Expression ?? string.Empty,

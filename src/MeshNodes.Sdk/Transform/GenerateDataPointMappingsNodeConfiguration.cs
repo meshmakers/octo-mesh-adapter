@@ -257,4 +257,29 @@ public class ControlMappingRuleMap
     /// (e.g. "value / 100"). Empty string ⇒ no transformation.
     /// </summary>
     public string? Expression { get; set; }
+
+    /// <summary>
+    /// Optional: navigate from the matched container target to a child entity of this
+    /// CkTypeId before emitting the suggestion. Used in v2-style models where the
+    /// actual mapping target is a child of the matched container (e.g. a Loxone/Room
+    /// matches an EnergyIQ/Space, but the temperature reading must target an
+    /// EnergyIQ/TemperatureSensor associated with that Space).
+    ///
+    /// When set, the node finds the first child entity of type
+    /// <c>ChildTargetCkTypeId</c> reachable from the matched target via the
+    /// <see cref="ChildTargetAssociationRoleId"/> role (inbound direction). If no
+    /// matching child exists, the rule produces no suggestion.
+    ///
+    /// When null, the matched container target is used directly (v1 behaviour — back
+    /// compat with rules that target attributes on the container itself).
+    /// </summary>
+    public string? ChildTargetCkTypeId { get; set; }
+
+    /// <summary>
+    /// Optional: association role used to resolve the child target. Defaults to the
+    /// node's <see cref="GenerateDataPointMappingsNodeConfiguration.HierarchyAssociationRoleId"/>
+    /// when null. Typically a v2 inverse role such as <c>EnergyIQ/SpaceSensors</c>,
+    /// <c>EnergyIQ/SpaceActuators</c>, or <c>EnergyIQ/SpaceTerminals</c>.
+    /// </summary>
+    public string? ChildTargetAssociationRoleId { get; set; }
 }

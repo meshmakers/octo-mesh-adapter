@@ -100,6 +100,11 @@ stages:
             displayName: 'Create documentation'              
           - template: build-and-push-docker-image.yml
             parameters:
+              # Build multi-arch so the adapter runs on arm64 nodes (e.g. Apple-Silicon
+              # local dev clusters), matching octo-communication-operator / octo-eda-adapter /
+              # octo-sdk. The Dockerfile builds the .NET app on $BUILDPLATFORM and selects
+              # arch-specific runtime deps (libpng12) via $TARGETARCH.
+              Architecture: 'linux/arm64,linux/amd64'
               PublicRegistryServiceConnection: $(DockerRegistryPublicConnection)
               PrivateRegistryName: $(DockerRegistryPrivateUri)
               Repository: meshmakers/octo-mesh-adapter

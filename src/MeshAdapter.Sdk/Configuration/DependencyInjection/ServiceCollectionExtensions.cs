@@ -75,6 +75,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GenerateAndStoreReportNode>()
             .RegisterNode<PdfOcrExtractionNode>()
             .RegisterNode<AnthropicAiQueryNode>()
+            .RegisterNode<LlmQueryNode>()
             .RegisterNode<StatisticalAnomalyNode>()
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<ReplyToTeamsChannelNode>()

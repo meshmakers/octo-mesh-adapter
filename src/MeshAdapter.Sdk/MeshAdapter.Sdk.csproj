@@ -53,6 +53,8 @@
              Sdk.Common to dedicated packages in octo-communication-sdk. -->
         <PackageReference Include="Meshmakers.Octo.Sdk.Adapters" Version="$(OctoCommVersion)" />
         <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoCommVersion)" />
+        <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
+        <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />

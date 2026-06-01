@@ -65,7 +65,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// </list>
     /// </summary>
     [PropertyGroup("AI Configuration", 0)]
-    public string Model { get; set; } = "nemotron-3-nano:4b<";
+    public string Model { get; set; } = "nemotron-3-nano:4b";
 
     /// <summary>
     /// The question/prompt to ask the AI about the data.

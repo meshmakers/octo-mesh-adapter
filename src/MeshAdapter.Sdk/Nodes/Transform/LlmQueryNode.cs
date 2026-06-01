@@ -183,10 +183,16 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         {
             LlmProvider.OpenAiCompatible => ConstructOpenAiCompatibleClient(config, apiKey),
 
-            LlmProvider.Anthropic => throw new NotImplementedException(
-                "Anthropic provider lands in Spike 4. " +
-                "Until then, use Provider: OpenAiCompatible " +
-                "(set BaseUrl + Model to point at any OpenAI-compatible backend)."),
+            // Anthropic enum value is reserved for the native-Claude branch
+            // landing in Spike 4 (which will consolidate AnthropicAiQuery@1
+            // into this node). Until then, the existing AnthropicAiQuery@1
+            // node remains the supported path for native Anthropic features
+            // (MCP tool use, native message format, Claude-specific options).
+            LlmProvider.Anthropic => throw new NotSupportedException(
+                "Provider 'Anthropic' is not available in this build. " +
+                "For native Anthropic support today, use the existing " +
+                "AnthropicAiQuery@1 node instead. " +
+                "This branch will be consolidated into LlmQuery@1 in Spike 4."),
 
             _ => throw new ArgumentOutOfRangeException(nameof(config.Provider),
                 $"Unsupported provider: {config.Provider}")

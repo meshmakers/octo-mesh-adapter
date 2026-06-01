@@ -20,6 +20,15 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
     : IPipelineNode
 {
+    /// <summary>
+    /// Well-known ActivitySource name emitted by this node via
+    /// <c>Microsoft.Extensions.AI.OpenTelemetry</c>. Use this constant when
+    /// configuring OTel collectors (`AddSource(...)`) or filtering in Grafana
+    /// to capture <c>gen_ai.*</c> spans produced by LlmQuery@1 calls.
+    /// </summary>
+    internal const string ActivitySourceName = "Meshmakers.Octo.Sdk.MeshAdapter.LlmQuery";
+
+
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<LlmQueryNodeConfiguration>();
@@ -200,11 +209,20 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
 
         // Fully-qualified ChatClient avoids the OpenAI.Chat / Microsoft.Extensions.AI
         // namespace ambiguity on ChatMessage / ChatOptions / etc.
+        //
+        // The .UseOpenTelemetry() decorator emits gen_ai.* spans on the
+        // ActivitySourceName above — provider-agnostic telemetry that lets the
+        // same Grafana panels work across OpenAI, Anthropic, Ollama, etc.
+        // Sensitive data (prompts/responses) is OFF by default; flip via
+        // configure callback if a future audit needs it.
         return new OpenAI.Chat.ChatClient(
-            model: config.Model,
-            credential: credential,
-            options: options
-        ).AsIChatClient();
+                model: config.Model,
+                credential: credential,
+                options: options)
+            .AsIChatClient()
+            .AsBuilder()
+            .UseOpenTelemetry(sourceName: ActivitySourceName)
+            .Build();
     }
 
     // ----------------------------------------------------------------------

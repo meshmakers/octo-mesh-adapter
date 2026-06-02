@@ -1,10 +1,10 @@
 using System.Globalization;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -19,8 +19,8 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
     {
         var c = nodeContext.GetNodeConfiguration<UpdateRtEntityIfNewerNodeConfiguration>();
 
-        var input = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.InputPath,
-            RtNewtonsoftSerializer.DefaultSerializer) ?? new List<EntityUpdateInfo<RtEntity>>();
+        var input = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.InputPath)
+            ?? new List<EntityUpdateInfo<RtEntity>>();
 
         var filtered = new List<EntityUpdateInfo<RtEntity>>();
         var all = new List<EntityUpdateInfo<RtEntity>>();
@@ -175,8 +175,8 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
             return;
         }
 
-        var candidates = dataContext.GetComplexObjectByPath<List<AssociationUpdateInfo>>(
-            c.CandidateAssociationsInputPath!, RtNewtonsoftSerializer.DefaultSerializer)
+        var candidates = dataContext.Get<List<AssociationUpdateInfo>>(
+            c.CandidateAssociationsInputPath!)
             ?? new List<AssociationUpdateInfo>();
 
         var insertedOriginRtIds = filtered
@@ -188,9 +188,8 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
             .Where(a => insertedOriginRtIds.Contains(a.Origin.RtId))
             .ToList();
 
-        dataContext.SetValueByPath(c.FilteredAssociationsOutputPath!, keptAssociations,
-            DocumentModes.Extend, ValueKinds.Simple, TargetValueWriteModes.Overwrite,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.FilteredAssociationsOutputPath!, keptAssociations,
+            DocumentModes.Extend, ValueKinds.Simple, TargetValueWriteModes.Overwrite);
     }
 
     /// <summary>
@@ -235,10 +234,10 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
         List<EntityUpdateInfo<RtEntity>> filtered,
         List<EntityUpdateInfo<RtEntity>> all)
     {
-        dataContext.SetValueByPath(c.FilteredOutputPath, filtered, DocumentModes.Extend, ValueKinds.Simple,
-            TargetValueWriteModes.Overwrite, RtNewtonsoftSerializer.DefaultSerializer);
-        dataContext.SetValueByPath(c.OutputPathAll, all, DocumentModes.Extend, ValueKinds.Simple,
-            TargetValueWriteModes.Overwrite, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.FilteredOutputPath, filtered, DocumentModes.Extend, ValueKinds.Simple,
+            TargetValueWriteModes.Overwrite);
+        dataContext.Set(c.OutputPathAll, all, DocumentModes.Extend, ValueKinds.Simple,
+            TargetValueWriteModes.Overwrite);
     }
 
     private static DateTime? ExtractDateTime(IReadOnlyDictionary<string, object?> attributes, string path)
@@ -249,21 +248,41 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
         {
             switch (current)
             {
+                case RtTypeWithAttributes rtType:
+                    // Record-typed attributes (e.g. the energy sim's "TimeRange.From") materialize as
+                    // RtRecord, so descend through its attribute dictionary. Without this the comparison
+                    // value can't be read and every candidate is treated as not-newer.
+                    if (!rtType.Attributes.TryGetValue(part, out current)) return null;
+                    break;
                 case IReadOnlyDictionary<string, object?> ro:
                     if (!ro.TryGetValue(part, out current)) return null;
                     break;
                 case IDictionary<string, object?> rw:
                     if (!rw.TryGetValue(part, out current)) return null;
                     break;
-                case RtTypeWithAttributes typed:
-                    // Record-typed attribute (RtRecord) or RtEntity — step into the typed
-                    // Attributes map so the documented "Record.Field" syntax works.
-                    if (!typed.Attributes.TryGetValue(part, out current)) return null;
-                    break;
-                case Newtonsoft.Json.Linq.JObject jo:
-                    var token = jo[part];
-                    if (token == null) return null;
-                    current = token.Type == Newtonsoft.Json.Linq.JTokenType.Object ? token : token.ToObject<object?>();
+                case JsonObject jo:
+                    var jsonNode = jo[part];
+                    if (jsonNode == null) return null;
+                    if (jsonNode is JsonObject nestedObj)
+                    {
+                        current = nestedObj;
+                    }
+                    else if (jsonNode is JsonValue jsonValue)
+                    {
+                        // Mirror the original Newtonsoft behaviour: unwrap to a CLR scalar and let
+                        // the post-loop switch convert it. Check string FIRST so an offset-bearing
+                        // JSON date (e.g. "2026-01-01T12:00:00+02:00") is parsed by the post-loop
+                        // TryParse(AssumeUniversal|AdjustToUniversal) — which converts the offset to
+                        // UTC — instead of STJ's GetDateTime + SpecifyKind, which would mislabel it.
+                        if (jsonValue.TryGetValue<string>(out var sVal)) current = sVal;
+                        else if (jsonValue.TryGetValue<DateTime>(out var dtVal)) current = dtVal;
+                        else if (jsonValue.TryGetValue<DateTimeOffset>(out var dtoVal)) current = dtoVal;
+                        else return null;
+                    }
+                    else
+                    {
+                        return null;
+                    }
                     break;
                 default:
                     return null;

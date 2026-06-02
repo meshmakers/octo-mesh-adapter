@@ -1,11 +1,11 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -32,7 +32,7 @@ public class GrafanaDeprovisionTenantNode(NodeDelegate next, HttpClient httpClie
         var config = etlContext.GlobalConfiguration.GetValue<GrafanaConfig>(c.ServerConfiguration);
 
         var tenantId = !string.IsNullOrEmpty(c.TenantIdPath)
-            ? dataContext.GetSimpleValueByPath<string>(c.TenantIdPath)
+            ? dataContext.Get<string>(c.TenantIdPath)
             : etlContext.TenantId;
 
         if (string.IsNullOrEmpty(tenantId))
@@ -57,9 +57,9 @@ public class GrafanaDeprovisionTenantNode(NodeDelegate next, HttpClient httpClie
 
             if (!string.IsNullOrEmpty(c.TargetPath))
             {
-                var notFoundResult = new JObject { ["provisioned"] = false, ["message"] = "Org not found" };
-                dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                    c.TargetValueWriteMode, notFoundResult);
+                var notFoundResult = new JsonObject { ["provisioned"] = false, ["message"] = "Org not found" };
+                dataContext.Set(c.TargetPath, notFoundResult, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
             }
 
             await next(dataContext, nodeContext);
@@ -73,8 +73,8 @@ public class GrafanaDeprovisionTenantNode(NodeDelegate next, HttpClient httpClie
             return;
         }
 
-        var orgJson = JObject.Parse(await response.Content.ReadAsStringAsync());
-        var orgId = orgJson["id"]?.Value<long>() ?? 0;
+        var orgJson = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+        var orgId = orgJson?["id"]?.GetValue<long>() ?? 0;
 
         // Delete the org
         var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, $"{grafanaUrl}/api/orgs/{orgId}");
@@ -92,15 +92,15 @@ public class GrafanaDeprovisionTenantNode(NodeDelegate next, HttpClient httpClie
 
         if (!string.IsNullOrEmpty(c.TargetPath))
         {
-            var result = new JObject
+            var result = new JsonObject
             {
                 ["provisioned"] = false,
                 ["orgId"] = orgId,
                 ["orgName"] = tenantId,
                 ["deleted"] = true
             };
-            dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                c.TargetValueWriteMode, result);
+            dataContext.Set(c.TargetPath, result, c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
         }
 
         await next(dataContext, nodeContext);

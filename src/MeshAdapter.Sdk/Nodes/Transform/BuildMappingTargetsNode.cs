@@ -1,14 +1,12 @@
+using System.Text.Json.Serialization;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Sdk.MeshAdapter.Common;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -42,7 +40,7 @@ internal class BuildMappingTargetsNode(NodeDelegate next, IMeshEtlContext etlCon
         var mappingsResult = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
             session, DataPointMappingCkTypeId, RtEntityQueryOptions.Create());
 
-        var targets = new List<JObject>();
+        var targets = new List<MappingTargetRecord>();
         var seen = new HashSet<string>();
 
         foreach (var mapping in mappingsResult.Items)
@@ -148,34 +146,36 @@ internal class BuildMappingTargetsNode(NodeDelegate next, IMeshEtlContext etlCon
             }
         }
 
-        dataContext.SetValueByPath(c.TargetPath, targets, c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.TargetPath, targets, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode);
 
         nodeContext.Info($"Built {targets.Count} mapping targets from DataPointMappings");
 
         await next(dataContext, nodeContext);
     }
 
-    private static JObject CreateMappingTargetRecord(string sourceIdentifier, string? stateName, string externalId)
-    {
-        var attributes = new JObject
-        {
-            ["SourceIdentifier"] = sourceIdentifier,
-            ["ExternalId"] = externalId
-        };
+    internal static MappingTargetRecord CreateMappingTargetRecord(string sourceIdentifier, string? stateName,
+        string externalId) =>
+        new(
+            new RecordTypeRef("System.Communication/MappingTarget"),
+            // Name is added after ExternalId in the legacy JsonObject only when present;
+            // the property-level WhenWritingNull override omits the key when stateName is null
+            // (the pipeline default preserves nulls, so the override is required for parity).
+            new MappingTargetAttributes(sourceIdentifier, externalId,
+                string.IsNullOrWhiteSpace(stateName) ? null : stateName));
 
-        if (!string.IsNullOrWhiteSpace(stateName))
-        {
-            attributes["Name"] = stateName;
-        }
+    /// <summary>CK RecordArray item: <c>{ "CkRecordId": {...}, "Attributes": {...} }</c>.</summary>
+    internal sealed record MappingTargetRecord(
+        [property: JsonPropertyName("CkRecordId")] RecordTypeRef CkRecordId,
+        [property: JsonPropertyName("Attributes")] MappingTargetAttributes Attributes);
 
-        return new JObject
-        {
-            ["CkRecordId"] = new JObject
-            {
-                ["SemanticVersionedFullName"] = "System.Communication/MappingTarget"
-            },
-            ["Attributes"] = attributes
-        };
-    }
+    internal sealed record RecordTypeRef(
+        [property: JsonPropertyName("SemanticVersionedFullName")] string SemanticVersionedFullName);
+
+    internal sealed record MappingTargetAttributes(
+        [property: JsonPropertyName("SourceIdentifier")] string SourceIdentifier,
+        [property: JsonPropertyName("ExternalId")] string ExternalId,
+        [property: JsonPropertyName("Name")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Name);
 }

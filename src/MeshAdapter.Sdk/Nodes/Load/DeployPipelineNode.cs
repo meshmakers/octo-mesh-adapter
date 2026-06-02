@@ -2,7 +2,6 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -131,12 +130,11 @@ internal class DeployPipelineNode(
             return config.PipelineRtId.Value;
         }
 
-        if (config.PipelineRtIdPath == null || dataContext.Current == null)
+        if (config.PipelineRtIdPath == null)
         {
             return null;
         }
 
-        return dataContext.GetComplexObjectByPath<OctoObjectId?>(config.PipelineRtIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        return dataContext.Get<OctoObjectId?>(config.PipelineRtIdPath);
     }
 }

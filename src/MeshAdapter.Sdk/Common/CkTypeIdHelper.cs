@@ -32,7 +32,7 @@ public static class CkTypeIdHelper
         
         if (ckTypeIdPath != null)
         {
-            var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(ckTypeIdPath);
+            var ckTypeIdValue = dataContext.Get<string>(ckTypeIdPath);
             if (ckTypeIdValue == null)
             {
                 throw MeshAdapterPipelineExecutionException.CkTypeIdValueNull(nodeContext, ckTypeIdPath);
@@ -69,7 +69,7 @@ public static class CkTypeIdHelper
 
         if (ckTypeIdPath != null)
         {
-            var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(ckTypeIdPath);
+            var ckTypeIdValue = dataContext.Get<string>(ckTypeIdPath);
             if (ckTypeIdValue == null)
             {
                 resolvedRtCkTypeId = null;
@@ -106,7 +106,7 @@ public static class CkTypeIdHelper
         
         if (originCkTypeIdPath != null)
         {
-            var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(originCkTypeIdPath);
+            var ckTypeIdValue = dataContext.Get<string>(originCkTypeIdPath);
             if (ckTypeIdValue == null)
             {
                 throw MeshAdapterPipelineExecutionException.OriginCkTypeIdValueNull(nodeContext, originCkTypeIdPath);
@@ -139,7 +139,7 @@ public static class CkTypeIdHelper
         
         if (targetCkTypeIdPath != null)
         {
-            var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(targetCkTypeIdPath);
+            var ckTypeIdValue = dataContext.Get<string>(targetCkTypeIdPath);
             if (ckTypeIdValue == null)
             {
                 throw MeshAdapterPipelineExecutionException.TargetCkTypeIdValueNull(nodeContext, targetCkTypeIdPath);

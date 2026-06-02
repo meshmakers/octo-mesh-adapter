@@ -1,9 +1,10 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Helpers;
 
@@ -15,10 +16,11 @@ public static class MockFactory
     /// <summary>
     /// Creates a fake IDataContext with optional initial data.
     /// </summary>
-    public static IDataContext CreateDataContext(JToken? current = null)
+    public static IDataContext CreateDataContext(JsonNode? current = null)
     {
         var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(current ?? new JObject());
+        var data = current ?? new JsonObject();
+        A.CallTo(() => dataContext.Get<JsonNode>("$")).Returns(data);
         return dataContext;
     }
 
@@ -68,7 +70,7 @@ public static class MockFactory
     /// </summary>
     public static (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) CreateTestSetup<TConfig>(
         TConfig configuration,
-        JToken? testData = null)
+        JsonNode? testData = null)
         where TConfig : class, INodeConfiguration
     {
         var dataContext = CreateDataContext(testData);

@@ -1,6 +1,5 @@
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -33,9 +32,8 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
 
                 nodeContext.Debug("Mapping value {0} to {1} because of {2}", value, targetValue ?? "",
                     mapping.Description ?? "no description");
-                dataContext.SetValueByPath(c.TargetPath, targetValue, c.DocumentMode, c.TargetValueKind,
-                    c.TargetValueWriteMode,
-                    RtNewtonsoftSerializer.DefaultSerializer);
+                dataContext.Set(c.TargetPath, targetValue, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
 
                 break;
             }
@@ -50,24 +48,24 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
     {
         return sourceValueType switch
         {
-            AttributeValueTypesDto.Int => dataContext.GetSimpleValueByPath<int>(path),
-            AttributeValueTypesDto.String => dataContext.GetSimpleValueByPath<string>(path),
-            AttributeValueTypesDto.Binary => dataContext.GetSimpleValueByPath<byte>(path),
-            AttributeValueTypesDto.Boolean => dataContext.GetSimpleValueByPath<byte>(path),
-            AttributeValueTypesDto.DateTime => dataContext.GetSimpleValueByPath<DateTime>(path),
-            AttributeValueTypesDto.Double => dataContext.GetSimpleValueByPath<double>(path),
-            AttributeValueTypesDto.StringArray => dataContext.GetSimpleValueByPath<string[]>(path),
-            AttributeValueTypesDto.IntArray => dataContext.GetSimpleValueByPath<int[]>(path),
-            AttributeValueTypesDto.TimeSpan => dataContext.GetSimpleValueByPath<TimeSpan>(path),
-            AttributeValueTypesDto.Int64 => dataContext.GetSimpleValueByPath<long>(path),
+            AttributeValueTypesDto.Int => dataContext.Get<int>(path),
+            AttributeValueTypesDto.String => dataContext.Get<string>(path),
+            AttributeValueTypesDto.Binary => dataContext.Get<byte>(path),
+            AttributeValueTypesDto.Boolean => dataContext.Get<bool>(path),
+            AttributeValueTypesDto.DateTime => dataContext.Get<DateTime>(path),
+            AttributeValueTypesDto.Double => dataContext.Get<double>(path),
+            AttributeValueTypesDto.StringArray => dataContext.Get<string[]>(path),
+            AttributeValueTypesDto.IntArray => dataContext.Get<int[]>(path),
+            AttributeValueTypesDto.TimeSpan => dataContext.Get<TimeSpan>(path),
+            AttributeValueTypesDto.Int64 => dataContext.Get<long>(path),
 
             /* Not Mapped
-                AttributeValueTypesDto.BinaryLinked => dataContext.GetSimpleValueByPath<>(path),
-                AttributeValueTypesDto.Record => dataContext.GetSimpleValueByPath<>(path),
-                AttributeValueTypesDto.RecordArray => dataContext.GetSimpleValueByPath<>(path),
-                AttributeValueTypesDto.Enum => dataContext.GetSimpleValueByPath<>(path),
-                AttributeValueTypesDto.DateTimeOffset => dataContext.GetSimpleValueByPath<>(path),
-                AttributeValueTypesDto.GeospatialPoint => dataContext.GetSimpleValueByPath<>(path),
+                AttributeValueTypesDto.BinaryLinked => dataContext.Get<>(path),
+                AttributeValueTypesDto.Record => dataContext.Get<>(path),
+                AttributeValueTypesDto.RecordArray => dataContext.Get<>(path),
+                AttributeValueTypesDto.Enum => dataContext.Get<>(path),
+                AttributeValueTypesDto.DateTimeOffset => dataContext.Get<>(path),
+                AttributeValueTypesDto.GeospatialPoint => dataContext.Get<>(path),
             */
 
             _ => LogAndThrow(nodeContext, sourceValueType)
@@ -100,12 +98,12 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
                 AttributeValueTypesDto.Int64 => Convert.ChangeType(value, typeof(long)),
 
                 /* Not Mapped
-                    AttributeValueTypesDto.BinaryLinked => dataContext.GetSimpleValueByPath<>(path),
-                    AttributeValueTypesDto.Record => dataContext.GetSimpleValueByPath<>(path),
-                    AttributeValueTypesDto.RecordArray => dataContext.GetSimpleValueByPath<>(path),
-                    AttributeValueTypesDto.Enum => dataContext.GetSimpleValueByPath<>(path),
-                    AttributeValueTypesDto.DateTimeOffset => dataContext.GetSimpleValueByPath<>(path),
-                    AttributeValueTypesDto.GeospatialPoint => dataContext.GetSimpleValueByPath<>(path),
+                    AttributeValueTypesDto.BinaryLinked => dataContext.Get<>(path),
+                    AttributeValueTypesDto.Record => dataContext.Get<>(path),
+                    AttributeValueTypesDto.RecordArray => dataContext.Get<>(path),
+                    AttributeValueTypesDto.Enum => dataContext.Get<>(path),
+                    AttributeValueTypesDto.DateTimeOffset => dataContext.Get<>(path),
+                    AttributeValueTypesDto.GeospatialPoint => dataContext.Get<>(path),
                 */
 
                 _ => LogAndThrow(nodeContext, type)

@@ -1,15 +1,16 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Extracts;
 using Meshmakers.Octo.Sdk.Common.Services;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetPipelineConfigByWellKnownNameNodeTests
+public class GetPipelineConfigByWellKnownNameNodeTests : NodeTestBase
 {
     private readonly IEtlContext _etlContext;
     private readonly IGlobalConfiguration _globalConfiguration;
@@ -21,30 +22,6 @@ public class GetPipelineConfigByWellKnownNameNodeTests
         A.CallTo(() => _etlContext.GlobalConfiguration).Returns(_globalConfiguration);
     }
 
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        GetPipelineConfigByWellKnownNameNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "GetPipelineConfigByWellKnownName",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
-    }
-
     [Fact]
     public async Task ProcessObjectAsync_WithWellKnownName_SetsConfigOnDataContext()
     {
@@ -53,7 +30,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
             WellKnownName = "TestConfig",
             TargetPath = "$.config"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByWellKnownNameNodeConfiguration>(config);
 
         A.CallTo(() => _globalConfiguration.IsDefined("TestConfig")).Returns(true);
         A.CallTo(() => _globalConfiguration.GetRawJson("TestConfig")).Returns("{\"key\":\"value\"}");
@@ -61,12 +38,12 @@ public class GetPipelineConfigByWellKnownNameNodeTests
         var node = new GetPipelineConfigByWellKnownNameNode(next, _etlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set<JsonNode?>(
                 "$.config",
+                A<JsonNode?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<JToken>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -78,7 +55,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
             WellKnownName = "TestConfig",
             TargetPath = "$.config"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByWellKnownNameNodeConfiguration>(config);
 
         A.CallTo(() => _globalConfiguration.IsDefined("TestConfig")).Returns(true);
         A.CallTo(() => _globalConfiguration.GetRawJson("TestConfig")).Returns("{}");
@@ -86,7 +63,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
         var node = new GetPipelineConfigByWellKnownNameNode(next, _etlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -97,9 +74,9 @@ public class GetPipelineConfigByWellKnownNameNodeTests
             WellKnownNamePath = "$.name",
             TargetPath = "$.config"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByWellKnownNameNodeConfiguration>(config);
 
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.name")).Returns("ResolvedConfig");
+        SetupGetSimpleValueByPath(dataContext, "$.name", "ResolvedConfig");
         A.CallTo(() => _globalConfiguration.IsDefined("ResolvedConfig")).Returns(true);
         A.CallTo(() => _globalConfiguration.GetRawJson("ResolvedConfig")).Returns("{}");
 
@@ -117,7 +94,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
             WellKnownName = "NonExistent",
             TargetPath = "$.config"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByWellKnownNameNodeConfiguration>(config);
 
         A.CallTo(() => _globalConfiguration.IsDefined("NonExistent")).Returns(false);
 
@@ -134,7 +111,7 @@ public class GetPipelineConfigByWellKnownNameNodeTests
         {
             TargetPath = "$.config"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByWellKnownNameNodeConfiguration>(config);
 
         var node = new GetPipelineConfigByWellKnownNameNode(next, _etlContext);
 

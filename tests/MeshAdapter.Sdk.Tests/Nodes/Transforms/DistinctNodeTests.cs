@@ -1,52 +1,66 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class DistinctNodeTests
+public class DistinctNodeTests : NodeTestBase
 {
-    private (IDataContext, INodeContext, List<JToken>?) PrepareTest(DistinctNodeConfiguration config, JToken? testData)
+    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
+        DistinctNodeConfiguration config,
+        JsonNode? testData)
     {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
+        // Round-trip test data through JSON so JsonValue instances are backed by JsonElements
+        // (DistinctNode.ConvertNodeToValue calls JsonValue.GetValue<JsonElement>()).
+        JsonNode? normalized = testData is null
+            ? null
+            : JsonNode.Parse(testData.ToJsonString());
 
-        var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(testData);
+        var setup = PrepareTest<DistinctNodeConfiguration>(config, normalized);
 
-        // Capture results written to the target path
-        List<JToken>? capturedResult = null;
-        A.CallTo(() => dataContext.SetValueByPath(config.TargetPath, config.DocumentMode,
-                config.TargetValueKind, config.TargetValueWriteMode, A<object>._))
-            .Invokes((string _, DocumentModes _, ValueKinds _, TargetValueWriteModes _, object result) =>
+        if (normalized is JsonObject obj && obj.TryGetPropertyValue(config.Path.TrimStart('$', '.'), out var arrayNode))
+        {
+            A.CallTo(() => setup.DataContext.GetKind(config.Path))
+                .Returns(arrayNode is JsonArray ? DataKind.Array : DataKind.Undefined);
+            if (arrayNode is JsonArray arr)
             {
-                if (result is List<JToken> list)
-                    capturedResult = list;
-                else if (result is IEnumerable<JToken> enumerable)
-                    capturedResult = enumerable.ToList();
-            });
+                A.CallTo(() => setup.DataContext.Get<JsonArray>(config.Path))
+                    .ReturnsLazily(() => (JsonArray)JsonNode.Parse(arr.ToJsonString())!);
+            }
+        }
+        else
+        {
+            A.CallTo(() => setup.DataContext.GetKind(config.Path)).Returns(DataKind.Undefined);
+        }
 
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("Distinct", 0, config, dataContext);
-
-        return (dataContext, nodeContext, capturedResult);
+        return setup;
     }
 
-    private List<JToken>? GetCapturedResult(IDataContext dataContext, DistinctNodeConfiguration config)
+    private static JsonArray? CapturedTarget(IDataContext dataContext, DistinctNodeConfiguration config)
     {
-        List<JToken>? result = null;
-        // Extract captured result from the fake's recorded calls
+        JsonArray? captured = null;
+        A.CallTo(() => dataContext.Set(
+                config.TargetPath, A<JsonArray?>._, config.DocumentMode,
+                config.TargetValueKind, config.TargetValueWriteMode))
+            .Invokes((string _, JsonArray? result, DocumentModes _, ValueKinds _,
+                TargetValueWriteModes _) =>
+            {
+                captured = result;
+            });
+        return captured;
+    }
+
+    private static JsonArray? GetCapturedFromCalls(IDataContext dataContext, DistinctNodeConfiguration config)
+    {
         var call = Fake.GetCalls(dataContext)
-            .FirstOrDefault(c => c.Method.Name == "SetValueByPath" && c.Arguments.Count == 5
-                                 && c.Arguments[0] as string == config.TargetPath);
-        if (call?.Arguments[4] is List<JToken> list)
-            result = list;
-        else if (call?.Arguments[4] is IEnumerable<JToken> enumerable)
-            result = enumerable.ToList();
-        return result;
+            .FirstOrDefault(c => c.Method.Name == "Set"
+                                 && c.Arguments.Count >= 2
+                                 && (string?)c.Arguments[0] == config.TargetPath);
+        return call?.Arguments[1] as JsonArray;
     }
 
     [Fact]
@@ -59,26 +73,24 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray(
-                new JObject { ["id"] = "A", ["name"] = "Item 1" },
-                new JObject { ["id"] = "B", ["name"] = "Item 2" },
-                new JObject { ["id"] = "A", ["name"] = "Item 3" },
-                new JObject { ["id"] = "C", ["name"] = "Item 4" }
-            )
+            ["items"] = new JsonArray(
+                new JsonObject { ["id"] = "A", ["name"] = "Item 1" },
+                new JsonObject { ["id"] = "B", ["name"] = "Item 2" },
+                new JsonObject { ["id"] = "A", ["name"] = "Item 3" },
+                new JsonObject { ["id"] = "C", ["name"] = "Item 4" })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        var result = GetCapturedResult(dataContext, config);
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, result!.Count);
     }
 
     [Fact]
@@ -91,26 +103,24 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray(
-                new JObject { ["id"] = 1, ["name"] = "Item 1" },
-                new JObject { ["id"] = 2, ["name"] = "Item 2" },
-                new JObject { ["id"] = 1, ["name"] = "Item 3" },
-                new JObject { ["id"] = 3, ["name"] = "Item 4" }
-            )
+            ["items"] = new JsonArray(
+                new JsonObject { ["id"] = 1, ["name"] = "Item 1" },
+                new JsonObject { ["id"] = 2, ["name"] = "Item 2" },
+                new JsonObject { ["id"] = 1, ["name"] = "Item 3" },
+                new JsonObject { ["id"] = 3, ["name"] = "Item 4" })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        var result = GetCapturedResult(dataContext, config);
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, result!.Count);
     }
 
     [Fact]
@@ -123,26 +133,24 @@ public class DistinctNodeTests
             DistinctValuePath = "active"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray(
-                new JObject { ["id"] = 1, ["active"] = true },
-                new JObject { ["id"] = 2, ["active"] = false },
-                new JObject { ["id"] = 3, ["active"] = true },
-                new JObject { ["id"] = 4, ["active"] = false }
-            )
+            ["items"] = new JsonArray(
+                new JsonObject { ["id"] = 1, ["active"] = true },
+                new JsonObject { ["id"] = 2, ["active"] = false },
+                new JsonObject { ["id"] = 3, ["active"] = true },
+                new JsonObject { ["id"] = 4, ["active"] = false })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        var result = GetCapturedResult(dataContext, config);
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(2, result.Count);
+        Assert.Equal(2, result!.Count);
     }
 
     [Fact]
@@ -155,26 +163,24 @@ public class DistinctNodeTests
             DistinctValuePath = "value"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["readings"] = new JArray(
-                new JObject { ["sensor"] = "A", ["value"] = 1.5 },
-                new JObject { ["sensor"] = "B", ["value"] = 2.7 },
-                new JObject { ["sensor"] = "C", ["value"] = 1.5 },
-                new JObject { ["sensor"] = "D", ["value"] = 3.0 }
-            )
+            ["readings"] = new JsonArray(
+                new JsonObject { ["sensor"] = "A", ["value"] = 1.5 },
+                new JsonObject { ["sensor"] = "B", ["value"] = 2.7 },
+                new JsonObject { ["sensor"] = "C", ["value"] = 1.5 },
+                new JsonObject { ["sensor"] = "D", ["value"] = 3.0 })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        var result = GetCapturedResult(dataContext, config);
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, result!.Count);
     }
 
     [Fact]
@@ -187,26 +193,24 @@ public class DistinctNodeTests
             DistinctValuePath = "date"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["events"] = new JArray(
-                new JObject { ["name"] = "E1", ["date"] = "2024-01-15T10:00:00Z" },
-                new JObject { ["name"] = "E2", ["date"] = "2024-02-20T15:30:00Z" },
-                new JObject { ["name"] = "E3", ["date"] = "2024-01-15T10:00:00Z" },
-                new JObject { ["name"] = "E4", ["date"] = "2024-03-01T08:00:00Z" }
-            )
+            ["events"] = new JsonArray(
+                new JsonObject { ["name"] = "E1", ["date"] = "2024-01-15T10:00:00Z" },
+                new JsonObject { ["name"] = "E2", ["date"] = "2024-02-20T15:30:00Z" },
+                new JsonObject { ["name"] = "E3", ["date"] = "2024-01-15T10:00:00Z" },
+                new JsonObject { ["name"] = "E4", ["date"] = "2024-03-01T08:00:00Z" })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        var result = GetCapturedResult(dataContext, config);
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, result!.Count);
     }
 
     [Fact]
@@ -219,18 +223,21 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray()
+            ["items"] = new JsonArray()
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
+                config.TargetPath, A<JsonArray?>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .MustNotHaveHappened();
     }
 
     [Fact]
@@ -243,13 +250,16 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, null);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, null);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
+                config.TargetPath, A<JsonArray?>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .MustNotHaveHappened();
     }
 
     [Fact]
@@ -262,24 +272,22 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray(
-                new JObject { ["id"] = "A" },
-                new JObject { ["id"] = "B" },
-                new JObject { ["id"] = "C" }
-            )
+            ["items"] = new JsonArray(
+                new JsonObject { ["id"] = "A" },
+                new JsonObject { ["id"] = "B" },
+                new JsonObject { ["id"] = "C" })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var result = GetCapturedResult(dataContext, config);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, result!.Count);
     }
 
     [Fact]
@@ -292,24 +300,22 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray(
-                new JObject { ["id"] = "X", ["name"] = "First" },
-                new JObject { ["id"] = "X", ["name"] = "Second" },
-                new JObject { ["id"] = "X", ["name"] = "Third" }
-            )
+            ["items"] = new JsonArray(
+                new JsonObject { ["id"] = "X", ["name"] = "First" },
+                new JsonObject { ["id"] = "X", ["name"] = "Second" },
+                new JsonObject { ["id"] = "X", ["name"] = "Third" })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var result = GetCapturedResult(dataContext, config);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Single(result);
+        Assert.Single(result!);
     }
 
     [Fact]
@@ -322,24 +328,22 @@ public class DistinctNodeTests
             DistinctValuePath = "id"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["items"] = new JArray(
-                new JObject { ["id"] = "A", ["name"] = "First A" },
-                new JObject { ["id"] = "A", ["name"] = "Second A" }
-            )
+            ["items"] = new JsonArray(
+                new JsonObject { ["id"] = "A", ["name"] = "First A" },
+                new JsonObject { ["id"] = "A", ["name"] = "Second A" })
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var result = GetCapturedResult(dataContext, config);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Single(result);
-        Assert.Equal("First A", result[0]["name"]?.ToString());
+        Assert.Single(result!);
+        Assert.Equal("First A", result![0]?["name"]?.ToString());
     }
 
     [Fact]
@@ -351,19 +355,18 @@ public class DistinctNodeTests
             TargetPath = "$.uniqueUuids"
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
-            ["uuids"] = new JArray("aaa", "bbb", "aaa", "ccc", "bbb")
+            ["uuids"] = new JsonArray("aaa", "bbb", "aaa", "ccc", "bbb")
         };
 
-        var (dataContext, nodeContext, _) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new DistinctNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var result = GetCapturedResult(dataContext, config);
+        var result = GetCapturedFromCalls(dataContext, config);
         Assert.NotNull(result);
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, result!.Count);
     }
 }

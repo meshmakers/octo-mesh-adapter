@@ -1,8 +1,8 @@
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -23,9 +23,9 @@ public class GetPipelineConfigByCkTypeIdNode(NodeDelegate next, IMeshEtlContext 
         var ckTypeId = ResolveCkTypeId(c, dataContext, nodeContext);
 
         var rawJsonValues = etlContext.GlobalConfiguration.GetAllRawJsonByCkTypeId(ckTypeId);
-        var configurationsArray = new JArray(rawJsonValues.Select(JToken.Parse));
+        var configurationsArray = new JsonArray(rawJsonValues.Select(j => JsonNode.Parse(j)).ToArray());
 
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, configurationsArray);
+        dataContext.Set(c.TargetPath, configurationsArray, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
@@ -43,7 +43,7 @@ public class GetPipelineConfigByCkTypeIdNode(NodeDelegate next, IMeshEtlContext 
             return c.CkTypeId;
         }
 
-        var ckTypeIdValue = dataContext.GetSimpleValueByPath<string>(c.CkTypeIdPath!);
+        var ckTypeIdValue = dataContext.Get<string>(c.CkTypeIdPath!);
         if (ckTypeIdValue == null)
         {
             throw MeshAdapterPipelineExecutionException.CkTypeIdValueNull(nodeContext, c.CkTypeIdPath!);

@@ -74,21 +74,21 @@ public class EMailSenderNode(
                 semaphores[c.ServerConfiguration] = emailSemaphore;
             }
 
-            var recipients = dataContext.GetSimpleArrayValueByPath<string>(c.ToPath);
+            var recipients = dataContext.GetArray<string>(c.ToPath);
             if (recipients == null)
             {
                 throw MeshAdapterPipelineExecutionException.NoRecipientsFound(nodeContext,
                     nameof(c.ToPath), c.ToPath);
             }
 
-            var subject = dataContext.GetSimpleValueByPath<string>(c.SubjectPath);
+            var subject = dataContext.Get<string>(c.SubjectPath);
             if (subject == null)
             {
                 throw PipelineExecutionException.ValueNotSet(
                     nodeContext, c.SubjectPath);
             }
 
-            var body = dataContext.GetSimpleValueByPath<string>(c.Path);
+            var body = dataContext.Get<string>(c.Path);
             if (body == null)
             {
                 throw PipelineExecutionException.ValueNotSet(
@@ -166,8 +166,7 @@ public class EMailSenderNode(
         }
         
         var attachmentRtId = eMailSenderNodeConfiguration.AttachmentRtId ??
-                             dataContext.GetSimpleValueByPath<string>(eMailSenderNodeConfiguration
-                                 .AttachmentRtIdPath);
+                             dataContext.Get<string>(eMailSenderNodeConfiguration.AttachmentRtIdPath!);
         
         if (string.IsNullOrWhiteSpace(attachmentRtId))
         {
@@ -210,7 +209,7 @@ public class EMailSenderNode(
         var ccAddresses = c.CcAddresses != null && c.CcAddresses.Count > 0
             ? c.CcAddresses
             : !string.IsNullOrWhiteSpace(c.CcPath)
-                ? dataContext.GetSimpleArrayValueByPath<string>(c.CcPath)
+                ? dataContext.GetArray<string>(c.CcPath)
                 : null;
             
         if (ccAddresses != null)
@@ -227,7 +226,7 @@ public class EMailSenderNode(
         var bccAddresses = c.BccAddresses != null && c.BccAddresses.Count > 0
             ? c.BccAddresses
             : !string.IsNullOrWhiteSpace(c.BccPath)
-                ? dataContext.GetSimpleArrayValueByPath<string>(c.BccPath)
+                ? dataContext.GetArray<string>(c.BccPath)
                 : null;
             
         if (bccAddresses != null)

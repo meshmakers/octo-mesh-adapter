@@ -1,10 +1,10 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
@@ -44,7 +44,7 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
             return false;
         }
 
-        JObject input = new()
+        JsonObject input = new()
         {
             ["path"] = path.ToLower(),
             ["method"] = route.Method.ToString().ToUpper()
@@ -54,30 +54,29 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
             if (context.Request.ContentType == MimeTypes.MimeTypeJson)
             {
                 using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
-                var body = await JToken.ReadFromAsync(new JsonTextReader(reader));
-                
-                input["body"] = body;
+                var bodyText = await reader.ReadToEndAsync();
+                input["body"] = JsonNode.Parse(bodyText);
             }
             else if (context.Request.ContentType == MimeTypes.MimeText)
             {
                 using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
                 var body = await reader.ReadToEndAsync();
-                
+
                 input["body"] = body;
             }
             else if (context.Request.ContentType?.StartsWith("multipart/form-data") == true)
             {
                 // Handle multipart/form-data (file uploads)
-                var files = new JArray();
-                var formData = new JObject();
-                
+                var files = new JsonArray();
+                var formData = new JsonObject();
+
                 foreach (var file in context.Request.Form.Files)
                 {
                     using var memoryStream = new MemoryStream();
                     await file.CopyToAsync(memoryStream);
                     var fileBytes = memoryStream.ToArray();
-                    
-                    files.Add(new JObject
+
+                    files.Add(new JsonObject
                     {
                         ["fileName"] = file.FileName,
                         ["contentType"] = file.ContentType,
@@ -86,7 +85,7 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
                         ["encoding"] = "base64"
                     });
                 }
-                
+
                 foreach (var (formKey, formValue) in context.Request.Form)
                 {
                     if (formValue.Count == 1)
@@ -95,10 +94,15 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
                     }
                     else
                     {
-                        formData[formKey] = JToken.FromObject(formValue.ToArray());
+                        var arr = new JsonArray();
+                        foreach (var v in formValue)
+                        {
+                            arr.Add(v);
+                        }
+                        formData[formKey] = arr;
                     }
                 }
-                
+
                 if (files.Count > 0)
                 {
                     input["files"] = files;
@@ -115,7 +119,7 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
                 using var memoryStream = new MemoryStream();
                 await context.Request.Body.CopyToAsync(memoryStream);
                 var bytes = memoryStream.ToArray();
-                
+
                 // Check if this might be text-based content
                 var contentType = context.Request.ContentType ?? string.Empty;
                 if (IsTextBasedContentType(contentType))
@@ -139,34 +143,39 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
                     input["body"] = Convert.ToBase64String(bytes);
                     input["bodyEncoding"] = "base64";
                 }
-                
+
                 input["contentType"] = context.Request.ContentType;
                 input["contentLength"] = context.Request.ContentLength;
             }
         }
-        
+
         if (context.Request.Query.Count > 0)
         {
-            var query = new JObject();
+            var query = new JsonObject();
             foreach (var (queryKey, value) in context.Request.Query)
             {
-                if (value.Count == 1 )
+                if (value.Count == 1)
                 {
                     var o = value[0];
-                    query[queryKey] = string.IsNullOrWhiteSpace(o) ? null : JToken.FromObject(o);
+                    query[queryKey] = string.IsNullOrWhiteSpace(o) ? null : JsonValue.Create(o);
                     continue;
                 }
-        
-                query[queryKey] = JToken.FromObject(value);
+
+                var arr = new JsonArray();
+                foreach (var v in value)
+                {
+                    arr.Add(v);
+                }
+                query[queryKey] = arr;
             }
             input["query"] = query;
         }
-        
+
         var r = await route.ExecuteFunc(input);
         if (r != null)
         {
             context.Response.ContentType = MimeTypes.MimeTypeJson;
-            await context.Response.WriteAsync(r.ToString());
+            await context.Response.WriteAsync(r.ToJsonString());
         }
         return true;
     }

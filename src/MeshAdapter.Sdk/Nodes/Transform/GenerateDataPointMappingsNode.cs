@@ -1,17 +1,16 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -50,7 +49,7 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
 
         var matcher = new ContainerMatcher(c.ContainerMatchingStrategies, targets);
 
-        var suggestions = new JArray();
+        var suggestions = new List<MappingSuggestion>();
         var matched = 0;
         var unmatched = new List<string>();
         var rulesById = c.ControlMappingRules
@@ -134,23 +133,21 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
                 string.Join(", ", unmatched.Take(20)) + (unmatched.Count > 20 ? ", …" : ""));
         }
 
-        dataContext.SetValueByPath(c.TargetPath, suggestions, c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.TargetPath, suggestions, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode);
 
         if (!string.IsNullOrWhiteSpace(c.StatisticsTargetPath))
         {
-            var statistics = new JObject
-            {
-                ["totalContainers"] = containers.Count,
-                ["matchedContainers"] = matched,
-                ["unmatchedContainers"] = unmatched.Count,
-                ["unmatchedContainerNames"] = new JArray(unmatched),
-                ["totalSuggestions"] = suggestions.Count,
-                ["ruleHits"] = JObject.FromObject(rulesHitByRuleId),
-                ["definedRuleIds"] = new JArray(rulesById.Keys)
-            };
-            dataContext.SetValueByPath(c.StatisticsTargetPath, statistics, c.DocumentMode, ValueKinds.Simple,
-                TargetValueWriteModes.Overwrite, RtNewtonsoftSerializer.DefaultSerializer);
+            var statistics = new MappingStatistics(
+                containers.Count,
+                matched,
+                unmatched.Count,
+                unmatched,
+                suggestions.Count,
+                rulesHitByRuleId,
+                rulesById.Keys.ToList());
+            dataContext.Set(c.StatisticsTargetPath, statistics, c.DocumentMode, ValueKinds.Simple,
+                TargetValueWriteModes.Overwrite);
         }
 
         await next(dataContext, nodeContext);
@@ -271,7 +268,7 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
         string targetCkTypeId,
         string containerName,
         GenerateDataPointMappingsNodeConfiguration c,
-        JArray suggestions)
+        List<MappingSuggestion> suggestions)
     {
         var when = rule.When;
 
@@ -329,26 +326,51 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
         var controlRtId = control.RtId.ToString();
         var name = $"{rule.Id}|{controlRtId}|{sourceAttributePath}";
 
-        var suggestion = new JObject
-        {
-            ["name"] = name,
-            ["controlRtId"] = controlRtId,
-            ["controlCkTypeId"] = c.SourceControlCkTypeId,
+        var suggestion = new MappingSuggestion(
+            name,
+            controlRtId,
+            c.SourceControlCkTypeId,
             // Output field name "spaceRtId" / "spaceCkTypeId" is historical (matches the
             // AnthropicAiQueryNode contract); when a rule resolves a child target, these
             // fields carry the child's identity (e.g. a TemperatureSensor), not the
             // container's. Downstream pipelines see the correct mapping target either way.
-            ["spaceRtId"] = target.RtId.ToString(),
-            ["spaceCkTypeId"] = targetCkTypeId,
-            ["sourceAttributePath"] = sourceAttributePath,
-            ["targetAttributePath"] = rule.Map.TargetAttribute,
-            ["mappingExpression"] = rule.Map.Expression ?? string.Empty,
-            ["ruleId"] = rule.Id,
-            ["reason"] = $"Container '{containerName}' matched; rule '{rule.Id}' on control '{control.GetAttributeValueOrDefault("Name") as string ?? "(unnamed)"}'"
-        };
+            target.RtId.ToString(),
+            targetCkTypeId,
+            sourceAttributePath,
+            rule.Map.TargetAttribute!,
+            rule.Map.Expression ?? string.Empty,
+            rule.Id!,
+            $"Container '{containerName}' matched; rule '{rule.Id}' on control '{control.GetAttributeValueOrDefault("Name") as string ?? "(unnamed)"}'");
         suggestions.Add(suggestion);
         return 1;
     }
+
+    /// <summary>
+    /// Typed shape of a single DataPointMapping suggestion. The serialized key names/order
+    /// (camelCase, fixed order) match the AnthropicAiQueryNode output contract so the same
+    /// downstream ForEach consumes both. Set&lt;T&gt; reproduces the former JsonObject bytes.
+    /// </summary>
+    internal sealed record MappingSuggestion(
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("controlRtId")] string ControlRtId,
+        [property: JsonPropertyName("controlCkTypeId")] string ControlCkTypeId,
+        [property: JsonPropertyName("spaceRtId")] string SpaceRtId,
+        [property: JsonPropertyName("spaceCkTypeId")] string SpaceCkTypeId,
+        [property: JsonPropertyName("sourceAttributePath")] string SourceAttributePath,
+        [property: JsonPropertyName("targetAttributePath")] string TargetAttributePath,
+        [property: JsonPropertyName("mappingExpression")] string MappingExpression,
+        [property: JsonPropertyName("ruleId")] string RuleId,
+        [property: JsonPropertyName("reason")] string Reason);
+
+    /// <summary>Typed shape of the optional statistics object written to StatisticsTargetPath.</summary>
+    internal sealed record MappingStatistics(
+        [property: JsonPropertyName("totalContainers")] int TotalContainers,
+        [property: JsonPropertyName("matchedContainers")] int MatchedContainers,
+        [property: JsonPropertyName("unmatchedContainers")] int UnmatchedContainers,
+        [property: JsonPropertyName("unmatchedContainerNames")] IReadOnlyList<string> UnmatchedContainerNames,
+        [property: JsonPropertyName("totalSuggestions")] int TotalSuggestions,
+        [property: JsonPropertyName("ruleHits")] IReadOnlyDictionary<string, int> RuleHits,
+        [property: JsonPropertyName("definedRuleIds")] IReadOnlyList<string> DefinedRuleIds);
 
     internal static bool ControlHasState(RtEntity control, string statesAttribute, string stateNameAttribute,
         string stateName)

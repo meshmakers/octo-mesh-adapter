@@ -156,7 +156,7 @@ public class SftpUploadNode(
         string? fileName;
         if (!string.IsNullOrWhiteSpace(c.FileNamePath))
         {
-            fileName = dataContext.GetSimpleValueByPath<string>(c.FileNamePath);
+            fileName = dataContext.Get<string>(c.FileNamePath);
         }
         else
         {
@@ -213,7 +213,7 @@ public class SftpUploadNode(
 
             if (!string.IsNullOrWhiteSpace(configuration.FileRtIdPath))
             {
-                fileRtId = dataContext.GetSimpleValueByPath<string>(configuration.FileRtIdPath);
+                fileRtId = dataContext.Get<string>(configuration.FileRtIdPath);
             }
 
             // Fall back to static FileRtId only if no value was obtained from the path
@@ -246,7 +246,7 @@ public class SftpUploadNode(
         }
 
         // String content from data context
-        var content = dataContext.GetSimpleValueByPath<string>(configuration.Path);
+        var content = dataContext.Get<string>(configuration.Path);
         if (content == null)
         {
             throw PipelineExecutionException.ValueNotSet(nodeContext, configuration.Path);

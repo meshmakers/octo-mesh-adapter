@@ -1,9 +1,9 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
-using Newtonsoft.Json.Linq;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 using HttpRequestOptions = Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests.HttpRequestOptions;
 
@@ -54,7 +54,6 @@ public class HttpRequestServiceTests
 
         _service.RemoveRoute(HttpMethod.Get, "/test");
 
-        // Should not throw - route was removed
         var handle = _service.CreateRoute(options);
         Assert.NotNull(handle);
     }
@@ -71,7 +70,6 @@ public class HttpRequestServiceTests
 
         handle.Dispose();
 
-        // Should not throw - route was removed by Dispose
         var newHandle = _service.CreateRoute(options);
         Assert.NotNull(newHandle);
     }
@@ -83,11 +81,11 @@ public class HttpRequestServiceTests
     [Fact]
     public async Task SendRequestAsync_KnownRoute_ExecutesFuncAndReturnsTrue()
     {
-        JToken? receivedInput = null;
+        JsonNode? receivedInput = null;
         var options = CreateRouteOptions("/api/data", HttpMethod.Get, input =>
         {
             receivedInput = input;
-            return Task.FromResult<JToken?>(new JObject { ["status"] = "ok" });
+            return Task.FromResult<JsonNode?>(new JsonObject { ["status"] = "ok" });
         });
         _service.CreateRoute(options);
 
@@ -108,13 +106,13 @@ public class HttpRequestServiceTests
     }
 
     [Fact]
-    public async Task SendRequestAsync_JsonBody_ParsedAsJToken()
+    public async Task SendRequestAsync_JsonBody_ParsedAsJsonNode()
     {
-        JToken? receivedInput = null;
+        JsonNode? receivedInput = null;
         var options = CreateRouteOptions("/api/json", HttpMethod.Post, input =>
         {
             receivedInput = input;
-            return Task.FromResult<JToken?>(null);
+            return Task.FromResult<JsonNode?>(null);
         });
         _service.CreateRoute(options);
 
@@ -127,17 +125,17 @@ public class HttpRequestServiceTests
         var body = receivedInput!["body"];
         Assert.NotNull(body);
         Assert.Equal("test", body!["name"]?.ToString());
-        Assert.Equal(42, body["value"]?.Value<int>());
+        Assert.Equal(42, body["value"]?.GetValue<int>());
     }
 
     [Fact]
     public async Task SendRequestAsync_TextBody_ParsedAsString()
     {
-        JToken? receivedInput = null;
+        JsonNode? receivedInput = null;
         var options = CreateRouteOptions("/api/text", HttpMethod.Post, input =>
         {
             receivedInput = input;
-            return Task.FromResult<JToken?>(null);
+            return Task.FromResult<JsonNode?>(null);
         });
         _service.CreateRoute(options);
 
@@ -153,11 +151,11 @@ public class HttpRequestServiceTests
     [Fact]
     public async Task SendRequestAsync_QueryParameters_SetInInput()
     {
-        JToken? receivedInput = null;
+        JsonNode? receivedInput = null;
         var options = CreateRouteOptions("/api/query", HttpMethod.Get, input =>
         {
             receivedInput = input;
-            return Task.FromResult<JToken?>(null);
+            return Task.FromResult<JsonNode?>(null);
         });
         _service.CreateRoute(options);
 
@@ -176,9 +174,9 @@ public class HttpRequestServiceTests
     [Fact]
     public async Task SendRequestAsync_ResponseWrittenAsJson()
     {
-        var responseData = new JObject { ["result"] = "success" };
+        var responseData = new JsonObject { ["result"] = "success" };
         var options = CreateRouteOptions("/api/respond", HttpMethod.Get, _ =>
-            Task.FromResult<JToken?>(responseData));
+            Task.FromResult<JsonNode?>(responseData));
         _service.CreateRoute(options);
 
         var context = CreateHttpContext("GET", $"/{TenantId}/api/respond");
@@ -190,7 +188,7 @@ public class HttpRequestServiceTests
         context.Response.Body.Position = 0;
         using var reader = new StreamReader(context.Response.Body);
         var responseBody = await reader.ReadToEndAsync();
-        var parsed = JObject.Parse(responseBody);
+        var parsed = JsonNode.Parse(responseBody)!.AsObject();
         Assert.Equal("success", parsed["result"]?.ToString());
     }
 
@@ -198,7 +196,7 @@ public class HttpRequestServiceTests
     public async Task SendRequestAsync_NullResponse_DoesNotWriteBody()
     {
         var options = CreateRouteOptions("/api/null", HttpMethod.Get, _ =>
-            Task.FromResult<JToken?>(null));
+            Task.FromResult<JsonNode?>(null));
         _service.CreateRoute(options);
 
         var context = CreateHttpContext("GET", $"/{TenantId}/api/null");
@@ -212,11 +210,11 @@ public class HttpRequestServiceTests
     [Fact]
     public async Task SendRequestAsync_PathAndMethodSetInInput()
     {
-        JToken? receivedInput = null;
+        JsonNode? receivedInput = null;
         var options = CreateRouteOptions("/api/info", HttpMethod.Post, input =>
         {
             receivedInput = input;
-            return Task.FromResult<JToken?>(null);
+            return Task.FromResult<JsonNode?>(null);
         });
         _service.CreateRoute(options);
 
@@ -233,9 +231,9 @@ public class HttpRequestServiceTests
     #region Helpers
 
     private static HttpRequestOptions CreateRouteOptions(string route, HttpMethod method,
-        Func<JToken, Task<JToken?>>? executeFunc = null)
+        Func<JsonNode, Task<JsonNode?>>? executeFunc = null)
     {
-        executeFunc ??= _ => Task.FromResult<JToken?>(null);
+        executeFunc ??= _ => Task.FromResult<JsonNode?>(null);
         return new HttpRequestOptions(route, method, executeFunc);
     }
 

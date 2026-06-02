@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -9,13 +11,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class SaveStreamDataInArchiveNodeTests
+public class SaveStreamDataInArchiveNodeTests : NodeTestBase
 {
     private const string TenantId = "test-tenant";
     private const string DataPath = "$.updateInfos";
@@ -39,31 +38,6 @@ public class SaveStreamDataInArchiveNodeTests
 
         A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
         A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
-    }
-
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        SaveStreamDataInArchiveNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "SaveStreamDataInArchive",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-
-        return (dataContext, nodeContext, next);
     }
 
     private SaveStreamDataInArchiveNode CreateNode(NodeDelegate next)
@@ -104,10 +78,10 @@ public class SaveStreamDataInArchiveNodeTests
         return EntityUpdateInfo<RtEntity>.CreateDelete(rtEntityId);
     }
 
-    private void SetupDataContext(IDataContext dataContext, string path,
+    private static void SetupDataContextList(IDataContext dataContext, string path,
         List<EntityUpdateInfo<RtEntity>>? data)
     {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(path, A<JsonSerializer>._))
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(path))
             .Returns(data);
     }
 
@@ -115,10 +89,10 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithData_CallsEnsureDatabaseCreated()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -131,14 +105,14 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithInsertData_InsertsDataPoints()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo(),
             CreateInsertUpdateInfo()
         };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -153,10 +127,10 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithUpdateData_InsertsDataPoints()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateUpdateUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -171,10 +145,10 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithDeleteModOption_DoesNotInsert()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateDeleteUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -187,9 +161,9 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithNullData_DoesNotCreateTable()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
-        SetupDataContext(dataContext, DataPath, null);
+        SetupDataContextList(dataContext, DataPath, null);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -204,9 +178,9 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithEmptyData_DoesNotCreateTable()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
-        SetupDataContext(dataContext, DataPath, new List<EntityUpdateInfo<RtEntity>>());
+        SetupDataContextList(dataContext, DataPath, new List<EntityUpdateInfo<RtEntity>>());
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -219,43 +193,43 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_WithData_CallsNext()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithNullData_CallsNext()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
-        SetupDataContext(dataContext, DataPath, null);
+        SetupDataContextList(dataContext, DataPath, null);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_NullRtEntity_SkipsDataPoint()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo(),
             CreateDeleteUpdateInfo() // Has null RtEntity, won't pass the switch (Delete mod option)
         };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -271,12 +245,12 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_UsesRtChangedDateTimeAsTimestamp()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var changedDateTime = new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
         var entity = CreateRtEntity(changedDateTime);
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(entity) };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         IEnumerable<StreamDataPoint>? capturedDataPoints = null;
         A.CallTo(() => _streamDataRepository.InsertAsync(ArchiveRtId, A<IEnumerable<StreamDataPoint>>._))
@@ -294,11 +268,11 @@ public class SaveStreamDataInArchiveNodeTests
     public async Task ProcessObjectAsync_NoRtChangedDateTime_FallsBackToTransactionDateTime()
     {
         var config = new SaveStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
 
         var entity = CreateRtEntity(changedDateTime: null);
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(entity) };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         IEnumerable<StreamDataPoint>? capturedDataPoints = null;
         A.CallTo(() => _streamDataRepository.InsertAsync(ArchiveRtId, A<IEnumerable<StreamDataPoint>>._))

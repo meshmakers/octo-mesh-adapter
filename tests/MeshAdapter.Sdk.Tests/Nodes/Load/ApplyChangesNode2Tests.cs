@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Messages;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -9,13 +11,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class ApplyChangesNode2Tests
+public class ApplyChangesNode2Tests : NodeTestBase
 {
     private const string EntityUpdatesPath = "$.entityUpdates";
     private const string AssociationUpdatesPath = "$.associationUpdates";
@@ -32,31 +31,6 @@ public class ApplyChangesNode2Tests
 
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
-    }
-
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        ApplyChangesNodeConfiguration2 config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "ApplyChanges",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-
-        return (dataContext, nodeContext, next);
     }
 
     private ApplyChangesNode2 CreateNode(NodeDelegate next)
@@ -110,14 +84,14 @@ public class ApplyChangesNode2Tests
     private static void SetupEntityData(IDataContext dataContext, string path,
         List<EntityUpdateInfo<RtEntity>>? data)
     {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(path, A<JsonSerializer>._))
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(path))
             .Returns(data);
     }
 
     private static void SetupAssociationData(IDataContext dataContext, string path,
         List<AssociationUpdateInfo>? data)
     {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<AssociationUpdateInfo>>(path, A<JsonSerializer>._))
+        A.CallTo(() => dataContext.Get<List<AssociationUpdateInfo>>(path))
             .Returns(data);
     }
 
@@ -125,7 +99,7 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithEntityUpdates_CommitsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupEntityData(dataContext, EntityUpdatesPath, data);
@@ -140,7 +114,7 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithAssociationUpdates_CommitsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration2 { AssociationUpdatesPath = AssociationUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var assocData = new List<AssociationUpdateInfo>
         {
@@ -162,7 +136,7 @@ public class ApplyChangesNode2Tests
             EntityUpdatesPath = EntityUpdatesPath,
             AssociationUpdatesPath = AssociationUpdatesPath
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var entityData = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupEntityData(dataContext, EntityUpdatesPath, entityData);
@@ -188,7 +162,7 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithDuplicateEntityUpdates_DeduplicatesByRtEntityId()
     {
         var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
@@ -218,12 +192,12 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithDuplicateAssociationUpdates_DeduplicatesByOriginAndTarget()
     {
         var config = new ApplyChangesNodeConfiguration2 { AssociationUpdatesPath = AssociationUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var assocData = new List<AssociationUpdateInfo>
         {
             CreateAssociationDelete("000000000000000000000001", "000000000000000000000002"),
-            CreateAssociationDelete("000000000000000000000001", "000000000000000000000002") // duplicate
+            CreateAssociationDelete("000000000000000000000001", "000000000000000000000002")
         };
         SetupAssociationData(dataContext, AssociationUpdatesPath, assocData);
 
@@ -248,7 +222,7 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithNullPaths_DoesNotStartTransaction()
     {
         var config = new ApplyChangesNodeConfiguration2();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -264,7 +238,7 @@ public class ApplyChangesNode2Tests
             EntityUpdatesPath = EntityUpdatesPath,
             AssociationUpdatesPath = AssociationUpdatesPath
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>>());
         SetupAssociationData(dataContext, AssociationUpdatesPath, new List<AssociationUpdateInfo>());
@@ -279,7 +253,7 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithOperationErrors_AbortsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupEntityData(dataContext, EntityUpdatesPath, data);
@@ -306,7 +280,7 @@ public class ApplyChangesNode2Tests
     public async Task ProcessObjectAsync_WithData_CallsNext()
     {
         var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupEntityData(dataContext, EntityUpdatesPath, data);
@@ -314,32 +288,32 @@ public class ApplyChangesNode2Tests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithEmptyData_CallsNext()
     {
         var config = new ApplyChangesNodeConfiguration2();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithMixedInsertAndUpdateEntities_KeepsAllInsertsAndDedupsUpdates()
     {
         var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo("000000000000000000000001"),
             CreateUpdateUpdateInfo("000000000000000000000002"),
-            CreateUpdateUpdateInfo("000000000000000000000002") // duplicate
+            CreateUpdateUpdateInfo("000000000000000000000002")
         };
         SetupEntityData(dataContext, EntityUpdatesPath, data);
 
@@ -357,7 +331,6 @@ public class ApplyChangesNode2Tests
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedEntities);
-        // 1 insert + 1 deduped update = 2
         Assert.Equal(2, capturedEntities!.Count);
     }
 }

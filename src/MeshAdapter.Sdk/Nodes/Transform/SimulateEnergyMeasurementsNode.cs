@@ -3,7 +3,6 @@ using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -117,10 +116,10 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next) : IPipelineNode
             $"SimulateEnergyMeasurements: produced {entities.Count} entity candidates and {associations.Count} association candidates " +
             $"across {c.NumDays} day(s) and {c.MeteringPoints.Count} MeteringPoint(s).");
 
-        dataContext.SetValueByPath(c.EntityUpdatesOutputPath, entities, DocumentModes.Extend, ValueKinds.Simple,
-            TargetValueWriteModes.Overwrite, RtNewtonsoftSerializer.DefaultSerializer);
-        dataContext.SetValueByPath(c.AssociationUpdatesOutputPath, associations, DocumentModes.Extend, ValueKinds.Simple,
-            TargetValueWriteModes.Overwrite, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.EntityUpdatesOutputPath, entities, DocumentModes.Extend, ValueKinds.Simple,
+            TargetValueWriteModes.Overwrite);
+        dataContext.Set(c.AssociationUpdatesOutputPath, associations, DocumentModes.Extend, ValueKinds.Simple,
+            TargetValueWriteModes.Overwrite);
 
         return next(dataContext, nodeContext);
     }

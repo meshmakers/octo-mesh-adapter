@@ -1,10 +1,10 @@
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Runtime.Engine.MongoDb.Formulas;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -195,8 +195,8 @@ internal class ApplyDataPointMappingsNode(
 
         if (updateItems.Count > 0)
         {
-            dataContext.SetValueByPath(c.TargetPath, updateItems, c.DocumentMode, c.TargetValueKind,
-                c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+            dataContext.Set(c.TargetPath, updateItems, c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
         }
 
         await next(dataContext, nodeContext);
@@ -349,37 +349,52 @@ internal class ApplyDataPointMappingsNode(
     private static OctoObjectId? GetSourceRtId(IDataContext dataContext,
         ApplyDataPointMappingsNodeConfiguration config)
     {
-        if (config.SourceRtIdPath == null || dataContext.Current == null) return null;
+        if (config.SourceRtIdPath == null) return null;
 
-        return dataContext.GetComplexObjectByPath<OctoObjectId?>(config.SourceRtIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        return dataContext.Get<OctoObjectId?>(config.SourceRtIdPath);
     }
 
     private static RtCkId<CkTypeId>? GetSourceCkTypeId(IDataContext dataContext,
         ApplyDataPointMappingsNodeConfiguration config)
     {
-        if (config.SourceCkTypeIdPath == null || dataContext.Current == null) return null;
+        if (config.SourceCkTypeIdPath == null) return null;
 
-        return dataContext.GetComplexObjectByPath<RtCkId<CkTypeId>?>(config.SourceCkTypeIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        return dataContext.Get<RtCkId<CkTypeId>?>(config.SourceCkTypeIdPath);
     }
 
     private static object? GetSourceValue(IDataContext dataContext,
         ApplyDataPointMappingsNodeConfiguration config)
     {
-        if (config.SourceValuePath == null || dataContext.Current == null) return null;
+        if (config.SourceValuePath == null) return null;
 
-        var token = dataContext.Current.SelectToken(config.SourceValuePath);
-        return token?.ToObject<object>();
+        // Scalars (bool / long / double / DateTime / string) box via the shared JsonScalar rules
+        // exposed through GetValue — identical to the former hand-rolled UnwrapJsonNode ladder.
+        var scalar = dataContext.GetValue(config.SourceValuePath);
+        if (scalar != null) return scalar;
+
+        // Object / array values are serialized to their compact JSON string (legacy parity:
+        // the former code returned node.ToJsonString() with the default encoder). GetValue
+        // returns null for these kinds, so handle them explicitly here.
+        return dataContext.GetKind(config.SourceValuePath) switch
+        {
+            DataKind.Object or DataKind.Array => CompactJson(dataContext, config.SourceValuePath),
+            _ => null
+        };
+    }
+
+    private static string? CompactJson(IDataContext dataContext, string path)
+    {
+        using var stream = new MemoryStream();
+        dataContext.WriteJsonTo(path, stream);
+        return stream.Length == 0 ? null : System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
     private static string? GetSourceStateName(IDataContext dataContext,
         ApplyDataPointMappingsNodeConfiguration config)
     {
-        if (string.IsNullOrWhiteSpace(config.SourceStateNamePath) || dataContext.Current == null) return null;
+        if (string.IsNullOrWhiteSpace(config.SourceStateNamePath)) return null;
 
-        var token = dataContext.Current.SelectToken(config.SourceStateNamePath);
-        var str = token?.ToObject<string>();
+        var str = dataContext.Get<string>(config.SourceStateNamePath);
         return string.IsNullOrWhiteSpace(str) ? null : str;
     }
 }

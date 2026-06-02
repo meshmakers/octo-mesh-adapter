@@ -1,6 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
@@ -11,401 +11,497 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
+/// <summary>
+/// Drives <see cref="UpdateRtEntityIfNewerNode"/> through a real <see cref="DataContextImpl"/> (not a
+/// mocked <c>IDataContext</c>) so the input/output entities go through the actual STJ serialization
+/// round-trip — the path that masked the attribute-dropping blocker. Covers the per-WKN dedup and the
+/// <c>ExtractDateTime</c> comparison (including the record-typed <c>TimeRange.From</c> path the energy
+/// simulation uses).
+/// </summary>
 public class UpdateRtEntityIfNewerNodeTests
 {
-    private const string InputPath = "$.update.UpdateItems";
-    private const string FilteredOutputPath = "$.update.FilteredItems";
-    private const string OutputPathAll = "$.update.AllItems";
-    private const string AssocInputPath = "$.update.AssocUpdateItems";
-    private const string AssocOutputPath = "$.update.FilteredAssocs";
-
-    private static readonly RtCkId<CkTypeId> EmCkType = new("Basic.Energy/EnergyMeasurement");
-    private static readonly RtCkId<CkRecordId> TimeRangeRecordId = new("Basic/TimeRange");
-    private static readonly RtCkId<CkAssociationRoleId> ParentRole = new("Basic.Energy/HasMeasurement");
+    private const string CkTypeId = "Basic.Energy/EnergyMeasurement";
+    private const string Wkn = "MP1-1.8.0";
 
     private readonly IMeshEtlContext _etlContext;
     private readonly ITenantRepository _tenantRepository;
+    private readonly IOctoSession _session;
 
     public UpdateRtEntityIfNewerNodeTests()
     {
         _etlContext = A.Fake<IMeshEtlContext>();
         _tenantRepository = A.Fake<ITenantRepository>();
-        var session = A.Fake<IOctoSession>();
+        _session = A.Fake<IOctoSession>();
 
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
+        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        SetupExistingEntities();
     }
 
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        UpdateRtEntityIfNewerNodeConfiguration config, JToken? testData = null)
+    private void SetupExistingEntities(params RtEntity[] existing)
     {
-        var services = new ServiceCollection();
+        var resultSet = A.Fake<IResultSet<RtEntity>>();
+        A.CallTo(() => resultSet.Items).Returns(existing);
+        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+                A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .Returns(Task.FromResult<IResultSet<RtEntity>>(resultSet));
+    }
+
+    private static RtEntity Candidate(DateTime from, int slot)
+    {
+        var timeRange = new RtRecord(new RtCkId<CkRecordId>("Basic/TimeRange"), new Dictionary<string, object?>
+        {
+            ["From"] = from,
+            ["To"] = from.AddMinutes(15)
+        });
+        return new RtEntity(new RtCkId<CkTypeId>(CkTypeId), OctoObjectId.GenerateNewId(),
+            new Dictionary<string, object?>
+            {
+                ["TimeRange"] = timeRange,
+                ["slot"] = slot
+            })
+        {
+            RtWellKnownName = Wkn
+        };
+    }
+
+    private static (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareRealContext(
+        UpdateRtEntityIfNewerNodeConfiguration config, List<EntityUpdateInfo<RtEntity>> input)
+    {
+        var dataContext = new DataContextImpl(JsonDocument.Parse("{}"));
+        dataContext.Set(config.InputPath, input);
+
         var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "UpdateRtEntityIfNewer",
-            0,
-            config,
-            dataContext);
-
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var root = NodeContext.CreateRootNodeContext(sp, logger, dataContext);
+        var nodeContext = root.RegisterChildNode("UpdateRtEntityIfNewer", 0, config, dataContext);
         var next = A.Fake<NodeDelegate>();
         return (dataContext, nodeContext, next);
     }
 
-    private UpdateRtEntityIfNewerNode CreateNode(NodeDelegate next)
-        => new(next, _etlContext);
-
-    private static UpdateRtEntityIfNewerNodeConfiguration BaseConfig() => new()
+    [Fact]
+    public async Task NestedRecordComparisonPath_PicksLatestSlot_NotFirstInBatch()
     {
-        InputPath = InputPath,
-        FilteredOutputPath = FilteredOutputPath,
-        OutputPathAll = OutputPathAll,
-        ComparisonAttributePath = "TimeRange.To"
+        var config = new UpdateRtEntityIfNewerNodeConfiguration
+        {
+            InputPath = "$._candidates",
+            FilteredOutputPath = "$._filtered",
+            OutputPathAll = "$._all",
+            ComparisonAttributePath = "TimeRange.From"
+        };
+
+        var t1 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        // Order the batch so the newest slot (slot 3, T+30) is NOT first. With a working
+        // comparison, slot 3 wins; if the comparison value can't be read it falls back to the
+        // first candidate (slot 2) — the distinguishing assertion below.
+        var input = new List<EntityUpdateInfo<RtEntity>>
+        {
+            EntityUpdateInfo<RtEntity>.CreateInsert(Candidate(t1.AddMinutes(15), slot: 2)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(Candidate(t1.AddMinutes(30), slot: 3)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(Candidate(t1, slot: 1))
+        };
+
+        var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
+
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        var filtered = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered");
+        Assert.NotNull(filtered);
+        var inserted = Assert.Single(filtered!);
+        Assert.NotNull(inserted.RtEntity);
+        Assert.Equal(3, inserted.RtEntity!.GetAttributeValue<int>("slot"));
+
+        // Every batch candidate is preserved on the all-output for the archive write.
+        var all = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all");
+        Assert.Equal(3, all!.Count);
+    }
+
+    [Fact]
+    public async Task TopLevelComparisonPath_PicksLatestSlot()
+    {
+        var config = new UpdateRtEntityIfNewerNodeConfiguration
+        {
+            InputPath = "$._candidates",
+            FilteredOutputPath = "$._filtered",
+            OutputPathAll = "$._all",
+            ComparisonAttributePath = "measuredAt"
+        };
+
+        var t1 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var input = new List<EntityUpdateInfo<RtEntity>>
+        {
+            EntityUpdateInfo<RtEntity>.CreateInsert(TopLevelCandidate(t1.AddMinutes(15), slot: 2)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(TopLevelCandidate(t1.AddMinutes(30), slot: 3)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(TopLevelCandidate(t1, slot: 1))
+        };
+
+        var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
+
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        var inserted = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Equal(3, inserted.RtEntity!.GetAttributeValue<int>("slot"));
+    }
+
+    [Fact]
+    public async Task ExistingEntityNewer_CandidateSkippedFromFiltered_ButKeptInAllWithExistingRtId()
+    {
+        var existingRtId = new OctoObjectId("000000000000000000000abc");
+        var existing = new RtEntity(new RtCkId<CkTypeId>(CkTypeId), existingRtId, new Dictionary<string, object?>
+        {
+            ["TimeRange"] = new RtRecord(new RtCkId<CkRecordId>("Basic/TimeRange"),
+                new Dictionary<string, object?> { ["From"] = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc) })
+        })
+        {
+            RtWellKnownName = Wkn
+        };
+        SetupExistingEntities(existing);
+
+        var config = new UpdateRtEntityIfNewerNodeConfiguration
+        {
+            InputPath = "$._candidates",
+            FilteredOutputPath = "$._filtered",
+            OutputPathAll = "$._all",
+            ComparisonAttributePath = "TimeRange.From"
+        };
+
+        // Candidate is older than the existing entity → must not reach the RT-write (filtered) path,
+        // but must still appear on the all-output carrying the existing RtId for the archive.
+        var older = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var input = new List<EntityUpdateInfo<RtEntity>> { EntityUpdateInfo<RtEntity>.CreateInsert(Candidate(older, slot: 1)) };
+
+        var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
+
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+
+        var all = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all");
+        var kept = Assert.Single(all!);
+        Assert.Equal(existingRtId, kept.RtEntity!.RtId);
+    }
+
+    [Fact]
+    public async Task CandidateWithoutWellKnownName_PassesThroughAsInsertOnBothOutputs()
+    {
+        var config = new UpdateRtEntityIfNewerNodeConfiguration
+        {
+            InputPath = "$._candidates",
+            FilteredOutputPath = "$._filtered",
+            OutputPathAll = "$._all",
+            ComparisonAttributePath = "TimeRange.From"
+        };
+
+        var noKey = Candidate(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), slot: 1);
+        noKey.RtWellKnownName = null;
+        var input = new List<EntityUpdateInfo<RtEntity>> { EntityUpdateInfo<RtEntity>.CreateInsert(noKey) };
+
+        var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
+
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
+    }
+
+    private static RtEntity TopLevelCandidate(DateTime measuredAt, int slot)
+    {
+        return new RtEntity(new RtCkId<CkTypeId>(CkTypeId), OctoObjectId.GenerateNewId(),
+            new Dictionary<string, object?>
+            {
+                ["measuredAt"] = measuredAt,
+                ["slot"] = slot
+            })
+        {
+            RtWellKnownName = Wkn
+        };
+    }
+
+    private static RtEntity StringComparisonCandidate(string measuredAt, int slot)
+    {
+        return new RtEntity(new RtCkId<CkTypeId>(CkTypeId), OctoObjectId.GenerateNewId(),
+            new Dictionary<string, object?>
+            {
+                ["measuredAt"] = measuredAt,
+                ["slot"] = slot
+            })
+        {
+            RtWellKnownName = Wkn
+        };
+    }
+
+    [Fact]
+    public async Task OffsetBearingDateString_ComparedByUtcInstant_NotWallClock()
+    {
+        // Pins the offset->UTC handling ExtractDateTime relies on: a date string carrying a
+        // non-UTC offset is compared by its UTC instant, not its wall-clock value. Slot 1's wall
+        // clock (12:00) is later than slot 2's (09:00), but with the +05:00 offset applied slot 1
+        // is 07:00 UTC — EARLIER than slot 2's 09:00 UTC. So the newer entity is slot 2.
+        var config = new UpdateRtEntityIfNewerNodeConfiguration
+        {
+            InputPath = "$._candidates",
+            FilteredOutputPath = "$._filtered",
+            OutputPathAll = "$._all",
+            ComparisonAttributePath = "measuredAt"
+        };
+
+        var input = new List<EntityUpdateInfo<RtEntity>>
+        {
+            EntityUpdateInfo<RtEntity>.CreateInsert(StringComparisonCandidate("2026-01-01T12:00:00+05:00", slot: 1)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(StringComparisonCandidate("2026-01-01T09:00:00Z", slot: 2))
+        };
+
+        var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
+
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        var inserted = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Equal(2, inserted.RtEntity!.GetAttributeValue<int>("slot"));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Scenarios ported from the pre-migration (Newtonsoft) UpdateRtEntityIfNewerNodeTests so the
+    // behaviour of fix #16 (typed-record traversal + DateTime kind/offset normalisation) and the
+    // per-WKN dedup / association filtering stay covered against the STJ node. The original suite
+    // drove a mocked IDataContext with JObject input; these drive the real DataContextImpl instead.
+    // Local/DateTimeOffset comparison values are placed on the existing (DB) side so they reach
+    // ExtractDateTime as raw CLR values and exercise the terminal kind-normalisation switch.
+    // ---------------------------------------------------------------------------------------------
+
+    private static UpdateRtEntityIfNewerNodeConfiguration RecordConfig() => new()
+    {
+        InputPath = "$._candidates",
+        FilteredOutputPath = "$._filtered",
+        OutputPathAll = "$._all",
+        ComparisonAttributePath = "TimeRange.From"
     };
 
-    private static RtRecord BuildTimeRange(object toValue, object? fromValue = null)
+    private static RtEntity RecordCandidate(OctoObjectId rtId, object fromValue, int slot, string? wkn = Wkn)
     {
-        var rec = new RtRecord { CkRecordId = TimeRangeRecordId };
-        rec.SetAttributeRawValue("To", toValue);
-        if (fromValue != null) rec.SetAttributeRawValue("From", fromValue);
-        return rec;
-    }
-
-    private static RtEntity BuildEmEntity(string rtId, string? wkn, object toValue)
-    {
-        var entity = new RtEntity(EmCkType, new OctoObjectId(rtId));
-        if (!string.IsNullOrEmpty(wkn))
+        var timeRange = new RtRecord(new RtCkId<CkRecordId>("Basic/TimeRange"), new Dictionary<string, object?>
         {
-            entity.RtWellKnownName = wkn;
-        }
-        entity.SetAttributeValue("TimeRange", AttributeValueTypesDto.Record, BuildTimeRange(toValue));
-        return entity;
+            ["From"] = fromValue
+        });
+        return new RtEntity(new RtCkId<CkTypeId>(CkTypeId), rtId,
+            new Dictionary<string, object?>
+            {
+                ["TimeRange"] = timeRange,
+                ["slot"] = slot
+            })
+        {
+            RtWellKnownName = wkn
+        };
     }
 
-    private static EntityUpdateInfo<RtEntity> BuildInsert(string rtId, string? wkn, object toValue)
+    private static RtEntity RecordExisting(OctoObjectId rtId, object fromValue, string wkn = Wkn)
     {
-        var entity = BuildEmEntity(rtId, wkn, toValue);
-        return EntityUpdateInfo<RtEntity>.CreateInsert(EmCkType, entity);
-    }
-
-    private void SetupExistingByWkn(params RtEntity[] existing)
-    {
-        var resultSet = A.Fake<IResultSet<RtEntity>>();
-        A.CallTo(() => resultSet.Items).Returns(existing.ToList());
-        A.CallTo(() => resultSet.TotalCount).Returns(existing.Length);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
-                A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
-            .Returns(resultSet);
-    }
-
-    private void SetupInput(IDataContext dataContext, List<EntityUpdateInfo<RtEntity>> input)
-    {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(
-                InputPath, A<JsonSerializer>._))
-            .Returns(input);
-    }
-
-    private void SetupAssocInput(IDataContext dataContext, List<AssociationUpdateInfo>? input)
-    {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<AssociationUpdateInfo>>(
-                AssocInputPath, A<JsonSerializer>._))
-            .Returns(input);
-    }
-
-    /// <summary>
-    /// Wires capture of both output paths. Returns lambdas that read the captured lists
-    /// after the node has run.
-    /// </summary>
-    private static (Func<List<EntityUpdateInfo<RtEntity>>?> Filtered,
-                    Func<List<EntityUpdateInfo<RtEntity>>?> All) WireOutputCapture(IDataContext dataContext)
-    {
-        List<EntityUpdateInfo<RtEntity>>? filtered = null;
-        List<EntityUpdateInfo<RtEntity>>? all = null;
-
-        A.CallTo(() => dataContext.SetValueByPath(
-                FilteredOutputPath,
-                A<List<EntityUpdateInfo<RtEntity>>>._,
-                A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._,
-                A<JsonSerializer>._))
-            .Invokes(call => filtered = (List<EntityUpdateInfo<RtEntity>>?)call.Arguments[1]);
-
-        A.CallTo(() => dataContext.SetValueByPath(
-                OutputPathAll,
-                A<List<EntityUpdateInfo<RtEntity>>>._,
-                A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._,
-                A<JsonSerializer>._))
-            .Invokes(call => all = (List<EntityUpdateInfo<RtEntity>>?)call.Arguments[1]);
-
-        return (() => filtered, () => all);
-    }
-
-    private static Func<List<AssociationUpdateInfo>?> WireAssocCapture(IDataContext dataContext)
-    {
-        List<AssociationUpdateInfo>? captured = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-                AssocOutputPath,
-                A<List<AssociationUpdateInfo>>._,
-                A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._,
-                A<JsonSerializer>._))
-            .Invokes(call => captured = (List<AssociationUpdateInfo>?)call.Arguments[1]);
-        return () => captured;
+        var timeRange = new RtRecord(new RtCkId<CkRecordId>("Basic/TimeRange"), new Dictionary<string, object?>
+        {
+            ["From"] = fromValue
+        });
+        return new RtEntity(new RtCkId<CkTypeId>(CkTypeId), rtId,
+            new Dictionary<string, object?> { ["TimeRange"] = timeRange })
+        {
+            RtWellKnownName = wkn
+        };
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_ResolvesComparisonValueThroughTypedRtRecord()
+    public async Task TypedRecordPath_DbExistingAndCandidateNewer_UpdatesExistingRtId()
     {
-        // Regression test for the typed-record traversal fix: TimeRange is an RtRecord, not a
-        // dictionary or JObject, so the original ExtractDateTime returned null and treated the
-        // candidate as "no comparison value" → skipped.
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, _) = (WireOutputCapture(dataContext));
+        // Regression for the typed-record traversal fix: TimeRange is an RtRecord, so ExtractDateTime
+        // must descend into it. A newer candidate must produce an Update targeting the existing RtId,
+        // not the candidate's freshly generated one.
+        var existingRtId = new OctoObjectId("000000000000000000000010");
+        var existingFrom = new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc);
+        SetupExistingEntities(RecordExisting(existingRtId, existingFrom));
 
-        var existingTo = new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc);
-        var candidateTo = existingTo.AddMinutes(15);
+        var candidate = RecordCandidate(new OctoObjectId("000000000000000000000020"), existingFrom.AddMinutes(15), slot: 1);
+        var input = new List<EntityUpdateInfo<RtEntity>> { EntityUpdateInfo<RtEntity>.CreateInsert(candidate) };
 
-        var existing = BuildEmEntity("000000000000000000000010", "WKN-1", existingTo);
-        SetupExistingByWkn(existing);
-        SetupInput(dataContext, [BuildInsert("000000000000000000000020", "WKN-1", candidateTo)]);
+        var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
 
-        var filtered = getFiltered();
-        Assert.NotNull(filtered);
-        Assert.Single(filtered);
-        Assert.Equal(EntityModOptions.Update, filtered[0].ModOption);
-        // Update must target the existing RtId, not the candidate's freshly generated one.
-        Assert.Equal(existing.RtId, filtered[0].RtEntity!.RtId);
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        var filtered = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Equal(EntityModOptions.Update, filtered.ModOption);
+        Assert.Equal(existingRtId, filtered.RtEntity!.RtId);
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_NormalisesDateTimeOffsetCandidateAgainstUtcExisting()
+    public async Task DateTimeOffsetExisting_NormalisedToUtcInstant_CandidateSameInstantNotNewer()
     {
-        // Candidate carries a DateTimeOffset for the same instant as the existing UTC DateTime.
-        // Both must normalize to the same moment so the candidate is rejected as not-newer.
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, getAll) = WireOutputCapture(dataContext);
-
+        // The existing comparison value is a DateTimeOffset for the same instant as the candidate's
+        // UTC value. ExtractDateTime must reduce it via dto.UtcDateTime so the candidate is rejected
+        // as not-newer (equal instant), then still ride along on the all-output with the existing RtId.
+        var existingRtId = new OctoObjectId("000000000000000000000010");
         var instantUtc = new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc);
-        var sameInstantWithOffset = new DateTimeOffset(2026, 5, 21, 12, 0, 0, TimeSpan.FromHours(2));
+        var sameInstantOffset = new DateTimeOffset(2026, 5, 21, 12, 0, 0, TimeSpan.FromHours(2));
+        SetupExistingEntities(RecordExisting(existingRtId, sameInstantOffset));
 
-        var existing = BuildEmEntity("000000000000000000000010", "WKN-1", instantUtc);
-        SetupExistingByWkn(existing);
-        SetupInput(dataContext, [BuildInsert("000000000000000000000020", "WKN-1", sameInstantWithOffset)]);
+        var candidate = RecordCandidate(new OctoObjectId("000000000000000000000020"), instantUtc, slot: 1);
+        var input = new List<EntityUpdateInfo<RtEntity>> { EntityUpdateInfo<RtEntity>.CreateInsert(candidate) };
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        Assert.Empty(getFiltered()!);
-        // The candidate still ends up on _allEms with the existing RtId so the archive write lands.
-        Assert.Single(getAll()!);
-        Assert.Equal(existing.RtId, getAll()![0].RtEntity!.RtId);
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        var kept = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
+        Assert.Equal(existingRtId, kept.RtEntity!.RtId);
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_NormalisesLocalKindCandidateAgainstUtcExisting()
+    public async Task LocalKindExisting_NormalisedToUtcInstant_CandidateSameInstantNotNewer()
     {
-        // DateTime with DateTimeKind.Local representing the same instant as a UTC DateTime must
-        // compare equal after normalization, not be treated as newer because the numeric ticks
-        // happen to be larger on non-UTC machines.
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, _) = WireOutputCapture(dataContext);
-
+        // The existing comparison value is a DateTimeKind.Local DateTime for the same instant as the
+        // candidate's UTC value. ExtractDateTime must convert it via ToUniversalTime() (not relabel it
+        // with SpecifyKind), so the candidate compares equal and is rejected as not-newer. Holds on any
+        // machine time zone because ToLocalTime()->ToUniversalTime() preserves the instant.
+        var existingRtId = new OctoObjectId("000000000000000000000010");
         var instantUtc = new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc);
-        var sameInstantLocal = instantUtc.ToLocalTime(); // DateTimeKind.Local
+        var sameInstantLocal = instantUtc.ToLocalTime();
+        SetupExistingEntities(RecordExisting(existingRtId, sameInstantLocal));
 
-        var existing = BuildEmEntity("000000000000000000000010", "WKN-1", instantUtc);
-        SetupExistingByWkn(existing);
-        SetupInput(dataContext, [BuildInsert("000000000000000000000020", "WKN-1", sameInstantLocal)]);
+        var candidate = RecordCandidate(new OctoObjectId("000000000000000000000020"), instantUtc, slot: 1);
+        var input = new List<EntityUpdateInfo<RtEntity>> { EntityUpdateInfo<RtEntity>.CreateInsert(candidate) };
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        Assert.Empty(getFiltered()!);
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_IntraBatchDedupKeepsLatestAndCanonicalisedRtIds()
+    public async Task IntraBatchDedup_KeepsLatestAsInsert_AllShareFirstCandidateRtId()
     {
-        // Three candidates for the same WKN, no DB match. The latest by TimeRange.To wins on
-        // _filteredEms as an Insert with the first batch RtId; every candidate appears on
-        // _allEms pinned to that same canonical RtId.
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, getAll) = WireOutputCapture(dataContext);
+        // Three candidates for the same WKN, no DB match. The latest by TimeRange.From wins on the
+        // filtered output as an Insert carrying the FIRST batch candidate's RtId; every candidate
+        // appears on the all-output pinned to that same canonical RtId.
+        SetupExistingEntities();
 
-        SetupExistingByWkn(); // no DB match
-
+        var firstRtId = new OctoObjectId("000000000000000000000020");
         var t0 = new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc);
-        var firstRtId = "000000000000000000000020";
-        SetupInput(dataContext, [
-            BuildInsert(firstRtId, "WKN-1", t0),
-            BuildInsert("000000000000000000000021", "WKN-1", t0.AddMinutes(30)),
-            BuildInsert("000000000000000000000022", "WKN-1", t0.AddMinutes(15))
-        ]);
+        var input = new List<EntityUpdateInfo<RtEntity>>
+        {
+            EntityUpdateInfo<RtEntity>.CreateInsert(RecordCandidate(firstRtId, t0, slot: 1)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(RecordCandidate(new OctoObjectId("000000000000000000000021"), t0.AddMinutes(30), slot: 3)),
+            EntityUpdateInfo<RtEntity>.CreateInsert(RecordCandidate(new OctoObjectId("000000000000000000000022"), t0.AddMinutes(15), slot: 2))
+        };
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        var filtered = getFiltered()!;
-        var all = getAll()!;
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
 
-        Assert.Single(filtered);
-        Assert.Equal(EntityModOptions.Insert, filtered[0].ModOption);
-        Assert.Equal(new OctoObjectId(firstRtId), filtered[0].RtEntity!.RtId);
-        // The kept attributes must come from the candidate with the latest TimeRange.To.
-        var keptTo = (DateTime)((RtRecord)filtered[0].RtEntity!.Attributes["TimeRange"]!).Attributes["To"]!;
-        Assert.Equal(t0.AddMinutes(30), keptTo);
+        var filtered = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Equal(EntityModOptions.Insert, filtered.ModOption);
+        Assert.Equal(firstRtId, filtered.RtEntity!.RtId);
+        Assert.Equal(3, filtered.RtEntity!.GetAttributeValue<int>("slot"));
 
+        var all = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!;
         Assert.Equal(3, all.Count);
-        Assert.All(all, u => Assert.Equal(new OctoObjectId(firstRtId), u.RtEntity!.RtId));
+        Assert.All(all, u => Assert.Equal(firstRtId, u.RtEntity!.RtId));
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_DbExistsAndCandidateNotNewer_OmitsFromFilteredButKeepsInAll()
+    public async Task DbMissing_EmitsInsertOnBothOutputs_WithCandidateRtId()
     {
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, getAll) = WireOutputCapture(dataContext);
+        SetupExistingEntities();
 
-        var existingTo = new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc);
-        var olderTo = existingTo.AddMinutes(-15);
+        var candidateRtId = new OctoObjectId("000000000000000000000020");
+        var input = new List<EntityUpdateInfo<RtEntity>>
+        {
+            EntityUpdateInfo<RtEntity>.CreateInsert(
+                RecordCandidate(candidateRtId, new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc), slot: 1))
+        };
 
-        var existing = BuildEmEntity("000000000000000000000010", "WKN-1", existingTo);
-        SetupExistingByWkn(existing);
-        SetupInput(dataContext, [BuildInsert("000000000000000000000020", "WKN-1", olderTo)]);
+        var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
 
-        Assert.Empty(getFiltered()!);
-        var all = getAll()!;
-        Assert.Single(all);
-        Assert.Equal(EntityModOptions.Update, all[0].ModOption);
-        Assert.Equal(existing.RtId, all[0].RtEntity!.RtId);
+        var filtered = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Equal(EntityModOptions.Insert, filtered.ModOption);
+        Assert.Equal(candidateRtId, filtered.RtEntity!.RtId);
+
+        var all = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
+        Assert.Equal(candidateRtId, all.RtEntity!.RtId);
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_DbMissing_EmitsInsertOnBothOutputs()
+    public async Task EmptyInput_WritesEmptyOutputsCallsNextAndSkipsDbQuery()
     {
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, getAll) = WireOutputCapture(dataContext);
+        var input = new List<EntityUpdateInfo<RtEntity>>();
 
-        SetupExistingByWkn();
-        var candidateRtId = "000000000000000000000020";
-        SetupInput(dataContext,
-            [BuildInsert(candidateRtId, "WKN-NEW", new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc))]);
+        var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
 
-        var filtered = getFiltered()!;
-        Assert.Single(filtered);
-        Assert.Equal(EntityModOptions.Insert, filtered[0].ModOption);
-        Assert.Equal(new OctoObjectId(candidateRtId), filtered[0].RtEntity!.RtId);
-
-        var all = getAll()!;
-        Assert.Single(all);
-        Assert.Equal(new OctoObjectId(candidateRtId), all[0].RtEntity!.RtId);
-    }
-
-    [Fact]
-    public async Task ProcessObjectAsync_CandidateWithoutWellKnownName_PassesThroughAsInsertOnBothOutputs()
-    {
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, getAll) = WireOutputCapture(dataContext);
-
-        SetupExistingByWkn();
-        SetupInput(dataContext,
-            [BuildInsert("000000000000000000000020", null, new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc))]);
-
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
-
-        Assert.Single(getFiltered()!);
-        Assert.Equal(EntityModOptions.Insert, getFiltered()![0].ModOption);
-        Assert.Single(getAll()!);
-        Assert.Equal(EntityModOptions.Insert, getAll()![0].ModOption);
-    }
-
-    [Fact]
-    public async Task ProcessObjectAsync_EmptyInput_WritesEmptyOutputsAndCallsNext()
-    {
-        var config = BaseConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        var (getFiltered, getAll) = WireOutputCapture(dataContext);
-
-        SetupInput(dataContext, new List<EntityUpdateInfo<RtEntity>>());
-
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
-
-        Assert.Empty(getFiltered()!);
-        Assert.Empty(getAll()!);
+        Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
+        Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        // No DB query when there is nothing to dedup.
+        // Nothing to dedup -> no DB round-trip.
         A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
             .MustNotHaveHappened();
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_AssociationFilter_KeepsOnlyAssociationsForInsertedOrigins()
+    public async Task AssociationFilter_KeepsOnlyAssociationsForInsertedOrigins()
     {
-        var config = BaseConfig() with
-        {
-            CandidateAssociationsInputPath = AssocInputPath,
-            FilteredAssociationsOutputPath = AssocOutputPath
-        };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        WireOutputCapture(dataContext);
-        var getAssocs = WireAssocCapture(dataContext);
+        // WKN-EXIST already exists in the DB with a newer value; its older candidate is skipped, so its
+        // association must be dropped. WKN-NEW has no DB match and becomes an Insert, so its association
+        // must survive — keyed on the inserted origin's RtId.
+        var existingRtId = new OctoObjectId("000000000000000000000010");
+        SetupExistingEntities(
+            RecordExisting(existingRtId, new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc), "WKN-EXIST"));
 
-        // WKN-EXIST exists in DB, candidate older → skipped → its association must be dropped.
-        // WKN-NEW does not exist → candidate becomes Insert → its association must survive.
-        var existing = BuildEmEntity("000000000000000000000010", "WKN-EXIST",
-            new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc));
-        SetupExistingByWkn(existing);
+        var config = new UpdateRtEntityIfNewerNodeConfiguration
+        {
+            InputPath = "$._candidates",
+            FilteredOutputPath = "$._filtered",
+            OutputPathAll = "$._all",
+            ComparisonAttributePath = "TimeRange.From",
+            CandidateAssociationsInputPath = "$._assocIn",
+            FilteredAssociationsOutputPath = "$._assocOut"
+        };
 
         var newRtId = new OctoObjectId("000000000000000000000020");
         var staleRtId = new OctoObjectId("000000000000000000000021");
 
-        SetupInput(dataContext, [
-            BuildInsert(newRtId.ToString(), "WKN-NEW",
-                new DateTime(2026, 5, 21, 10, 0, 0, DateTimeKind.Utc)),
+        var input = new List<EntityUpdateInfo<RtEntity>>
+        {
+            EntityUpdateInfo<RtEntity>.CreateInsert(
+                RecordCandidate(newRtId, new DateTime(2026, 5, 21, 11, 0, 0, DateTimeKind.Utc), slot: 1, wkn: "WKN-NEW")),
+            EntityUpdateInfo<RtEntity>.CreateInsert(
+                RecordCandidate(staleRtId, new DateTime(2026, 5, 21, 9, 0, 0, DateTimeKind.Utc), slot: 1, wkn: "WKN-EXIST"))
+        };
 
-            BuildInsert(staleRtId.ToString(), "WKN-EXIST",
-                new DateTime(2026, 5, 21, 9, 0, 0, DateTimeKind.Utc))
-        ]);
+        var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
 
-        SetupAssocInput(dataContext, [
+        var ckType = new RtCkId<CkTypeId>(CkTypeId);
+        var role = new RtCkId<CkAssociationRoleId>("Basic.Energy/HasMeasurement");
+        var assocInput = new List<AssociationUpdateInfo>
+        {
             AssociationUpdateInfo.CreateInsert(
-                new RtEntityId(EmCkType, newRtId),
-                new RtEntityId(EmCkType, new OctoObjectId("0000000000000000000000aa")),
-                ParentRole),
-
+                new RtEntityId(ckType, newRtId),
+                new RtEntityId(ckType, new OctoObjectId("0000000000000000000000aa")),
+                role),
             AssociationUpdateInfo.CreateInsert(
-                new RtEntityId(EmCkType, staleRtId),
-                new RtEntityId(EmCkType, new OctoObjectId("0000000000000000000000bb")),
-                ParentRole)
-        ]);
+                new RtEntityId(ckType, staleRtId),
+                new RtEntityId(ckType, new OctoObjectId("0000000000000000000000bb")),
+                role)
+        };
+        dataContext.Set("$._assocIn", assocInput);
 
-        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
 
-        var assocs = getAssocs();
+        var assocs = dataContext.Get<List<AssociationUpdateInfo>>("$._assocOut");
         Assert.NotNull(assocs);
-        Assert.Single(assocs);
-        Assert.Equal(newRtId, assocs[0].Origin.RtId);
+        var kept = Assert.Single(assocs!);
+        Assert.Equal(newRtId, kept.Origin.RtId);
     }
 }

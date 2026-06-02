@@ -19,7 +19,7 @@ public class QueryResultToMarkdownTableNode(NodeDelegate next) : IPipelineNode
     {
         var c = nodeContext.GetNodeConfiguration<QueryResultToMarkdownTableNodeConfiguration>();
 
-        var queryResult = dataContext.GetComplexObjectByPath<QueryResult>(c.Path);
+        var queryResult = dataContext.Get<QueryResult>(c.Path);
         if (queryResult == null)
         {
             nodeContext.Error("No value found");
@@ -34,7 +34,7 @@ public class QueryResultToMarkdownTableNode(NodeDelegate next) : IPipelineNode
             stringBuilder.AppendLine("| " + string.Join(" | ", row.Values) + " |");
         }
 
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, stringBuilder.ToString());
+        dataContext.Set(c.TargetPath, stringBuilder.ToString(), c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }

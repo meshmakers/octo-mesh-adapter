@@ -1,15 +1,16 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class ImportFromCsvNodeTests
+public class ImportFromCsvNodeTests : NodeTestBase
 {
     private static ImportFromCsvNodeConfiguration CreateConfig(
         ICollection<CsvColumnMapping>? mappings = null,
@@ -169,7 +170,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("hello", mapping, nodeContext, 1);
 
-        Assert.Equal("hello", result?.Value<string>());
+        Assert.Equal("hello", result);
     }
 
     [Fact]
@@ -194,7 +195,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("-61,48", mapping, nodeContext, 1);
 
-        Assert.Equal(-61.48, result?.Value<double>());
+        Assert.Equal(-61.48, Assert.IsType<double>(result));
     }
 
     [Fact]
@@ -208,7 +209,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("28.500,00", mapping, nodeContext, 1);
 
-        Assert.Equal(28500.00, result?.Value<double>());
+        Assert.Equal(28500.00, Assert.IsType<double>(result));
     }
 
     [Fact]
@@ -222,9 +223,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("13.03.2026", mapping, nodeContext, 1);
 
-        Assert.NotNull(result);
-        Assert.Equal(JTokenType.Date, result.Type);
-        Assert.Equal(new DateTime(2026, 3, 13), result.Value<DateTime>());
+        Assert.Equal(new DateTime(2026, 3, 13), Assert.IsType<DateTime>(result));
     }
 
     [Fact]
@@ -235,7 +234,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("0", mapping, nodeContext, 1);
 
-        Assert.Equal(false, result?.Value<bool>());
+        Assert.False(Assert.IsType<bool>(result));
     }
 
     [Fact]
@@ -246,7 +245,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("1", mapping, nodeContext, 1);
 
-        Assert.Equal(true, result?.Value<bool>());
+        Assert.True(Assert.IsType<bool>(result));
     }
 
     [Fact]
@@ -257,7 +256,7 @@ public class ImportFromCsvNodeTests
 
         var result = ImportFromCsvNode.ConvertValue("42", mapping, nodeContext, 1);
 
-        Assert.Equal(42, result?.Value<int>());
+        Assert.Equal(42, Assert.IsType<int>(result));
     }
 
     [Fact]
@@ -305,52 +304,36 @@ public class ImportFromCsvNodeTests
                 }
             });
 
-        var inputData = new JObject
-        {
-            ["files"] = new JArray
+        var (dataContext, nodeContext, next) = PrepareTest<ImportFromCsvNodeConfiguration>(config);
+
+        // Mock the file data read
+        A.CallTo(() => dataContext.Get<string>("$.files[0].data"))
+            .Returns(base64Data);
+
+        List<Dictionary<string, object?>>? capturedValue = null;
+        A.CallTo(() => dataContext.Set(
+                config.TargetPath, A<List<Dictionary<string, object?>>?>._, config.DocumentMode,
+                config.TargetValueKind, config.TargetValueWriteMode))
+            .Invokes((string _, List<Dictionary<string, object?>>? result, DocumentModes _, ValueKinds _,
+                TargetValueWriteModes _) =>
             {
-                new JObject
-                {
-                    ["fileName"] = "test.csv",
-                    ["data"] = base64Data,
-                    ["encoding"] = "base64"
-                }
-            }
-        };
+                capturedValue = result;
+            });
 
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(inputData);
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("ImportFromCsv", 0, config, dataContext);
-
-        JToken? capturedValue = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-            A<string>._,
-            A<DocumentModes>._,
-            A<ValueKinds>._,
-            A<TargetValueWriteModes>._,
-            A<JArray>._)).Invokes(call => { capturedValue = call.GetArgument<JArray>(4); });
-
-        var next = A.Fake<NodeDelegate>();
         var node = new ImportFromCsvNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedValue);
-        var resultArray = (JArray)capturedValue;
-        Assert.Equal(2, resultArray.Count);
+        Assert.Equal(2, capturedValue!.Count);
 
-        Assert.Equal("Alice", resultArray[0]?["name"]?.Value<string>());
-        Assert.Equal(-61.48, resultArray[0]?["amount"]?.Value<double>());
-        Assert.Equal(new DateTime(2026, 3, 13), resultArray[0]?["date"]?.Value<DateTime>());
+        Assert.Equal("Alice", capturedValue[0]["name"]);
+        Assert.Equal(-61.48, capturedValue[0]["amount"]);
+        Assert.Equal(new DateTime(2026, 3, 13), capturedValue[0]["date"]);
 
-        Assert.Equal("Bob", resultArray[1]?["name"]?.Value<string>());
-        Assert.Equal(100.00, resultArray[1]?["amount"]?.Value<double>());
+        Assert.Equal("Bob", capturedValue[1]["name"]);
+        Assert.Equal(100.00, capturedValue[1]["amount"]);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -367,44 +350,32 @@ public class ImportFromCsvNodeTests
                 new() { SourceIndex = 2, TargetProperty = "third", DataType = CsvDataType.String }
             });
 
-        var inputData = new JObject
-        {
-            ["files"] = new JArray
+        var (dataContext, nodeContext, next) = PrepareTest<ImportFromCsvNodeConfiguration>(config);
+
+        A.CallTo(() => dataContext.Get<string>("$.files[0].data"))
+            .Returns(base64Data);
+
+        List<Dictionary<string, object?>>? capturedValue = null;
+        A.CallTo(() => dataContext.Set(
+                config.TargetPath, A<List<Dictionary<string, object?>>?>._, config.DocumentMode,
+                config.TargetValueKind, config.TargetValueWriteMode))
+            .Invokes((string _, List<Dictionary<string, object?>>? result, DocumentModes _, ValueKinds _,
+                TargetValueWriteModes _) =>
             {
-                new JObject { ["fileName"] = "test.csv", ["data"] = base64Data }
-            }
-        };
+                capturedValue = result;
+            });
 
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(inputData);
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("ImportFromCsv", 0, config, dataContext);
-
-        JToken? capturedValue = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-            A<string>._,
-            A<DocumentModes>._,
-            A<ValueKinds>._,
-            A<TargetValueWriteModes>._,
-            A<JArray>._)).Invokes(call => { capturedValue = call.GetArgument<JArray>(4); });
-
-        var next = A.Fake<NodeDelegate>();
         var node = new ImportFromCsvNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedValue);
-        var resultArray = (JArray)capturedValue;
-        Assert.Equal(2, resultArray.Count);
+        Assert.Equal(2, capturedValue!.Count);
 
         // First row "a;b;c" with no header means it's data
-        Assert.Equal("a", resultArray[0]?["first"]?.Value<string>());
-        Assert.Equal("c", resultArray[0]?["third"]?.Value<string>());
-        Assert.Equal("1", resultArray[1]?["first"]?.Value<string>());
-        Assert.Equal("3", resultArray[1]?["third"]?.Value<string>());
+        Assert.Equal("a", capturedValue[0]["first"]);
+        Assert.Equal("c", capturedValue[0]["third"]);
+        Assert.Equal("1", capturedValue[1]["first"]);
+        Assert.Equal("3", capturedValue[1]["third"]);
     }
 
     [Fact]
@@ -416,22 +387,16 @@ public class ImportFromCsvNodeTests
                 new() { SourceColumn = "Name", TargetProperty = "name" }
             });
 
-        var inputData = new JObject();
+        var (dataContext, nodeContext, next) = PrepareTest<ImportFromCsvNodeConfiguration>(config);
 
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(inputData);
+        // Explicitly mock Get<string> to return null so GetFileData fails fast.
+        A.CallTo(() => dataContext.Get<string>("$.files[0].data"))
+            .Returns((string?)null);
 
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("ImportFromCsv", 0, config, dataContext);
-
-        var next = A.Fake<NodeDelegate>();
         var node = new ImportFromCsvNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
     #endregion

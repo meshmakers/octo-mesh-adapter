@@ -122,8 +122,7 @@ public class GetQueryByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCac
                 break;
         }
 
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode,
-            queryResult);
+        dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }

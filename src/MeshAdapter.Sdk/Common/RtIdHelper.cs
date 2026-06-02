@@ -1,5 +1,4 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -31,13 +30,7 @@ public static class RtIdHelper
             return rtId.Value;
         }
 
-        if (dataContext.Current == null)
-        {
-            throw MeshAdapterPipelineExecutionException.DataContextIsNull(nodeContext);
-        }
-
-        rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(rtIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        rtId = dataContext.Get<OctoObjectId?>(rtIdPath!);
 
         if (rtId == null && generateNewRtId)
         {
@@ -65,6 +58,7 @@ public static class RtIdHelper
     /// <exception cref="MeshAdapterPipelineExecutionException">When data context is null</exception>
     public static bool TryResolveRtId(OctoObjectId? rtId, string? rtIdPath, IDataContext dataContext, INodeContext nodeContext, out OctoObjectId? resolvedRtId)
     {
+        _ = nodeContext;
         if (rtId == null && rtIdPath == null)
         {
             resolvedRtId = null;
@@ -77,13 +71,7 @@ public static class RtIdHelper
             return true;
         }
 
-        if (dataContext.Current == null)
-        {
-            throw MeshAdapterPipelineExecutionException.DataContextIsNull(nodeContext);
-        }
-
-        rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(rtIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        rtId = dataContext.Get<OctoObjectId?>(rtIdPath!);
 
 
         if (rtId == null)

@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
@@ -15,12 +17,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetQueryByIdNodeTests
+public class GetQueryByIdNodeTests : NodeTestBase
 {
     private static readonly OctoObjectId TestQueryRtId = new("000000000000000000000099");
     private static readonly CkId<CkTypeId> TestCkTypeId = new("TestModel", new CkTypeId("TestType-1"));
@@ -43,7 +43,6 @@ public class GetQueryByIdNodeTests
         A.CallTo(() => _tenantRepository.TenantId).Returns(TestTenantId);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
 
-        // Set up CK cache to return a valid type graph for path evaluation
         var ckTypeDto = new CkCompiledTypeDto { TypeId = new CkTypeId("TestType-1") };
         var ckTypeGraph = new CkTypeGraph(TestCkTypeId, ckTypeDto);
         A.CallTo(() => _ckCacheService.GetRtCkType(TestTenantId, A<RtCkId<CkTypeId>>._))
@@ -51,30 +50,6 @@ public class GetQueryByIdNodeTests
         A.CallTo(() => _ckCacheService.TryGetCkType(TestTenantId, A<CkId<CkTypeId>>._, out ckTypeGraph))
             .Returns(true)
             .AssignsOutAndRefParameters(ckTypeGraph);
-    }
-
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        GetQueryByIdNodeConfiguration config)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "GetQueryById",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
     }
 
     private GetQueryByIdNode CreateNode(NodeDelegate next)
@@ -146,13 +121,26 @@ public class GetQueryByIdNodeTests
         };
     }
 
+    private static void CaptureSetCall(IDataContext dataContext, string targetPath,
+        Action<QueryResult?> capture)
+    {
+        A.CallTo(() => dataContext.Set(
+                targetPath,
+                A<QueryResult?>._,
+                A<DocumentModes>._,
+                A<ValueKinds>._,
+                A<TargetValueWriteModes>._))
+            .Invokes((string _, QueryResult? qr, DocumentModes _, ValueKinds _,
+                TargetValueWriteModes _) => capture(qr));
+    }
+
     #region Query Not Found
 
     [Fact]
     public async Task ProcessObjectAsync_WithNonExistentQuery_Throws()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         SetupQueryEntityNotFound();
 
@@ -170,7 +158,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithSimpleQuery_CallsNext()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var simpleQuery = new RtSimpleRtQuery
         {
@@ -183,14 +171,14 @@ public class GetQueryByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithSimpleQuery_PassesSkipTakeToRepository()
     {
         var config = CreateConfig(skip: 5, take: 10);
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var simpleQuery = new RtSimpleRtQuery
         {
@@ -217,7 +205,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithSimpleQuery_SetsQueryResultOnDataContext()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var simpleQuery = new RtSimpleRtQuery
         {
@@ -230,12 +218,12 @@ public class GetQueryByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set(
                 "$.queryResult",
+                A<QueryResult?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<QueryResult>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -247,7 +235,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithAggregationQuery_CallsNext()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var aggregationQuery = CreateTestAggregationQuery("quantity", RtAggregationTypesEnum.Sum);
         SetupAggregationQuery(aggregationQuery);
@@ -259,14 +247,14 @@ public class GetQueryByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithAggregationQuery_PassesNullSkipTakeToRepository()
     {
         var config = CreateConfig(skip: 5, take: 10);
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var aggregationQuery = CreateTestAggregationQuery("quantity", RtAggregationTypesEnum.Sum);
         SetupAggregationQuery(aggregationQuery);
@@ -278,7 +266,6 @@ public class GetQueryByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        // Aggregation queries should pass null for skip/take
         A.CallTo(() => _tenantRepository.GetRtEntitiesGraphByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
@@ -293,7 +280,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithAggregationQuery_SetsSingleRowResult()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var aggregationQuery = CreateTestAggregationQuery("quantity", RtAggregationTypesEnum.Sum);
         SetupAggregationQuery(aggregationQuery);
@@ -303,14 +290,7 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(aggregationResult: aggregationResult));
 
         QueryResult? capturedResult = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-                "$.queryResult",
-                A<DocumentModes>._,
-                A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<QueryResult>._))
-            .Invokes((string _, DocumentModes _, ValueKinds _, TargetValueWriteModes _, QueryResult qr) =>
-                capturedResult = qr);
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -328,12 +308,11 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithAggregationQuery_NullResult_Throws()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var aggregationQuery = CreateTestAggregationQuery("quantity", RtAggregationTypesEnum.Sum);
         SetupAggregationQuery(aggregationQuery);
 
-        // No aggregation result
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(aggregationResult: null));
 
         var node = CreateNode(next);
@@ -346,7 +325,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithAggregationQuery_MultipleColumns_ReturnsAllValues()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var aggregationQuery = new RtAggregationRtQuery { QueryCkTypeId = "TestModel/TestType" };
         var col1 = new RtAggregationQueryColumnRecord
@@ -376,14 +355,7 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(aggregationResult: aggregationResult));
 
         QueryResult? capturedResult = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-                "$.queryResult",
-                A<DocumentModes>._,
-                A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<QueryResult>._))
-            .Invokes((string _, DocumentModes _, ValueKinds _, TargetValueWriteModes _, QueryResult qr) =>
-                capturedResult = qr);
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -392,9 +364,9 @@ public class GetQueryByIdNodeTests
         Assert.Equal(3, capturedResult!.Columns.Count);
         Assert.Single(capturedResult.Rows);
         Assert.Equal(3, capturedResult.Rows[0].Values.Count);
-        Assert.Equal(100.0, capturedResult.Rows[0].Values[0]); // Sum(quantity)
-        Assert.Equal(25.5, capturedResult.Rows[0].Values[1]);  // Avg(price)
-        Assert.Equal(4L, capturedResult.Rows[0].Values[2]);     // Count(quantity)
+        Assert.Equal(100.0, capturedResult.Rows[0].Values[0]);
+        Assert.Equal(25.5, capturedResult.Rows[0].Values[1]);
+        Assert.Equal(4L, capturedResult.Rows[0].Values[2]);
     }
 
     #endregion
@@ -405,7 +377,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithGroupedAggregationQuery_CallsNext()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var groupedQuery = CreateTestGroupedAggregationQuery(
             ["status"], "quantity", RtAggregationTypesEnum.Sum);
@@ -421,14 +393,14 @@ public class GetQueryByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithGroupedAggregationQuery_PassesNullSkipTakeToRepository()
     {
         var config = CreateConfig(skip: 5, take: 10);
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var groupedQuery = CreateTestGroupedAggregationQuery(
             ["status"], "quantity", RtAggregationTypesEnum.Sum);
@@ -444,7 +416,6 @@ public class GetQueryByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        // Grouped aggregation queries should pass null for skip/take to the database
         A.CallTo(() => _tenantRepository.GetRtEntitiesGraphByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
@@ -459,7 +430,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithGroupedAggregationQuery_BuildsColumnsAndRows()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var groupedQuery = CreateTestGroupedAggregationQuery(
             ["status"], "quantity", RtAggregationTypesEnum.Sum);
@@ -475,34 +446,23 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(fieldAggregationResult: fieldAggResults));
 
         QueryResult? capturedResult = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-                "$.queryResult",
-                A<DocumentModes>._,
-                A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<QueryResult>._))
-            .Invokes((string _, DocumentModes _, ValueKinds _, TargetValueWriteModes _, QueryResult qr) =>
-                capturedResult = qr);
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedResult);
 
-        // Columns: groupBy first, then aggregation
         Assert.Equal(2, capturedResult!.Columns.Count);
         Assert.Equal("status", capturedResult.Columns[0].Header);
         Assert.Equal("quantity", capturedResult.Columns[1].Header);
 
-        // Rows: one per group
         Assert.Equal(2, capturedResult.Rows.Count);
 
-        // First group
         Assert.Equal("Active", capturedResult.Rows[0].Values[0]);
         Assert.Equal(100.0, capturedResult.Rows[0].Values[1]);
         Assert.Null(capturedResult.Rows[0].RtId);
 
-        // Second group
         Assert.Equal("Inactive", capturedResult.Rows[1].Values[0]);
         Assert.Equal(50.0, capturedResult.Rows[1].Values[1]);
     }
@@ -511,7 +471,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithGroupedAggregationQuery_AppliesInMemorySkip()
     {
         var config = CreateConfig(skip: 1);
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var groupedQuery = CreateTestGroupedAggregationQuery(
             ["status"], "quantity", RtAggregationTypesEnum.Sum);
@@ -529,20 +489,12 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(fieldAggregationResult: fieldAggResults));
 
         QueryResult? capturedResult = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-                "$.queryResult",
-                A<DocumentModes>._,
-                A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<QueryResult>._))
-            .Invokes((string _, DocumentModes _, ValueKinds _, TargetValueWriteModes _, QueryResult qr) =>
-                capturedResult = qr);
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedResult);
-        // Skip 1 → 2 rows remaining (B and C)
         Assert.Equal(2, capturedResult!.Rows.Count);
         Assert.Equal("B", capturedResult.Rows[0].Values[0]);
         Assert.Equal("C", capturedResult.Rows[1].Values[0]);
@@ -552,7 +504,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithGroupedAggregationQuery_AppliesInMemoryTake()
     {
         var config = CreateConfig(take: 2);
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var groupedQuery = CreateTestGroupedAggregationQuery(
             ["status"], "quantity", RtAggregationTypesEnum.Sum);
@@ -570,20 +522,12 @@ public class GetQueryByIdNodeTests
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(fieldAggregationResult: fieldAggResults));
 
         QueryResult? capturedResult = null;
-        A.CallTo(() => dataContext.SetValueByPath(
-                "$.queryResult",
-                A<DocumentModes>._,
-                A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<QueryResult>._))
-            .Invokes((string _, DocumentModes _, ValueKinds _, TargetValueWriteModes _, QueryResult qr) =>
-                capturedResult = qr);
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedResult);
-        // Take 2 → only A and B
         Assert.Equal(2, capturedResult!.Rows.Count);
         Assert.Equal("A", capturedResult.Rows[0].Values[0]);
         Assert.Equal("B", capturedResult.Rows[1].Values[0]);
@@ -593,13 +537,12 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithGroupedAggregationQuery_NullResult_Throws()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var groupedQuery = CreateTestGroupedAggregationQuery(
             ["status"], "quantity", RtAggregationTypesEnum.Sum);
         SetupGroupingAggregationQuery(groupedQuery);
 
-        // No field aggregation result
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(fieldAggregationResult: null));
 
         var node = CreateNode(next);
@@ -616,7 +559,7 @@ public class GetQueryByIdNodeTests
     public async Task ProcessObjectAsync_WithAggregationQuery_StartsAndCommitsTransaction()
     {
         var config = CreateConfig();
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
         var aggregationQuery = CreateTestAggregationQuery("quantity", RtAggregationTypesEnum.Count);
         SetupAggregationQuery(aggregationQuery);

@@ -47,23 +47,21 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             if (r.TotalCount == 0)
             {
                 var objectId = OctoObjectId.GenerateNewId();
-                dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, objectId);
-                dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, ckTypeIdString);
-                dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, UpdateKind.Insert);
+                dataContext.Set(c.RtIdTargetPath, objectId, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite);
+                dataContext.Set(c.CkTypeIdTargetPath, ckTypeIdString, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite);
+                dataContext.Set(c.ModOperationPath, UpdateKind.Insert, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite);
             }
             else
             {
-                dataContext.SetValueByPath(c.RtIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite,
-                    r.Items.First().RtId);
-                dataContext.SetValueByPath(c.CkTypeIdTargetPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite, ckTypeIdString);
-                dataContext.SetValueByPath(c.ModOperationPath, DocumentModes.Extend, ValueKinds.Simple,
-                    TargetValueWriteModes.Overwrite,
-                    UpdateKind.Update);
+                dataContext.Set(c.RtIdTargetPath, r.Items.First().RtId, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite);
+                dataContext.Set(c.CkTypeIdTargetPath, ckTypeIdString, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite);
+                dataContext.Set(c.ModOperationPath, UpdateKind.Update, DocumentModes.Extend, ValueKinds.Simple,
+                    TargetValueWriteModes.Overwrite);
             }
 
             await session.CommitTransactionAsync();

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects.ApiErrors;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
@@ -6,7 +8,6 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json.Linq;
 using HttpRequestOptions = Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests.HttpRequestOptions;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
@@ -32,14 +33,14 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
                     return null;
                 }
 
-                return JToken.FromObject(result);
+                return JsonSerializer.SerializeToNode(result, SystemTextJsonOptions.Default);
             }
             catch (RuntimeRepositoryException ex)
             {
                 var messages = ex.OperationResult.GetMessages();
                 var o = new OperationFailedErrorDto(ex.Message,
                     [new FailedDetailsDto { Code = null, Description = messages }]);
-                return JToken.FromObject(o);
+                return JsonSerializer.SerializeToNode(o, SystemTextJsonOptions.Default);
             }
             catch (Exception e)
             {

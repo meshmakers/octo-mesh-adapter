@@ -1,3 +1,6 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
@@ -10,7 +13,6 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -22,6 +24,17 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService)
     : IPipelineNode
 {
+    // Compact JSON with non-ASCII / HTML emitted literally, matching Newtonsoft's
+    // ToString(Formatting.None). A String target attribute that receives an object/array is
+    // stored as this JSON string; using the default encoder would escape non-ASCII (ü -> ü)
+    // and diverge from pre-migration stored values, breaking downstream string equality
+    // (e.g. CheckDuplicateNode's FieldFilter Equals). UnsafeRelaxedJsonEscaping still escapes
+    // control chars / quotes / backslash, so it remains valid JSON.
+    private static readonly JsonSerializerOptions CompactLiteralOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -54,9 +67,16 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         // we are most likely not the first node in a pipeline run. Otherwise, we just create a new list
 
         var timeStamp = DateTime.UtcNow;
-        if (c.TimestampPath != null && dataContext.Current != null)
+        if (c.TimestampPath != null)
         {
-            timeStamp = dataContext.GetSimpleValueByPath<DateTime>(c.TimestampPath);
+            // Fall back to UtcNow when the configured path is absent/null. Get<DateTime?> yields
+            // null for a missing path (whereas Get<DateTime> would silently produce
+            // DateTime.MinValue) — keep the live timestamp instead of stamping the epoch minimum.
+            var configured = dataContext.Get<DateTime?>(c.TimestampPath);
+            if (configured.HasValue)
+            {
+                timeStamp = configured.Value;
+            }
         }
 
         var rtEntity = new RtEntity
@@ -82,33 +102,36 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
             if (!string.IsNullOrEmpty(au.ValuePath))
             {
-                var jTokens = dataContext.Current?.SelectTokens(au.ValuePath ?? "$") ??
-                              dataContext.Current?[au.ValuePath ?? "$"];
-
-                if (jTokens == null)
+                var path = au.ValuePath ?? "$";
+                // Multi-match: wildcard / recursive-descent paths (e.g. "$.items[*].v") must
+                // produce one update per match — restoring the legacy SelectTokens semantics
+                // from the Newtonsoft implementation. SelectMatches yields a detached read
+                // sub-context per match in document order; SetAttributeValue iterates them.
+                var matches = dataContext.SelectMatches(path).ToList();
+                if (matches.Count == 0)
                 {
                     continue;
                 }
 
-                // For String target attributes: serialize JObject/JArray values as JSON strings
+                // For String target attributes: serialize objects/arrays as JSON strings
                 // so complex nested structures can be stored in a single String attribute.
-                if (au.AttributeValueType == AttributeValueTypesDto.String)
+                // Each match is serialized individually, mirroring the per-match update
+                // behavior of the non-String branch.
+                if (au.AttributeValueType == AttributeValueTypesDto.String &&
+                    matches.All(m => m.GetKind("$") is DataKind.Object or DataKind.Array))
                 {
-                    var materialized = jTokens.ToList();
-                    if (materialized.Count == 1 && materialized[0] is JContainer container)
+                    foreach (var m in matches)
                     {
-                        var jsonString = container.ToString(Newtonsoft.Json.Formatting.None);
+                        var jsonString = m.Get<JsonNode>("$")!.ToJsonString(CompactLiteralOptions);
                         if (SetAttributeValueSingle(nodeContext, au.AttributeName, jsonString, rtEntity))
                         {
                             hasUpdate = true;
                         }
-                        continue;
                     }
-
-                    jTokens = materialized;
+                    continue;
                 }
 
-                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, jTokens, rtEntity);
+                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, matches, rtEntity);
             }
             else if (au.Value != null)
             {
@@ -147,60 +170,75 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 }
             }
 
-            dataContext.SetValueByPath(c.TargetPath, updateItem, c.DocumentMode, c.TargetValueKind,
-                c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+            dataContext.Set(c.TargetPath, updateItem, c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
         }
 
 
         await next(dataContext, nodeContext);
     }
 
-    private bool SetAttributeValue(INodeContext nodeContext, string attributeName, IEnumerable<JToken> jTokens,
-        RtTypeWithAttributes rtTypeWithAttributes)
+    private bool SetAttributeValue(INodeContext nodeContext, string attributeName,
+        IEnumerable<IDataContext> matches, RtTypeWithAttributes rtTypeWithAttributes)
     {
         bool hasUpdate = false;
-        foreach (var jToken in jTokens)
+        foreach (var match in matches)
         {
-            if (jToken is JValue jValue)
+            switch (match.GetKind("$"))
             {
-                if (!SetAttributeValueSingle(nodeContext, attributeName, jValue.Value,
-                        rtTypeWithAttributes))
+                case DataKind.Object:
                 {
-                    continue;
-                }
+                    // Objects may carry a CkRecordId → RtRecord; the structural conversion in
+                    // GetAttributeValue needs the JsonObject, so read it via Get<JsonNode>.
+                    var jObject = (JsonObject?)match.Get<JsonNode>("$");
+                    if (jObject is not null &&
+                        SetAttributeValueSingle(nodeContext, attributeName, jObject, rtTypeWithAttributes))
+                    {
+                        hasUpdate = true;
+                    }
 
-                hasUpdate = true;
-            }
-            else if (jToken is JObject jObject)
-            {
-                if (!SetAttributeValueSingle(nodeContext, attributeName, jObject,
-                        rtTypeWithAttributes))
-                {
-                    continue;
+                    break;
                 }
+                case DataKind.Array:
+                {
+                    // Convert JsonArray items: primitives stay as primitives, objects get converted
+                    // via GetAttributeValue (which handles CkRecordId → RtRecord conversion).
+                    var jArray = (JsonArray?)match.Get<JsonNode>("$");
+                    if (jArray is null) break;
+                    var list = jArray.Select(item => item switch
+                    {
+                        JsonValue v => JsonScalar.ToClr(v),
+                        _ => GetAttributeValue(nodeContext, item)
+                    }).ToList();
+                    if (SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
+                    {
+                        hasUpdate = true;
+                    }
 
-                hasUpdate = true;
-            }
-            else if (jToken is JArray jArray)
-            {
-                // Convert JArray items: JValues stay as primitives, JObjects get converted
-                // via GetAttributeValue (which handles CkRecordId → RtRecord conversion).
-                var list = jArray.Select(item => item switch
-                {
-                    JValue v => v.Value,
-                    _ => GetAttributeValue(nodeContext, item)
-                }).ToList();
-                if (!SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
-                {
-                    continue;
+                    break;
                 }
+                case DataKind.Null:
+                {
+                    if (SetAttributeValueSingle(nodeContext, attributeName, null, rtTypeWithAttributes))
+                    {
+                        hasUpdate = true;
+                    }
 
-                hasUpdate = true;
-            }
-            else
-            {
-                nodeContext.Error($"Value {jToken} is not a valid type");
-                throw MeshAdapterPipelineExecutionException.InvalidValue(jToken);
+                    break;
+                }
+                default:
+                {
+                    // Scalars (bool / long / double / DateTime / string) box via the shared
+                    // JsonScalar rules exposed through GetValue — same parity as the former
+                    // ExtractPrimitive ladder.
+                    var raw = match.GetValue("$");
+                    if (SetAttributeValueSingle(nodeContext, attributeName, raw, rtTypeWithAttributes))
+                    {
+                        hasUpdate = true;
+                    }
+
+                    break;
+                }
             }
         }
 
@@ -225,34 +263,49 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             };
         }
 
-        if (value is JObject jObject && jObject.TryGetValue("CkRecordId", out var ckRecordIdToken) &&
-            ckRecordIdToken is JObject ckRecordIdObject)
+        if (value is JsonObject jObject &&
+            jObject.TryGetPropertyValue("CkRecordId", out var ckRecordIdNode) &&
+            jObject.TryGetPropertyValue("Attributes", out var attributes) &&
+            attributes is JsonObject attributesObject)
         {
-            if (jObject.TryGetValue("Attributes", out var attributes) && attributes is JObject attributesObject)
+            // CkRecordId is serialized as the SemanticVersionedFullName string by
+            // RtCkIdRecordIdConverter. Accept the legacy reflection-emitted object shape too,
+            // for inline JSON/YAML inputs that pass a structured CkRecordId.
+            string? semanticName = ckRecordIdNode switch
             {
-                var ckRecordGraphChild = ckCacheService.GetRtCkRecord(etlContext.TenantId,
-                    ckRecordIdObject["SemanticVersionedFullName"]!.ToObject<string>()!);
-                var recordChild = new RtRecord
-                {
-                    CkRecordId = ckRecordGraphChild.CkRecordId.ToRtCkId()
-                };
-
-                foreach (var jToken in attributesObject.Properties())
-                {
-                    if (ckRecordGraphChild.AllAttributesByName.TryGetValue(jToken.Name, out var attribute))
-                    {
-                        var childValue = GetAttributeValue(nodeContext, jToken.Value);
-                        recordChild.SetAttributeValue(attribute.AttributeName, attribute.ValueType, childValue);
-                    }
-                    else
-                    {
-                        throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, jToken);
-                    }
-                }
-
-                return recordChild;
+                JsonValue v when v.TryGetValue<string>(out var s) => s,
+                JsonObject o => o[RtCkIdJsonShim.SemanticVersionedFullNameKey]?.GetValue<string>(),
+                _ => null
+            };
+            if (semanticName == null)
+            {
+                throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, ckRecordIdNode);
             }
+
+            var ckRecordGraphChild = ckCacheService.GetRtCkRecord(etlContext.TenantId, semanticName);
+            var recordChild = new RtRecord
+            {
+                CkRecordId = ckRecordGraphChild.CkRecordId.ToRtCkId()
+            };
+
+            foreach (var kvp in attributesObject)
+            {
+                if (ckRecordGraphChild.AllAttributesByName.TryGetValue(kvp.Key, out var attribute))
+                {
+                    var childValue = GetAttributeValue(nodeContext, kvp.Value);
+                    recordChild.SetAttributeValue(attribute.AttributeName, attribute.ValueType, childValue);
+                }
+                else
+                {
+                    throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, kvp.Value);
+                }
+            }
+
+            return recordChild;
         }
+
+        // For JsonValue, unwrap to native primitive via the shared JsonScalar boxing rules.
+        if (value is JsonValue jv) return JsonScalar.ToClr(jv);
 
         return value;
     }
@@ -274,13 +327,12 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             return config.RtId.Value;
         }
 
-        if (config.RtIdPath == null || dataContext.Current == null)
+        if (config.RtIdPath == null)
         {
             return null;
         }
 
-        var rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(config.RtIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        var rtId = dataContext.Get<OctoObjectId?>(config.RtIdPath);
 
         if (rtId == null && config.GenerateRtId)
         {
@@ -297,27 +349,21 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             return config.UpdateKind;
         }
 
-        if (config.UpdateKindPath == null || dataContext.Current == null)
+        if (config.UpdateKindPath == null)
         {
             return null;
         }
 
-        var updateKind =
-            dataContext.GetComplexObjectByPath<UpdateKind?>(config.UpdateKindPath,
-                RtNewtonsoftSerializer.DefaultSerializer);
-        return updateKind;
+        return dataContext.Get<UpdateKind?>(config.UpdateKindPath);
     }
 
     private static string? GetRtWellKnownName(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)
     {
-        if (config.RtWellKnownNamePath == null || dataContext.Current == null)
+        if (config.RtWellKnownNamePath == null)
         {
             return null;
         }
 
-        var rtWellKnownName =
-            dataContext.GetComplexObjectByPath<string?>(config.RtWellKnownNamePath,
-                RtNewtonsoftSerializer.DefaultSerializer);
-        return rtWellKnownName;
+        return dataContext.Get<string?>(config.RtWellKnownNamePath);
     }
 }

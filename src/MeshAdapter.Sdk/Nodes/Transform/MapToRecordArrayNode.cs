@@ -1,8 +1,8 @@
+using System.Text.Json.Serialization;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -20,34 +20,46 @@ internal class MapToRecordArrayNode(NodeDelegate next) : IPipelineNode
     {
         var config = nodeContext.GetNodeConfiguration<MapToRecordArrayNodeConfiguration>();
 
-        var source = dataContext.Current?.SelectToken(config.Path);
-        var records = new JArray();
+        var records = new List<RecordArrayItem>();
 
-        if (source is JObject map)
+        if (dataContext.GetKind(config.Path) == DataKind.Object)
         {
-            foreach (var prop in map.Properties())
+            await dataContext.IterateObjectAsync(config.Path, (key, valueContext) =>
             {
-                if (prop.Value == null || prop.Value.Type == JTokenType.Null) continue;
-
-                var record = new JObject
+                // Skip explicit-null values (legacy: kvp.Value == null continue).
+                if (valueContext.GetKind("$") is DataKind.Null or DataKind.Undefined)
                 {
-                    ["CkRecordId"] = new JObject
-                    {
-                        ["SemanticVersionedFullName"] = config.CkRecordId
-                    },
-                    ["Attributes"] = new JObject
-                    {
-                        [config.KeyAttributeName] = prop.Name,
-                        [config.ValueAttributeName] = prop.Value
-                    }
+                    return Task.CompletedTask;
+                }
+
+                // The value attribute is genuinely dynamic (any JSON kind). Reading it as
+                // object? materializes scalars to their CLR form and objects/arrays to a
+                // JsonElement, which re-serializes byte-identically to the source value.
+                var value = valueContext.Get<object?>("$");
+
+                // Attribute names are config-driven (dynamic) → a small object bag, not a
+                // fixed record. The CkRecordId envelope stays a typed record.
+                var attributes = new Dictionary<string, object?>
+                {
+                    [config.KeyAttributeName] = key,
+                    [config.ValueAttributeName] = value
                 };
-                records.Add(record);
-            }
+                records.Add(new RecordArrayItem(new RecordTypeRef(config.CkRecordId), attributes));
+                return Task.CompletedTask;
+            });
         }
 
-        dataContext.SetValueByPath(config.TargetPath, config.DocumentMode, config.TargetValueKind,
-            config.TargetValueWriteMode, records);
+        dataContext.Set(config.TargetPath, records, config.DocumentMode, config.TargetValueKind,
+            config.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
+
+    /// <summary>CK RecordArray item: <c>{ "CkRecordId": {...}, "Attributes": {...} }</c>.</summary>
+    internal sealed record RecordArrayItem(
+        [property: JsonPropertyName("CkRecordId")] RecordTypeRef CkRecordId,
+        [property: JsonPropertyName("Attributes")] IReadOnlyDictionary<string, object?> Attributes);
+
+    internal sealed record RecordTypeRef(
+        [property: JsonPropertyName("SemanticVersionedFullName")] string SemanticVersionedFullName);
 }

@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text.Json.Nodes;
 using Meshmakers.Common.Shared;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
@@ -14,7 +15,6 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -86,7 +86,7 @@ public class ImportFromExcelNode(
         await next(dataContext, nodeContext);
     }
 
-    private async Task<Dictionary<int, IDictionary<string, RtEntity>>> GetEntitiesByWellKnownName(JArray data,
+    private async Task<Dictionary<int, IDictionary<string, RtEntity>>> GetEntitiesByWellKnownName(JsonArray data,
         ColumnContext columnContext)
     {
         Dictionary<int, IDictionary<string, RtEntity>> entities = new();
@@ -104,7 +104,7 @@ public class ImportFromExcelNode(
                 for (int i = 0; i < data.Count; i++)
                 {
                     var e = data[i];
-                    if (e is not JArray entry)
+                    if (e is not JsonArray entry)
                     {
                         continue;
                     }
@@ -134,7 +134,7 @@ public class ImportFromExcelNode(
         return entities;
     }
 
-    private void ParseTreeByColumns(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities,
+    private void ParseTreeByColumns(JsonArray data, ColumnContext columnContext, List<HierarchicalEntity> entities,
         IDictionary<int, IDictionary<string, RtEntity>> entitiesByWellKnownName)
     {
         var maxLayers = columnContext.GetMaxLayer();
@@ -142,7 +142,7 @@ public class ImportFromExcelNode(
         {
             foreach (var e in data)
             {
-                if (e is not JArray entry)
+                if (e is not JsonArray entry)
                 {
                     continue;
                 }
@@ -222,11 +222,11 @@ public class ImportFromExcelNode(
         }
     }
 
-    private static void ParseTreeByPath(JArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
+    private static void ParseTreeByPath(JsonArray data, ColumnContext columnContext, List<HierarchicalEntity> entities)
     {
         foreach (var jToken in data)
         {
-            var entry = (JArray)jToken;
+            var entry = (JsonArray)jToken!;
             var ckTypeId = columnContext.GetCkTypeId();
             var name = columnContext.GetValueByPath<string>(entry, "name");
             if (name == null)
@@ -384,23 +384,12 @@ public class ImportFromExcelNode(
         [NotNullWhen(true)] out string? importType
     )
     {
-        importType = null;
-        var o = dataContext.Current as JObject;
-
-        if (o?["body"] is not JObject body)
-        {
-            nodeContext.Error("Body is null");
-            return false;
-        }
-
-        var i = body.Value<string>("importType");
-        if (i == null)
+        importType = dataContext.Get<string>("$.body.importType");
+        if (importType == null)
         {
             nodeContext.Error("Import type is not TreeModel");
             return false;
         }
-
-        importType = i;
         return true;
     }
 
@@ -409,60 +398,35 @@ public class ImportFromExcelNode(
         INodeContext nodeContext,
         [NotNullWhen(true)] out string? rootNodeId)
     {
-        rootNodeId = null;
-
-        var o = dataContext.Current as JObject;
-
-        if (o?["body"] is not JObject body)
-        {
-            nodeContext.Error("Body is null");
-            return false;
-        }
-
-        var r = body.Value<string>("treeModelRootRtId");
-        if (r == null)
+        rootNodeId = dataContext.Get<string>("$.body.treeModelRootRtId");
+        if (rootNodeId == null)
         {
             nodeContext.Error("Root node id is not set");
             return false;
         }
-
-        rootNodeId = r;
-
         return true;
     }
 
     private static bool EnsureAndValidateData(
         IDataContext dataContext,
         INodeContext nodeContext,
-        [NotNullWhen(true)] out JArray? data,
-        [NotNullWhen(true)] out JArray? columns)
+        [NotNullWhen(true)] out JsonArray? data,
+        [NotNullWhen(true)] out JsonArray? columns)
     {
         data = null;
-        columns = null;
-
-        var o = dataContext.Current as JObject;
-
-        if (o?["body"] is not JObject body)
-        {
-            nodeContext.Error("Body is null");
-            return false;
-        }
-
-        if (body["columns"] is not JArray c)
+        columns = dataContext.Get<JsonArray>("$.body.columns");
+        if (columns == null)
         {
             nodeContext.Error("Columns are null");
             return false;
         }
 
-
-        if (body["data"] is not JArray d)
+        data = dataContext.Get<JsonArray>("$.body.data");
+        if (data == null)
         {
             nodeContext.Error("Data is null");
             return false;
         }
-
-        data = d;
-        columns = c;
 
         return true;
     }

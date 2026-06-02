@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -9,16 +11,13 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
 // Pins the time-range save node's wiring through to IStreamDataRepository.InsertTimeRangeAsync.
 // Critical behaviours: From/To stripped from attributes (so they don't reappear as user columns),
 // entities without a usable window are skipped (not aborted), deletes are not propagated.
-public class SaveTimeRangeStreamDataInArchiveNodeTests
+public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
 {
     private const string TenantId = "test-tenant";
     private const string DataPath = "$.updateInfos";
@@ -43,22 +42,6 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
         A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
     }
 
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        SaveTimeRangeStreamDataInArchiveNodeConfiguration config)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "SaveTimeRangeStreamDataInArchive", 0, config, dataContext);
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
-    }
-
     private static RtEntity CreateEntityWithWindow(DateTime? from, DateTime? to, string fromKey = "From", string toKey = "To")
     {
         var ckTypeId = new RtCkId<CkTypeId>("Industry.Energy/Meter");
@@ -77,7 +60,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
 
     private void SetupDataContext(IDataContext dataContext, List<EntityUpdateInfo<RtEntity>>? data)
     {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
     }
 
@@ -85,7 +68,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
     public async Task Insert_WithValidWindow_ForwardsToInsertTimeRangeAsync_WithStrippedWindowAttributes()
     {
         var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
         var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
@@ -116,7 +99,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
     public async Task Insert_WithoutWindow_SkipsRow_DoesNotCallInsert()
     {
         var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var entity = CreateEntityWithWindow(from: null, to: null);
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
@@ -140,7 +123,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
             FromAttributePath = "windowStart",
             ToAttributePath = "windowEnd",
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
         var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
@@ -167,7 +150,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
     public async Task Delete_IsNotPropagated_AsTimeRangeArchives_DoNotSupportDeletes()
     {
         var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var rtEntityId = new RtEntityId(new RtCkId<CkTypeId>("Industry.Energy/Meter"),
             new OctoObjectId("000000000000000000000099"));
@@ -186,7 +169,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
     public async Task NullData_LogsWarning_AndCallsNext()
     {
         var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
         SetupDataContext(dataContext, null);
 
         await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
@@ -200,7 +183,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests
     public async Task EmptyArchiveRtId_Throws_BeforeAnyRepoCall()
     {
         var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = "" };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)

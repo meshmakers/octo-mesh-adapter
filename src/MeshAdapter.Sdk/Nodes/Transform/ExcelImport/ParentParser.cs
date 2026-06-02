@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json.Linq;
+﻿using System.Text.Json.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 
@@ -33,7 +33,7 @@ internal static class ParentNameParser
         return name.Remove(name.Length - itemName.Length).Trim();
     }
 
-    public static string? ParseLayerBasedName(ColumnContext columnContext, JArray entities, int iLayer)
+    public static string? ParseLayerBasedName(ColumnContext columnContext, JsonArray entities, int iLayer)
     {
         return iLayer == 1 ? null : columnContext.GetValueByPath<string>(entities, "name", iLayer - 1);
     }

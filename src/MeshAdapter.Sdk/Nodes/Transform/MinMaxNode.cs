@@ -1,9 +1,9 @@
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -20,35 +20,43 @@ public class MinMaxNode(NodeDelegate next) : IPipelineNode
     {
         var c = nodeContext.GetNodeConfiguration<MinMaxNodeConfiguration>();
 
-        var sourceArray = dataContext.GetComplexObjectByPath<List<object>>(c.Path,
-            RtNewtonsoftSerializer.DefaultSerializer);
-
-        if (sourceArray != null && sourceArray.Any())
+        if (dataContext.GetKind(c.Path) == DataKind.Array && dataContext.Length(c.Path) > 0)
         {
-            JObject? winningObject = null;
+            // One detached read context per array item, in document order.
+            var items = dataContext.SelectMatches($"{c.Path}[*]").ToList();
+
+            // ValuePath is relative to each item ("value", "metadata.score") or rooted
+            // ("$.readings[0].value"); normalize to a rooted form GetValue accepts.
+            var valuePath = JsonNodePath.NormalizePathOrRelative(c.ValuePath);
+
+            int? winningIndex = null;
             IComparable? winningValue = null;
 
-            foreach (JObject item in sourceArray.Where(e => e is JObject))
+            for (var i = 0; i < items.Count; i++)
             {
-                var token = item.SelectToken(c.ValuePath);
-                if (token == null)
-                    continue;
-
-                IComparable? comparableValue = token.Type switch
+                // The comparable value boxes through GetValue (shared JsonScalar parity):
+                // ISO strings -> DateTime, reals -> double, integers that fit -> int,
+                // larger -> long. Normalize all numeric arms to double so comparisons
+                // stay uniform across int / long / double.
+                var value = items[i].GetValue(valuePath);
+                IComparable? comparableValue = value switch
                 {
-                    JTokenType.Integer => token.Value<double>(),
-                    JTokenType.Float => token.Value<double>(),
-                    JTokenType.Date => token.Value<DateTime>(),
+                    DateTime dt => dt,
+                    double d => d,
+                    long l => (double)l,
+                    int i32 => (double)i32,
                     _ => null
                 };
 
                 if (comparableValue == null)
+                {
                     continue;
+                }
 
                 if (winningValue == null)
                 {
                     winningValue = comparableValue;
-                    winningObject = item;
+                    winningIndex = i;
                 }
                 else
                 {
@@ -58,15 +66,18 @@ public class MinMaxNode(NodeDelegate next) : IPipelineNode
                         (c.Mode == MinMaxMode.Max && comparison > 0))
                     {
                         winningValue = comparableValue;
-                        winningObject = item;
+                        winningIndex = i;
                     }
                 }
             }
 
-            if (winningObject != null)
+            if (winningIndex != null)
             {
-                dataContext.SetValueByPath(c.TargetPath, winningObject, c.DocumentMode, c.TargetValueKind,
-                    c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+                // The winning item is an arbitrary-shape object; write it whole via its
+                // detached context root (dynamic shape — no fixed record applies).
+                var winner = items[winningIndex.Value].Get<JsonNode>("$");
+                dataContext.Set(c.TargetPath, winner, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
             }
         }
 

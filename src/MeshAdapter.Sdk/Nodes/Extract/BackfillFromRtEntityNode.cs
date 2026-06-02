@@ -3,7 +3,6 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -28,8 +27,7 @@ internal class BackfillFromRtEntityNode(
                 "BackfillFromRtEntity: archiveRtId is required. Configure the node with the runtime id of the CkArchive whose column spec drives the backfill.");
         }
 
-        var updateInfos = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        var updateInfos = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
         if (updateInfos == null || updateInfos.Count == 0)
         {
@@ -112,9 +110,9 @@ internal class BackfillFromRtEntityNode(
             $"BackfillFromRtEntity: loaded {loadedCount} entities, filled {filledCount} attribute slots from archive '{archiveRtId}'.");
 
         // Write the mutated list back so downstream nodes see the backfilled attributes via the
-        // data context (the deserialised list is a fresh object graph, not a live JToken view).
-        dataContext.SetValueByPath(c.Path, updateInfos, DocumentModes.Replace, ValueKinds.Simple,
-            TargetValueWriteModes.Overwrite, RtNewtonsoftSerializer.DefaultSerializer);
+        // data context (the deserialised list is a fresh object graph, not a live JsonNode view).
+        dataContext.Set(c.Path, updateInfos, DocumentModes.Replace, ValueKinds.Simple,
+            TargetValueWriteModes.Overwrite);
 
         await next(dataContext, nodeContext);
     }

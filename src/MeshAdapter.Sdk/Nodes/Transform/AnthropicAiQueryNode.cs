@@ -1,13 +1,12 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -22,6 +21,10 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+
+    // Indented rendering for non-string DataPaths values in the AI prompt context (mirrors the
+    // former JsonNode.ToJsonString(WriteIndented:true)). Prompt text only — not a wire format.
+    private static readonly JsonSerializerOptions IndentedPromptOptions = new() { WriteIndented = true };
 
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -49,10 +52,9 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             nodeContext.Debug("Starting Anthropic AI query");
 
             // Get the main content from the configured path (optional when using MCP tools)
-            var mainContentToken = !string.IsNullOrEmpty(config.Path)
-                ? dataContext.Current?.SelectToken(config.Path)
+            var mainContent = !string.IsNullOrEmpty(config.Path)
+                ? dataContext.Get<string>(config.Path)
                 : null;
-            var mainContent = mainContentToken?.ToString();
 
             if (string.IsNullOrEmpty(mainContent) && string.IsNullOrEmpty(mcpServerUrl))
             {
@@ -78,28 +80,30 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
                 {
                     try
                     {
-                        var additionalData = dataContext.GetSimpleValueByPath<object>(dataPath);
-                        if (additionalData != null)
+                        var kind = dataContext.GetKind(dataPath);
+                        if (kind is DataKind.Undefined)
                         {
-                            contextBuilder.AppendLine($"Data from {dataPath}:");
-
-                            if (additionalData is string strData)
-                            {
-                                contextBuilder.AppendLine(strData);
-                            }
-                            else
-                            {
-                                var jsonData = JsonSerializer.Serialize(additionalData,
-                                    new JsonSerializerOptions
-                                    {
-                                        WriteIndented = true,
-                                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                                    });
-                                contextBuilder.AppendLine(jsonData);
-                            }
-
-                            contextBuilder.AppendLine();
+                            continue;
                         }
+
+                        contextBuilder.AppendLine($"Data from {dataPath}:");
+
+                        if (kind == DataKind.String)
+                        {
+                            contextBuilder.AppendLine(dataContext.Get<string>(dataPath));
+                        }
+                        else
+                        {
+                            // Non-string scalars and structured values are rendered as indented
+                            // JSON for the AI prompt. Get<object?> materializes objects/arrays to
+                            // a JsonElement which re-serializes equivalently to the former node's
+                            // JsonNode.ToJsonString(WriteIndented).
+                            var value = dataContext.Get<object?>(dataPath);
+                            contextBuilder.AppendLine(
+                                JsonSerializer.Serialize(value, IndentedPromptOptions));
+                        }
+
+                        contextBuilder.AppendLine();
                     }
                     catch (Exception ex)
                     {
@@ -137,14 +141,13 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             List<object>? historyMessages = null;
             if (!string.IsNullOrEmpty(config.ConversationHistoryPath))
             {
-                var historyToken = dataContext.Current?.SelectToken(config.ConversationHistoryPath);
-                if (historyToken is Newtonsoft.Json.Linq.JArray historyArray)
+                if (dataContext.GetKind(config.ConversationHistoryPath) == DataKind.Array)
                 {
                     historyMessages = new List<object>();
-                    foreach (var entry in historyArray)
+                    foreach (var entry in dataContext.SelectMatches($"{config.ConversationHistoryPath}[*]"))
                     {
-                        var role = entry["role"]?.ToString();
-                        var content = entry["content"]?.ToString();
+                        var role = entry.Get<string>("$.role");
+                        var content = entry.Get<string>("$.content");
                         if (!string.IsNullOrEmpty(role) && !string.IsNullOrEmpty(content))
                         {
                             historyMessages.Add(new { role, content });
@@ -169,25 +172,23 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             object processedResponse = ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
 
             // Store the processed response
-            dataContext.SetValueByPath(
+            dataContext.Set(
                 config.TargetPath,
                 processedResponse,
                 config.DocumentMode,
                 config.TargetValueKind,
-                config.TargetValueWriteMode,
-                RtNewtonsoftSerializer.DefaultSerializer
+                config.TargetValueWriteMode
             );
 
             // Store raw response if requested
             if (config.IncludeRawResponse)
             {
-                dataContext.SetValueByPath(
+                dataContext.Set(
                     config.RawResponseOutputPath ?? "$.RawAiResponse",
                     aiResponse,
                     config.DocumentMode,
                     config.TargetValueKind,
-                    config.TargetValueWriteMode,
-                    RtNewtonsoftSerializer.DefaultSerializer
+                    config.TargetValueWriteMode
                 );
             }
 
@@ -216,8 +217,8 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
                 var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
                 if (rawJson != null)
                 {
-                    var configDoc = JObject.Parse(rawJson);
-                    var key = configDoc.Value<string>("apiKey");
+                    var configDoc = JsonNode.Parse(rawJson);
+                    var key = configDoc?["apiKey"]?.GetValue<string>();
                     if (!string.IsNullOrEmpty(key))
                     {
                         nodeContext.Debug(
@@ -245,8 +246,8 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
             if (rawJson != null)
             {
-                var configDoc = JObject.Parse(rawJson);
-                var url = configDoc.Value<string>("mcpServerUrl");
+                var configDoc = JsonNode.Parse(rawJson);
+                var url = configDoc?["mcpServerUrl"]?.GetValue<string>();
                 if (!string.IsNullOrEmpty(url))
                 {
                     nodeContext.Debug(
@@ -695,9 +696,9 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
                 {
                     try
                     {
-                        var jsonElement = JToken.Parse(extractedJson);
+                        var jsonElement = JsonNode.Parse(extractedJson);
                         nodeContext.Debug("Successfully extracted JSON from mixed response");
-                        return jsonElement;
+                        return jsonElement!;
                     }
                     catch (JsonException ex)
                     {

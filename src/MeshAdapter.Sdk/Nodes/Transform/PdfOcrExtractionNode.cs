@@ -2,7 +2,6 @@ using IronOcr;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.Services;
 
@@ -23,7 +22,7 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 throw MeshAdapterPipelineExecutionException.PathParameterValueMissing(nodeContext, nameof(config.Path));
             }
 
-            var content = dataContext.GetSimpleValueByPath<string>(config.Path);
+            var content = dataContext.Get<string>(config.Path);
             if (string.IsNullOrEmpty(content))
             {
                 throw PipelineExecutionException.ValueNotSet(nodeContext, config.Path);
@@ -64,13 +63,12 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 if (tables is { Length: > 0 })
                 {
                     nodeContext.Debug($"Found {tables.Length} tables in PDF");
-                    dataContext.SetValueByPath(
+                    dataContext.Set(
                         config.TablesOutputPath ?? "$.Tables",
                         tables,
                         config.DocumentMode,
                         config.TargetValueKind,
-                        config.TargetValueWriteMode,
-                        RtNewtonsoftSerializer.DefaultSerializer
+                        config.TargetValueWriteMode
                     );
                 }
             }
@@ -81,35 +79,32 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 if (barcodes != null && barcodes.Length > 0)
                 {
                     nodeContext.Debug($"Found {barcodes.Length} barcodes in PDF");
-                    dataContext.SetValueByPath(
+                    dataContext.Set(
                         config.BarcodesOutputPath ?? "$.Barcodes",
                         barcodes,
                         config.DocumentMode,
                         config.TargetValueKind,
-                        config.TargetValueWriteMode,
-                        RtNewtonsoftSerializer.DefaultSerializer
+                        config.TargetValueWriteMode
                     );
                 }
             }
 
-            dataContext.SetValueByPath(
+            dataContext.Set(
                 config.TargetPath,
                 extractedText,
                 config.DocumentMode,
                 config.TargetValueKind,
-                config.TargetValueWriteMode,
-                RtNewtonsoftSerializer.DefaultSerializer
+                config.TargetValueWriteMode
             );
 
             if (config.IncludeConfidence)
             {
-                dataContext.SetValueByPath(
+                dataContext.Set(
                     config.ConfidenceOutputPath ?? "$.Confidence",
                     result.Confidence,
                     config.DocumentMode,
                     config.TargetValueKind,
-                    config.TargetValueWriteMode,
-                    RtNewtonsoftSerializer.DefaultSerializer
+                    config.TargetValueWriteMode
                 );
             }
 

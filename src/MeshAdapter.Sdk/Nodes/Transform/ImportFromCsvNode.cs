@@ -4,12 +4,13 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-/// Pipeline node that imports CSV file data into a JArray of JObjects based on column mappings
+/// Pipeline node that imports CSV file data into an array of row objects, based on column
+/// mappings. Each row is a dynamic key/value bag (column names come from the mappings) written
+/// via <c>Set</c>, which serializes it; this is the genuinely-dynamic-shape case (spec §6).
 /// </summary>
 [NodeConfiguration(typeof(ImportFromCsvNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -36,8 +37,8 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
         if (lines.Count == 0)
         {
             nodeContext.Warning("CSV file contains no data lines");
-            dataContext.SetValueByPath(config.TargetPath, config.DocumentMode,
-                config.TargetValueKind, config.TargetValueWriteMode, new JArray());
+            dataContext.Set(config.TargetPath, new List<Dictionary<string, object?>>(), config.DocumentMode,
+                config.TargetValueKind, config.TargetValueWriteMode);
             await next(dataContext, nodeContext);
             return;
         }
@@ -47,8 +48,8 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
         if (dataStartIndex >= lines.Count)
         {
             nodeContext.Warning($"SkipRows ({config.SkipRows}) exceeds total lines ({lines.Count})");
-            dataContext.SetValueByPath(config.TargetPath, config.DocumentMode,
-                config.TargetValueKind, config.TargetValueWriteMode, new JArray());
+            dataContext.Set(config.TargetPath, new List<Dictionary<string, object?>>(), config.DocumentMode,
+                config.TargetValueKind, config.TargetValueWriteMode);
             await next(dataContext, nodeContext);
             return;
         }
@@ -64,8 +65,9 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
         // Build column index lookup from mappings
         var resolvedMappings = ResolveMappings(config.ColumnMappings, headers, nodeContext);
 
-        // Parse data rows
-        var result = new JArray();
+        // Parse data rows. Each row is a dynamic key/value bag (the column names come from the
+        // mappings) — Set serializes it, reproducing the former JsonObject row bytes.
+        var result = new List<Dictionary<string, object?>>();
         for (var i = dataStartIndex; i < lines.Count; i++)
         {
             var line = lines[i];
@@ -75,7 +77,7 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
             }
 
             var fields = ParseCsvLine(line, config.Delimiter);
-            var row = new JObject();
+            var row = new Dictionary<string, object?>();
 
             foreach (var (mapping, columnIndex) in resolvedMappings)
             {
@@ -97,8 +99,8 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
 
         nodeContext.Info($"Parsed {result.Count} rows from CSV file");
 
-        dataContext.SetValueByPath(config.TargetPath, config.DocumentMode,
-            config.TargetValueKind, config.TargetValueWriteMode, result);
+        dataContext.Set(config.TargetPath, result, config.DocumentMode,
+            config.TargetValueKind, config.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
@@ -106,14 +108,15 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
     private static string? GetFileData(IDataContext dataContext, ImportFromCsvNodeConfiguration config,
         INodeContext nodeContext)
     {
-        var filesToken = dataContext.Current?.SelectToken($"$.files[{config.FileIndex}].data");
-        if (filesToken == null)
+        var path = $"$.files[{config.FileIndex}].data";
+        var data = dataContext.Get<string>(path);
+        if (data == null)
         {
-            nodeContext.Error($"No file found at $.files[{config.FileIndex}].data");
+            nodeContext.Error($"No file found at {path}");
             return null;
         }
 
-        return filesToken.Value<string>();
+        return data;
     }
 
     internal static string? DecodeFileContent(string base64Data, ImportFromCsvNodeConfiguration config,
@@ -260,7 +263,7 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
         return resolved;
     }
 
-    internal static JToken? ConvertValue(string rawValue, CsvColumnMapping mapping, INodeContext nodeContext,
+    internal static object? ConvertValue(string rawValue, CsvColumnMapping mapping, INodeContext nodeContext,
         int lineNumber)
     {
         if (string.IsNullOrEmpty(rawValue))
@@ -277,7 +280,7 @@ public class ImportFromCsvNode(NodeDelegate next) : IPipelineNode
                 CsvDataType.Double => ParseDouble(rawValue, mapping.NumberCulture),
                 CsvDataType.Boolean => ParseBoolean(rawValue),
                 CsvDataType.DateTime => ParseDateTime(rawValue, mapping.DateFormat),
-                _ => rawValue
+                _ => (object)rawValue
             };
         }
         catch (Exception ex)

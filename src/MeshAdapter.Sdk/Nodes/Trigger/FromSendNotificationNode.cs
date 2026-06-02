@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -5,7 +7,6 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.Services.Contracts.DistributionEventHub.Commands;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
@@ -28,7 +29,7 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
                 {
                     context.NodeContext.Info("Received command send notification");
 
-                    JToken input = JArray.FromObject(message.Notifications);
+                    JsonNode input = JsonSerializer.SerializeToNode(message.Notifications, SystemTextJsonOptions.Default) ?? new JsonArray();
 
                     var startDateTime = DateTime.UtcNow;
                     var pipelineExecutionId =

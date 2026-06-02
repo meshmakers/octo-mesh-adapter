@@ -38,8 +38,8 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
             throw MeshAdapterPipelineExecutionException.NotificationTemplateNotFound(nodeContext, notificationTemplateName);
         }
 
-        dataContext.SetValueByPath(c.SubjectTargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.SubjectTemplate);
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, notificationTemplate.BodyTemplate);
+        dataContext.Set(c.SubjectTargetPath, notificationTemplate.SubjectTemplate, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+        dataContext.Set(c.TargetPath, notificationTemplate.BodyTemplate, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         
         await next(dataContext, nodeContext);
     }
@@ -53,7 +53,7 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         
         if (!string.IsNullOrEmpty(c.NotificationTemplateNamePath))
         {
-            var templateName = dataContext.GetSimpleValueByPath<string>(c.NotificationTemplateNamePath);
+            var templateName = dataContext.Get<string>(c.NotificationTemplateNamePath);
             if (string.IsNullOrEmpty(templateName))
             {
                 throw MeshAdapterPipelineExecutionException.NotificationTemplateNameValueNull(nodeContext, c.NotificationTemplateNamePath);

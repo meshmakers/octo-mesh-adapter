@@ -1,32 +1,16 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class DataMappingNodeTests
+public class DataMappingNodeTests : NodeTestBase
 {
-    private (IDataContext DataContext, INodeContext NodeContext) PrepareTest(
-        DataMappingNodeConfiguration config,
-        JToken? testData)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("DataMapping", 0, config, dataContext);
-
-        return (dataContext, nodeContext);
-    }
-
     [Fact]
     public async Task ProcessObjectAsync_StringMapping_MapsCorrectly()
     {
@@ -43,22 +27,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["status"] = "active" });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns("active");
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, "active");
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             config.TargetPath,
-            A<object>.That.Matches(o => Convert.ToInt32(o) == 1),
+            A<object?>.That.Matches(o => o != null && Convert.ToInt32(o) == 1),
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -78,22 +59,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["code"] = 2 });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<int>(config.Path)).Returns(2);
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, 2);
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             config.TargetPath,
-            A<object>.That.Matches(o => o != null && o.ToString() == "Warning"),
+            A<object?>.That.Matches(o => o != null && o.ToString() == "Warning"),
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -112,22 +90,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["status"] = "unknown" });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns("unknown");
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, "unknown");
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             A<string>._,
-            A<object>._,
+            A<object?>._,
             A<DocumentModes>._,
             A<ValueKinds>._,
-            A<TargetValueWriteModes>._,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustNotHaveHappened();
+            A<TargetValueWriteModes>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -145,22 +120,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject());
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns(null);
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath<string?>(dataContext, config.Path, null);
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             A<string>._,
-            A<object>._,
+            A<object?>._,
             A<DocumentModes>._,
             A<ValueKinds>._,
-            A<TargetValueWriteModes>._,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustNotHaveHappened();
+            A<TargetValueWriteModes>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -179,15 +151,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["isActive"] = true });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<byte>(config.Path)).Returns((byte)1);
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, true);
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
+            config.TargetPath,
+            A<object?>.That.Matches(o => o != null && o.ToString() == "Active"),
+            config.DocumentMode,
+            config.TargetValueKind,
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -207,22 +183,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["value"] = 2.5 });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<double>(config.Path)).Returns(2.5);
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, 2.5);
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             config.TargetPath,
-            A<object>.That.Matches(o => o != null && o.ToString() == "Medium"),
+            A<object?>.That.Matches(o => o != null && o.ToString() == "Medium"),
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -241,22 +214,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["status"] = "test" });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns("test");
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, "test");
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             config.TargetPath,
-            A<object>.That.Matches(o => o != null && o.ToString() == "First Match"),
+            A<object?>.That.Matches(o => o != null && o.ToString() == "First Match"),
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -274,22 +244,19 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["bigNumber"] = 9223372036854775807L });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<long>(config.Path)).Returns(9223372036854775807L);
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, 9223372036854775807L);
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             config.TargetPath,
-            A<object>.That.Matches(o => o != null && o.ToString() == "Max Long"),
+            A<object?>.That.Matches(o => o != null && o.ToString() == "Max Long"),
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -308,21 +275,62 @@ public class DataMappingNodeTests
             }
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, new JObject { ["category"] = "Low" });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns("Low");
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, config.Path, "Low");
 
-        var next = A.Fake<NodeDelegate>();
         var node = new DataMappingNode(next);
-
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
             config.TargetPath,
-            A<object>.That.Matches(o => o != null && o.GetType() == typeof(double) && Math.Abs((double)o - 1.5) < 0.001),
+            A<object?>.That.Matches(o => o != null && o.GetType() == typeof(double) && Math.Abs((double)o - 1.5) < 0.001),
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<Newtonsoft.Json.JsonSerializer>._)).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task DataMappingNode_BooleanSource_ReadsTrueWithoutThrowing()
+    {
+        // Pre-migration JToken.Value<byte>() silently coerced JSON true/false to 1/0.
+        // STJ's JsonNode.Deserialize<byte>(options) has no boolean→byte converter
+        // and throws JsonException at runtime, breaking every pipeline configured
+        // with SourceValueType=Boolean.
+        // Reading as bool restores parity with the pre-migration behaviour.
+
+        var config = new DataMappingNodeConfiguration
+        {
+            Path = "$.flag",
+            TargetPath = "$.result",
+            SourceValueType = AttributeValueTypesDto.Boolean,
+            TargetValueType = AttributeValueTypesDto.String,
+            Mappings = new List<MappingEntry>
+            {
+                new() { SourceValue = true, TargetValue = "Yes" },
+                new() { SourceValue = false, TargetValue = "No" }
+            }
+        };
+
+        // Use SetupGetByPath so the mock exercises STJ deserialization via
+        // JsonNode.Deserialize<T>(Options), exactly as the production data context does.
+        var testData = new System.Text.Json.Nodes.JsonObject
+        {
+            ["flag"] = true
+        };
+
+        var (dataContext, nodeContext, next) = PrepareTest<DataMappingNodeConfiguration>(config, testData);
+        SetupGetByPath<bool>(dataContext, config.Path, testData);
+
+        var node = new DataMappingNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set(
+            config.TargetPath,
+            A<object?>.That.Matches(o => o != null && o.ToString() == "Yes"),
+            config.DocumentMode,
+            config.TargetValueKind,
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 }

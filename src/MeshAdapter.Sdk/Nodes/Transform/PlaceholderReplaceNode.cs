@@ -18,7 +18,7 @@ public class PlaceholderReplaceNode(NodeDelegate next) : IPipelineNode
     {
         var c = nodeContext.GetNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
 
-        var value = dataContext.GetSimpleValueByPath<string>(c.Path);
+        var value = dataContext.Get<string>(c.Path);
 
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -29,11 +29,11 @@ public class PlaceholderReplaceNode(NodeDelegate next) : IPipelineNode
         var replaceRules = c.ReplaceRules;
         foreach (var replaceRule in replaceRules)
         {
-            var replace = dataContext.GetSimpleValueByPath<string>(replaceRule.Path);
+            var replace = dataContext.Get<string>(replaceRule.Path);
             value = value.Replace("${" + replaceRule.Placeholder + "}", replace, StringComparison.OrdinalIgnoreCase);
         }
 
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, value);
+        dataContext.Set(c.TargetPath, value, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }

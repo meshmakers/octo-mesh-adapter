@@ -2,7 +2,6 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -24,8 +23,7 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
     {
         var c = nodeContext.GetNodeConfiguration<ApplyChangesNodeConfiguration>();
 
-        var list = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        var list = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
         if (list != null && list.Any())
         {

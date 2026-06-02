@@ -1,9 +1,7 @@
-using System.Globalization;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
@@ -17,21 +15,35 @@ internal static class FieldFilterExtensions
         {
             foreach (var fieldFilter in fieldFilters)
             {
-                var comparisonValue = GetComparisonValue(fieldFilter.ComparisonValue);
+                var comparisonValue = fieldFilter.ComparisonValue;
                 if (comparisonValue == null && !string.IsNullOrWhiteSpace(fieldFilter.ComparisonValuePath))
                 {
-                    var t = dataContext.Current?.SelectTokens(fieldFilter.ComparisonValuePath ?? "$").ToList();
-                    if (t != null)
+                    var path = fieldFilter.ComparisonValuePath ?? "$";
+                    // SelectMatches captures the full JSONPath dialect, including wildcards
+                    // (e.g. "$.items[*].id"). The previous Get<JsonNode>(path) returned only
+                    // the first match, silently collapsing N-element wildcard expansions to
+                    // a single scalar comparison value. Same fix shape as commit edfba77 in
+                    // CreateUpdateInfoNode.
+                    var matches = dataContext.SelectMatches(path).ToList();
+                    if (matches.Count == 1)
                     {
-                        if (t.Count == 1)
+                        // Single match: either a literal JSON array (e.g. "$.ids" → unwrap)
+                        // or a single scalar (e.g. "$.filter.value" → take as-is).
+                        if (matches[0].GetKind("$") == DataKind.Array)
                         {
-                            comparisonValue = GetComparisonValue(t.First());
+                            comparisonValue = ReadArrayScalars(matches[0]);
                         }
-                        else if (t.Count > 1)
+                        else
                         {
-                            comparisonValue = t.Select(GetComparisonValue).ToList();
+                            comparisonValue = matches[0].GetValue("$");
                         }
                     }
+                    else if (matches.Count > 1)
+                    {
+                        // Multi-match (wildcard / recursive descent) — list of scalars.
+                        comparisonValue = matches.Select(m => m.GetValue("$")).ToList();
+                    }
+                    // matches.Count == 0 → path resolved to nothing; leave comparisonValue null.
                 }
 
                 queryOptions.AddFieldFilter(fieldFilter.AttributePath, GetOperator(fieldFilter.Operator),
@@ -40,33 +52,20 @@ internal static class FieldFilterExtensions
         }
     }
 
-    private static object? GetComparisonValue(object? comparisonValue)
+    // Reads each element of the array sub-context as its natural CLR scalar via GetValue,
+    // which routes through JsonScalar.ToClr — Int32 for integers that fit, Int64 for larger
+    // values, double for reals. Matches the Newtonsoft pre-migration boxing as enforced by
+    // Sdk.Common.PipelineParityTests.AttributeRoundTripClrTypeParityTests.
+    private static List<object?> ReadArrayScalars(IDataContext arrayContext)
     {
-        if (comparisonValue is JValue jValue)
+        var length = arrayContext.Length("$");
+        var result = new List<object?>(length);
+        for (var i = 0; i < length; i++)
         {
-            switch (jValue.Type)
-            {
-                case JTokenType.Float:
-                    return jValue.Value<double>();
-                case JTokenType.Boolean:
-                    return jValue.Value<bool>();
-                case JTokenType.Date:
-                    return jValue.Value<DateTime>();
-                case JTokenType.String:
-                    return jValue.Value<string>();
-                case JTokenType.Null:
-                    return null;
-                default:
-                    return jValue.ToString(CultureInfo.InvariantCulture);
-            }
+            result.Add(arrayContext.GetValue($"$[{i}]"));
         }
 
-        if (comparisonValue is JArray jArray)
-        {
-            return jArray.Select(GetComparisonValue).ToList();
-        }
-
-        return comparisonValue;
+        return result;
     }
 
     private static FieldFilterOperator GetOperator(FieldFilterOperatorDto f)

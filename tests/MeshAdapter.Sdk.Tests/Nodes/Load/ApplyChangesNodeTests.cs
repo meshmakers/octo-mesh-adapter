@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Messages;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -9,13 +11,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class ApplyChangesNodeTests
+public class ApplyChangesNodeTests : NodeTestBase
 {
     private const string DataPath = "$.updateInfos";
 
@@ -31,31 +30,6 @@ public class ApplyChangesNodeTests
 
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
-    }
-
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        ApplyChangesNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "ApplyChanges",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-
-        return (dataContext, nodeContext, next);
     }
 
     private ApplyChangesNode CreateNode(NodeDelegate next)
@@ -91,10 +65,10 @@ public class ApplyChangesNodeTests
         return EntityUpdateInfo<RtEntity>.CreateDelete(rtEntityId);
     }
 
-    private static void SetupDataContext(IDataContext dataContext, string path,
+    private static void SetupDataContextList(IDataContext dataContext, string path,
         List<EntityUpdateInfo<RtEntity>>? data)
     {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(path, A<JsonSerializer>._))
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(path))
             .Returns(data);
     }
 
@@ -102,10 +76,10 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithData_StartsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -117,10 +91,10 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithData_CommitsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -132,14 +106,14 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithInsertData_AppliesAllInserts()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo("000000000000000000000001"),
             CreateInsertUpdateInfo("000000000000000000000002")
         };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
@@ -161,15 +135,14 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithDuplicateUpdates_KeepsLastUpdatePerEntity()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
-        // Two updates for the same entity - only the last should be kept
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateUpdateUpdateInfo("000000000000000000000001"),
             CreateUpdateUpdateInfo("000000000000000000000001")
         };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
@@ -190,15 +163,15 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithMixedInsertAndUpdate_KeepsAllInsertsAndDedupsUpdates()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo("000000000000000000000001"),
             CreateUpdateUpdateInfo("000000000000000000000002"),
-            CreateUpdateUpdateInfo("000000000000000000000002") // duplicate update
+            CreateUpdateUpdateInfo("000000000000000000000002")
         };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
@@ -212,7 +185,6 @@ public class ApplyChangesNodeTests
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(capturedUpdates);
-        // 1 insert + 1 deduped update = 2
         Assert.Equal(2, capturedUpdates!.Count);
     }
 
@@ -220,14 +192,14 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithDeleteAndInsert_KeepsBothInResult()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>>
         {
             CreateInsertUpdateInfo("000000000000000000000001"),
             CreateDeleteUpdateInfo("000000000000000000000002")
         };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
@@ -250,9 +222,9 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithNullData_DoesNotStartTransaction()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
-        SetupDataContext(dataContext, DataPath, null);
+        SetupDataContextList(dataContext, DataPath, null);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -264,9 +236,9 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithEmptyData_DoesNotStartTransaction()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
-        SetupDataContext(dataContext, DataPath, new List<EntityUpdateInfo<RtEntity>>());
+        SetupDataContextList(dataContext, DataPath, new List<EntityUpdateInfo<RtEntity>>());
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -278,10 +250,10 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithOperationErrors_AbortsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
@@ -303,10 +275,10 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithFatalErrors_AbortsTransaction()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
@@ -328,39 +300,39 @@ public class ApplyChangesNodeTests
     public async Task ProcessObjectAsync_WithData_CallsNext()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithNullData_CallsNext()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
-        SetupDataContext(dataContext, DataPath, null);
+        SetupDataContextList(dataContext, DataPath, null);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_WithOperationErrors_StillCallsNext()
     {
         var config = new ApplyChangesNodeConfiguration { Path = DataPath };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
 
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
-        SetupDataContext(dataContext, DataPath, data);
+        SetupDataContextList(dataContext, DataPath, data);
 
         A.CallTo(() => _tenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
@@ -374,6 +346,6 @@ public class ApplyChangesNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 }

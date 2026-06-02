@@ -3,7 +3,6 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -31,8 +30,7 @@ internal class SaveStreamDataInArchiveNode(
 
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);
 
-        var data = dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(c.Path,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
         if (data != null && data.Count != 0)
         {

@@ -1,4 +1,7 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -10,12 +13,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class GenerateDataPointMappingsNodeTests
+public class GenerateDataPointMappingsNodeTests : NodeTestBase
 {
     private static readonly RtCkId<CkTypeId> RoomType = new("Loxone/Room");
     private static readonly RtCkId<CkTypeId> CategoryType = new("Loxone/Category");
@@ -259,7 +260,7 @@ public class GenerateDataPointMappingsNodeTests
             }
         };
 
-        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
         var node = new GenerateDataPointMappingsNode(next, _etlContext);
 
         // Act
@@ -269,17 +270,17 @@ public class GenerateDataPointMappingsNodeTests
         Assert.NotNull(captured.Value);
         var suggestions = captured.Value!;
         Assert.Equal(3, suggestions.Count);
-        var attrs = suggestions.Select(s => s["targetAttributePath"]!.ToString()).OrderBy(s => s).ToArray();
+        var attrs = suggestions.Select(s => s.TargetAttributePath).OrderBy(s => s).ToArray();
         Assert.Equal(new[] { "CO2Level", "Temperature", "TemperatureSetpointHeating" }, attrs);
 
         // Verify deterministic name format using the actual padded RtIds.
         var ctrlRtId = control.RtId.ToString();
         var spaceRtId = space.RtId.ToString();
-        var tempActual = suggestions.First(s => s["targetAttributePath"]!.ToString() == "Temperature");
-        Assert.Equal($"rc-tempActual|{ctrlRtId}|tempActual", tempActual["name"]!.ToString());
-        Assert.Equal(ctrlRtId, tempActual["controlRtId"]!.ToString());
-        Assert.Equal(spaceRtId, tempActual["spaceRtId"]!.ToString());
-        Assert.Equal("tempActual", tempActual["sourceAttributePath"]!.ToString());
+        var tempActual = suggestions.First(s => s.TargetAttributePath == "Temperature");
+        Assert.Equal($"rc-tempActual|{ctrlRtId}|tempActual", tempActual.Name);
+        Assert.Equal(ctrlRtId, tempActual.ControlRtId);
+        Assert.Equal(spaceRtId, tempActual.SpaceRtId);
+        Assert.Equal("tempActual", tempActual.SourceAttributePath);
 
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
@@ -322,14 +323,14 @@ public class GenerateDataPointMappingsNodeTests
             }
         };
 
-        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
         var node = new GenerateDataPointMappingsNode(next, _etlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured.Value);
         Assert.Single(captured.Value!);
-        Assert.Equal(control.RtId.ToString(), captured.Value![0]["controlRtId"]!.ToString());
+        Assert.Equal(control.RtId.ToString(), captured.Value![0].ControlRtId);
     }
 
     [Fact]
@@ -372,15 +373,15 @@ public class GenerateDataPointMappingsNodeTests
             }
         };
 
-        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
         var node = new GenerateDataPointMappingsNode(next, _etlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured.Value);
         Assert.Single(captured.Value!);
-        Assert.Equal(humidity.RtId.ToString(), captured.Value![0]["controlRtId"]!.ToString());
-        Assert.Equal("CurrentValue", captured.Value![0]["sourceAttributePath"]!.ToString());
+        Assert.Equal(humidity.RtId.ToString(), captured.Value![0].ControlRtId);
+        Assert.Equal("CurrentValue", captured.Value![0].SourceAttributePath);
     }
 
     [Fact]
@@ -433,7 +434,7 @@ public class GenerateDataPointMappingsNodeTests
             }
         };
 
-        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
         var node = new GenerateDataPointMappingsNode(next, _etlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -442,11 +443,11 @@ public class GenerateDataPointMappingsNodeTests
         Assert.Single(captured.Value!);
         var suggestion = captured.Value![0];
         // The suggestion's target ids must be the sensor's, not the space's.
-        Assert.Equal(sensor.RtId.ToString(), suggestion["spaceRtId"]!.ToString());
-        Assert.Equal("EnergyIQ/TemperatureSensor", suggestion["spaceCkTypeId"]!.ToString());
-        Assert.Equal("Temperature", suggestion["targetAttributePath"]!.ToString());
+        Assert.Equal(sensor.RtId.ToString(), suggestion.SpaceRtId);
+        Assert.Equal("EnergyIQ/TemperatureSensor", suggestion.SpaceCkTypeId);
+        Assert.Equal("Temperature", suggestion.TargetAttributePath);
         // controlRtId still points at the Loxone control.
-        Assert.Equal(control.RtId.ToString(), suggestion["controlRtId"]!.ToString());
+        Assert.Equal(control.RtId.ToString(), suggestion.ControlRtId);
     }
 
     [Fact]
@@ -498,7 +499,7 @@ public class GenerateDataPointMappingsNodeTests
             }
         };
 
-        var (dataContext, nodeContext, next, captured) = PrepareTest(config);
+        var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
         var node = new GenerateDataPointMappingsNode(next, _etlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -605,32 +606,92 @@ public class GenerateDataPointMappingsNodeTests
     }
 
     private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next, CapturedSuggestions Captured)
-        PrepareTest(GenerateDataPointMappingsNodeConfiguration config)
+        PrepareTestWithCapture(GenerateDataPointMappingsNodeConfiguration config)
     {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(new JObject());
+        var (dataContext, nodeContext, next) = PrepareTest<GenerateDataPointMappingsNodeConfiguration>(config);
 
         var captured = new CapturedSuggestions();
-        // The node calls the 6-arg overload (path, value, documentMode, valueKind, writeMode, serializer).
-        // We capture suggestions written to the configured target path.
+        // The node calls dataContext.Set<List<MappingSuggestion>>(targetPath, suggestions, ...) — capture them.
         A.CallTo(dataContext)
-            .Where(call => call.Method.Name == nameof(IDataContext.SetValueByPath)
-                && call.Arguments.Count == 6
+            .Where(call => call.Method.Name == nameof(IDataContext.Set)
+                && call.Arguments.Count >= 2
                 && (call.Arguments[0] as string) == config.TargetPath
-                && call.Arguments[1] is JArray)
-            .Invokes(call => captured.Value = (JArray)call.Arguments[1]!);
+                && call.Arguments[1] is List<GenerateDataPointMappingsNode.MappingSuggestion>)
+            .Invokes(call =>
+                captured.Value = (List<GenerateDataPointMappingsNode.MappingSuggestion>)call.Arguments[1]!);
 
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("GenerateDataPointMappings", 0, config, dataContext);
-        var next = A.Fake<NodeDelegate>();
         return (dataContext, nodeContext, next, captured);
     }
 
     private sealed class CapturedSuggestions
     {
-        public JArray? Value { get; set; }
+        public List<GenerateDataPointMappingsNode.MappingSuggestion>? Value { get; set; }
+    }
+
+    /// <summary>
+    /// Characterization: the typed MappingSuggestion + MappingStatistics records serialize
+    /// byte-identically to the former hand-built JsonObject shapes (camelCase keys, order,
+    /// ruleHits dynamic object, string arrays). Legacy builders are reproduced locally.
+    /// </summary>
+    [Fact]
+    public void MappingSuggestionAndStatistics_SerializeByteIdenticalToLegacyJsonObjects()
+    {
+        var suggestion = new GenerateDataPointMappingsNode.MappingSuggestion(
+            Name: "rc-temp|0001|tempActual",
+            ControlRtId: "0001",
+            ControlCkTypeId: "Loxone/Control",
+            SpaceRtId: "0002",
+            SpaceCkTypeId: "EnergyIQ/Space",
+            SourceAttributePath: "tempActual",
+            TargetAttributePath: "Temperature",
+            MappingExpression: "value / 100",
+            RuleId: "rc-temp",
+            Reason: "Container 'Wohnzimmer' matched; rule 'rc-temp' on control 'Raumregler'");
+
+        var legacySuggestion = new JsonObject
+        {
+            ["name"] = suggestion.Name,
+            ["controlRtId"] = suggestion.ControlRtId,
+            ["controlCkTypeId"] = suggestion.ControlCkTypeId,
+            ["spaceRtId"] = suggestion.SpaceRtId,
+            ["spaceCkTypeId"] = suggestion.SpaceCkTypeId,
+            ["sourceAttributePath"] = suggestion.SourceAttributePath,
+            ["targetAttributePath"] = suggestion.TargetAttributePath,
+            ["mappingExpression"] = suggestion.MappingExpression,
+            ["ruleId"] = suggestion.RuleId,
+            ["reason"] = suggestion.Reason,
+        };
+
+        Assert.Equal(
+            legacySuggestion.ToJsonString(SystemTextJsonOptions.Default),
+            JsonSerializer.Serialize(suggestion, SystemTextJsonOptions.Default));
+
+        var unmatched = new List<string> { "Unbekannt", "Größe" };
+        var ruleHits = new Dictionary<string, int>(StringComparer.Ordinal) { ["rc-temp"] = 3, ["rc-co2"] = 1 };
+        var definedRuleIds = new List<string> { "rc-temp", "rc-co2", "rc-humidity" };
+
+        var stats = new GenerateDataPointMappingsNode.MappingStatistics(
+            TotalContainers: 10,
+            MatchedContainers: 8,
+            UnmatchedContainers: 2,
+            UnmatchedContainerNames: unmatched,
+            TotalSuggestions: 4,
+            RuleHits: ruleHits,
+            DefinedRuleIds: definedRuleIds);
+
+        var legacyStats = new JsonObject
+        {
+            ["totalContainers"] = 10,
+            ["matchedContainers"] = 8,
+            ["unmatchedContainers"] = 2,
+            ["unmatchedContainerNames"] = new JsonArray(unmatched.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+            ["totalSuggestions"] = 4,
+            ["ruleHits"] = (JsonObject)JsonSerializer.SerializeToNode(ruleHits, SystemTextJsonOptions.Default)!,
+            ["definedRuleIds"] = new JsonArray(definedRuleIds.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+        };
+
+        Assert.Equal(
+            legacyStats.ToJsonString(SystemTextJsonOptions.Default),
+            JsonSerializer.Serialize(stats, SystemTextJsonOptions.Default));
     }
 }

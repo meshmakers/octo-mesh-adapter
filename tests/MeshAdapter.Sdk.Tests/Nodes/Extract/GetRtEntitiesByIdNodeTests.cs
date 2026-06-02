@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -10,12 +12,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetRtEntitiesByIdNodeTests
+public class GetRtEntitiesByIdNodeTests : NodeTestBase
 {
     private static readonly RtCkId<CkTypeId> TestCkTypeId = new("TestModel/TestType");
 
@@ -31,31 +31,6 @@ public class GetRtEntitiesByIdNodeTests
 
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
-    }
-
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        GetRtEntitiesByIdNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "GetRtEntitiesById",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-
-        return (dataContext, nodeContext, next);
     }
 
     private GetRtEntitiesByIdNode CreateNode(NodeDelegate next)
@@ -83,6 +58,11 @@ public class GetRtEntitiesByIdNodeTests
             .Returns(resultSet);
     }
 
+    private static void SetupGetArray(IDataContext dataContext, string path, IEnumerable<string?>? values)
+    {
+        A.CallTo(() => dataContext.GetArray<string>(path)).Returns(values);
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_WithRtIds_QueriesRepository()
     {
@@ -93,7 +73,7 @@ public class GetRtEntitiesByIdNodeTests
             RtIds = rtIds,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         var entity = new RtEntity(TestCkTypeId, new OctoObjectId("000000000000000000000001"));
         SetupGetRtEntitiesById(CreateResultSet(entity));
@@ -121,7 +101,7 @@ public class GetRtEntitiesByIdNodeTests
             RtIds = rtIds,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         var entity = new RtEntity(TestCkTypeId, new OctoObjectId("000000000000000000000001"));
         SetupGetRtEntitiesById(CreateResultSet(entity));
@@ -129,12 +109,12 @@ public class GetRtEntitiesByIdNodeTests
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set(
                 "$.result",
+                A<IResultSet<RtEntity>?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<IResultSet<RtEntity>>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -148,14 +128,14 @@ public class GetRtEntitiesByIdNodeTests
             RtIds = rtIds,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         SetupGetRtEntitiesById(CreateResultSet());
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -167,10 +147,10 @@ public class GetRtEntitiesByIdNodeTests
             RtIdsPath = "$.ids",
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
-        A.CallTo(() => dataContext.GetSimpleArrayValueByPath<string>("$.ids"))
-            .Returns(new List<string> { "000000000000000000000001", "000000000000000000000002" });
+        SetupGetArray(dataContext, "$.ids",
+            new List<string?> { "000000000000000000000001", "000000000000000000000002" });
 
         var entity1 = new RtEntity(TestCkTypeId, new OctoObjectId("000000000000000000000001"));
         var entity2 = new RtEntity(TestCkTypeId, new OctoObjectId("000000000000000000000002"));
@@ -196,14 +176,13 @@ public class GetRtEntitiesByIdNodeTests
         {
             CkTypeId = TestCkTypeId,
             TargetPath = "$.result"
-            // RtIds and RtIdsPath are both null
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -215,12 +194,12 @@ public class GetRtEntitiesByIdNodeTests
             RtIds = new List<OctoObjectId>(),
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -232,10 +211,9 @@ public class GetRtEntitiesByIdNodeTests
             RtIds = new List<OctoObjectId> { new("000000000000000000000001") },
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.typeId"))
-            .Returns("TestModel/ResolvedType");
+        SetupGetSimpleValueByPath(dataContext, "$.typeId", "TestModel/ResolvedType");
 
         SetupGetRtEntitiesById(CreateResultSet());
 
@@ -259,9 +237,8 @@ public class GetRtEntitiesByIdNodeTests
         {
             RtIds = new List<OctoObjectId> { new("000000000000000000000001") },
             TargetPath = "$.result"
-            // CkTypeId and CkTypeIdPath are both null
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         var node = CreateNode(next);
 
@@ -278,10 +255,9 @@ public class GetRtEntitiesByIdNodeTests
             RtIdsPath = "$.ids",
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
-        A.CallTo(() => dataContext.GetSimpleArrayValueByPath<string>("$.ids"))
-            .Returns(new List<string>());
+        SetupGetArray(dataContext, "$.ids", new List<string?>());
 
         var node = CreateNode(next);
 
@@ -301,7 +277,7 @@ public class GetRtEntitiesByIdNodeTests
             Skip = 5,
             Take = 10
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         SetupGetRtEntitiesById(CreateResultSet());
 
@@ -328,7 +304,7 @@ public class GetRtEntitiesByIdNodeTests
             RtIds = rtIds,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetRtEntitiesByIdNodeConfiguration>(config);
 
         SetupGetRtEntitiesById(CreateResultSet());
 

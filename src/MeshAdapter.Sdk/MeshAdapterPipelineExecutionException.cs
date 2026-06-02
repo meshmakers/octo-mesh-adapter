@@ -1,8 +1,8 @@
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter;
 
@@ -25,14 +25,19 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
     }
 
-    public static Exception InvalidValue(JToken jToken)
+    public static Exception InvalidValue(object? value)
     {
-        return new MeshAdapterPipelineExecutionException($"Invalid value: {jToken}");
+        return new MeshAdapterPipelineExecutionException($"Invalid value: {value}");
     }
 
-    public static Exception InvalidValue(INodeContext nodeContext, JToken jToken)
+    public static Exception InvalidValue(INodeContext nodeContext, object? value)
     {
-        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Invalid value: {jToken}");
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Invalid value: {value}");
+    }
+
+    public static Exception InvalidValue(INodeContext nodeContext, JsonNode? value)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Invalid value: {value}");
     }
 
     public static Exception TargetCkTypeIdNotSet(INodeContext nodeContext)

@@ -18,7 +18,7 @@ public class ComputeFileHashNode(NodeDelegate next) : IPipelineNode
     {
         var config = nodeContext.GetNodeConfiguration<ComputeFileHashNodeConfiguration>();
 
-        var base64Data = dataContext.Current?.SelectToken(config.Path)?.ToString();
+        var base64Data = dataContext.Get<string>(config.Path);
         if (string.IsNullOrEmpty(base64Data))
         {
             nodeContext.Warning($"No data found at path: {config.Path}");
@@ -30,8 +30,8 @@ public class ComputeFileHashNode(NodeDelegate next) : IPipelineNode
         var hashBytes = SHA256.HashData(bytes);
         var hashHex = Convert.ToHexStringLower(hashBytes);
 
-        dataContext.SetValueByPath(config.TargetPath, config.DocumentMode,
-            config.TargetValueKind, config.TargetValueWriteMode, hashHex);
+        dataContext.Set(config.TargetPath, hashHex, config.DocumentMode,
+            config.TargetValueKind, config.TargetValueWriteMode);
 
         nodeContext.Debug($"Computed file hash: {hashHex}");
 

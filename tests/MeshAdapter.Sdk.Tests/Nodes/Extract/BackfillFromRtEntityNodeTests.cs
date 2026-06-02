@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -11,13 +13,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class BackfillFromRtEntityNodeTests
+public class BackfillFromRtEntityNodeTests : NodeTestBase
 {
     private const string TenantId = "test-tenant";
     private const string DataPath = "$.updateInfos";
@@ -46,23 +45,6 @@ public class BackfillFromRtEntityNodeTests
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
         A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
         A.CallTo(() => _tenantContext.GetArchiveRuntimeStore()).Returns(_archiveStore);
-    }
-
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        BackfillFromRtEntityNodeConfiguration config)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(), logger, dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode("BackfillFromRtEntity", 0, config, dataContext);
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
     }
 
     private void ConfigureArchive(params (string Path, bool Indexed, bool Required)[] columns)
@@ -109,11 +91,9 @@ public class BackfillFromRtEntityNodeTests
         StubPersistedEntity(rtId, ("Current", AttributeValueTypesDto.Double, 5.5));
 
         var data = new List<EntityUpdateInfo<RtEntity>> { update };
-        var (dataContext, nodeContext, next) = PrepareTest(new BackfillFromRtEntityNodeConfiguration
-        {
-            Path = DataPath, ArchiveRtId = ArchiveRtIdString
-        });
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        var (dataContext, nodeContext, next) = PrepareTest<BackfillFromRtEntityNodeConfiguration>(
+            new BackfillFromRtEntityNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString });
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
         var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
@@ -133,11 +113,9 @@ public class BackfillFromRtEntityNodeTests
         StubPersistedEntity(rtId, ("Voltage", AttributeValueTypesDto.Double, 999.0));
 
         var data = new List<EntityUpdateInfo<RtEntity>> { update };
-        var (dataContext, nodeContext, next) = PrepareTest(new BackfillFromRtEntityNodeConfiguration
-        {
-            Path = DataPath, ArchiveRtId = ArchiveRtIdString
-        });
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        var (dataContext, nodeContext, next) = PrepareTest<BackfillFromRtEntityNodeConfiguration>(
+            new BackfillFromRtEntityNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString });
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
         var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
@@ -162,11 +140,9 @@ public class BackfillFromRtEntityNodeTests
             ("Current", AttributeValueTypesDto.Double, 888.0));
 
         var data = new List<EntityUpdateInfo<RtEntity>> { u1, u2 };
-        var (dataContext, nodeContext, next) = PrepareTest(new BackfillFromRtEntityNodeConfiguration
-        {
-            Path = DataPath, ArchiveRtId = ArchiveRtIdString
-        });
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        var (dataContext, nodeContext, next) = PrepareTest<BackfillFromRtEntityNodeConfiguration>(
+            new BackfillFromRtEntityNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString });
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
         var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
@@ -183,11 +159,9 @@ public class BackfillFromRtEntityNodeTests
     public async Task ProcessObjectAsync_NoUpdateInfos_PassesThrough()
     {
         ConfigureArchive(("Voltage", false, false));
-        var (dataContext, nodeContext, next) = PrepareTest(new BackfillFromRtEntityNodeConfiguration
-        {
-            Path = DataPath, ArchiveRtId = ArchiveRtIdString
-        });
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        var (dataContext, nodeContext, next) = PrepareTest<BackfillFromRtEntityNodeConfiguration>(
+            new BackfillFromRtEntityNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString });
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(null);
 
         var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
@@ -204,11 +178,9 @@ public class BackfillFromRtEntityNodeTests
 
         var rtId = new OctoObjectId("000000000000000000000004");
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateUpdateInfo(rtId) };
-        var (dataContext, nodeContext, next) = PrepareTest(new BackfillFromRtEntityNodeConfiguration
-        {
-            Path = DataPath, ArchiveRtId = ArchiveRtIdString
-        });
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        var (dataContext, nodeContext, next) = PrepareTest<BackfillFromRtEntityNodeConfiguration>(
+            new BackfillFromRtEntityNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString });
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
         var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
@@ -226,11 +198,9 @@ public class BackfillFromRtEntityNodeTests
             .Returns(Task.FromResult<RtEntity?>(null));
 
         var data = new List<EntityUpdateInfo<RtEntity>> { update };
-        var (dataContext, nodeContext, next) = PrepareTest(new BackfillFromRtEntityNodeConfiguration
-        {
-            Path = DataPath, ArchiveRtId = ArchiveRtIdString
-        });
-        A.CallTo(() => dataContext.GetComplexObjectByPath<List<EntityUpdateInfo<RtEntity>>>(DataPath, A<JsonSerializer>._))
+        var (dataContext, nodeContext, next) = PrepareTest<BackfillFromRtEntityNodeConfiguration>(
+            new BackfillFromRtEntityNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString });
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
         var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);

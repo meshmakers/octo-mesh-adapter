@@ -3,7 +3,8 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using System.Text;
-using Newtonsoft.Json.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -71,11 +72,19 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
                 nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
                     response.StatusCode, responseContent);
 
-                JToken? responseJson = null;
+                JsonNode? responseJson = null;
 
                 try
                 {
-                    responseJson = JObject.Parse(responseContent);
+                    // Only treat the response as JSON when it parses to an object. The
+                    // legacy JObject.Parse threw for scalars and arrays, falling through
+                    // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
+                    // (scalars, arrays, objects) -- without the JsonObject filter, a
+                    // body like "42" or "[1,2,3]" would be silently stored as a typed
+                    // JSON value, and a downstream Get<string>(targetPath) couldn't
+                    // recover the original wire text. Pre-migration parity:
+                    // objects-as-JSON, everything else as text.
+                    responseJson = JsonNode.Parse(responseContent) as JsonObject;
                 }
                 catch (Exception)
                 {
@@ -83,8 +92,16 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
                 }
 
                 // Store response in data context at the configured path
-                dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                    c.TargetValueWriteMode, responseJson ?? responseContent);
+                if (responseJson != null)
+                {
+                    dataContext.Set(c.TargetPath, responseJson, c.DocumentMode, c.TargetValueKind,
+                        c.TargetValueWriteMode);
+                }
+                else
+                {
+                    dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
+                        c.TargetValueWriteMode);
+                }
             }
             else
             {
@@ -177,7 +194,7 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
 
         if (!string.IsNullOrWhiteSpace(config.UrlPath))
         {
-            return dataContext.GetSimpleValueByPath<string>(config.UrlPath) ?? string.Empty;
+            return dataContext.Get<string>(config.UrlPath) ?? string.Empty;
         }
 
         return string.Empty;
@@ -192,8 +209,18 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
 
         if (!string.IsNullOrWhiteSpace(config.BodyPath))
         {
-            var d = dataContext.GetComplexObjectByPath<JToken>(config.BodyPath);
-            return d!.ToString();
+            // Read as a CLR value (objects/arrays materialize to a JsonElement) and serialize with
+            // the shared options so the body inherits the relaxed encoder (non-ASCII emitted
+            // literally, matching the legacy Newtonsoft body) instead of STJ's default \uXXXX
+            // escaping. Output stays compact (WriteIndented is off on this bundle) — the exact
+            // bytes the former Get<JsonNode> + ToJsonString produced. Missing path → no body.
+            if (dataContext.GetKind(config.BodyPath) == DataKind.Undefined)
+            {
+                return null;
+            }
+
+            var value = dataContext.Get<object?>(config.BodyPath);
+            return JsonSerializer.Serialize(value, SystemTextJsonOptions.Default);
         }
 
         return null;
@@ -250,7 +277,7 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
 
         if (!string.IsNullOrWhiteSpace(pathParam.ValuePath))
         {
-            var value = dataContext.GetSimpleValueByPath<string>(pathParam.ValuePath);
+            var value = dataContext.Get<string>(pathParam.ValuePath);
             return value;
         }
 
@@ -266,7 +293,7 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
 
         if (!string.IsNullOrWhiteSpace(headerParam.ValuePath))
         {
-            return dataContext.GetSimpleValueByPath<string>(headerParam.ValuePath);
+            return dataContext.Get<string>(headerParam.ValuePath);
         }
 
         return null;

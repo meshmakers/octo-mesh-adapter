@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -9,12 +11,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class SftpUploadNodeTests
+public class SftpUploadNodeTests : NodeTestBase
 {
     private const string TestServerConfig = "sftp-server-1";
     private const string TestRemoteDir = "/upload/test";
@@ -44,31 +44,6 @@ public class SftpUploadNodeTests
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
     }
 
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        SftpUploadNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "SftpUpload",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-
-        return (dataContext, nodeContext, next);
-    }
-
     private SftpUploadNode CreateNode(NodeDelegate next)
     {
         return new SftpUploadNode(next, _etlContext);
@@ -84,10 +59,9 @@ public class SftpUploadNodeTests
             ServerConfiguration = TestServerConfig,
             RemoteDirectory = TestRemoteDir,
             Path = TestContentPath
-            // FileName and FileNamePath both null
         };
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -104,10 +78,9 @@ public class SftpUploadNodeTests
             RemoteDirectory = TestRemoteDir,
             FileName = TestFileName,
             Path = null!
-            // No FileRtId, FileRtIdPath, or Path
         };
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -127,7 +100,7 @@ public class SftpUploadNodeTests
             Path = TestContentPath
         };
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -149,7 +122,7 @@ public class SftpUploadNodeTests
 
         A.CallTo(() => _globalConfiguration.IsDefined(TestServerConfig)).Returns(false);
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -171,7 +144,7 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig(password: null, privateKey: null);
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -197,8 +170,8 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestFileNamePath)).Returns((string?)null);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath<string?>(dataContext, TestFileNamePath, null);
 
         var node = CreateNode(next);
 
@@ -221,19 +194,16 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestFileNamePath)).Returns("dynamic.csv");
-        // Return null so the node fails deterministically before attempting SFTP connection
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestContentPath)).Returns((string?)null);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestFileNamePath, "dynamic.csv");
+        SetupGetSimpleValueByPath<string?>(dataContext, TestContentPath, null);
 
         var node = CreateNode(next);
 
-        // Will throw due to missing content, but we verify the file name resolution happened
-        // by checking that FileNamePath was queried (not just FileName used)
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
 
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestFileNamePath))
+        A.CallTo(() => dataContext.Get<string>(TestFileNamePath))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -258,15 +228,12 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestFileNamePath)).Returns(maliciousFileName);
-        // Return null so the node fails deterministically before attempting SFTP connection
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestContentPath)).Returns((string?)null);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestFileNamePath, maliciousFileName);
+        SetupGetSimpleValueByPath<string?>(dataContext, TestContentPath, null);
 
         var node = CreateNode(next);
 
-        // Should not throw an invalid file name exception - the name is sanitized to its basename.
-        // The exception should be about missing content, not about an invalid file name.
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
 
@@ -288,8 +255,8 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestFileNamePath)).Returns(traversalName);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestFileNamePath, traversalName);
 
         var node = CreateNode(next);
 
@@ -316,8 +283,8 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestFileRtIdPath)).Returns((string?)null);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath<string?>(dataContext, TestFileRtIdPath, null);
 
         var node = CreateNode(next);
 
@@ -344,7 +311,7 @@ public class SftpUploadNodeTests
                 _session, A<OctoObjectId>._, A<CancellationToken>._))
             .Returns(Task.FromResult((IDownloadStreamHandler)null!));
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -370,12 +337,11 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestContentPath)).Returns((string?)null);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath<string?>(dataContext, TestContentPath, null);
 
         var node = CreateNode(next);
 
-        // MeshAdapterPipelineExecutionException extends PipelineExecutionException
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains(TestContentPath, ex.Message);
@@ -398,17 +364,14 @@ public class SftpUploadNodeTests
 
         SetupGlobalConfig();
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        // Return null so the node fails deterministically after semaphore creation
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(TestContentPath)).Returns((string?)null);
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath<string?>(dataContext, TestContentPath, null);
 
         var node = CreateNode(next);
 
-        // Will throw due to missing content, but semaphore should already be created
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
 
-        // Verify a ConcurrentDictionary was stored in properties
         Assert.True(_properties.ContainsKey("SftpUploadNode.Semaphores"));
         Assert.IsType<ConcurrentDictionary<string, SemaphoreSlim>>(_properties["SftpUploadNode.Semaphores"]);
     }
@@ -421,25 +384,25 @@ public class SftpUploadNodeTests
     {
         A.CallTo(() => _globalConfiguration.IsDefined(TestServerConfig)).Returns(true);
 
-        var serverConfigJson = new JObject
+        var serverConfigJson = $$"""
         {
-            ["Host"] = "localhost",
-            ["Port"] = 22,
-            ["Username"] = "testuser",
-            ["Password"] = password,
-            ["PrivateKey"] = privateKey,
-            ["MaxConcurrentConnections"] = 3
-        };
+            "Host": "localhost",
+            "Port": 22,
+            "Username": "testuser",
+            "Password": {{(password is null ? "null" : "\"" + password + "\"")}},
+            "PrivateKey": {{(privateKey is null ? "null" : "\"" + privateKey + "\"")}},
+            "MaxConcurrentConnections": 3
+        }
+        """;
 
-        // SftpServerConfiguration is private, so we intercept any GetValue call and deserialize dynamically
+        // SftpServerConfiguration is private; deserialize dynamically using STJ.
         A.CallTo(_globalConfiguration)
             .Where(call => call.Method.Name == "GetValue" && call.Method.IsGenericMethod)
             .WithNonVoidReturnType()
             .ReturnsLazily(call =>
             {
-                var json = serverConfigJson.ToString();
                 var type = call.Method.GetGenericArguments()[0];
-                return Newtonsoft.Json.JsonConvert.DeserializeObject(json, type)!;
+                return JsonSerializer.Deserialize(serverConfigJson, type)!;
             });
     }
 

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -34,7 +35,7 @@ public class CkTypeIdHelperTests
     public void ResolveRtCkTypeId_PathResolution_ReturnsResolvedValue()
     {
         const string path = "$.ckTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns("TestModel/TestType");
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns("TestModel/TestType");
 
         var result = CkTypeIdHelper.ResolveRtCkTypeId(null, path, _dataContext, _nodeContext);
 
@@ -52,7 +53,7 @@ public class CkTypeIdHelperTests
     public void ResolveRtCkTypeId_PathResolvesToNull_ThrowsException()
     {
         const string path = "$.ckTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns(null);
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns(null);
 
         Assert.Throws<MeshAdapterPipelineExecutionException>(
             () => CkTypeIdHelper.ResolveRtCkTypeId(null, path, _dataContext, _nodeContext));
@@ -63,7 +64,7 @@ public class CkTypeIdHelperTests
     {
         const string path = "$.ckTypeId";
         var otherCkTypeId = new RtCkId<CkTypeId>("Other/Type");
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns("Other/Type");
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns("Other/Type");
 
         var result = CkTypeIdHelper.ResolveRtCkTypeId(TestCkTypeId, path, _dataContext, _nodeContext);
 
@@ -87,7 +88,7 @@ public class CkTypeIdHelperTests
     public void TryResolveRtCkTypeId_PathResolution_ReturnsTrueWithValue()
     {
         const string path = "$.ckTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns("TestModel/TestType");
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns("TestModel/TestType");
 
         var success = CkTypeIdHelper.TryResolveRtCkTypeId(null, path, _dataContext, out var resolved);
 
@@ -108,7 +109,7 @@ public class CkTypeIdHelperTests
     public void TryResolveRtCkTypeId_PathResolvesToNull_ReturnsFalse()
     {
         const string path = "$.ckTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns(null);
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns(null);
 
         var success = CkTypeIdHelper.TryResolveRtCkTypeId(null, path, _dataContext, out var resolved);
 
@@ -132,7 +133,7 @@ public class CkTypeIdHelperTests
     public void ResolveOriginCkTypeId_PathResolution_ReturnsResolvedValue()
     {
         const string path = "$.originCkTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns("TestModel/TestType");
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns("TestModel/TestType");
 
         var result = CkTypeIdHelper.ResolveOriginCkTypeId(null, path, _dataContext, _nodeContext);
 
@@ -150,7 +151,7 @@ public class CkTypeIdHelperTests
     public void ResolveOriginCkTypeId_PathResolvesToNull_ThrowsException()
     {
         const string path = "$.originCkTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns(null);
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns(null);
 
         Assert.Throws<MeshAdapterPipelineExecutionException>(
             () => CkTypeIdHelper.ResolveOriginCkTypeId(null, path, _dataContext, _nodeContext));
@@ -172,7 +173,7 @@ public class CkTypeIdHelperTests
     public void ResolveTargetCkTypeId_PathResolution_ReturnsResolvedValue()
     {
         const string path = "$.targetCkTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns("TestModel/TestType");
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns("TestModel/TestType");
 
         var result = CkTypeIdHelper.ResolveTargetCkTypeId(null, path, _dataContext, _nodeContext);
 
@@ -190,7 +191,7 @@ public class CkTypeIdHelperTests
     public void ResolveTargetCkTypeId_PathResolvesToNull_ThrowsException()
     {
         const string path = "$.targetCkTypeId";
-        A.CallTo(() => _dataContext.GetSimpleValueByPath<string>(path)).Returns(null);
+        A.CallTo(() => _dataContext.Get<string>(path)).Returns(null);
 
         Assert.Throws<MeshAdapterPipelineExecutionException>(
             () => CkTypeIdHelper.ResolveTargetCkTypeId(null, path, _dataContext, _nodeContext));

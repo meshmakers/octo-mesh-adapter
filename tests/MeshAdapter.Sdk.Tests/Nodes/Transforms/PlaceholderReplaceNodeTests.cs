@@ -1,48 +1,62 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class PlaceholderReplaceNodeTests
+public class PlaceholderReplaceNodeTests : NodeTestBase
 {
-    private (IDataContext DataContext, INodeContext NodeContext) PrepareTest(
+    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
         PlaceholderReplaceNodeConfiguration config,
-        JToken? testData,
+        JsonNode? testData,
         Dictionary<string, string?>? pathValues = null)
     {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
+        var setup = PrepareTest<PlaceholderReplaceNodeConfiguration>(config, testData);
 
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        // Setup GetSimpleValueByPath for template value
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path))
+        // Setup Get<string> for the template path, sourcing from testData when provided.
+        A.CallTo(() => setup.DataContext.Get<string>(config.Path))
             .ReturnsLazily(() =>
             {
-                if (testData == null) return null;
-                var token = testData.SelectToken(config.Path.TrimStart('$', '.'));
-                return token?.Value<string>();
+                if (testData is null) return null;
+                var node = ResolvePath(testData, config.Path);
+                return node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
             });
 
-        // Setup GetSimpleValueByPath for each replace rule path
         if (pathValues != null)
         {
             foreach (var (path, value) in pathValues)
             {
-                A.CallTo(() => dataContext.GetSimpleValueByPath<string>(path)).Returns(value);
+                A.CallTo(() => setup.DataContext.Get<string>(path))
+                    .Returns(value);
             }
         }
 
-        var rootNodeContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("PlaceholderReplace", 0, config, dataContext);
+        return setup;
+    }
 
-        return (dataContext, nodeContext);
+    private static JsonNode? ResolvePath(JsonNode? root, string path)
+    {
+        if (root is null) return null;
+        var trimmed = path.StartsWith("$.") ? path[2..] : path.StartsWith('$') ? path[1..] : path;
+        if (string.IsNullOrEmpty(trimmed)) return root;
+        JsonNode? cursor = root;
+        foreach (var segment in trimmed.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (cursor is JsonObject obj && obj.TryGetPropertyValue(segment, out var next))
+            {
+                cursor = next;
+            }
+            else
+            {
+                return null;
+            }
+        }
+        return cursor;
     }
 
     [Fact]
@@ -58,7 +72,7 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "Hello ${name}!",
             ["name"] = "World"
@@ -69,19 +83,18 @@ public class PlaceholderReplaceNodeTests
             ["$.name"] = "World"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData, pathValues);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath<string>(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set<string>(
             config.TargetPath,
+            "Hello World!",
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            "Hello World!")).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -98,7 +111,7 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "Hello ${firstName} ${lastName}!",
             ["firstName"] = "John",
@@ -111,19 +124,18 @@ public class PlaceholderReplaceNodeTests
             ["$.lastName"] = "Doe"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData, pathValues);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath<string>(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set<string>(
             config.TargetPath,
+            "Hello John Doe!",
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            "Hello John Doe!")).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -139,7 +151,7 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "Hello ${name}!",
             ["name"] = "World"
@@ -150,19 +162,18 @@ public class PlaceholderReplaceNodeTests
             ["$.name"] = "World"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData, pathValues);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath<string>(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set<string>(
             config.TargetPath,
+            "Hello World!",
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            "Hello World!")).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -178,18 +189,17 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["name"] = "World"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -205,27 +215,18 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "",
             ["name"] = "World"
         };
 
-        var pathValues = new Dictionary<string, string?>
-        {
-            ["$.name"] = "World"
-        };
-
-        // Override the default return for empty string
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns("");
-
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -241,21 +242,18 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "   ",
             ["name"] = "World"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>(config.Path)).Returns("   ");
-
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -271,7 +269,7 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "Hello World!",
             ["name"] = "Test"
@@ -282,19 +280,18 @@ public class PlaceholderReplaceNodeTests
             ["$.name"] = "Test"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData, pathValues);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath<string>(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set<string>(
             config.TargetPath,
+            "Hello World!",
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            "Hello World!")).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -310,7 +307,7 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "Hello ${name}!"
         };
@@ -320,19 +317,18 @@ public class PlaceholderReplaceNodeTests
             ["$.name"] = null
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData, pathValues);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath<string>(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set<string>(
             config.TargetPath,
+            "Hello !",
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            "Hello !")).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -348,7 +344,7 @@ public class PlaceholderReplaceNodeTests
             }
         };
 
-        var testData = new JObject
+        var testData = new JsonObject
         {
             ["template"] = "Hello ${name}, goodbye ${name}!",
             ["name"] = "World"
@@ -359,18 +355,17 @@ public class PlaceholderReplaceNodeTests
             ["$.name"] = "World"
         };
 
-        var (dataContext, nodeContext) = PrepareTest(config, testData, pathValues);
-        var next = A.Fake<NodeDelegate>();
+        var (dataContext, nodeContext, next) = PrepareTest(config, testData, pathValues);
         var node = new PlaceholderReplaceNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => dataContext.SetValueByPath<string>(
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => dataContext.Set<string>(
             config.TargetPath,
+            "Hello World, goodbye World!",
             config.DocumentMode,
             config.TargetValueKind,
-            config.TargetValueWriteMode,
-            "Hello World, goodbye World!")).MustHaveHappenedOnceExactly();
+            config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 }

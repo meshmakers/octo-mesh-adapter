@@ -3,11 +3,11 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using System.Text;
+using System.Text.Json.Nodes;
 using Meshmakers.Common.Shared;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Microsoft.Extensions.Options;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -77,11 +77,15 @@ public class GenerateAndStoreReportNode(
                 nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
                     response.StatusCode, responseContent);
 
-                JToken? responseJson = null;
+                JsonNode? responseJson = null;
 
                 try
                 {
-                    responseJson = JObject.Parse(responseContent);
+                    // Only treat the response as JSON when it parses to an object. See
+                    // MakeHttpRequestNode for the rationale -- this preserves the
+                    // legacy JObject.Parse behavior where scalars and arrays fell
+                    // through to the text branch.
+                    responseJson = JsonNode.Parse(responseContent) as JsonObject;
                 }
                 catch (Exception)
                 {
@@ -89,8 +93,16 @@ public class GenerateAndStoreReportNode(
                 }
 
                 // Store response in data context at the configured path
-                dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                    c.TargetValueWriteMode, responseJson ?? responseContent);
+                if (responseJson != null)
+                {
+                    dataContext.Set(c.TargetPath, responseJson, c.DocumentMode, c.TargetValueKind,
+                        c.TargetValueWriteMode);
+                }
+                else
+                {
+                    dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
+                        c.TargetValueWriteMode);
+                }
             }
             else
             {
@@ -179,7 +191,7 @@ public class GenerateAndStoreReportNode(
 
         if (!string.IsNullOrWhiteSpace(pathParam.ValuePath))
         {
-            var value = dataContext.GetSimpleValueByPath<string>(pathParam.ValuePath);
+            var value = dataContext.Get<string>(pathParam.ValuePath);
             return value;
         }
 

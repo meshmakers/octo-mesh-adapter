@@ -1,10 +1,10 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Helpers;
 
@@ -13,21 +13,22 @@ namespace MeshAdapter.Sdk.Tests.Helpers;
 /// </summary>
 public abstract class NodeTestBase
 {
-    protected readonly JsonSerializer Serializer = JsonSerializer.CreateDefault();
+    protected readonly JsonSerializerOptions Options = SystemTextJsonOptions.Default;
 
     /// <summary>
     /// Prepares a standard test setup with mocked contexts.
     /// </summary>
     protected (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest<TConfig>(
         TConfig config,
-        JToken? testData = null)
+        JsonNode? testData = null)
         where TConfig : class, INodeConfiguration
     {
         var services = new ServiceCollection();
         var logger = A.Fake<IPipelineLogger>();
         var dataContext = A.Fake<IDataContext>();
 
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
+        var data = testData ?? new JsonObject();
+        A.CallTo(() => dataContext.Get<JsonNode>("$")).Returns(data);
 
         var rootNodeContext = NodeContext.CreateRootNodeContext(
             services.BuildServiceProvider(),
@@ -46,25 +47,46 @@ public abstract class NodeTestBase
     }
 
     /// <summary>
-    /// Sets up GetComplexObjectByPath mock to return data from the specified path.
+    /// Sets up Get&lt;T&gt; mock to return the deserialized data from the specified path.
     /// </summary>
-    protected void SetupGetComplexObjectByPath<T>(IDataContext dataContext, string path, JToken testData)
-        where T : class
+    protected void SetupGetByPath<T>(IDataContext dataContext, string path, JsonNode? testData)
     {
-        A.CallTo(() => dataContext.GetComplexObjectByPath<T>(path, A<JsonSerializer>._))
+        A.CallTo(() => dataContext.Get<T>(path))
             .ReturnsLazily(() =>
             {
-                var token = testData.SelectToken(path);
-                return token?.ToObject<T>(Serializer);
+                if (testData == null) return default;
+                var node = ResolveSubPath(testData, path);
+                if (node == null) return default;
+                return node.Deserialize<T>(Options);
             });
     }
 
     /// <summary>
-    /// Sets up GetSimpleValueByPath mock to return data from the specified path.
+    /// Sets up Get&lt;T&gt; for simple values at a given path.
     /// </summary>
     protected void SetupGetSimpleValueByPath<T>(IDataContext dataContext, string path, T value)
     {
-        A.CallTo(() => dataContext.GetSimpleValueByPath<T>(path)).Returns(value);
+        A.CallTo(() => dataContext.Get<T>(path)).Returns(value);
+    }
+
+    private static JsonNode? ResolveSubPath(JsonNode? root, string? path)
+    {
+        if (root == null || string.IsNullOrEmpty(path)) return root;
+        var p = path.StartsWith("$.") ? path[2..] : path.StartsWith('$') ? path[1..] : path;
+        if (string.IsNullOrEmpty(p)) return root;
+        JsonNode? cursor = root;
+        foreach (var segment in p.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (cursor is JsonObject obj && obj.TryGetPropertyValue(segment, out var next))
+            {
+                cursor = next;
+            }
+            else
+            {
+                return null;
+            }
+        }
+        return cursor;
     }
 
     /// <summary>

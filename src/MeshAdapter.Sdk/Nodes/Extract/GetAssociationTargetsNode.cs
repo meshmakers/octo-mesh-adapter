@@ -3,7 +3,6 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -79,22 +78,21 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             });
         }
 
-        dataContext.SetValueByPath(c.TargetPath, resultDto, c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.TargetPath, resultDto, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
 
     private RtCkId<CkTypeId>? GetOriginCkTypeId(IDataContext dataContext, GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.OriginCkTypeId == null && config.OriginCkTypeIdPath == null || dataContext.Current == null)
+        if (config.OriginCkTypeId == null && config.OriginCkTypeIdPath == null)
         {
             return null;
         }
 
         var sourceCkTypeId = config.OriginCkTypeId ??
-                             dataContext.GetComplexObjectByPath<RtCkId<CkTypeId>?>(config.OriginCkTypeIdPath,
-                                 RtNewtonsoftSerializer.DefaultSerializer);
+                             dataContext.Get<RtCkId<CkTypeId>?>(config.OriginCkTypeIdPath!);
 
         return sourceCkTypeId;
     }
@@ -107,28 +105,49 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             return config.AssociationRoleId;
         }
 
-        if (config.AssociationRoleIdPath == null || dataContext.Current == null)
+        if (config.AssociationRoleIdPath == null)
         {
             return null;
         }
 
-        var roleId = dataContext.GetSimpleValueByPath<RtCkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
+        var roleId = dataContext.Get<RtCkId<CkAssociationRoleId>>(config.AssociationRoleIdPath);
         return roleId;
     }
 
     private static OctoObjectId[]? GetOriginRtIds(IDataContext dataContext,
         GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.OriginRtId == null && config.OriginRtIdPath == null || dataContext.Current == null)
+        if (config.OriginRtId == null && config.OriginRtIdPath == null)
         {
             return null;
         }
 
         if (!string.IsNullOrWhiteSpace(config.OriginRtIdPath))
         {
-            var sourceRtIds = dataContext.Current.SelectTokens(config.OriginRtIdPath)
-                .Select(t => t.ToObject<OctoObjectId>(RtNewtonsoftSerializer.DefaultSerializer));
-            return sourceRtIds.ToArray();
+            // SelectMatches captures the full JSONPath dialect, including wildcards
+            // (e.g. "$.items[*].rtId"). The previous Get<OctoObjectId?>(path) returned
+            // only the first match, silently collapsing N-element wildcard expansions
+            // to a single origin id. Same fix shape as FieldFilterExtensions (#5).
+            var matches = dataContext.SelectMatches(config.OriginRtIdPath).ToList();
+            if (matches.Count == 0)
+            {
+                return null;
+            }
+
+            // Special-case the single literal array (e.g. "$.rtIds" where the value
+            // is itself a JSON array) — unwrap it into its OctoObjectId elements.
+            if (matches.Count == 1 && matches[0].GetKind("$") == DataKind.Array)
+            {
+                var arr = matches[0].GetArray<OctoObjectId>("$");
+                return arr?.Where(x => x != OctoObjectId.Empty).ToArray();
+            }
+
+            var ids = matches
+                .Select(m => m.Get<OctoObjectId?>("$"))
+                .Where(id => id.HasValue && id.Value != OctoObjectId.Empty)
+                .Select(id => id!.Value)
+                .ToArray();
+            return ids.Length > 0 ? ids : null;
         }
 
         if (config.OriginRtId != null)
@@ -142,14 +161,13 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
     private static RtCkId<CkTypeId>? GetTargetCkTypeId(IDataContext dataContext,
         GetAssociationTargetsNodeConfiguration config)
     {
-        if (config.TargetCkTypeId == null && config.TargetCkTypeIdPath == null || dataContext.Current == null)
+        if (config.TargetCkTypeId == null && config.TargetCkTypeIdPath == null)
         {
             return null;
         }
 
         var targetCkTypeId = config.TargetCkTypeId ??
-                             dataContext.GetComplexObjectByPath<RtCkId<CkTypeId>?>(config.TargetCkTypeIdPath,
-                                 RtNewtonsoftSerializer.DefaultSerializer);
+                             dataContext.Get<RtCkId<CkTypeId>?>(config.TargetCkTypeIdPath!);
 
         return targetCkTypeId;
     }
@@ -162,14 +180,13 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             return Convert(config.GraphDirection);
         }
 
-        if (config.GraphDirectionPath == null || dataContext.Current == null)
+        if (config.GraphDirectionPath == null)
         {
             return null;
         }
 
         var updateKind =
-            dataContext.GetComplexObjectByPath<GraphDirectionsDto?>(config.GraphDirectionPath,
-                RtNewtonsoftSerializer.DefaultSerializer);
+            dataContext.Get<GraphDirectionsDto?>(config.GraphDirectionPath);
         return Convert(updateKind);
     }
 

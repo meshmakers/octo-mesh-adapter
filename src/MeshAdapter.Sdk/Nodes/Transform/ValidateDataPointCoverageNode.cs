@@ -1,14 +1,13 @@
+using System.Text.Json.Serialization;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -150,24 +149,12 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             }
         }
 
-        var report = new JObject
-        {
-            ["treeRtId"] = rootEntity.RtId.ToString(),
-            ["treeCkTypeId"] = rootCkTypeId.ToString(),
-            ["generatedAt"] = DateTimeOffset.UtcNow.ToString("O"),
-            ["summary"] = new JObject
-            {
-                ["ok"] = summary.Ok,
-                ["warning"] = summary.Warning,
-                ["error"] = summary.Error,
-                ["info"] = summary.Info,
-                ["total"] = nodes.Count,
-            },
-            ["nodes"] = new JArray(nodes.Select(SerialiseNode)),
-        };
+        var report = BuildReport(
+            rootEntity.RtId.ToString(), rootCkTypeId.ToString(), DateTimeOffset.UtcNow.ToString("O"),
+            summary, nodes);
 
-        dataContext.SetValueByPath(c.TargetPath, report, c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+        dataContext.Set(c.TargetPath, report, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode);
 
         nodeContext.Info(
             "ValidateDataPointCoverage: validated {0} nodes — ok={1} warning={2} error={3} info={4}",
@@ -194,7 +181,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
 
         if (!string.IsNullOrWhiteSpace(c.RootRtIdPath))
         {
-            var value = dataContext.GetSimpleValueByPath<string>(c.RootRtIdPath);
+            var value = dataContext.Get<string>(c.RootRtIdPath);
             if (!string.IsNullOrWhiteSpace(value))
             {
                 try
@@ -384,29 +371,73 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         IReadOnlyList<string> PresentAssociations,
         IReadOnlyList<string> MissingRequiredAssociations);
 
-    private static JObject SerialiseNode(NodeReport r)
-    {
-        return new JObject
-        {
-            ["rtId"] = r.RtId,
-            ["ckTypeId"] = r.CkTypeId,
-            ["name"] = r.Name,
-            ["status"] = r.Status,
-            ["depth"] = r.Depth,
-            ["parentRtId"] = r.ParentRtId,
-            ["required"] = JArray.FromObject(r.Required),
-            ["recommended"] = JArray.FromObject(r.Recommended),
-            ["present"] = JArray.FromObject(r.Present),
-            ["missingRequired"] = JArray.FromObject(r.MissingRequired),
-            ["missingRecommended"] = JArray.FromObject(r.MissingRecommended),
-            ["requiredAssociations"] = JArray.FromObject(r.RequiredAssociations),
-            ["presentAssociations"] = JArray.FromObject(r.PresentAssociations),
-            ["missingRequiredAssociations"] = JArray.FromObject(r.MissingRequiredAssociations),
-            ["mappingCount"] = r.MappingCount,
-        };
-    }
+    /// <summary>
+    /// Assembles the coverage report as a typed record. The serialized shape (camelCase keys,
+    /// key order) is pinned by <c>[JsonPropertyName]</c> + member declaration order so that
+    /// <c>Set&lt;T&gt;</c> via <see cref="SystemTextJsonOptions.Default"/> reproduces the exact
+    /// wire bytes of the former hand-built JsonObject.
+    /// </summary>
+    internal static CoverageReport BuildReport(
+        string treeRtId, string treeCkTypeId, string generatedAt,
+        SummaryCounters summary, IReadOnlyList<NodeReport> nodes) =>
+        new(
+            treeRtId,
+            treeCkTypeId,
+            generatedAt,
+            new CoverageSummary(summary.Ok, summary.Warning, summary.Error, summary.Info, nodes.Count),
+            nodes.Select(SerialiseNode).ToList());
 
-    private record NodeReport(
+    private static NodeReportDto SerialiseNode(NodeReport r) =>
+        new(
+            r.RtId,
+            r.CkTypeId,
+            r.Name,
+            r.Status,
+            r.Depth,
+            r.ParentRtId,
+            r.Required,
+            r.Recommended,
+            r.Present,
+            r.MissingRequired,
+            r.MissingRecommended,
+            r.RequiredAssociations,
+            r.PresentAssociations,
+            r.MissingRequiredAssociations,
+            r.MappingCount);
+
+    /// <summary>Typed shape of the coverage report written to <c>TargetPath</c>.</summary>
+    internal sealed record CoverageReport(
+        [property: JsonPropertyName("treeRtId")] string TreeRtId,
+        [property: JsonPropertyName("treeCkTypeId")] string TreeCkTypeId,
+        [property: JsonPropertyName("generatedAt")] string GeneratedAt,
+        [property: JsonPropertyName("summary")] CoverageSummary Summary,
+        [property: JsonPropertyName("nodes")] IReadOnlyList<NodeReportDto> Nodes);
+
+    internal sealed record CoverageSummary(
+        [property: JsonPropertyName("ok")] int Ok,
+        [property: JsonPropertyName("warning")] int Warning,
+        [property: JsonPropertyName("error")] int Error,
+        [property: JsonPropertyName("info")] int Info,
+        [property: JsonPropertyName("total")] int Total);
+
+    internal sealed record NodeReportDto(
+        [property: JsonPropertyName("rtId")] string RtId,
+        [property: JsonPropertyName("ckTypeId")] string CkTypeId,
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("status")] string Status,
+        [property: JsonPropertyName("depth")] int Depth,
+        [property: JsonPropertyName("parentRtId")] string? ParentRtId,
+        [property: JsonPropertyName("required")] IReadOnlyList<string> Required,
+        [property: JsonPropertyName("recommended")] IReadOnlyList<string> Recommended,
+        [property: JsonPropertyName("present")] IReadOnlyList<string> Present,
+        [property: JsonPropertyName("missingRequired")] IReadOnlyList<string> MissingRequired,
+        [property: JsonPropertyName("missingRecommended")] IReadOnlyList<string> MissingRecommended,
+        [property: JsonPropertyName("requiredAssociations")] IReadOnlyList<string> RequiredAssociations,
+        [property: JsonPropertyName("presentAssociations")] IReadOnlyList<string> PresentAssociations,
+        [property: JsonPropertyName("missingRequiredAssociations")] IReadOnlyList<string> MissingRequiredAssociations,
+        [property: JsonPropertyName("mappingCount")] int MappingCount);
+
+    internal record NodeReport(
         string RtId,
         string CkTypeId,
         string Name,
@@ -423,7 +454,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         IReadOnlyList<string> MissingRequiredAssociations,
         int MappingCount);
 
-    private sealed class SummaryCounters
+    internal sealed class SummaryCounters
     {
         public int Ok;
         public int Warning;

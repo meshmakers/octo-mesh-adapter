@@ -48,7 +48,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             queryOptions, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode, r);
+        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
@@ -62,7 +62,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
         
         if (c.RtIdsPath != null)
         {
-            var rtIds = dataContext.GetSimpleArrayValueByPath<string>(c.RtIdsPath)?.ToList();
+            var rtIds = dataContext.GetArray<string>(c.RtIdsPath)?.ToList();
             if (rtIds == null || rtIds.Count == 0)
             {
                 throw new InvalidOperationException($"No RtIds found at path '{c.RtIdsPath}'");

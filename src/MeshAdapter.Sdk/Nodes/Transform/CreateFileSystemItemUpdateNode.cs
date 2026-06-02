@@ -6,7 +6,6 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -117,11 +116,11 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         await session.CommitTransactionAsync();
 
-        dataContext.SetValueByPath(c.TargetPath,
+        dataContext.Set(c.TargetPath,
             new FileSystemItemResult
                 { CkTypeId = RtCkTypeIdFileSystemItem, RtId = rtFileSystemItem.RtId, FileName = fileName },
             c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, RtNewtonsoftSerializer.DefaultSerializer);
+            c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
@@ -133,16 +132,12 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             return config.ContentLength;
         }
 
-        if (config.ContentLengthPath == null || dataContext.Current == null)
+        if (config.ContentLengthPath == null)
         {
             return null;
         }
 
-        var contentLength = dataContext.GetComplexObjectByPath<long>(config.ContentLengthPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
-
-
-        return contentLength;
+        return dataContext.Get<long?>(config.ContentLengthPath);
     }
 
     private static string? GetContentType(IDataContext dataContext, CreateFileSystemUpdateNodeConfiguration config)
@@ -152,23 +147,18 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             return config.ContentType;
         }
 
-        if (config.ContentTypePath == null || dataContext.Current == null)
+        if (config.ContentTypePath == null)
         {
             return null;
         }
 
-        var contentType = dataContext.GetComplexObjectByPath<string>(config.ContentTypePath,
-            RtNewtonsoftSerializer.DefaultSerializer);
-
-
-        return contentType;
+        return dataContext.Get<string>(config.ContentTypePath);
     }
 
     private static string GetPath(INodeContext nodeContext, IDataContext dataContext,
         CreateFileSystemUpdateNodeConfiguration config)
     {
-        var pathValue = dataContext.GetComplexObjectByPath<string>(config.Path,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        var pathValue = dataContext.Get<string>(config.Path);
 
         if (string.IsNullOrWhiteSpace(pathValue))
         {
@@ -187,16 +177,12 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             return config.FileName;
         }
 
-        if (config.FileNamePath == null || dataContext.Current == null)
+        if (config.FileNamePath == null)
         {
             return $"{Guid.NewGuid()}.{GetFileExtensionFromContentType(contentType)}";
         }
 
-        var fileName = dataContext.GetComplexObjectByPath<string>(config.FileNamePath,
-            RtNewtonsoftSerializer.DefaultSerializer);
-
-
-        return fileName;
+        return dataContext.Get<string>(config.FileNamePath);
     }
 
     private static string GetFileExtensionFromContentType(string contentType)
@@ -211,13 +197,12 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             return config.RtId.Value;
         }
 
-        if (config.RtIdPath == null || dataContext.Current == null)
+        if (config.RtIdPath == null)
         {
             return null;
         }
 
-        var rtId = dataContext.GetComplexObjectByPath<OctoObjectId?>(config.RtIdPath,
-            RtNewtonsoftSerializer.DefaultSerializer);
+        var rtId = dataContext.Get<OctoObjectId?>(config.RtIdPath);
 
         if (rtId == null && config.GenerateRtId)
         {
@@ -229,15 +214,12 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
     private static string? GetRtWellKnownName(IDataContext dataContext, CreateFileSystemUpdateNodeConfiguration config)
     {
-        if (config.RtWellKnownNamePath == null || dataContext.Current == null)
+        if (config.RtWellKnownNamePath == null)
         {
             return null;
         }
 
-        var rtWellKnownName =
-            dataContext.GetComplexObjectByPath<string?>(config.RtWellKnownNamePath,
-                RtNewtonsoftSerializer.DefaultSerializer);
-        return rtWellKnownName;
+        return dataContext.Get<string?>(config.RtWellKnownNamePath);
     }
 
     private static async Task<RtEntity> GetFolderRootAsync(ITenantRepository tenantRepository,

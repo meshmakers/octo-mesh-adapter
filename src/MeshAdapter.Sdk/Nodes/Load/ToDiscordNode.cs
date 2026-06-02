@@ -1,6 +1,9 @@
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
@@ -8,7 +11,6 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -58,7 +60,7 @@ public class ToDiscordNode(
         if (string.IsNullOrWhiteSpace(channelId) || !IsSnowflake(channelId))
         {
             throw MeshAdapterPipelineExecutionException.InvalidValue(
-                nodeContext, new JValue(channelId ?? ""));
+                nodeContext, channelId ?? "");
         }
 
         var content = ResolveStringValue(dataContext, c.ContentPath, c.Content);
@@ -81,20 +83,25 @@ public class ToDiscordNode(
                 nodeContext, "content/embed/attachment");
         }
 
-        var payload = new JObject();
-        if (!string.IsNullOrWhiteSpace(content)) payload["content"] = content;
-
+        DiscordEmbed? embed = null;
         if (!string.IsNullOrWhiteSpace(embedTitle) || !string.IsNullOrWhiteSpace(embedDescription)
             || embedColor.HasValue)
         {
-            var embed = new JObject();
-            if (!string.IsNullOrWhiteSpace(embedTitle)) embed["title"] = embedTitle;
-            if (!string.IsNullOrWhiteSpace(embedDescription)) embed["description"] = embedDescription;
-            if (embedColor.HasValue) embed["color"] = embedColor.Value;
-            payload["embeds"] = new JArray(embed);
+            embed = new DiscordEmbed(
+                string.IsNullOrWhiteSpace(embedTitle) ? null : embedTitle,
+                string.IsNullOrWhiteSpace(embedDescription) ? null : embedDescription,
+                embedColor);
         }
 
-        if (allowedMentions != null) payload["allowed_mentions"] = allowedMentions;
+        var payload = new DiscordPayload(
+            string.IsNullOrWhiteSpace(content) ? null : content,
+            embed == null ? null : new[] { embed },
+            allowedMentions);
+
+        // Discord is an external API; the body must stay compact (SystemTextJsonOptions.Default
+        // is not indented) and byte-stable. Omitted optional keys come from the property-level
+        // WhenWritingNull overrides (the pipeline default otherwise preserves nulls).
+        var payloadJson = JsonSerializer.Serialize(payload, SystemTextJsonOptions.Default);
 
         var url = $"{DiscordApiBase}/channels/{channelId}/messages";
 
@@ -106,7 +113,7 @@ public class ToDiscordNode(
             var (stream, filename, contentType) =
                 await DownloadAttachmentAsync(fileSystemItemRtId!, filenameOverride, nodeContext);
             var multipart = new MultipartFormDataContent();
-            multipart.Add(new StringContent(payload.ToString(Newtonsoft.Json.Formatting.None),
+            multipart.Add(new StringContent(payloadJson,
                 Encoding.UTF8, "application/json"), "payload_json");
             var fileContent = new StreamContent(stream);
             fileContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
@@ -116,7 +123,7 @@ public class ToDiscordNode(
         else
         {
             request.Content = new StringContent(
-                payload.ToString(Newtonsoft.Json.Formatting.None), Encoding.UTF8, "application/json");
+                payloadJson, Encoding.UTF8, "application/json");
         }
 
         var client = httpClientFactory.CreateClient("Discord");
@@ -134,8 +141,8 @@ public class ToDiscordNode(
 
         if (!string.IsNullOrWhiteSpace(c.TargetPath))
         {
-            dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                c.TargetValueWriteMode, JToken.Parse(body));
+            dataContext.Set(c.TargetPath, JsonNode.Parse(body), c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
         }
 
         await next(dataContext, nodeContext);
@@ -145,7 +152,7 @@ public class ToDiscordNode(
     {
         if (!string.IsNullOrWhiteSpace(path))
         {
-            var resolved = dc.GetSimpleValueByPath<string>(path);
+            var resolved = dc.Get<string>(path);
             if (!string.IsNullOrWhiteSpace(resolved)) return resolved;
         }
         return literal;
@@ -156,7 +163,7 @@ public class ToDiscordNode(
     {
         if (!string.IsNullOrWhiteSpace(c.EmbedColorPath))
         {
-            var raw = dc.GetSimpleValueByPath<string>(c.EmbedColorPath);
+            var raw = dc.Get<string>(c.EmbedColorPath);
             if (string.IsNullOrWhiteSpace(raw)) return c.EmbedColor;
             var trimmed = raw.Trim();
             var hex = trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
@@ -169,19 +176,19 @@ public class ToDiscordNode(
                 {
                     return hv;
                 }
-                throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, new JValue(raw));
+                throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, raw);
             }
             if (int.TryParse(trimmed, System.Globalization.NumberStyles.Integer,
                     System.Globalization.CultureInfo.InvariantCulture, out var dv))
             {
                 return dv;
             }
-            throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, new JValue(raw));
+            throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext, raw);
         }
         return c.EmbedColor;
     }
 
-    private static JToken? ResolveAllowedMentions(IDataContext dc, ToDiscordNodeConfiguration c,
+    private static object? ResolveAllowedMentions(IDataContext dc, ToDiscordNodeConfiguration c,
         INodeContext nodeContext)
     {
         switch (c.MentionPolicy)
@@ -189,20 +196,22 @@ public class ToDiscordNode(
             case MentionPolicy.All:
                 return null; // omit allowed_mentions; Discord's permissive default
             case MentionPolicy.None:
-                return new JObject { ["parse"] = new JArray() };
+                return new DiscordAllowedMentions(Array.Empty<string>());
             case MentionPolicy.Users:
-                return new JObject { ["parse"] = new JArray("users") };
+                return new DiscordAllowedMentions(new[] { "users" });
             case MentionPolicy.Roles:
-                return new JObject { ["parse"] = new JArray("roles") };
+                return new DiscordAllowedMentions(new[] { "roles" });
             case MentionPolicy.UsersAndRoles:
-                return new JObject { ["parse"] = new JArray("users", "roles") };
+                return new DiscordAllowedMentions(new[] { "users", "roles" });
             case MentionPolicy.Custom:
                 if (string.IsNullOrWhiteSpace(c.AllowedMentionsPath))
                 {
                     throw MeshAdapterPipelineExecutionException.InputValueNull(
                         nodeContext, nameof(c.AllowedMentionsPath));
                 }
-                var resolved = dc.GetComplexObjectByPath<JToken>(c.AllowedMentionsPath);
+                // Custom mentions are arbitrary JSON supplied by the pipeline; read as object?
+                // (objects/arrays materialize to JsonElement) so it re-serializes byte-identically.
+                var resolved = dc.Get<object?>(c.AllowedMentionsPath);
                 if (resolved == null)
                 {
                     throw MeshAdapterPipelineExecutionException.InputValueNull(
@@ -211,9 +220,39 @@ public class ToDiscordNode(
                 return resolved;
             default:
                 throw MeshAdapterPipelineExecutionException.InvalidValue(
-                    nodeContext, new JValue(c.MentionPolicy.ToString()));
+                    nodeContext, c.MentionPolicy.ToString());
         }
     }
+
+    /// <summary>
+    /// Typed Discord webhook message payload. Each optional key is omitted when null via the
+    /// property-level WhenWritingNull override (the pipeline default preserves nulls); key order
+    /// (content, embeds, allowed_mentions) reproduces the former hand-built JsonObject.
+    /// </summary>
+    internal sealed record DiscordPayload(
+        [property: JsonPropertyName("content")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Content,
+        [property: JsonPropertyName("embeds")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<DiscordEmbed>? Embeds,
+        [property: JsonPropertyName("allowed_mentions")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        object? AllowedMentions);
+
+    internal sealed record DiscordEmbed(
+        [property: JsonPropertyName("title")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Title,
+        [property: JsonPropertyName("description")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Description,
+        [property: JsonPropertyName("color")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        int? Color);
+
+    internal sealed record DiscordAllowedMentions(
+        [property: JsonPropertyName("parse")] IReadOnlyList<string> Parse);
 
     private static bool IsSnowflake(string s)
     {

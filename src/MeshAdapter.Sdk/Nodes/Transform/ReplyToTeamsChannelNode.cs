@@ -29,7 +29,7 @@ public class ReplyToTeamsChannelNode(
         {
             // Get webhook URL
             var webhookUrl = !string.IsNullOrEmpty(config.WebhookUrlPath)
-                ? dataContext.GetSimpleValueByPath<string>(config.WebhookUrlPath)
+                ? dataContext.Get<string>(config.WebhookUrlPath)
                 : config.WebhookUrl;
 
             if (string.IsNullOrEmpty(webhookUrl))
@@ -43,7 +43,7 @@ public class ReplyToTeamsChannelNode(
             string? body;
             if (!string.IsNullOrEmpty(config.MessageBodyPath))
             {
-                body = dataContext.GetSimpleValueByPath<string>(config.MessageBodyPath);
+                body = dataContext.Get<string>(config.MessageBodyPath);
             }
             else
             {
@@ -96,8 +96,8 @@ public class ReplyToTeamsChannelNode(
             var jsonPath = match.Groups[1].Value;
             try
             {
-                var token = dataContext.Current?.SelectToken(jsonPath);
-                return token?.ToString() ?? "";
+                var s = dataContext.Get<string>(jsonPath);
+                return s ?? "";
             }
             catch
             {

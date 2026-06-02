@@ -15,7 +15,6 @@ using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Extract;
 
@@ -169,24 +168,24 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
 
         // Create dataContext with tracking
         var dataContext = A.Fake<IDataContext>();
-        var currentData = new JObject();
+        var currentData = new Dictionary<string, object?>();
         bool setValueCalled = false;
         object? capturedValue = null;
 
-        A.CallTo(() => dataContext.Current).Returns(currentData);
-        // Configure the generic SetValueByPath method using AnyCall matching
+        // Configure the generic Set<T> method using AnyCall matching.
+        // STJ Set signature: (path, value, DocumentMode, ValueKind, WriteMode, JsonSerializerOptions?) → value at idx 1.
         A.CallTo(dataContext)
-            .Where(call => call.Method.Name == nameof(IDataContext.SetValueByPath))
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
             .Invokes(call =>
             {
                 setValueCalled = true;
                 var path = call.Arguments[0] as string;
-                var value = call.Arguments[4]; // T? value is the 5th argument
+                var value = call.Arguments[1];
                 capturedValue = value;
                 if (!string.IsNullOrEmpty(path))
                 {
                     var key = path.TrimStart('$', '.');
-                    currentData[key] = value != null ? JToken.FromObject(value) : JValue.CreateNull();
+                    currentData[key] = value;
                 }
             });
 
@@ -221,13 +220,12 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         // Assert - next should be called when query is found
         nextCalled.Should().BeTrue("next should be called when query is found");
 
-        // Assert - SetValueByPath should have been called
-        setValueCalled.Should().BeTrue("SetValueByPath should be called when query is found");
+        // Assert - Set should have been called
+        setValueCalled.Should().BeTrue("Set should be called when query is found");
         capturedValue.Should().NotBeNull("The captured value should not be null");
 
         // Assert - result should be set when query is found
-        var result = dataContext.Current?["queryResult"];
-        result.Should().NotBeNull();
+        currentData.Should().ContainKey("queryResult");
 
         // Assert - validate the QueryResult structure and content
         // The QueryResult is internal but accessible via InternalsVisibleTo
@@ -266,15 +264,13 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         // Capture what was set at the target path
         object? capturedValue = null;
         var dataContext = A.Fake<IDataContext>();
-        var currentData = new JObject();
-        A.CallTo(() => dataContext.Current).Returns(currentData);
-        // Configure the generic SetValueByPath method using AnyCall matching
+        // Configure the generic Set<T> method using AnyCall matching.
         A.CallTo(dataContext)
-            .Where(call => call.Method.Name == nameof(IDataContext.SetValueByPath))
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
             .Invokes(call =>
             {
                 var path = call.Arguments[0] as string;
-                var value = call.Arguments[4]; // T? value is the 5th argument
+                var value = call.Arguments[1];
                 if (path == "$.queryResult")
                 {
                     capturedValue = value;
@@ -741,13 +737,11 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         QueryResult? capturedResult = null;
 
         var dataContext = A.Fake<IDataContext>();
-        var currentData = new JObject();
-        A.CallTo(() => dataContext.Current).Returns(currentData);
         A.CallTo(dataContext)
-            .Where(call => call.Method.Name == nameof(IDataContext.SetValueByPath))
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
             .Invokes(call =>
             {
-                var value = call.Arguments[4];
+                var value = call.Arguments[1];
                 if (value is QueryResult qr)
                 {
                     capturedResult = qr;
@@ -850,20 +844,19 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
     {
         // Create a fake data context using FakeItEasy
         var dataContext = A.Fake<IDataContext>();
-        var currentData = new JObject();
+        var currentData = new Dictionary<string, object?>();
 
-        A.CallTo(() => dataContext.Current).Returns(currentData);
-        // Configure the generic SetValueByPath method using AnyCall matching
+        // Configure the generic Set<T> method using AnyCall matching.
         A.CallTo(dataContext)
-            .Where(call => call.Method.Name == nameof(IDataContext.SetValueByPath))
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
             .Invokes(call =>
             {
                 var path = call.Arguments[0] as string;
-                var value = call.Arguments[4]; // T? value is the 5th argument
+                var value = call.Arguments[1];
                 if (!string.IsNullOrEmpty(path))
                 {
                     var key = path.TrimStart('$', '.');
-                    currentData[key] = value != null ? JToken.FromObject(value) : JValue.CreateNull();
+                    currentData[key] = value;
                 }
             });
 

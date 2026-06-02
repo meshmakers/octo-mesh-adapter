@@ -1,16 +1,17 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetPipelineConfigByCkTypeIdNodeTests
+public class GetPipelineConfigByCkTypeIdNodeTests : NodeTestBase
 {
     private readonly IMeshEtlContext _etlContext;
     private readonly IGlobalConfiguration _globalConfiguration;
@@ -22,30 +23,6 @@ public class GetPipelineConfigByCkTypeIdNodeTests
         A.CallTo(() => _etlContext.GlobalConfiguration).Returns(_globalConfiguration);
     }
 
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        GetPipelineConfigByCkTypeIdNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "GetPipelineConfigByCkTypeId",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
-    }
-
     [Fact]
     public async Task ProcessObjectAsync_WithCkTypeId_SetsConfigArrayOnDataContext()
     {
@@ -54,7 +31,7 @@ public class GetPipelineConfigByCkTypeIdNodeTests
             CkTypeId = "TestModel/TestType",
             TargetPath = "$.configs"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
 
         A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId("TestModel/TestType"))
             .Returns(new List<string> { "{\"key\":\"value1\"}", "{\"key\":\"value2\"}" });
@@ -62,12 +39,12 @@ public class GetPipelineConfigByCkTypeIdNodeTests
         var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set(
                 "$.configs",
+                A<JsonArray?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<JArray>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -79,9 +56,9 @@ public class GetPipelineConfigByCkTypeIdNodeTests
             CkTypeIdPath = "$.ckTypeId",
             TargetPath = "$.configs"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
 
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.ckTypeId")).Returns("ResolvedModel/ResolvedType");
+        SetupGetSimpleValueByPath(dataContext, "$.ckTypeId", "ResolvedModel/ResolvedType");
         A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId("ResolvedModel/ResolvedType"))
             .Returns(new List<string> { "{}" });
 
@@ -99,7 +76,7 @@ public class GetPipelineConfigByCkTypeIdNodeTests
         {
             TargetPath = "$.configs"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
 
         var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
 
@@ -115,9 +92,9 @@ public class GetPipelineConfigByCkTypeIdNodeTests
             CkTypeIdPath = "$.ckTypeId",
             TargetPath = "$.configs"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
 
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.ckTypeId")).Returns(null);
+        SetupGetSimpleValueByPath<string?>(dataContext, "$.ckTypeId", null);
 
         var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
 
@@ -133,7 +110,7 @@ public class GetPipelineConfigByCkTypeIdNodeTests
             CkTypeId = "TestModel/TestType",
             TargetPath = "$.configs"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
 
         A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId("TestModel/TestType"))
             .Returns(new List<string>());
@@ -141,12 +118,12 @@ public class GetPipelineConfigByCkTypeIdNodeTests
         var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set(
                 "$.configs",
+                A<JsonArray?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<JArray>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -158,7 +135,7 @@ public class GetPipelineConfigByCkTypeIdNodeTests
             CkTypeId = "TestModel/TestType",
             TargetPath = "$.configs"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
 
         A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId("TestModel/TestType"))
             .Returns(new List<string>());
@@ -166,6 +143,6 @@ public class GetPipelineConfigByCkTypeIdNodeTests
         var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 }

@@ -1,8 +1,9 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -18,30 +19,31 @@ internal class UpdateRecordArrayItemNode(NodeDelegate next) : IPipelineNode
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var config = nodeContext.GetNodeConfiguration<UpdateRecordArrayItemNodeConfiguration>();
+        var c = nodeContext.GetNodeConfiguration<UpdateRecordArrayItemNodeConfiguration>();
 
-        // Get the RecordArray from the source path
-        var source = dataContext.Current?.SelectToken(config.Path);
-        if (source is not JArray recordArray)
+        if (dataContext.GetKind(c.Path) != DataKind.Array)
         {
             // Log available keys for debugging
-            var keyToken = dataContext.Current?.SelectToken("$.key");
-            if (keyToken is JObject keyObj)
+            if (dataContext.GetKind("$.key") == DataKind.Object)
             {
-                var keys = string.Join(", ", keyObj.Properties().Select(p => p.Name));
-                nodeContext.Warning("No array found at path '{0}'. Available keys on $.key: [{1}]", config.Path, keys);
+                var keys = string.Join(", ", dataContext.Keys("$.key"));
+                nodeContext.Warning("No array found at path '{0}'. Available keys on $.key: [{1}]", c.Path, keys);
 
                 // Try to find Attributes
-                var attrsToken = keyObj["Attributes"] ?? keyObj["attributes"];
-                if (attrsToken is JObject debugAttrsObj)
+                if (dataContext.GetKind("$.key.Attributes") == DataKind.Object)
                 {
-                    var attrKeys = string.Join(", ", debugAttrsObj.Properties().Select(p => p.Name));
+                    var attrKeys = string.Join(", ", dataContext.Keys("$.key.Attributes"));
+                    nodeContext.Warning("Available attribute keys: [{0}]", attrKeys);
+                }
+                else if (dataContext.GetKind("$.key.attributes") == DataKind.Object)
+                {
+                    var attrKeys = string.Join(", ", dataContext.Keys("$.key.attributes"));
                     nodeContext.Warning("Available attribute keys: [{0}]", attrKeys);
                 }
             }
             else
             {
-                nodeContext.Warning("No array found at path '{0}'", config.Path);
+                nodeContext.Warning("No array found at path '{0}'", c.Path);
             }
 
             await next(dataContext, nodeContext);
@@ -49,9 +51,9 @@ internal class UpdateRecordArrayItemNode(NodeDelegate next) : IPipelineNode
         }
 
         // Resolve the match value
-        var matchValue = config.MatchValuePath != null
-            ? dataContext.GetSimpleValueByPath<string>(config.MatchValuePath)
-            : config.MatchValue;
+        var matchValue = c.MatchValuePath != null
+            ? dataContext.Get<string>(c.MatchValuePath)
+            : c.MatchValue;
 
         if (string.IsNullOrEmpty(matchValue))
         {
@@ -60,62 +62,83 @@ internal class UpdateRecordArrayItemNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
-        // Find the matching record
-        var matchAttrName = config.MatchAttributeName.ToLowerInvariant();
-        JObject? matchedRecord = null;
-
-        foreach (var item in recordArray)
+        var sourceArr = dataContext.Get<JsonArray>(c.Path);
+        if (sourceArr is null)
         {
-            if (item is not JObject record) continue;
-
-            // Records have an "Attributes" object with attribute names as keys
-            var attrs = record["Attributes"] ?? record["attributes"];
-            if (attrs == null) continue;
-
-            var attrValue = attrs[config.MatchAttributeName]?.ToString()
-                            ?? attrs[matchAttrName]?.ToString();
-
-            if (string.Equals(attrValue, matchValue, StringComparison.OrdinalIgnoreCase))
-            {
-                matchedRecord = record;
-                break;
-            }
-        }
-
-        if (matchedRecord == null)
-        {
-            nodeContext.Debug("No record found matching {0}='{1}'", config.MatchAttributeName, matchValue);
             await next(dataContext, nodeContext);
             return;
         }
 
-        // Apply attribute updates to the matched record
-        var attrs2 = matchedRecord["Attributes"] ?? matchedRecord["attributes"];
-        if (attrs2 is JObject attrsObj)
-        {
-            foreach (var update in config.AttributeUpdates)
-            {
-                object? value;
-                if (update.ValuePath != null)
-                {
-                    value = dataContext.GetSimpleValueByPath<object>(update.ValuePath);
-                }
-                else if (update.Value is string strVal && strVal == "=now()")
-                {
-                    value = DateTime.UtcNow.ToString("O");
-                }
-                else
-                {
-                    value = update.Value;
-                }
+        var matchAttrName = c.MatchAttributeName;
+        var matchAttrNameLower = c.MatchAttributeName.ToLowerInvariant();
 
-                attrsObj[update.AttributeName] = value != null ? JToken.FromObject(value) : JValue.CreateNull();
+        var updated = new JsonArray();
+        var matched = false;
+
+        foreach (var item in sourceArr)
+        {
+            if (item is JsonObject record)
+            {
+                var attrs = (record["Attributes"] ?? record["attributes"]) as JsonObject;
+                if (attrs is not null && !matched)
+                {
+                    var attrValueNode = attrs[matchAttrName] ?? attrs[matchAttrNameLower];
+                    var attrValue = attrValueNode?.ToString();
+
+                    if (string.Equals(attrValue, matchValue, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Deep-clone the matched record and apply attribute updates to the clone
+                        var clone = (JsonObject)record.DeepClone();
+                        var cloneAttrs = (clone["Attributes"] ?? clone["attributes"]) as JsonObject;
+                        if (cloneAttrs is not null)
+                        {
+                            foreach (var update in c.AttributeUpdates)
+                            {
+                                JsonNode? newValue;
+                                if (update.ValuePath != null)
+                                {
+                                    newValue = dataContext.Get<JsonNode>(update.ValuePath);
+                                }
+                                else if (update.Value is string strVal && strVal == "=now()")
+                                {
+                                    newValue = JsonValue.Create(DateTime.UtcNow.ToString("O"));
+                                }
+                                else if (update.Value is null)
+                                {
+                                    newValue = null;
+                                }
+                                else
+                                {
+                                    newValue = JsonSerializer.SerializeToNode(update.Value, SystemTextJsonOptions.Default);
+                                }
+
+                                cloneAttrs[update.AttributeName] = newValue?.DeepClone();
+                            }
+                        }
+                        updated.Add(clone);
+                        matched = true;
+                        continue;
+                    }
+                }
             }
+
+            updated.Add(item?.DeepClone());
+        }
+
+        if (!matched)
+        {
+            // Early-return restored to match the pre-migration Newtonsoft behavior
+            // (verified against commit 4cd2a0a). Writing the unchanged cloned array
+            // to TargetPath when TargetPath != Path materializes an artifact where
+            // one didn't previously exist, breaking downstream readers that relied
+            // on absence to signal "no update happened".
+            nodeContext.Debug("No record found matching {0}='{1}'", c.MatchAttributeName, matchValue);
+            await next(dataContext, nodeContext);
+            return;
         }
 
         // Write modified array to target path
-        dataContext.SetValueByPath(config.TargetPath, config.DocumentMode, config.TargetValueKind,
-            config.TargetValueWriteMode, recordArray);
+        dataContext.Set(c.TargetPath, updated, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }

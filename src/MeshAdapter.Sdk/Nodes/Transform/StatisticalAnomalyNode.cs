@@ -1,11 +1,14 @@
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using MassTransit.Internals;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.Sdk.Common;
+using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
-using Newtonsoft.Json.Linq;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -24,12 +27,6 @@ public class StatisticalAnomalyNode(NodeDelegate next, IMeshEtlContext meshEtlCo
     {
         var c = nodeContext.GetNodeConfiguration<StatisticalAnomalyNodeConfiguration>();
 
-        if (dataContext.Current == null)
-        {
-            throw PipelineExecutionException.InputValueNull(nodeContext);
-        }
-
-
         // Get or create statistics dictionary in context
         if (!meshEtlContext.Properties.TryGetValue(AnomalyDetectionStatistics, out var obj) ||
             obj is not Dictionary<string, RunningStatistics> statisticsMap || c.ResetStatistics)
@@ -38,23 +35,26 @@ public class StatisticalAnomalyNode(NodeDelegate next, IMeshEtlContext meshEtlCo
             meshEtlContext.Properties[AnomalyDetectionStatistics] = statisticsMap;
         }
 
-        var sourceData = dataContext.Current.SelectTokens(c.Path).ToArray();
-        if (sourceData == null)
+        // Use multi-match JSONPath read so wildcards (e.g. $.items[*]) and recursive
+        // descent (e.g. $..value) yield every matching element. This restores the legacy
+        // SelectTokens(path) semantics from the Newtonsoft implementation.
+        var sourceData = dataContext.SelectMatches(c.Path).ToArray();
+        if (sourceData.Length == 0)
         {
             throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext, c.Path);
         }
 
-        var results = new JArray();
+        var results = new List<StatisticalAnomalyResult>();
 
         foreach (var detector in c.Detectors)
         {
             if (!string.IsNullOrWhiteSpace(detector.GroupByPath))
             {
-                var groupBy = sourceData.GroupBy(x => x.SelectToken(detector.GroupByPath));
+                var groupBy = sourceData.GroupBy(x =>
+                    AnomalyNodeHelpers.GetPropertyAsString(x.Get<JsonNode>("$"), detector.GroupByPath));
                 foreach (var group in groupBy)
                 {
-                    var groupToken = group.Key?.Value<string>() ?? "";
-                    Calculate(nodeContext, statisticsMap, groupToken, group.ToArray(), detector, results);
+                    Calculate(nodeContext, statisticsMap, group.Key ?? "", group.ToArray(), detector, results);
                 }
             }
             else
@@ -63,65 +63,80 @@ public class StatisticalAnomalyNode(NodeDelegate next, IMeshEtlContext meshEtlCo
             }
         }
 
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, results);
+        dataContext.Set(c.TargetPath, results, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext).ConfigureAwait(false);
     }
 
     private void Calculate(INodeContext nodeContext, Dictionary<string, RunningStatistics> statisticsMap, string key,
-        JToken[] sourceData, StatisticalDetectorConfiguration statisticalDetector, JArray results)
+        IDataContext[] sourceData, StatisticalDetectorConfiguration statisticalDetector,
+        List<StatisticalAnomalyResult> results)
     {
         if (!sourceData.Any())
         {
             throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
+        var valuePath = JsonNodePath.NormalizePathOrRelative(statisticalDetector.Path);
+
         foreach (var sourceDataItem in sourceData)
         {
-            var sourceToken = sourceDataItem.SelectToken(statisticalDetector.Path);
+            var sourceToken = sourceDataItem.Get<JsonNode>(valuePath);
             if (sourceToken == null)
             {
                 throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext, statisticalDetector.Path);
             }
-            double value;
-            try
+            if (!JsonScalar.TryToNumber<double>(sourceToken, out var value))
             {
-                value = sourceToken.ToObject<double>();
-            }
-            catch (FormatException e)
-            {
-                throw MeshAdapterPipelineExecutionException.InputValueInvalidFormat(nodeContext, statisticalDetector.Path, e);
+                throw MeshAdapterPipelineExecutionException.InputValueInvalidFormat(
+                    nodeContext, statisticalDetector.Path, new FormatException("Cannot read as double"));
             }
 
             var anomalyResult = DetectAnomaly(statisticsMap, key, value, statisticalDetector);
 
             if (anomalyResult.IsAnomaly)
             {
-                var resultObject = new JObject
-                {
-                    ["path"] = statisticalDetector.Path,
-                    ["value"] = value,
-                    ["isAnomaly"] = anomalyResult.IsAnomaly,
-                    ["score"] = anomalyResult.Score,
-                    ["method"] = anomalyResult.Method,
-                    ["reason"] = anomalyResult.Reason
-                };
-
-                // Add context data if specified
+                // Context is dynamic (any JSON kind); read as object? so scalars materialize
+                // to CLR and objects/arrays to JsonElement, re-serializing byte-identically.
+                // Null Context omits the "context" key (property-level WhenWritingNull override);
+                // a configured-but-missing context falls back to "" exactly as the legacy did.
+                object? context = null;
                 if (!string.IsNullOrWhiteSpace(statisticalDetector.ContextPath))
                 {
-                    var contextValue = sourceDataItem.GetSimpleValueByPath<object>(statisticalDetector.ContextPath);
-                    resultObject["context"] = JToken.FromObject(contextValue ?? "");
+                    var contextPath = JsonNodePath.NormalizePathOrRelative(statisticalDetector.ContextPath);
+                    context = sourceDataItem.Get<object?>(contextPath) ?? "";
                 }
 
                 nodeContext.Debug("Anomaly detected: {0} at path {1} with score {2}",
                     anomalyResult.Reason, statisticalDetector.Path, anomalyResult.Score);
 
-                results.Add(resultObject);
+                results.Add(new StatisticalAnomalyResult(
+                    statisticalDetector.Path,
+                    value,
+                    anomalyResult.IsAnomaly,
+                    anomalyResult.Score,
+                    anomalyResult.Method,
+                    anomalyResult.Reason,
+                    context));
             }
         }
     }
+
+    /// <summary>
+    /// Typed shape of a statistical anomaly result. Key names/order match the former JsonObject;
+    /// "context" is optional (omitted when no ContextPath is configured) and dynamic.
+    /// </summary>
+    internal sealed record StatisticalAnomalyResult(
+        [property: JsonPropertyName("path")] string Path,
+        [property: JsonPropertyName("value")] double Value,
+        [property: JsonPropertyName("isAnomaly")] bool IsAnomaly,
+        [property: JsonPropertyName("score")] float Score,
+        [property: JsonPropertyName("method")] string Method,
+        [property: JsonPropertyName("reason")] string Reason,
+        [property: JsonPropertyName("context")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        object? Context);
 
     private AnomalyResult DetectAnomaly(Dictionary<string, RunningStatistics> statisticsMap, string key, double value,
         StatisticalDetectorConfiguration statisticalDetector)

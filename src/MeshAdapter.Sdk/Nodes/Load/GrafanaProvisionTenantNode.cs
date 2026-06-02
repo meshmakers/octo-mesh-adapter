@@ -1,12 +1,12 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -33,7 +33,7 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
         var config = etlContext.GlobalConfiguration.GetValue<GrafanaConfig>(c.ServerConfiguration);
 
         var tenantId = !string.IsNullOrEmpty(c.TenantIdPath)
-            ? dataContext.GetSimpleValueByPath<string>(c.TenantIdPath)
+            ? dataContext.Get<string>(c.TenantIdPath)
             : etlContext.TenantId;
 
         if (string.IsNullOrEmpty(tenantId))
@@ -72,15 +72,15 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
 
         if (!string.IsNullOrEmpty(c.TargetPath))
         {
-            var result = new JObject
+            var result = new JsonObject
             {
                 ["orgId"] = orgId.Value,
                 ["orgName"] = tenantId,
                 ["datasourceCreated"] = dsCreated,
                 ["provisioned"] = true
             };
-            dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-                c.TargetValueWriteMode, result);
+            dataContext.Set(c.TargetPath, result, c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
         }
 
         await next(dataContext, nodeContext);
@@ -105,8 +105,8 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
             return null;
         }
 
-        var json = JObject.Parse(await response.Content.ReadAsStringAsync());
-        return json["id"]?.Value<long>();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+        return json?["id"]?.GetValue<long>();
     }
 
     private async Task<long?> CreateOrg(string grafanaUrl, AuthenticationHeaderValue auth,
@@ -115,7 +115,7 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
         var request = new HttpRequestMessage(HttpMethod.Post, $"{grafanaUrl}/api/orgs");
         request.Headers.Authorization = auth;
         request.Content = new StringContent(
-            JsonConvert.SerializeObject(new { name = orgName }),
+            JsonSerializer.Serialize(new { name = orgName }),
             Encoding.UTF8, "application/json");
 
         var response = await httpClient.SendAsync(request);
@@ -127,8 +127,8 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
             return null;
         }
 
-        var json = JObject.Parse(body);
-        return json["orgId"]?.Value<long>();
+        var json = JsonNode.Parse(body);
+        return json?["orgId"]?.GetValue<long>();
     }
 
     private async Task<bool> CreateDatasourceInOrg(string grafanaUrl, AuthenticationHeaderValue auth,
@@ -159,7 +159,7 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
         request.Headers.Authorization = auth;
         request.Headers.Add("X-Grafana-Org-Id", orgId.ToString());
         request.Content = new StringContent(
-            JsonConvert.SerializeObject(dsPayload),
+            JsonSerializer.Serialize(dsPayload),
             Encoding.UTF8, "application/json");
 
         var response = await httpClient.SendAsync(request);

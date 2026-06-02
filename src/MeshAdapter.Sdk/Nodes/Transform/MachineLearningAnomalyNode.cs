@@ -1,13 +1,16 @@
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using MassTransit.Internals;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
-using Meshmakers.Octo.Sdk.Common;
+using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
-using Newtonsoft.Json.Linq;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -34,28 +37,26 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
             meshEtlContext.Properties[AnomalyDetectionStatistics] = timeSeriesDataMap;
         }
 
-        if (dataContext.Current == null)
-        {
-            throw PipelineExecutionException.InputValueNull(nodeContext);
-        }
-
-        var sourceData = dataContext.Current.SelectTokens(c.Path).ToArray();
-        if (sourceData == null)
+        // Use multi-match JSONPath read so wildcards (e.g. $.items[*]) and recursive
+        // descent (e.g. $..value) yield every matching element. This restores the legacy
+        // SelectTokens(path) semantics from the Newtonsoft implementation.
+        var sourceData = dataContext.SelectMatches(c.Path).ToArray();
+        if (sourceData.Length == 0)
         {
             throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext, c.Path);
         }
 
-        var results = new JArray();
+        var results = new List<object>();
 
         foreach (var detector in c.Detectors)
         {
             if (!string.IsNullOrWhiteSpace(detector.GroupByPath))
             {
-                var groupBy = sourceData.GroupBy(x => x.SelectToken(detector.GroupByPath));
+                var groupBy = sourceData.GroupBy(x =>
+                    AnomalyNodeHelpers.GetPropertyAsString(x.Get<JsonNode>("$"), detector.GroupByPath));
                 foreach (var group in groupBy)
                 {
-                    var groupToken = group.Key?.Value<string>() ?? "";
-                    Calculate(nodeContext, timeSeriesDataMap, groupToken, group.ToArray(), detector, results);
+                    Calculate(nodeContext, timeSeriesDataMap, group.Key ?? "", group.ToArray(), detector, results);
                 }
             }
             else
@@ -66,36 +67,34 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
 
 
         // Set results
-        dataContext.SetValueByPath(c.TargetPath, c.DocumentMode, c.TargetValueKind,
-            c.TargetValueWriteMode, results);
+        dataContext.Set(c.TargetPath, results, c.DocumentMode, c.TargetValueKind,
+            c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext).ConfigureAwait(false);
     }
 
-    private void Calculate(INodeContext nodeContext,Dictionary<string, TimeSeriesData> timeSeriesDataMap, string key,
-        JToken[] sourceData, MachineLearningAnomalyDetectorConfiguration detector, JArray results)
+    private void Calculate(INodeContext nodeContext, Dictionary<string, TimeSeriesData> timeSeriesDataMap, string key,
+        IDataContext[] sourceData, MachineLearningAnomalyDetectorConfiguration detector, List<object> results)
     {
         if (!sourceData.Any())
         {
             throw PipelineExecutionException.InputValueNull(nodeContext);
         }
 
+        var valuePath = JsonNodePath.NormalizePathOrRelative(detector.Path);
+
         foreach (var sourceDataItem in sourceData)
         {
-            var sourceToken = sourceDataItem.SelectToken(detector.Path);
+            var sourceToken = sourceDataItem.Get<JsonNode>(valuePath);
             if (sourceToken == null)
             {
                 throw MeshAdapterPipelineExecutionException.InputValueNull(nodeContext, detector.Path);
             }
 
-            float value;
-            try
+            if (!JsonScalar.TryToNumber<float>(sourceToken, out var value))
             {
-                value = sourceToken.ToObject<float>();
-            }
-            catch (FormatException e)
-            {
-                throw MeshAdapterPipelineExecutionException.InputValueInvalidFormat(nodeContext, detector.Path, e);
+                throw MeshAdapterPipelineExecutionException.InputValueInvalidFormat(
+                    nodeContext, detector.Path, new FormatException("Cannot read as float"));
             }
 
             // Get or create time series data
@@ -110,35 +109,28 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
                 continue;
             }
 
-            // Detect anomalies
-            var anomalies = new List<JObject>();
+            // Resolve context once per item (dynamic — scalars to CLR, objects/arrays to
+            // JsonElement, re-serializing byte-identically). Null => "context" key omitted;
+            // configured-but-missing => "" exactly as the legacy did. The records carry
+            // seriesKey / currentValue / context as their trailing members so the serialized
+            // key order matches the former incremental JsonObject mutation.
+            object? context = null;
+            if (!string.IsNullOrWhiteSpace(detector.ContextPath))
+            {
+                var contextPath = JsonNodePath.NormalizePathOrRelative(detector.ContextPath);
+                context = sourceDataItem.Get<object?>(contextPath) ?? "";
+            }
 
             if (detector.DetectSpikes)
             {
-                var spikes = DetectSpikes(series, detector, nodeContext);
-                anomalies.AddRange(spikes);
+                var spike = DetectSpike(series, detector, nodeContext, key, value, context);
+                if (spike != null) results.Add(spike);
             }
 
             if (detector.DetectChangePoints)
             {
-                var changePoints = DetectChangePoints(series, detector, nodeContext);
-                anomalies.AddRange(changePoints);
-            }
-
-            // Add anomalies to results
-            foreach (var anomaly in anomalies)
-            {
-                anomaly["seriesKey"] = key;
-                anomaly["currentValue"] = value;
-
-                // Add context if specified
-                if (!string.IsNullOrWhiteSpace(detector.ContextPath))
-                {
-                    var contextValue = sourceDataItem.GetSimpleValueByPath<object>(detector.ContextPath);
-                    anomaly["context"] = JToken.FromObject(contextValue ?? "");
-                }
-
-                results.Add(anomaly);
+                var changePoint = DetectChangePoint(series, detector, nodeContext, key, value, context);
+                if (changePoint != null) results.Add(changePoint);
             }
 
             // Maintain sliding window
@@ -149,11 +141,10 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
         }
     }
 
-    private List<JObject> DetectSpikes(TimeSeriesData series, MachineLearningAnomalyDetectorConfiguration detector,
-        INodeContext nodeContext)
+    private SpikeAnomalyResult? DetectSpike(TimeSeriesData series,
+        MachineLearningAnomalyDetectorConfiguration detector, INodeContext nodeContext,
+        string key, float currentValue, object? context)
     {
-        var results = new List<JObject>();
-
         try
         {
             var dataView = _mlContext.Data.LoadFromEnumerable(
@@ -174,17 +165,16 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
             var lastPrediction = predictions.LastOrDefault();
             if (lastPrediction?.Prediction[0] > 0)
             {
-                results.Add(new JObject
-                {
-                    ["type"] = "spike",
-                    ["confidence"] = detector.SpikeConfidence,
-                    ["level"] = lastPrediction.Prediction[0],
-                    ["score"] = lastPrediction.Prediction[1],
-                    ["pValue"] = lastPrediction.Prediction[2],
-                    ["timestamp"] = DateTime.UtcNow
-                });
-
                 nodeContext.Debug("Spike detected with score {0}", lastPrediction.Prediction[1]);
+                return new SpikeAnomalyResult(
+                    detector.SpikeConfidence,
+                    lastPrediction.Prediction[0],
+                    lastPrediction.Prediction[1],
+                    lastPrediction.Prediction[2],
+                    DateTime.UtcNow,
+                    key,
+                    currentValue,
+                    context);
             }
         }
         catch (Exception ex)
@@ -192,14 +182,13 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
             throw MeshAdapterPipelineExecutionException.SpikeDetectionFailed(nodeContext, ex);
         }
 
-        return results;
+        return null;
     }
 
-    private List<JObject> DetectChangePoints(TimeSeriesData series, MachineLearningAnomalyDetectorConfiguration detector,
-        INodeContext nodeContext)
+    private ChangePointAnomalyResult? DetectChangePoint(TimeSeriesData series,
+        MachineLearningAnomalyDetectorConfiguration detector, INodeContext nodeContext,
+        string key, float currentValue, object? context)
     {
-        var results = new List<JObject>();
-
         try
         {
             var dataView = _mlContext.Data.LoadFromEnumerable(
@@ -220,18 +209,17 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
             var lastPrediction = predictions.LastOrDefault();
             if (lastPrediction?.Prediction[0] > 0)
             {
-                results.Add(new JObject
-                {
-                    ["type"] = "changePoint",
-                    ["confidence"] = detector.ChangePointConfidence,
-                    ["level"] = lastPrediction.Prediction[0],
-                    ["score"] = lastPrediction.Prediction[1],
-                    ["pValue"] = lastPrediction.Prediction[2],
-                    ["martingaleValue"] = lastPrediction.Prediction[3],
-                    ["timestamp"] = DateTime.UtcNow
-                });
-
                 nodeContext.Debug("Change point detected with score {0}", lastPrediction.Prediction[1]);
+                return new ChangePointAnomalyResult(
+                    detector.ChangePointConfidence,
+                    lastPrediction.Prediction[0],
+                    lastPrediction.Prediction[1],
+                    lastPrediction.Prediction[2],
+                    lastPrediction.Prediction[3],
+                    DateTime.UtcNow,
+                    key,
+                    currentValue,
+                    context);
             }
         }
         catch (Exception ex)
@@ -239,7 +227,53 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
             throw MeshAdapterPipelineExecutionException.ChangePointDetectionFailed(nodeContext, ex);
         }
 
-        return results;
+        return null;
+    }
+
+    /// <summary>
+    /// Typed shape of a spike anomaly. Member order/names reproduce the former JsonObject
+    /// (a fixed "type" discriminator, the detector fields, then the appended
+    /// seriesKey/currentValue/context). "context" is optional (omitted when no ContextPath
+    /// is configured). Explicit JsonPropertyOrder pins the key order regardless of how STJ
+    /// interleaves the computed Type property with the positional parameters.
+    /// </summary>
+    internal sealed record SpikeAnomalyResult(
+        [property: JsonPropertyName("confidence")] [property: JsonPropertyOrder(1)] double Confidence,
+        [property: JsonPropertyName("level")] [property: JsonPropertyOrder(2)] double Level,
+        [property: JsonPropertyName("score")] [property: JsonPropertyOrder(3)] double Score,
+        [property: JsonPropertyName("pValue")] [property: JsonPropertyOrder(4)] double PValue,
+        [property: JsonPropertyName("timestamp")] [property: JsonPropertyOrder(5)] DateTime Timestamp,
+        [property: JsonPropertyName("seriesKey")] [property: JsonPropertyOrder(6)] string SeriesKey,
+        [property: JsonPropertyName("currentValue")] [property: JsonPropertyOrder(7)] float CurrentValue,
+        [property: JsonPropertyName("context")] [property: JsonPropertyOrder(8)]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        object? Context)
+    {
+        [JsonPropertyName("type")]
+        [JsonPropertyOrder(0)]
+        public string Type => "spike";
+    }
+
+    /// <summary>
+    /// Typed shape of a change-point anomaly. Same as the spike shape plus "martingaleValue"
+    /// inserted between pValue and timestamp, matching the former JsonObject key order.
+    /// </summary>
+    internal sealed record ChangePointAnomalyResult(
+        [property: JsonPropertyName("confidence")] [property: JsonPropertyOrder(1)] double Confidence,
+        [property: JsonPropertyName("level")] [property: JsonPropertyOrder(2)] double Level,
+        [property: JsonPropertyName("score")] [property: JsonPropertyOrder(3)] double Score,
+        [property: JsonPropertyName("pValue")] [property: JsonPropertyOrder(4)] double PValue,
+        [property: JsonPropertyName("martingaleValue")] [property: JsonPropertyOrder(5)] double MartingaleValue,
+        [property: JsonPropertyName("timestamp")] [property: JsonPropertyOrder(6)] DateTime Timestamp,
+        [property: JsonPropertyName("seriesKey")] [property: JsonPropertyOrder(7)] string SeriesKey,
+        [property: JsonPropertyName("currentValue")] [property: JsonPropertyOrder(8)] float CurrentValue,
+        [property: JsonPropertyName("context")] [property: JsonPropertyOrder(9)]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        object? Context)
+    {
+        [JsonPropertyName("type")]
+        [JsonPropertyOrder(0)]
+        public string Type => "changePoint";
     }
 
     private class TimeSeriesData

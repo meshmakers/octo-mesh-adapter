@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
@@ -8,38 +10,11 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class CreateAssociationUpdateNodeTests
+public class CreateAssociationUpdateNodeTests : NodeTestBase
 {
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        CreateAssociationUpdateNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(),
-            logger,
-            dataContext);
-
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "CreateAssociationUpdate",
-            0,
-            config,
-            dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
-    }
-
     [Fact]
     public async Task ProcessObjectAsync_WithCreateKind_SetsUpdateInfoOnDataContext()
     {
@@ -53,18 +28,17 @@ public class CreateAssociationUpdateNodeTests
             UpdateKind = AssociationUpdateKind.Create,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<CreateAssociationUpdateNodeConfiguration>(config);
 
         var node = new CreateAssociationUpdateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set(
                 "$.result",
-                A<AssociationUpdateInfo>._,
+                A<AssociationUpdateInfo?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<JsonSerializer>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -81,18 +55,17 @@ public class CreateAssociationUpdateNodeTests
             UpdateKind = AssociationUpdateKind.Delete,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<CreateAssociationUpdateNodeConfiguration>(config);
 
         var node = new CreateAssociationUpdateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
+        A.CallTo(() => dataContext.Set(
                 "$.result",
-                A<AssociationUpdateInfo>._,
+                A<AssociationUpdateInfo?>._,
                 A<DocumentModes>._,
                 A<ValueKinds>._,
-                A<TargetValueWriteModes>._,
-                A<JsonSerializer>._))
+                A<TargetValueWriteModes>._))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -108,7 +81,7 @@ public class CreateAssociationUpdateNodeTests
             UpdateKind = AssociationUpdateKind.Create,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<CreateAssociationUpdateNodeConfiguration>(config);
 
         var node = new CreateAssociationUpdateNode(next);
 
@@ -128,7 +101,7 @@ public class CreateAssociationUpdateNodeTests
             UpdateKind = AssociationUpdateKind.Create,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<CreateAssociationUpdateNodeConfiguration>(config);
 
         var node = new CreateAssociationUpdateNode(next);
 
@@ -148,7 +121,7 @@ public class CreateAssociationUpdateNodeTests
             AssociationRoleId = new RtCkId<CkAssociationRoleId>("TestModel/TestRole"),
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<CreateAssociationUpdateNodeConfiguration>(config);
 
         var node = new CreateAssociationUpdateNode(next);
 
@@ -169,11 +142,11 @@ public class CreateAssociationUpdateNodeTests
             UpdateKind = AssociationUpdateKind.Create,
             TargetPath = "$.result"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<CreateAssociationUpdateNodeConfiguration>(config);
 
         var node = new CreateAssociationUpdateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 }

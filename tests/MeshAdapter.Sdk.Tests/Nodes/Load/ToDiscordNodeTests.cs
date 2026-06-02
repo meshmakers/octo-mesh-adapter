@@ -1,6 +1,8 @@
 using System.Net;
-using System.Net.Http;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -14,12 +16,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json.Linq;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class ToDiscordNodeTests
+public class ToDiscordNodeTests : NodeTestBase
 {
     private const string ServerConfig = "discord-1";
     private const string BotToken = "bot-token-xyz";
@@ -54,22 +54,6 @@ public class ToDiscordNodeTests
             .Returns(new ToDiscordNode.DiscordConfiguration { BotToken = BotToken });
     }
 
-    private (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        ToDiscordNodeConfiguration config, JToken? testData = null)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = A.Fake<IDataContext>();
-        A.CallTo(() => dataContext.Current).Returns(testData ?? new JObject());
-
-        var rootNodeContext = NodeContext.CreateRootNodeContext(
-            services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode(
-            "ToDiscord", 0, config, dataContext);
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
-    }
-
     private ToDiscordNode CreateNode(NodeDelegate next) =>
         new ToDiscordNode(next, _etlContext, _httpClientFactory);
 
@@ -82,7 +66,7 @@ public class ToDiscordNodeTests
             ChannelId = ChannelId,
             Content = "hello world"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -94,10 +78,10 @@ public class ToDiscordNodeTests
         Assert.Equal("Bot", req.Headers.Authorization?.Scheme);
         Assert.Equal(BotToken, req.Headers.Authorization?.Parameter);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        Assert.Equal("hello world", body["content"]?.Value<string>());
-        Assert.Null(body["embeds"]);
-        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        Assert.Equal("hello world", body["content"]?.GetValue<string>());
+        Assert.False(body.ContainsKey("embeds"));
+        VerifyNextCalled(next, dataContext, nodeContext);
     }
 
     [Fact]
@@ -111,18 +95,18 @@ public class ToDiscordNodeTests
             EmbedDescription = "Something happened",
             EmbedColor = 0xFF0000
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        Assert.Null(body["content"]);
-        var embeds = (JArray)body["embeds"]!;
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        Assert.False(body.ContainsKey("content"));
+        var embeds = (JsonArray)body["embeds"]!;
         Assert.Single(embeds);
-        Assert.Equal("Alert", embeds[0]["title"]?.Value<string>());
-        Assert.Equal("Something happened", embeds[0]["description"]?.Value<string>());
-        Assert.Equal(0xFF0000, embeds[0]["color"]?.Value<int>());
+        Assert.Equal("Alert", embeds[0]!["title"]?.GetValue<string>());
+        Assert.Equal("Something happened", embeds[0]!["description"]?.GetValue<string>());
+        Assert.Equal(0xFF0000, embeds[0]!["color"]?.GetValue<int>());
     }
 
     [Fact]
@@ -135,15 +119,14 @@ public class ToDiscordNodeTests
             Content = "literal",
             ContentPath = "$.msg"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config,
-            new JObject { ["msg"] = "from-path" });
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.msg")).Returns("from-path");
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.msg", "from-path");
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        Assert.Equal("from-path", body["content"]?.Value<string>());
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        Assert.Equal("from-path", body["content"]?.GetValue<string>());
     }
 
     [Fact]
@@ -156,8 +139,8 @@ public class ToDiscordNodeTests
             ChannelIdPath = "$.channel",
             Content = "hi"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.channel")).Returns(resolvedChannel);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.channel", resolvedChannel);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -176,15 +159,15 @@ public class ToDiscordNodeTests
             Content = "hi",
             TargetPath = "$.discordResponse"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
-            "$.discordResponse", config.DocumentMode, config.TargetValueKind,
-            config.TargetValueWriteMode,
-            A<JToken>.That.Matches(t => t["id"]!.Value<string>() == "111")))
+        A.CallTo(() => dataContext.Set(
+            "$.discordResponse",
+            A<JsonNode?>.That.Matches(t => t != null && t["id"]!.GetValue<string>() == "111"),
+            config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -198,13 +181,13 @@ public class ToDiscordNodeTests
             Content = "hi",
             TargetPath = ""
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => dataContext.SetValueByPath(
-            A<string>._, A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._, A<JToken>._))
+        A.CallTo(() => dataContext.Set(
+            A<string>._, A<JsonNode?>._, A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
             .MustNotHaveHappened();
     }
 
@@ -219,7 +202,7 @@ public class ToDiscordNodeTests
             ChannelId = ChannelId,
             Content = "hi"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -243,7 +226,7 @@ public class ToDiscordNodeTests
             ChannelId = ChannelId,
             Content = "hi"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -270,7 +253,7 @@ public class ToDiscordNodeTests
             ChannelId = "",
             Content = "hi"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -286,7 +269,7 @@ public class ToDiscordNodeTests
             ChannelId = "not-a-snowflake",
             Content = "hi"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -301,7 +284,7 @@ public class ToDiscordNodeTests
             ServerConfiguration = ServerConfig,
             ChannelId = ChannelId
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -321,14 +304,14 @@ public class ToDiscordNodeTests
             EmbedTitle = "t",
             EmbedColorPath = "$.color"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.color")).Returns(raw);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.color", raw);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        Assert.Equal(expected, (int)body["embeds"]![0]!["color"]!);
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        Assert.Equal(expected, body["embeds"]![0]!["color"]!.GetValue<int>());
     }
 
     [Fact]
@@ -341,8 +324,8 @@ public class ToDiscordNodeTests
             EmbedTitle = "t",
             EmbedColorPath = "$.color"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.color")).Returns("not-a-color");
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.color", "not-a-color");
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -352,12 +335,6 @@ public class ToDiscordNodeTests
     private static readonly RtCkId<CkTypeId> FileSystemItemCkTypeId =
         new("System.Reporting/FileSystemItem");
 
-    /// <summary>
-    /// Wires the repository fakes so that fetching <paramref name="fsItemRtId"/> returns a
-    /// FileSystemItem whose <c>Content</c> points at <paramref name="binaryRtId"/> and whose
-    /// <c>Name</c>/<c>Content.Filename</c> carry the supplied values; the subsequent binary
-    /// download returns the given bytes.
-    /// </summary>
     private void SetupFileSystemItem(
         string fsItemRtId,
         string binaryRtId,
@@ -426,14 +403,13 @@ public class ToDiscordNodeTests
             Content = "see attached",
             AttachmentFileSystemItemRtId = fsItemRtId
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.StartsWith("multipart/form-data", _handler.LastContentType);
         Assert.Contains("\"content\":\"see attached\"", _handler.LastBody);
-        // Name wins over content.filename when no override is set.
         Assert.Contains("filename=\"Invoice March.pdf\"", _handler.LastBody);
         Assert.DoesNotContain("aaaa-bbbb-cccc.pdf", _handler.LastBody);
     }
@@ -457,7 +433,7 @@ public class ToDiscordNodeTests
             AttachmentFileSystemItemRtId = fsItemRtId,
             AttachmentFilename = "custom-override.pdf"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -485,9 +461,8 @@ public class ToDiscordNodeTests
             AttachmentFileSystemItemRtId = fsItemRtId,
             AttachmentFilenamePath = "$.desiredName"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetSimpleValueByPath<string>("$.desiredName"))
-            .Returns("inv-2025-09-30-abc.pdf");
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.desiredName", "inv-2025-09-30-abc.pdf");
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -501,7 +476,7 @@ public class ToDiscordNodeTests
         const string fsItemRtId = "000000000000000000000042";
         const string binaryRtId = "000000000000000000000099";
         SetupFileSystemItem(fsItemRtId, binaryRtId,
-            name: null, // no Name on the entity
+            name: null,
             contentFilename: "fallback.pdf",
             contentType: "application/pdf",
             bytes: "hi"u8.ToArray());
@@ -513,7 +488,7 @@ public class ToDiscordNodeTests
             Content = "see attached",
             AttachmentFileSystemItemRtId = fsItemRtId
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -543,7 +518,7 @@ public class ToDiscordNodeTests
             Content = "hi",
             AttachmentFileSystemItemRtId = fsItemRtId
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -559,7 +534,6 @@ public class ToDiscordNodeTests
         var session = A.Fake<IOctoSession>();
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
 
-        // Entity exists but has no Content attribute.
         var fsItem = new RtEntity(FileSystemItemCkTypeId, new OctoObjectId(fsItemRtId));
         fsItem.SetAttributeValue("Name", AttributeValueTypesDto.String, "orphan.pdf");
 
@@ -578,7 +552,7 @@ public class ToDiscordNodeTests
             Content = "hi",
             AttachmentFileSystemItemRtId = fsItemRtId
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -594,15 +568,14 @@ public class ToDiscordNodeTests
             ServerConfiguration = ServerConfig,
             ChannelId = ChannelId,
             Content = "hello @everyone"
-            // MentionPolicy not set → defaults to None
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        var parse = (JArray?)body["allowed_mentions"]?["parse"];
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        var parse = body["allowed_mentions"]?["parse"]?.AsArray();
         Assert.NotNull(parse);
         Assert.Empty(parse!);
     }
@@ -617,13 +590,13 @@ public class ToDiscordNodeTests
             Content = "hello @everyone",
             MentionPolicy = MentionPolicy.All
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        Assert.Null(body["allowed_mentions"]);
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        Assert.False(body.ContainsKey("allowed_mentions"));
     }
 
     [Theory]
@@ -640,24 +613,24 @@ public class ToDiscordNodeTests
             Content = "hi",
             MentionPolicy = policy
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
-        var parse = (JArray?)body["allowed_mentions"]?["parse"];
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
+        var parse = body["allowed_mentions"]?["parse"]?.AsArray();
         Assert.NotNull(parse);
-        Assert.Equal(expectedParse, parse!.Select(t => t.Value<string>()).ToArray());
+        Assert.Equal(expectedParse, parse!.Select(t => t!.GetValue<string>()).ToArray());
     }
 
     [Fact]
     public async Task ProcessObjectAsync_MentionPolicyCustom_PassesThroughRawObject()
     {
-        var custom = new JObject
+        var custom = new JsonObject
         {
-            ["parse"] = new JArray("users"),
-            ["users"] = new JArray("111222333444555666"),
+            ["parse"] = new JsonArray("users"),
+            ["users"] = new JsonArray("111222333444555666"),
             ["replied_user"] = true
         };
         var config = new ToDiscordNodeConfiguration
@@ -668,17 +641,17 @@ public class ToDiscordNodeTests
             MentionPolicy = MentionPolicy.Custom,
             AllowedMentionsPath = "$.mentions"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetComplexObjectByPath<JToken>("$.mentions")).Returns(custom);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        A.CallTo(() => dataContext.Get<object?>("$.mentions")).Returns(custom);
         var node = CreateNode(next);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        var body = JObject.Parse(_handler.LastBody!);
+        var body = JsonNode.Parse(_handler.LastBody!)!.AsObject();
         var am = body["allowed_mentions"]!;
-        Assert.Equal(new[] { "users" }, am["parse"]!.Select(t => t.Value<string>()).ToArray());
-        Assert.Equal("111222333444555666", am["users"]![0]!.Value<string>());
-        Assert.True(am["replied_user"]!.Value<bool>());
+        Assert.Equal(new[] { "users" }, am["parse"]!.AsArray().Select(t => t!.GetValue<string>()).ToArray());
+        Assert.Equal("111222333444555666", am["users"]![0]!.GetValue<string>());
+        Assert.True(am["replied_user"]!.GetValue<bool>());
     }
 
     [Fact]
@@ -690,9 +663,8 @@ public class ToDiscordNodeTests
             ChannelId = ChannelId,
             Content = "hi",
             MentionPolicy = MentionPolicy.Custom
-            // AllowedMentionsPath deliberately unset
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
@@ -710,12 +682,68 @@ public class ToDiscordNodeTests
             MentionPolicy = MentionPolicy.Custom,
             AllowedMentionsPath = "$.missing"
         };
-        var (dataContext, nodeContext, next) = PrepareTest(config);
-        A.CallTo(() => dataContext.GetComplexObjectByPath<JToken>("$.missing")).Returns(null);
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+        A.CallTo(() => dataContext.Get<object?>("$.missing")).Returns(null);
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    // ── Byte-identity: DiscordPayload record vs the legacy hand-built JsonObject ──
+    // Pins the Discord webhook wire format (key order + omit-when-null) so the typed-record
+    // rewrite cannot silently drift from the pre-migration JsonObject output.
+
+    [Fact]
+    public void DiscordPayload_FullShape_SerializesByteIdenticalToLegacyJsonObject()
+    {
+        var legacy = new JsonObject
+        {
+            ["content"] = "hello",
+            ["embeds"] = new JsonArray(new JsonObject
+            {
+                ["title"] = "T",
+                ["description"] = "D",
+                ["color"] = 123
+            }),
+            ["allowed_mentions"] = new JsonObject { ["parse"] = new JsonArray(JsonValue.Create("users")) }
+        };
+        var payload = new ToDiscordNode.DiscordPayload(
+            "hello",
+            new[] { new ToDiscordNode.DiscordEmbed("T", "D", 123) },
+            new ToDiscordNode.DiscordAllowedMentions(new[] { "users" }));
+
+        Assert.Equal(
+            legacy.ToJsonString(SystemTextJsonOptions.Default),
+            JsonSerializer.Serialize(payload, SystemTextJsonOptions.Default));
+    }
+
+    [Fact]
+    public void DiscordPayload_ContentOnly_OmitsEmbedsAndMentions()
+    {
+        var legacy = new JsonObject { ["content"] = "hi" };
+        var payload = new ToDiscordNode.DiscordPayload("hi", null, null);
+
+        Assert.Equal(
+            legacy.ToJsonString(SystemTextJsonOptions.Default),
+            JsonSerializer.Serialize(payload, SystemTextJsonOptions.Default));
+    }
+
+    [Fact]
+    public void DiscordPayload_EmbedOnly_OmitsContentAndMentions_AndOmitsNullEmbedFields()
+    {
+        var legacy = new JsonObject
+        {
+            ["embeds"] = new JsonArray(new JsonObject { ["description"] = "D" })
+        };
+        var payload = new ToDiscordNode.DiscordPayload(
+            null,
+            new[] { new ToDiscordNode.DiscordEmbed(null, "D", null) },
+            null);
+
+        Assert.Equal(
+            legacy.ToJsonString(SystemTextJsonOptions.Default),
+            JsonSerializer.Serialize(payload, SystemTextJsonOptions.Default));
     }
 }
 

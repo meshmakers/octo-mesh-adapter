@@ -34,6 +34,14 @@
     <ItemGroup>
         <Compile Include="$(MSBuildThisFileDirectory)DotNetStandardFix.cs" Visible="false" />
     </ItemGroup>
+
+    <!-- Suppress NuGet audit warnings for known transitive vulnerabilities from IronOCR dependencies.
+         SharpCompress and Snappier are not direct dependencies; they are pulled in transitively.
+         These suppressions allow the build to succeed while the upstream packages are upgraded. -->
+    <ItemGroup>
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-6c8g-7p36-r338" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-pggp-6c3x-2xmx" />
+    </ItemGroup>
     <PropertyGroup Condition=" '$(Configuration)' == 'DebugL' ">
         <DebugSymbols>true</DebugSymbols>
         <DebugType>full</DebugType>

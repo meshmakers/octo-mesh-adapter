@@ -34,7 +34,7 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         var config = nodeContext.GetNodeConfiguration<LlmQueryNodeConfiguration>();
 
         // Allows for cancellation via timeout or upstream interrupt.
-        using var timeoutCts = new CancellationTokenSource(config.Timeout);
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(config.TimeoutSeconds));
         var ct = timeoutCts.Token;
 
         try
@@ -49,6 +49,27 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             {
                 throw MeshAdapterPipelineExecutionException.PathParameterValueMissing(
                     nodeContext, nameof(config.Path));
+            }
+
+            // Sampling-config mutual exclusion: Temperature and TopP are
+            // alternative controls for the same property of the output
+            // distribution. Industry convention (OpenAI, Anthropic, Cerebras,
+            // Ollama) is to set only one. Anthropic rejects requests that
+            // set both; OpenAI accepts but recommends against. We treat as
+            // a hard contract — same error regardless of backend.
+            if (config.Temperature is not null && config.TopP is not null)
+            {
+                throw MeshAdapterPipelineExecutionException.ProcessingError(
+                    nodeContext,
+                    new ArgumentException(
+                        $"Sampling configuration error: Temperature ({config.Temperature}) " +
+                        $"and TopP ({config.TopP}) are mutually exclusive — set one, " +
+                        "leave the other null. Industry convention across OpenAI, " +
+                        "Anthropic, Cerebras, and Ollama is to use only one of these " +
+                        "sampling controls; Anthropic rejects requests that set both. " +
+                        "For most pipelines, set only Temperature (e.g. 0.3 for " +
+                        "deterministic extraction, 0.7 for varied output) and leave " +
+                        "TopP null. TopK is orthogonal and may be set with either."));
             }
 
             // Resolve API key. May legitimately be null for self-hosted OpenAI-compat
@@ -173,8 +194,15 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
     }
 
     // ----------------------------------------------------------------------
-    // Provider factory — v0.1 supports OpenAI-compatible only.
-    // Anthropic native branch lands in Spike 4.
+    // Provider factory — Spike 2 added OpenAI-compatible; Spike 4 added the
+    // Anthropic-native branch. Both produce an IChatClient with identical
+    // contract surface (response, streaming, JSON, cancellation, OTel) so
+    // the rest of ProcessObjectAsync is provider-agnostic. The difference
+    // is in the gen_ai.provider.name attribute on emitted spans:
+    //   OpenAiCompatible → "openai" (regardless of actual backend)
+    //   Anthropic        → "anthropic"
+    // server.address and openai.response.system_fingerprint pin the real
+    // backend within each branch.
     // ----------------------------------------------------------------------
 
     private static IChatClient ConstructClient(LlmQueryNodeConfiguration config, string? apiKey)
@@ -182,18 +210,7 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         return config.Provider switch
         {
             LlmProvider.OpenAiCompatible => ConstructOpenAiCompatibleClient(config, apiKey),
-
-            // Anthropic enum value is reserved for the native-Claude branch
-            // landing in Spike 4 (which will consolidate AnthropicAiQuery@1
-            // into this node). Until then, the existing AnthropicAiQuery@1
-            // node remains the supported path for native Anthropic features
-            // (MCP tool use, native message format, Claude-specific options).
-            LlmProvider.Anthropic => throw new NotSupportedException(
-                "Provider 'Anthropic' is not available in this build. " +
-                "For native Anthropic support today, use the existing " +
-                "AnthropicAiQuery@1 node instead. " +
-                "This branch will be consolidated into LlmQuery@1 in Spike 4."),
-
+            LlmProvider.Anthropic        => ConstructAnthropicClient(config, apiKey),
             _ => throw new ArgumentOutOfRangeException(nameof(config.Provider),
                 $"Unsupported provider: {config.Provider}")
         };
@@ -226,6 +243,48 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
                 credential: credential,
                 options: options)
             .AsIChatClient()
+            .AsBuilder()
+            .UseOpenTelemetry(sourceName: ActivitySourceName)
+            .Build();
+    }
+
+    private static IChatClient ConstructAnthropicClient(
+        LlmQueryNodeConfiguration config, string? apiKey)
+    {
+        // Anthropic requires a real API key — unlike Ollama's auth-less local
+        // mode, there is no public anonymous endpoint. Fail fast with a clear
+        // message rather than letting the SDK throw a confusing 401.
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            throw new InvalidOperationException(
+                "Anthropic provider requires a non-empty API key. " +
+                "Set ApiKey directly or use ApiKeyConfigurationName to " +
+                "reference an AiConfiguration entity.");
+        }
+
+        var client = new Anthropic.AnthropicClient { ApiKey = apiKey };
+
+        // BaseUrl override is for self-hosted / proxy scenarios (Workspaces,
+        // enterprise gateways). When null, the SDK uses the default
+        // https://api.anthropic.com endpoint.
+        if (!string.IsNullOrEmpty(config.BaseUrl))
+        {
+            client = (Anthropic.AnthropicClient)client
+                .WithOptions(o => o with { BaseUrl = config.BaseUrl });
+        }
+
+        // .AsIChatClient(model) — the official Anthropic SDK's IChatClient
+        // bridge. Model passed here becomes the default; ChatOptions.ModelId
+        // can override it per-call but our node body always sets it
+        // explicitly, so the default is the only path that fires.
+        //
+        // Telemetry observation (Spike 4 evidence): this path emits
+        // gen_ai.provider.name = "anthropic" (vs the OpenAI-compat path's
+        // "openai"). server.address = "api.anthropic.com". Bonus tags
+        // include gen_ai.usage.cache_read.input_tokens (prompt caching)
+        // and gen_ai.response.time_to_first_chunk on streaming responses.
+        return client
+            .AsIChatClient(config.Model)
             .AsBuilder()
             .UseOpenTelemetry(sourceName: ActivitySourceName)
             .Build();

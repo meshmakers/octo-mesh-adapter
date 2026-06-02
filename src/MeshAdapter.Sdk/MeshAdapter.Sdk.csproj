@@ -35,6 +35,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="Anthropic" Version="12.24.1" />
         <PackageReference Include="IronOcr" Version="2026.6.1" />
         <!-- Cover-sheet rendering (RenderDataSheetPdf) + PDF merge (MergePdf) for
              the accounting BMD handover export. QuestPDF Community license is set

@@ -18,7 +18,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// LLM provider. v0.1 supports <see cref="LlmProvider.OpenAiCompatible"/>
     /// </summary>
-    [PropertyGroup("Connection", 0)]
+    [PropertyGroup("Connection")]
     public LlmProvider Provider { get; set; } = LlmProvider.OpenAiCompatible;
 
     /// <summary>
@@ -64,7 +64,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     ///   <item><description>Cerebras: gpt-oss-120b, llama-3.3-70b</description></item>
     /// </list>
     /// </summary>
-    [PropertyGroup("AI Configuration", 0)]
+    [PropertyGroup("AI Configuration")]
     public string Model { get; set; } = "nemotron-3-nano:4b";
 
     /// <summary>
@@ -86,33 +86,62 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     public int MaxTokens { get; set; } = 4096;
 
     /// <summary>
-    /// Sampling temperature (0.0 to 1.0). Lower = more deterministic.
+    /// Sampling temperature, typically 0.0–1.0. Lower = more deterministic;
+    /// higher = more random. Default 0.3 works well for extraction and
+    /// summarization tasks; bump to 0.7 for varied creative output. Set to
+    /// null (omit from YAML) to let the provider apply its own default.
+    /// <para>
+    /// <b>Mutually exclusive with <see cref="TopP"/>.</b> Industry convention
+    /// (OpenAI, Anthropic, Cerebras, Ollama) is to use only one of these
+    /// sampling controls — combining them produces unpredictable interactions
+    /// and Anthropic rejects such requests outright. For most pipelines, set
+    /// only Temperature and leave TopP null. The node throws a configuration
+    /// error if both are non-null.
+    /// </para>
     /// </summary>
-    [PropertyGroup("AI Configuration", 4)]
-    public double Temperature { get; set; } = 0.3;
+    [PropertyGroup("AI Configuration / Sampling", 4)]
+    public double? Temperature { get; set; } = 0.3;
 
     /// <summary>
-    /// Nucleus-sampling threshold. Optional; null = provider default.
+    /// Nucleus-sampling threshold, 0.0–1.0. Optional; null = provider default.
+    /// Lower values restrict sampling to higher-probability tokens.
+    /// <para>
+    /// <b>Mutually exclusive with <see cref="Temperature"/>.</b> If you set
+    /// TopP, also set Temperature to null. Most pipelines should prefer
+    /// Temperature; TopP is for users who specifically want nucleus-sampling
+    /// semantics. The node throws a configuration error if both are non-null.
+    /// </para>
     /// </summary>
-    [PropertyGroup("AI Configuration", 5)]
+    [PropertyGroup("AI Configuration / Sampling", 5)]
     public float? TopP { get; set; }
 
     /// <summary>
-    /// Top-K sampling cutoff. Optional; null = provider default. Note that
-    /// OpenAI cloud silently ignores this; honoured by Anthropic, Ollama, and
-    /// most other backends.
+    /// Top-K sampling cutoff. Optional; null = provider default.
+    /// <para>
+    /// Orthogonal to <see cref="Temperature"/> / <see cref="TopP"/> — may be
+    /// set independently alongside either one. OpenAI cloud silently ignores
+    /// TopK; honoured by Anthropic, Ollama, and most OpenAI-compatible
+    /// self-hosted backends.
+    /// </para>
     /// </summary>
-    [PropertyGroup("AI Configuration", 6)]
+    [PropertyGroup("AI Configuration / Sampling", 6)]
     public int? TopK { get; set; }
 
     /// <summary>
-    /// Maximum call duration before cancellation fires. Default 90 seconds.
-    /// Note: the OpenAI SDK's internal HttpClient ceiling is 100 seconds; if
-    /// you need longer timeouts, the node must construct a custom transport
-    /// (see docs/spike2_llmquery_fork.md Phase D).
+    /// Maximum call duration in seconds before cancellation fires.
+    /// Default 90 seconds; typical range 30–300. Examples:
+    /// <c>30</c> for fast extraction, <c>120</c> for longer summaries,
+    /// <c>300</c> for large prompts or slow self-hosted models.
+    /// <para>
+    /// Note: the OpenAI SDK's internal HttpClient ceiling is 100 seconds;
+    /// if you need longer timeouts than that on the OpenAI-compatible path,
+    /// the node must construct a custom transport (see
+    /// <c>docs/spike2_llmquery_fork.md</c> Phase D). The Anthropic path
+    /// does not have this ceiling.
+    /// </para>
     /// </summary>
     [PropertyGroup("AI Configuration", 7)]
-    public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(90);
+    public int TimeoutSeconds { get; set; } = 90;
 
     // ---- Paths group ----
 
@@ -136,7 +165,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// Expected response format ("json" or "text").
     /// </summary>
-    [PropertyGroup("Output", 0)]
+    [PropertyGroup("Output")]
     public string ResponseFormat { get; set; } = "json";
 
     /// <summary>
@@ -170,7 +199,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// Whether to continue processing if the AI query fails.
     /// </summary>
-    [PropertyGroup("Options", 0)]
+    [PropertyGroup("Options")]
     public bool ContinueOnError { get; set; } = false;
 
     // MCP fields (McpServerUrl, MaxToolRounds, McpToolNames) intentionally

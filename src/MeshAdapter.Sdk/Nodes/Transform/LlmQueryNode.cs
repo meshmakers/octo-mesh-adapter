@@ -7,6 +7,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.AI;
+using ModelContextProtocol.Client;
 using Newtonsoft.Json.Linq;
 using OpenAI;
 // IMPORTANT: do NOT add `using OpenAI.Chat;` — it conflicts with Microsoft.Extensions.AI
@@ -107,6 +108,17 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // Construct IChatClient based on provider
             var client = ConstructClient(config, apiKey);
 
+            // Load MCP servers + tools. Empty list when McpConfigurationNames is
+            // empty, in which case the LLM runs in plain chat mode with no tool
+            // plumbing. One broken MCP server logs a warning and is skipped —
+            // remaining servers still contribute their tools. Loading happens
+            // before message construction so a connection failure surfaces in
+            // logs before we send a useless prompt.
+            var mcpServers = ResolveMcpServers(config, etlContext, nodeContext);
+            var mcpTools = mcpServers.Count > 0
+                ? await LoadMcpToolsAsync(mcpServers, nodeContext, ct)
+                : (IList<AIFunction>)Array.Empty<AIFunction>();
+
             // Build messages list: System, optional history, then current user prompt.
             var messages = new List<ChatMessage>
             {
@@ -124,7 +136,13 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
                 }
             }
 
-            // Build ChatOptions from config
+            // Build ChatOptions from config. Tools is null when no MCP is
+            // configured (LLM runs in plain chat mode); otherwise it carries
+            // the aggregated AIFunction list from every connected MCP server.
+            // MEAI's UseFunctionInvocation() middleware (added in both client
+            // factories) routes tool_use blocks back to the matching
+            // McpClientTool — provider-agnostic, works for Anthropic-native
+            // tool_use and OpenAI function_call equally.
             var options = new ChatOptions
             {
                 ModelId = config.Model,
@@ -135,7 +153,8 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
                 ResponseFormat = config.ResponseFormat.Equals(
                     "json", StringComparison.OrdinalIgnoreCase)
                     ? ChatResponseFormat.Json
-                    : ChatResponseFormat.Text
+                    : ChatResponseFormat.Text,
+                Tools = mcpTools.Count > 0 ? [..mcpTools] : null
             };
 
             nodeContext.Debug($"Calling LLM with {context.Length} characters of context");
@@ -246,6 +265,12 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         // same Grafana panels work across OpenAI, Anthropic, Ollama, etc.
         // Sensitive data (prompts/responses) is OFF by default; flip via
         // configure callback if a future audit needs it.
+        // .UseFunctionInvocation() enables MEAI's tool-call loop: when the LLM
+        // returns tool_use blocks, the middleware invokes the matching AIFunction
+        // from ChatOptions.Tools and feeds results back automatically. Required
+        // for MCP integration — McpClientTool extends AIFunction, so MCP tools
+        // become callable through this same path. The middleware is harmless
+        // when ChatOptions.Tools is empty (no MCP configured).
         return new OpenAI.Chat.ChatClient(
                 model: config.Model,
                 credential: credential,
@@ -253,6 +278,7 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             .AsIChatClient()
             .AsBuilder()
             .UseOpenTelemetry(sourceName: ActivitySourceName)
+            .UseFunctionInvocation()
             .Build();
     }
 
@@ -291,10 +317,16 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         // "openai"). server.address = "api.anthropic.com". Bonus tags
         // include gen_ai.usage.cache_read.input_tokens (prompt caching)
         // and gen_ai.response.time_to_first_chunk on streaming responses.
+        // .UseFunctionInvocation() — same middleware as the OpenAI-compat path.
+        // Anthropic's native tool-use blocks get mapped to MEAI tool calls by
+        // the SDK's IChatClient adapter; the MEAI middleware then invokes the
+        // matching AIFunction from ChatOptions.Tools. MCP tools flow through
+        // this path identically to the OpenAI-compat branch.
         return client
             .AsIChatClient(config.Model)
             .AsBuilder()
             .UseOpenTelemetry(sourceName: ActivitySourceName)
+            .UseFunctionInvocation()
             .Build();
     }
 
@@ -539,5 +571,228 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         }
 
         return null;
+    }
+
+    // =========================================================================
+    // MCP — Model Context Protocol tool loading
+    // =========================================================================
+    // LlmQuery@1 wires zero or more MCP servers into the LLM call as tool
+    // providers. At pipeline-execution time we:
+    //   1. Resolve each named System.Communication/McpConfiguration entity
+    //      from GlobalConfiguration (mirrors ResolveApiKey's idiom)
+    //   2. Open an McpClient per server (stdio subprocess, SSE, or HTTP)
+    //   3. Aggregate ListToolsAsync() results into one IList<AIFunction>
+    //   4. Pass to the LLM via ChatOptions.Tools — MEAI's UseFunctionInvocation
+    //      middleware (added in both client factories) routes tool_use blocks
+    //      back to the matching McpClientTool, provider-agnostic
+    //
+    // A broken MCP server logs a warning and is skipped — remaining servers
+    // still contribute their tools. Empty McpConfigurationNames = no MCP,
+    // LLM runs in plain chat mode.
+    //
+    // Wire-format note: McpConfiguration.transport in GlobalConfiguration JSON
+    // may serialize as either the integer key (0/1/2) or the enum name string
+    // ("Stdio"/"Sse"/"Http"), depending on the runtime engine's JSON converter
+    // configuration. We accept both forms.
+
+    private enum McpTransport { Stdio = 0, Sse = 1, Http = 2 }
+
+    private sealed record McpServerConfig(
+        string Name,
+        string? Url,
+        McpTransport Transport,
+        string? Command,
+        string? Arguments,
+        string? BearerToken);
+
+    // ---------------------------------------------------------------------------
+    // McpConfiguration v0.1 — known follow-up enhancements (post-thesis backlog)
+    // ---------------------------------------------------------------------------
+    // The current CK type ships 5 attributes (Url, Transport, Command, Arguments,
+    // BearerToken). The MCP SDK transport options expose several more knobs that
+    // we'll want to surface as McpConfiguration attributes once real-world MCP
+    // servers force the issue:
+    //
+    //   1. EnvironmentVariables (Stdio) — needed when the spawned MCP subprocess
+    //      reads API keys from env (e.g. the GitHub MCP wants GITHUB_TOKEN). The
+    //      shortest path is to mirror LlmQueryNode's ApiKeyConfigurationName
+    //      indirection: a new attribute on McpConfiguration that references another
+    //      configuration entity holding the secret blob, resolved at run-time via
+    //      IConfigurationCache. Same pattern keeps secrets out of the pipeline YAML.
+    //      Alternative (richer): a RecordArray attribute holding key/value/isSecret
+    //      tuples directly on McpConfiguration — mirrors the established Workload
+    //      ValueOverride pattern (octo-communication-controller-services CLAUDE.md
+    //      → "Workload Chart Management").
+    //
+    //   2. WorkingDirectory (Stdio) — for MCP servers with relative file paths
+    //      (filesystem MCP rooted at a project directory). Plain string attribute.
+    //
+    //   3. AdditionalHeaders (HTTP) — free-form header map for MCP servers behind
+    //      non-bearer auth (custom API-key headers, mTLS-proxy identity headers).
+    //      Currently we only populate the Authorization header from BearerToken;
+    //      this would be additive.
+    //
+    //   4. OAuth (HTTP) — full ClientOAuthOptions for MCP servers using OAuth2
+    //      authorization-code flow instead of a static bearer token. The SDK has
+    //      first-class support; we'd surface it via a separate
+    //      OAuthConfigurationName reference (mirrors ApiKeyConfigurationName).
+    //
+    // Per-tool-call timeout intentionally omitted in v0.1 — covered by node-level TimeoutSeconds + MaxToolRounds.
+    // ---------------------------------------------------------------------------
+
+    private static IList<McpServerConfig> ResolveMcpServers(
+        LlmQueryNodeConfiguration config,
+        IMeshEtlContext etlContext,
+        INodeContext nodeContext)
+    {
+        var result = new List<McpServerConfig>();
+        foreach (var name in config.McpConfigurationNames)
+        {
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            if (!etlContext.GlobalConfiguration.IsDefined(name))
+            {
+                nodeContext.Warning(
+                    $"McpConfiguration '{name}' not found in GlobalConfiguration; skipping. " +
+                    "Create one via Studio (General → Configurations → MCP Server) or via " +
+                    "runtime.systemCommunicationMcpConfigurations.create.");
+                continue;
+            }
+
+            var rawJson = etlContext.GlobalConfiguration.GetRawJson(name);
+            if (string.IsNullOrEmpty(rawJson)) continue;
+            var doc = JObject.Parse(rawJson);
+
+            var transportToken = doc["transport"];
+            var transport = transportToken?.Type switch
+            {
+                JTokenType.Integer => (McpTransport)transportToken.Value<int>(),
+                JTokenType.String => Enum.TryParse<McpTransport>(
+                    transportToken.Value<string>()!, ignoreCase: true, out var t) ? t : McpTransport.Sse,
+                _ => McpTransport.Sse
+            };
+
+            result.Add(new McpServerConfig(
+                Name: name,
+                Url: doc.Value<string>("url"),
+                Transport: transport,
+                Command: doc.Value<string>("command"),
+                Arguments: doc.Value<string>("arguments"),
+                BearerToken: doc.Value<string>("bearerToken")));
+
+            nodeContext.Debug($"McpConfiguration '{name}' loaded: transport={transport}");
+        }
+        return result;
+    }
+
+    private static async Task<IList<AIFunction>> LoadMcpToolsAsync(
+        IList<McpServerConfig> servers,
+        INodeContext nodeContext,
+        CancellationToken ct)
+    {
+        var allTools = new List<AIFunction>();
+        foreach (var server in servers)
+        {
+            try
+            {
+                IClientTransport transport = server.Transport switch
+                {
+                    McpTransport.Stdio => BuildStdioTransport(server),
+                    McpTransport.Sse or McpTransport.Http => BuildHttpTransport(server),
+                    _ => throw new InvalidOperationException(
+                        $"Unsupported MCP transport: {server.Transport}")
+                };
+
+                var client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+                var tools = await client.ListToolsAsync(cancellationToken: ct);
+
+                nodeContext.Debug(
+                    $"MCP server '{server.Name}' contributed {tools.Count} tool(s): " +
+                    string.Join(", ", tools.Select(t => t.Name)));
+
+                allTools.AddRange(tools.Cast<AIFunction>());
+            }
+            catch (Exception ex)
+            {
+                nodeContext.Warning(
+                    $"Failed to connect to MCP server '{server.Name}': {ex.Message}. " +
+                    "Continuing without its tools.");
+            }
+        }
+        return allTools;
+    }
+
+    private static StdioClientTransport BuildStdioTransport(McpServerConfig server)
+    {
+        if (string.IsNullOrEmpty(server.Command))
+        {
+            throw new InvalidOperationException(
+                $"McpConfiguration '{server.Name}' uses Stdio transport but Command is empty. " +
+                "Set Command to the executable (e.g. 'dotnet', 'npx') and Arguments to its " +
+                "command-line arguments (one per line, or JSON array).");
+        }
+
+        return new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = server.Name,
+            Command = server.Command,
+            Arguments = ParseStdioArguments(server.Arguments),
+            // SDK default ShutdownTimeout (5s) is fine — tool-call duration is bounded by
+            // the outer chat-call cancellation token from the LlmQuery pipeline node.
+        });
+    }
+
+    private static HttpClientTransport BuildHttpTransport(McpServerConfig server)
+    {
+        if (string.IsNullOrEmpty(server.Url))
+        {
+            throw new InvalidOperationException(
+                $"McpConfiguration '{server.Name}' uses {server.Transport} transport but Url is empty. " +
+                "Set Url to the MCP server endpoint (e.g. https://mcp.example.com).");
+        }
+
+        // HttpClientTransport unifies SSE and Streamable HTTP — TransportMode picks
+        // between them. McpTransport.Http → Streamable HTTP (the newer spec, faster);
+        // McpTransport.Sse → legacy Server-Sent Events. Default AutoDetect tries
+        // Streamable HTTP first and falls back to SSE if the server doesn't support it.
+        var options = new HttpClientTransportOptions
+        {
+            Name = server.Name,
+            Endpoint = new Uri(server.Url),
+            TransportMode = server.Transport switch
+            {
+                McpTransport.Http => HttpTransportMode.StreamableHttp,
+                McpTransport.Sse => HttpTransportMode.Sse,
+                _ => HttpTransportMode.AutoDetect,
+            },
+            // SDK default ConnectionTimeout (30s) is fine — tool-call duration is bounded
+            // by the outer chat-call cancellation token from the LlmQuery pipeline node.
+        };
+        if (!string.IsNullOrEmpty(server.BearerToken))
+        {
+            options.AdditionalHeaders = new Dictionary<string, string>
+            {
+                ["Authorization"] = $"Bearer {server.BearerToken}"
+            };
+        }
+        return new HttpClientTransport(options);
+    }
+
+    private static IList<string> ParseStdioArguments(string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments)) return new List<string>();
+        var trimmed = arguments.Trim();
+        if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
+        {
+            // JSON-array form: ["--project", "./my-mcp"]
+            return JArray.Parse(trimmed)
+                .Select(t => t.ToString())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList();
+        }
+        // One argument per line
+        return arguments
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
     }
 }

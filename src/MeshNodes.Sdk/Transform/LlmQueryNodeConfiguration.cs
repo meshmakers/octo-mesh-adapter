@@ -202,7 +202,35 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     [PropertyGroup("Options")]
     public bool ContinueOnError { get; set; } = false;
 
-    // MCP fields (McpServerUrl, MaxToolRounds, McpToolNames) intentionally
-    // omitted from v0.1. Reintroduce when Anthropic provider lands in Spike 4.
-    // See docs/production_fork_plan.md Phase 0.5 for context.
+    // ---- MCP group ----
+
+    /// <summary>
+    /// Well-known names of <c>System.Communication/McpConfiguration</c> entities
+    /// whose MCP servers should be wired into the LLM call as tool providers.
+    /// Each named configuration is loaded from <c>GlobalConfiguration</c> at
+    /// pipeline-execution time, an <c>McpClient</c> is opened against it, and
+    /// the union of <c>ListToolsAsync()</c> results is passed to the LLM via
+    /// <c>ChatOptions.Tools</c>. Tool-call execution is handled by MEAI's
+    /// <c>UseFunctionInvocation()</c> middleware — provider-agnostic, works for
+    /// both the OpenAI-compatible and Anthropic-native branches.
+    /// <para>
+    /// Leave empty (default) for pipelines that don't need MCP tools — the LLM
+    /// then runs in plain chat mode with no tool-use loop. Multiple names let a
+    /// single pipeline compose tools from several MCP servers (filesystem,
+    /// knowledge-graph, GitHub, etc.).
+    /// </para>
+    /// </summary>
+    [PropertyGroup("MCP", 0)]
+    public IList<string> McpConfigurationNames { get; set; } = new List<string>();
+
+    /// <summary>
+    /// Per-pipeline budget for how many tool-call rounds the LLM may make
+    /// before the node forces a stop. Default 8 matches the legacy
+    /// <c>AnthropicAiQuery@1</c> behavior and is enough for most agentic
+    /// extraction flows. Raise for long multi-step workflows; lower for
+    /// strict cost-control. Has no effect when
+    /// <see cref="McpConfigurationNames"/> is empty.
+    /// </summary>
+    [PropertyGroup("MCP", 1)]
+    public int MaxToolRounds { get; set; } = 8;
 }

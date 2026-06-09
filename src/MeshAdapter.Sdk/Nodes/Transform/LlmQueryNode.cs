@@ -80,8 +80,16 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             nodeContext.Debug(
                 $"Starting LlmQuery (provider: {config.Provider}, model: {config.Model})");
 
-            // Read source content
-            var mainContent = dataContext.Current?.SelectToken(config.Path)?.ToString();
+            // Read source content. GetKind first to distinguish "path not present"
+            // from "present but empty string" — both end the node, but the warning
+            // text differs to help debugging. (Same pattern used by AnthropicAiQueryNode
+            // after the STJ migration: nodes do not touch JToken / JsonNode directly,
+            // they go through the typed path API on IDataContext.)
+            string? mainContent = null;
+            if (dataContext.GetKind(config.Path) is not DataKind.Undefined)
+            {
+                mainContent = dataContext.Get<string>(config.Path);
+            }
             if (string.IsNullOrEmpty(mainContent))
             {
                 nodeContext.Warning($"No content found at path: {config.Path}");
@@ -149,26 +157,26 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // including the prose-wrapped-JSON extraction fallback in ExtractJsonFromText).
             var processedResponse = ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
 
-            // Store the processed response
-            dataContext.SetValueByPath(
+            // Store the processed response via the typed STJ-based Set API.
+            // The serializer argument from the old API is gone — IDataContext is
+            // STJ-native and uses SystemTextJsonOptions.Default internally.
+            dataContext.Set(
                 config.TargetPath,
                 processedResponse,
                 config.DocumentMode,
                 config.TargetValueKind,
-                config.TargetValueWriteMode,
-                RtNewtonsoftSerializer.DefaultSerializer
+                config.TargetValueWriteMode
             );
 
             // Optionally also store the raw response
             if (config.IncludeRawResponse)
             {
-                dataContext.SetValueByPath(
+                dataContext.Set(
                     config.RawResponseOutputPath ?? "$.RawAiResponse",
                     aiResponse,
                     config.DocumentMode,
                     config.TargetValueKind,
-                    config.TargetValueWriteMode,
-                    RtNewtonsoftSerializer.DefaultSerializer
+                    config.TargetValueWriteMode
                 );
             }
 
@@ -339,22 +347,26 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         {
             try
             {
-                var data = dataContext.GetSimpleValueByPath<object>(dataPath);
-                if (data == null) continue;
+                // Mirror AnthropicAiQueryNode's STJ-era pattern: probe with GetKind,
+                // then read scalars via Get<string> and structured values via Get<object?>
+                // (which materializes to a JsonElement we can re-serialize indented).
+                var kind = dataContext.GetKind(dataPath);
+                if (kind is DataKind.Undefined) continue;
+
                 ctx.AppendLine($"Data from {dataPath}:");
-                if (data is string s)
+                if (kind == DataKind.String)
                 {
-                    ctx.AppendLine(s);
+                    ctx.AppendLine(dataContext.Get<string>(dataPath));
                 }
                 else
                 {
-                    var jsonData = JsonSerializer.Serialize(data,
+                    var value = dataContext.Get<object?>(dataPath);
+                    ctx.AppendLine(JsonSerializer.Serialize(value,
                         new JsonSerializerOptions
                         {
                             WriteIndented = true,
                             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                        });
-                    ctx.AppendLine(jsonData);
+                        }));
                 }
 
                 ctx.AppendLine();
@@ -378,16 +390,25 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         string historyPath, IDataContext dataContext, INodeContext nodeContext)
     {
         var result = new List<ChatMessage>();
-        var token = dataContext.Current?.SelectToken(historyPath);
-        if (token is not JArray array)
+
+        // STJ-era equivalent of "is this path a JSON array?" — GetKind reports the
+        // structural kind without materializing the value. If not an array, bail.
+        if (dataContext.GetKind(historyPath) != DataKind.Array)
         {
             return result;
         }
 
-        foreach (var entry in array)
+        // SelectMatches returns one detached sub-context per JSONPath match.
+        // We use [*] to enumerate the array elements; each sub-context's $ is
+        // the element itself, so we read role and content via Get<string> from $.
+        foreach (var entry in dataContext.SelectMatches($"{historyPath}[*]"))
         {
-            var role = entry["role"]?.ToString();
-            var content = entry["content"]?.ToString();
+            var role = entry.GetKind("$.role") is DataKind.String
+                ? entry.Get<string>("$.role")
+                : null;
+            var content = entry.GetKind("$.content") is DataKind.String
+                ? entry.Get<string>("$.content")
+                : null;
             if (string.IsNullOrEmpty(role) || string.IsNullOrEmpty(content))
             {
                 continue;

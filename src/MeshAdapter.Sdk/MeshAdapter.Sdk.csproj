@@ -44,6 +44,7 @@
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
         <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
         <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
+        <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />

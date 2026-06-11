@@ -41,6 +41,10 @@
         <PackageReference Include="IronOcr.MacOs" Version="2026.5.2" />
         <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.5.2" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoVersion)" />
+        <!-- Phase 3 cut: adapter base classes + pipeline framework moved out of
+             Sdk.Common to dedicated packages in octo-communication-sdk. -->
+        <PackageReference Include="Meshmakers.Octo.Sdk.Adapters" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoVersion)" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />

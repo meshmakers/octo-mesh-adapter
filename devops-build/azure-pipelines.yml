@@ -8,6 +8,18 @@ resources:
         branches:
           include:
             - main
+    # Phase 3 of the YAML migration carved the adapter framework out of
+    # octo-sdk into octo-communication-sdk. mesh-adapter now restores
+    # Meshmakers.Octo.Sdk.{Pipeline,Adapters,CommunicationAdapter,Common.Web,
+    # SimulationNodes} from this repo, so its CI must re-fire when those
+    # NuGets are republished. octo-sdk + DEH + CK-Engine are reached
+    # transitively (octo-communication-sdk watches octo-sdk).
+    - pipeline: octo-communication-sdk
+      source: octo-communication-sdk-CI
+      trigger:
+        branches:
+          include:
+            - main
   repositories:
     - repository: helmChartBuild
       type: github

@@ -14,8 +14,7 @@
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
         <DocumentationFile>../../bin/$(Configuration)\$(AssemblyName).xml</DocumentationFile>
-        <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
-        <TargetFramework />
+        <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
     
     <ItemGroup>
@@ -33,6 +32,9 @@
     
     <ItemGroup>
         <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoVersion)" />
+        <!-- Phase 3 cut: pipeline node types (PropertyGroupAttribute, NodeName,
+             etc.) moved from Sdk.Common to Sdk.Pipeline in octo-communication-sdk. -->
+        <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoVersion)" />
     </ItemGroup>
 
 </Project>

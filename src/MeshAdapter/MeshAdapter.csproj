@@ -15,7 +15,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Meshmakers.Octo.Sdk.Common.Web" Version="$(OctoCoreLibVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.Common.Web" Version="$(OctoCommVersion)" />
     </ItemGroup>
 
     <ItemGroup>

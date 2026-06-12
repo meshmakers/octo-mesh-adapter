@@ -31,10 +31,10 @@
     </ItemGroup>
     
     <ItemGroup>
-        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoCoreLibVersion)" />
         <!-- Phase 3 cut: pipeline node types (PropertyGroupAttribute, NodeName,
              etc.) moved from Sdk.Common to Sdk.Pipeline in octo-communication-sdk. -->
-        <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoCoreLibVersion)" />
     </ItemGroup>
 
 </Project>

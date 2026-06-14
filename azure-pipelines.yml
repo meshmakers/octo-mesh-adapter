@@ -152,7 +152,7 @@ stages:
           - task: PowerShell@2
             displayName: 'Create API documentation'
             inputs:
-              filePath: '$(System.DefaultWorkingDirectory)/devops-build/createDocumentation.ps1'
+              filePath: '$(System.DefaultWorkingDirectory)/scripts/createDocumentation.ps1'
               arguments: '-configuration $(buildConfiguration)'
 
           # Multi-arch docker build: arm64 for Apple-Silicon dev clusters

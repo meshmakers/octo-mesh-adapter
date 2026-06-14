@@ -1,0 +1,205 @@
+# Root-level CI pipeline for octo-mesh-adapter, using shared templates from
+# octo-pipeline-templates@tpl-v0.4.2.
+#
+# Item 3 prep (2026-06-14): mesh-adapter migration to root YAML is the
+# prerequisite for adding `mesh-adapter` to hotfix-service.yml dropdown.
+# Without the migration the legacy devops-build/ flow doesn't honour the
+# tpl-v0.3.1 OctoCoreLibVersion + OctoCommVersion split — the same trap
+# CK-Mongo hit at r3.4.9 (slim main-branch NuGets restored on r-tag).
+# Directory.Build.props + every .csproj already use $(OctoCoreLibVersion)
+# / $(OctoCommVersion); the missing piece is the CI export.
+#
+# Coexists with devops-build/azure-pipelines.yml during the pilot. Once
+# parity is verified, def 112 yamlFilename flips here and devops-build/
+# can be deleted in a follow-up commit.
+#
+# mesh-adapter-specific quirks preserved from the legacy YAML:
+#   - Multi-arch docker build (linux/arm64,linux/amd64) so the adapter
+#     runs on arm64 nodes (Apple-Silicon dev clusters, edge devices).
+#   - SSHKey + submodules:recursive — pulls private submodules at checkout.
+#   - download-ca — internal CA for dotnet restore.
+#   - Build passes /p:OctoNugetPrivateServer + /p:OctoPublishCatalog —
+#     no /p:OctoPrivateGitHubApiKey for now (legacy didn't have it; if a
+#     CK model is added later, mirror the bot-services pattern).
+#   - SystemTests excluded.
+#   - HAS push-nuget — mesh-adapter publishes Meshmakers.Octo.MeshAdapter.*
+#     NuGets (MeshAdapter.Sdk + MeshNodes.Sdk).
+#   - Documentation generation via createDocumentation.ps1 stays inline.
+#   - helm chart packaging + publishing stays inline because it uses the
+#     helm-chart-build companion repo's templates (not shared across .NET
+#     services — only mesh-adapter, eda-adapter, communication-operator
+#     publish charts to meshmakers.github.io/charts under the adapter
+#     category).
+#   - resources.pipelines triggers preserved: octo-common-services and
+#     octo-communication-sdk republish reach mesh-adapter via NuGet, so
+#     the CI must re-fire when those builds finish on main.
+
+name: $(MajorVersion).$(MinorVersion).$(date:yyMM).$(DayOfMonth)$(rev:rrr)-$(Build.SourceBranchName)
+
+resources:
+  pipelines:
+    - pipeline: octo-common-services
+      source: octo-common-services-CI
+      trigger:
+        branches:
+          include:
+            - main
+    # Phase 3 of the YAML migration carved the adapter framework out of
+    # octo-sdk into octo-communication-sdk. mesh-adapter restores
+    # Meshmakers.Octo.Sdk.{Pipeline,Adapters,CommunicationAdapter,Common.Web,
+    # SimulationNodes} from this repo, so its CI must re-fire when those
+    # NuGets are republished. octo-sdk + DEH + CK-Engine are reached
+    # transitively (octo-communication-sdk watches octo-sdk).
+    - pipeline: octo-communication-sdk
+      source: octo-communication-sdk-CI
+      trigger:
+        branches:
+          include:
+            - main
+  repositories:
+    - repository: pipelineTemplates
+      type: github
+      name: meshmakers/octo-pipeline-templates
+      endpoint: meshmakers-access-token
+      ref: refs/tags/tpl-v0.4.2
+    - repository: helmChartBuild
+      type: github
+      name: meshmakers/helm-chart-build
+      endpoint: meshmakers-access-token
+      ref: refs/heads/main
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - dev/*
+      - test/*
+      - main
+  tags:
+    exclude:
+      - '*'
+
+variables:
+  - group: GitSSHGroup
+  - group: ApiKeys-mm-cloud
+  - group: OctoDefault
+  - name: solutionFile
+    value: 'Octo.MeshAdapter.sln'
+  - name: artifactsFrameworkVersion
+    value: 'net10.0'
+  - name: buildConfiguration
+    value: 'Release'
+  - name: buildPlatform
+    value: 'Any CPU'
+  - name: isRelease
+    value: ${{ startsWith(variables['Build.SourceBranch'], 'refs/tags/r') }}
+  - name: isMain
+    value: ${{ eq(variables['Build.SourceBranch'], 'refs/heads/main') }}
+  - name: isTest
+    value: ${{ startsWith(variables['Build.SourceBranch'], 'refs/heads/test') }}
+
+stages:
+  - stage: Build
+    jobs:
+      - job: linux
+        displayName: 'Build, test, push Docker image, package chart, NuGets'
+        pool:
+          name: meshmakers-ci-agents
+        steps:
+          - template: templates/steps/update-build-number.yml@pipelineTemplates
+          # Sets $(ChartVersion) — 3-segment SemVer derived from
+          # Build.BuildNumber. See helm-chart-build's docs/PUBLISHING.md.
+          # On main: 0.1.<yyMM><DDxxx> (e.g. 0.1.260518002);
+          # on r-tags: <Major>.<Minor>.<Patch>.
+          - template: ci-templates/derive-chart-version.yml@helmChartBuild
+          - checkout: self
+            clean: true
+            submodules: recursive
+          - task: InstallSSHKey@0
+            displayName: 'Install SSH key for submodules'
+            inputs:
+              knownHostsEntry: '$(SSHKnownHosts)'
+              sshPublicKey: '$(SSHPublicKey)'
+              sshPassphrase: '$(SSHPassphrase)'
+              sshKeySecureFile: '$(SSHPrivateKeyFile)'
+          - template: templates/steps/set-version.yml@pipelineTemplates
+          - template: templates/steps/download-ca.yml@pipelineTemplates
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet packages'
+            inputs:
+              command: 'restore'
+              projects: '$(solutionFile)'
+              restoreArguments: '--force /p:OctoNugetPrivateServer=$(nugetPrivateServer)'
+              noCache: true
+          - task: DotNetCoreCLI@2
+            displayName: 'Build'
+            inputs:
+              command: 'build'
+              projects: '$(solutionFile)'
+              arguments: '--configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer) /p:OctoPublishCatalog="$(effectivePublishCatalog)"'
+              publishWebProjects: false
+              zipAfterPublish: false
+              modifyOutputPath: false
+          - task: DotNetCoreCLI@2
+            displayName: 'Test'
+            inputs:
+              command: 'test'
+              arguments: '--configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer)'
+              projects: |
+                **/*Tests.csproj
+                !**/*SystemTests.csproj
+              testRunTitle: 'CI'
+          - task: PowerShell@2
+            displayName: 'Create API documentation'
+            inputs:
+              filePath: '$(System.DefaultWorkingDirectory)/devops-build/createDocumentation.ps1'
+              arguments: '-configuration $(buildConfiguration)'
+
+          # Multi-arch docker build: arm64 for Apple-Silicon dev clusters
+          # + edge devices, amd64 for everything else.
+          - template: templates/steps/build-and-push-docker.yml@pipelineTemplates
+            parameters:
+              publicRegistryServiceConnection: $(DockerRegistryPublicConnection)
+              privateRegistryName: $(DockerRegistryPrivateUri)
+              repository: meshmakers/octo-mesh-adapter
+              dockerfile: src/MeshAdapter/Dockerfile
+              platforms: 'linux/arm64,linux/amd64'
+              enableMainLatestTag: true
+
+          - task: HelmDeploy@0
+            displayName: 'helm package octo-mesh-adapter'
+            inputs:
+              command: package
+              chartPath: '$(System.DefaultWorkingDirectory)/src/charts/octo-mesh-adapter'
+              chartVersion: '$(ChartVersion)'
+              destination: '$(Build.artifactstagingdirectory)'
+              arguments: '--app-version $(Build.BuildNumber) --dependency-update'
+
+          # Dev (rolling) publish — every main build lands in helm-chart-build's
+          # gh-pages dev catalog.
+          - template: ci-templates/publish-helm-chart.yml@helmChartBuild
+            parameters:
+              channel: dev
+              chartName: octo-mesh-adapter
+              chartVersion: $(ChartVersion)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
+              githubTokenVariable: HelmChartBuildGhToken
+              condition: and(succeeded(), eq(variables.isMain, true))
+
+          # Release publish — only on r* tag, lands in
+          # meshmakers.github.io/charts/ under the adapter category.
+          - template: ci-templates/publish-helm-chart.yml@helmChartBuild
+            parameters:
+              channel: release
+              chartCategory: adapter
+              chartName: octo-mesh-adapter
+              chartVersion: $(ChartVersion)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
+              githubTokenVariable: HelmChartBuildGhToken
+              condition: and(succeeded(), eq(variables.isRelease, true))
+
+          - template: templates/steps/handle-artifacts.yml@pipelineTemplates
+            parameters:
+              apiDocumentationPaths:
+                - '$(Build.SourcesDirectory)/bin/$(buildConfiguration)/$(artifactsFrameworkVersion)/documentation'
+          - template: templates/steps/push-nuget-package.yml@pipelineTemplates

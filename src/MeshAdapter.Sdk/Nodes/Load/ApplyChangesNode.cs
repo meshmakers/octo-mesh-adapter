@@ -25,6 +25,18 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
 
         var list = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.ApplyChanges, new
+            {
+                path = c.Path,
+                count = list?.Count ?? 0,
+                wouldApply = list
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         if (list != null && list.Any())
         {
             // We use all inserts

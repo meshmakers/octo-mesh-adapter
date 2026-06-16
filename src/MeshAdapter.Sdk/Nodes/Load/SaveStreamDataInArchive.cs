@@ -32,6 +32,19 @@ internal class SaveStreamDataInArchiveNode(
 
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.SaveStreamDataInArchive, new
+            {
+                archiveRtId = c.ArchiveRtId,
+                path = c.Path,
+                count = data?.Count ?? 0,
+                wouldInsert = data
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         if (data != null && data.Count != 0)
         {
             var tenantId = etlContext.TenantId;

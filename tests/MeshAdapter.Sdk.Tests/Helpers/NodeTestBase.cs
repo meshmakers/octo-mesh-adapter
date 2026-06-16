@@ -3,6 +3,8 @@ using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -20,7 +22,9 @@ public abstract class NodeTestBase
     /// </summary>
     protected (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest<TConfig>(
         TConfig config,
-        JsonNode? testData = null)
+        JsonNode? testData = null,
+        IPipelineExecutionMode? executionMode = null,
+        IPipelineDebugger? pipelineDebugger = null)
         where TConfig : class, INodeConfiguration
     {
         var services = new ServiceCollection();
@@ -33,7 +37,9 @@ public abstract class NodeTestBase
         var rootNodeContext = NodeContext.CreateRootNodeContext(
             services.BuildServiceProvider(),
             logger,
-            dataContext);
+            dataContext,
+            pipelineDebugger,
+            executionMode);
 
         var nodeContext = rootNodeContext.RegisterChildNode(
             typeof(TConfig).Name.Replace("Configuration", ""),

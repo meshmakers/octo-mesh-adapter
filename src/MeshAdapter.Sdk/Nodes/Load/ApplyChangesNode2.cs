@@ -36,6 +36,21 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                 c.AssociationUpdatesPath) ?? [];
         }
 
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.ApplyChanges2, new
+            {
+                entityUpdatesPath = c.EntityUpdatesPath,
+                associationUpdatesPath = c.AssociationUpdatesPath,
+                entityUpdateCount = entityUpdates.Count,
+                associationUpdateCount = associationUpdates.Count,
+                wouldApplyEntityUpdates = entityUpdates,
+                wouldApplyAssociationUpdates = associationUpdates
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         if (entityUpdates.Any() || associationUpdates.Any())
         {
             // We use all inserts

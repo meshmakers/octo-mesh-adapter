@@ -37,6 +37,21 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.SaveTimeRangeStreamDataInArchive, new
+            {
+                archiveRtId = c.ArchiveRtId,
+                path = c.Path,
+                fromAttributePath = c.FromAttributePath,
+                toAttributePath = c.ToAttributePath,
+                count = data?.Count ?? 0,
+                wouldInsert = data
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         if (data == null || data.Count == 0)
         {
             nodeContext.Warning("No update infos found");

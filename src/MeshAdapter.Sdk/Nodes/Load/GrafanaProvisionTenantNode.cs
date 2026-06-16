@@ -43,6 +43,20 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
         }
 
         var grafanaUrl = config.GrafanaUrl.TrimEnd('/');
+
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.GrafanaProvisionTenant, new
+            {
+                tenantId,
+                grafanaUrl,
+                targetPath = c.TargetPath,
+                serverConfiguration = c.ServerConfiguration
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         var authHeader = BasicAuth(config.AdminUser, config.AdminPassword);
 
         nodeContext.Debug("Provisioning Grafana org for tenant '{0}' at {1}", tenantId, grafanaUrl);

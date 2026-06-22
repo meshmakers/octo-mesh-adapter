@@ -50,6 +50,8 @@ ARG BUILD_CONFIGURATION=Release
 ARG OCTO_PRIVATE_NUGET_SERVICE
 ARG OCTO_PRIVATE_NUGET_CERTIFICATE
 ARG OCTO_VERSION
+ARG OCTO_CORE_LIB_VERSION
+ARG OCTO_COMM_VERSION
 
 COPY ${OCTO_PRIVATE_NUGET_CERTIFICATE} /usr/local/share/ca-certificates/nugetca.crt
 RUN chmod 644 /usr/local/share/ca-certificates/nugetca.crt && update-ca-certificates
@@ -58,11 +60,11 @@ WORKDIR /src
 COPY . .
 ENV NUGET_XMLDOC_MODE=none
 WORKDIR "/src/src/MeshAdapter"
-RUN dotnet build "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -o /app/build
+RUN dotnet build "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION} -p:OctoCommVersion=${OCTO_COMM_VERSION} -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -o /app/publish
+RUN dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION} -p:OctoCommVersion=${OCTO_COMM_VERSION} -o /app/publish
 
 FROM base AS final
 WORKDIR /app

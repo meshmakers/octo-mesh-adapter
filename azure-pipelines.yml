@@ -61,7 +61,7 @@ resources:
       type: github
       name: meshmakers/octo-pipeline-templates
       endpoint: meshmakers-access-token
-      ref: refs/tags/tpl-v0.4.6
+      ref: refs/tags/tpl-v0.4.7
     - repository: helmChartBuild
       type: github
       name: meshmakers/helm-chart-build

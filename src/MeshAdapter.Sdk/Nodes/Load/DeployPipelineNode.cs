@@ -50,6 +50,18 @@ internal class DeployPipelineNode(
             return;
         }
 
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.DeployPipeline, new
+            {
+                targetPipelineRtId = targetPipelineRtId.Value.ToString(),
+                currentDataFlowRtId = etlContext.DataFlowRtId.ToString(),
+                serviceAccountConfigName = c.ServiceAccountConfigName
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         using var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
 

@@ -94,7 +94,25 @@ public class EMailSenderNode(
                 throw PipelineExecutionException.ValueNotSet(
                     nodeContext, c.Path);
             }
-            
+
+            if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+            {
+                nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.SendEMail, new
+                {
+                    host = eMailSenderConfiguration.Host,
+                    port = eMailSenderConfiguration.Port,
+                    sender = eMailSenderConfiguration.SenderEmail,
+                    recipientsCount = recipients.Count(),
+                    recipients = recipients.ToArray(),
+                    subject,
+                    bodyMarkdownLength = body.Length,
+                    hasAttachment = c.AttachmentRtId != null || c.AttachmentRtIdPath != null,
+                    attachmentRtId = c.AttachmentRtId,
+                    attachmentRtIdPath = c.AttachmentRtIdPath
+                });
+                await next(dataContext, nodeContext);
+                return;
+            }
 
             var bodyInHtml = Markdown.ToHtml(body, _pipeline);
 

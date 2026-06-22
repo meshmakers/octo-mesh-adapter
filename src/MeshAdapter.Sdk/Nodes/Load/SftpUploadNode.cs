@@ -60,16 +60,33 @@ public class SftpUploadNode(
 
             ValidateAuthConfiguration(serverConfiguration, nodeContext);
 
-            var sftpSemaphore = GetOrCreateSemaphore(c.ServerConfiguration, serverConfiguration);
-
             // Resolve file name
             var fileName = ResolveFileName(c, dataContext, nodeContext);
 
-            // Get upload stream
-            await using var uploadStream = await GetUploadStreamAsync(c, dataContext, nodeContext);
-
             // Build remote path
             var remotePath = c.RemoteDirectory.TrimEnd('/') + "/" + fileName;
+
+            if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+            {
+                nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.SftpUpload, new
+                {
+                    host = serverConfiguration.Host,
+                    port = serverConfiguration.Port,
+                    username = serverConfiguration.Username,
+                    remotePath,
+                    fileName,
+                    hasBinarySource = !string.IsNullOrWhiteSpace(c.FileRtId) ||
+                                      !string.IsNullOrWhiteSpace(c.FileRtIdPath),
+                    contentPath = c.Path
+                });
+                await next(dataContext, nodeContext);
+                return;
+            }
+
+            var sftpSemaphore = GetOrCreateSemaphore(c.ServerConfiguration, serverConfiguration);
+
+            // Get upload stream
+            await using var uploadStream = await GetUploadStreamAsync(c, dataContext, nodeContext);
 
             // Connect and upload
             using var client = CreateSftpClient(serverConfiguration);

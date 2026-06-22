@@ -42,6 +42,20 @@ public class GrafanaDeprovisionTenantNode(NodeDelegate next, HttpClient httpClie
         }
 
         var grafanaUrl = config.GrafanaUrl.TrimEnd('/');
+
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.GrafanaDeprovisionTenant, new
+            {
+                tenantId,
+                grafanaUrl,
+                targetPath = c.TargetPath,
+                serverConfiguration = c.ServerConfiguration
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         var authHeader = BasicAuth(config.AdminUser, config.AdminPassword);
 
         nodeContext.Debug("Deprovisioning Grafana org for tenant '{0}' at {1}", tenantId, grafanaUrl);

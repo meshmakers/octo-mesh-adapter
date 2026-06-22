@@ -105,6 +105,25 @@ public class ToDiscordNode(
 
         var url = $"{DiscordApiBase}/channels/{channelId}/messages";
 
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.ToDiscord, new
+            {
+                channelId,
+                endpoint = url,
+                hasContent = !string.IsNullOrWhiteSpace(content),
+                contentLength = content?.Length ?? 0,
+                embedTitle,
+                embedDescription,
+                embedColor,
+                hasAttachment = !string.IsNullOrWhiteSpace(fileSystemItemRtId),
+                attachmentFileSystemItemRtId = fileSystemItemRtId,
+                payloadJson
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bot", cfg.BotToken);
 

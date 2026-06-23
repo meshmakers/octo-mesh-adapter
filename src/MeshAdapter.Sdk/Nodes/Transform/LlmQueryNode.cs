@@ -143,6 +143,29 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // factories) routes tool_use blocks back to the matching
             // McpClientTool — provider-agnostic, works for Anthropic-native
             // tool_use and OpenAI function_call equally.
+            // ResponseFormat handling — only send response_format when JSON is
+            // explicitly requested AND no tools are attached. Two reasons:
+            //   1. Text is every provider's default, so sending response_format=text
+            //      is redundant — and Cerebras (and other strict OpenAI-compatible
+            //      backends) reject any request carrying both "tools" and
+            //      "response_format" ("\"tools\" is incompatible with
+            //      \"response_format\"", HTTP 400). Omitting it for the text case
+            //      keeps tool-calling working everywhere.
+            //   2. JSON-mode + tools is mutually exclusive on the same providers.
+            //      When both are configured we drop response_format and rely on the
+            //      system prompt to enforce JSON, logging a warning so the operator
+            //      knows structured-output enforcement was relaxed for this call.
+            var wantsJson = config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase);
+            var hasTools = mcpTools.Count > 0;
+
+            if (wantsJson && hasTools)
+            {
+                nodeContext.Warning(
+                    "responseFormat=json is incompatible with MCP tools on most providers; " +
+                    "sending the request without response_format and relying on the system " +
+                    "prompt to enforce JSON. Make sure the system prompt requests JSON output.");
+            }
+
             var options = new ChatOptions
             {
                 ModelId = config.Model,
@@ -150,11 +173,8 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
                 Temperature = (float?)config.Temperature,
                 TopP = config.TopP,
                 TopK = config.TopK,
-                ResponseFormat = config.ResponseFormat.Equals(
-                    "json", StringComparison.OrdinalIgnoreCase)
-                    ? ChatResponseFormat.Json
-                    : ChatResponseFormat.Text,
-                Tools = mcpTools.Count > 0 ? [..mcpTools] : null
+                ResponseFormat = wantsJson && !hasTools ? ChatResponseFormat.Json : null,
+                Tools = hasTools ? [..mcpTools] : null
             };
 
             nodeContext.Debug($"Calling LLM with {context.Length} characters of context");
@@ -162,6 +182,8 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // Call the LLM via the IChatClient abstraction
             var response = await client.GetResponseAsync(messages, options, ct);
             var aiResponse = response.Text;
+
+            LogToolCalls(response, mcpTools.Count, nodeContext);
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -201,11 +223,45 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
 
             nodeContext.Info("LlmQuery completed successfully");
         }
+        catch (OperationCanceledException oce) when (timeoutCts.IsCancellationRequested)
+        {
+            // Our own TimeoutSeconds budget elapsed (not an upstream interrupt).
+            // The raw exception ("A task was canceled.") hides this — surface a
+            // clear, actionable message. Common causes: the provider call plus
+            // the MCP tool-call loop exceeded TimeoutSeconds; a slow remote MCP
+            // server (DeepWiki ask_question can take tens of seconds) across
+            // several MaxToolRounds; or the provider repeatedly returning a
+            // retryable status (429/5xx) so the SDK backs off until the budget
+            // runs out.
+            nodeContext.Error(
+                $"LlmQuery timed out after {config.TimeoutSeconds}s (provider call + tool loop " +
+                $"exceeded the budget). Increase TimeoutSeconds, lower MaxToolRounds, or check " +
+                $"MCP server latency / provider rate limits.");
+            throw MeshAdapterPipelineExecutionException.ProcessingError(nodeContext, oce);
+        }
         catch (OperationCanceledException)
         {
-            // Don't swallow cancellation. ContinueOnError does not apply to deliberate
-            // cancellation — let the pipeline runtime see it and react.
+            // Genuine upstream cancellation (pipeline shutdown / caller abort).
+            // ContinueOnError does not apply to deliberate cancellation — let the
+            // pipeline runtime see it and react.
             throw;
+        }
+        catch (ClientResultException cre)
+        {
+            // Provider returned a non-success HTTP status (e.g. 400 from Cerebras
+            // rejecting an unsupported tool schema, 401 bad key, 429 rate limit).
+            // The default exception message is only "Service request failed.
+            // Status: 400 (Bad Request)" — the actionable detail lives in the raw
+            // response body. Surface it so model/MCP-schema incompatibilities are
+            // diagnosable from the pipeline log instead of opaque 400s.
+            var body = cre.GetRawResponse()?.Content?.ToString();
+            nodeContext.Error(
+                $"LLM provider request failed (HTTP {cre.Status}): {body ?? cre.Message}");
+
+            if (!config.ContinueOnError)
+            {
+                throw MeshAdapterPipelineExecutionException.ProcessingError(nodeContext, cre);
+            }
         }
         catch (Exception ex)
         {
@@ -682,6 +738,80 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             nodeContext.Debug($"McpConfiguration '{name}' loaded: transport={transport}");
         }
         return result;
+    }
+
+    /// <summary>
+    /// Logs the MCP tool invocations of a chat call for reproducibility and
+    /// troubleshooting. <c>UseFunctionInvocation()</c> runs the tool-call loop
+    /// internally and logs nothing to the pipeline log; the intermediate rounds
+    /// are preserved in <see cref="ChatResponse.Messages"/> as
+    /// <see cref="FunctionCallContent"/> / <see cref="FunctionResultContent"/>
+    /// entries, which is where this method picks them up. Call arguments are
+    /// logged at Info (small, high diagnostic value); tool results at Debug,
+    /// truncated, since they can be large.
+    /// </summary>
+    private static void LogToolCalls(ChatResponse response, int offeredToolCount, INodeContext nodeContext)
+    {
+        if (offeredToolCount == 0)
+        {
+            return; // No MCP tools were offered — nothing to report.
+        }
+
+        var calls = response.Messages
+            .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+            .ToList();
+
+        if (calls.Count == 0)
+        {
+            nodeContext.Info($"{offeredToolCount} MCP tool(s) offered, but the model made no tool calls");
+            return;
+        }
+
+        var resultsByCallId = response.Messages
+            .SelectMany(m => m.Contents.OfType<FunctionResultContent>())
+            .GroupBy(r => r.CallId)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        nodeContext.Info($"Model made {calls.Count} MCP tool call(s) ({offeredToolCount} tool(s) offered):");
+        foreach (var call in calls)
+        {
+            string args;
+            try
+            {
+                args = call.Arguments is { Count: > 0 }
+                    ? JsonSerializer.Serialize(call.Arguments, SystemTextJsonOptions.Default)
+                    : "{}";
+            }
+            catch (Exception)
+            {
+                args = "<unserializable>";
+            }
+
+            nodeContext.Info($"  -> {call.Name}({args})");
+
+            if (!resultsByCallId.TryGetValue(call.CallId, out var result))
+            {
+                continue;
+            }
+
+            string resultText;
+            try
+            {
+                resultText = JsonSerializer.Serialize(result.Result, SystemTextJsonOptions.Default);
+            }
+            catch (Exception)
+            {
+                resultText = result.Result?.ToString() ?? "<null>";
+            }
+
+            const int maxResultLogLength = 500;
+            if (resultText.Length > maxResultLogLength)
+            {
+                resultText = resultText[..maxResultLogLength] + $"… [{resultText.Length} chars total]";
+            }
+
+            nodeContext.Debug($"  <- {call.Name} result: {resultText}");
+        }
     }
 
     private static async Task<IList<AIFunction>> LoadMcpToolsAsync(

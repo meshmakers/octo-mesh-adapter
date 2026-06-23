@@ -18,6 +18,7 @@
         <RepositoryUrl>https://github.com/meshmakers/octo-mesh-adapter</RepositoryUrl>
         <PackageIcon>meshmakers64.png</PackageIcon>
         <PackageLicenseFile>LICENSE</PackageLicenseFile>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageProjectUrl>https://www.meshmakers.io</PackageProjectUrl>
         <PackageTags>Octo data mesh iot</PackageTags>
         <TargetFramework>net10.0</TargetFramework>
@@ -61,6 +62,9 @@
         <Optimize>false</Optimize>
         <DefineConstants>DEBUG;TRACE</DefineConstants>
     </PropertyGroup>        
+    <ItemGroup>
+        <None Include="$([System.IO.Path]::Combine('$(OctoRepoRootPath)','README.md'))" Pack="True" PackagePath="" Visible="false" />
+    </ItemGroup>
 </Project>
 
 

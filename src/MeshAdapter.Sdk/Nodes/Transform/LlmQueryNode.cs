@@ -659,7 +659,8 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         McpTransport Transport,
         string? Command,
         string? Arguments,
-        string? BearerToken);
+        string? BearerToken,
+        IReadOnlyDictionary<string, string> AdditionalHeaders);
 
     // ---------------------------------------------------------------------------
     // McpConfiguration v0.1 — known follow-up enhancements (post-thesis backlog)
@@ -727,15 +728,22 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
                 _ => McpTransport.Sse
             };
 
+            var additionalHeaders = ParseHeaders(doc["additionalHeaders"] as JArray);
+
             result.Add(new McpServerConfig(
                 Name: name,
                 Url: doc.Value<string>("url"),
                 Transport: transport,
                 Command: doc.Value<string>("command"),
                 Arguments: doc.Value<string>("arguments"),
-                BearerToken: doc.Value<string>("bearerToken")));
+                BearerToken: doc.Value<string>("bearerToken"),
+                AdditionalHeaders: additionalHeaders));
 
-            nodeContext.Debug($"McpConfiguration '{name}' loaded: transport={transport}");
+            // Header *names* are safe to log (values are secrets and are never logged).
+            var headerInfo = additionalHeaders.Count > 0
+                ? $", additionalHeaders=[{string.Join(", ", additionalHeaders.Keys)}]"
+                : string.Empty;
+            nodeContext.Debug($"McpConfiguration '{name}' loaded: transport={transport}{headerInfo}");
         }
         return result;
     }
@@ -897,12 +905,26 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // SDK default ConnectionTimeout (30s) is fine — tool-call duration is bounded
             // by the outer chat-call cancellation token from the LlmQuery pipeline node.
         };
+        // Compose request headers from two sources:
+        //   1. BearerToken  → Authorization: Bearer {token}   (the common case)
+        //   2. AdditionalHeaders → arbitrary header map        (custom API-key
+        //      headers like Exa's `x-api-key`, Devin's `X-Org-Id`, mTLS-proxy
+        //      identity headers, etc.)
+        // AdditionalHeaders is applied last so an explicit "Authorization" entry
+        // there can override the BearerToken-derived one if a server needs a
+        // non-Bearer scheme. Header values are secrets — never logged.
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrEmpty(server.BearerToken))
         {
-            options.AdditionalHeaders = new Dictionary<string, string>
-            {
-                ["Authorization"] = $"Bearer {server.BearerToken}"
-            };
+            headers["Authorization"] = $"Bearer {server.BearerToken}";
+        }
+        foreach (var (key, value) in server.AdditionalHeaders)
+        {
+            headers[key] = value;
+        }
+        if (headers.Count > 0)
+        {
+            options.AdditionalHeaders = headers;
         }
         return new HttpClientTransport(options);
     }
@@ -924,5 +946,34 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(s => !string.IsNullOrEmpty(s))
             .ToList();
+    }
+
+    /// <summary>
+    /// Parses the <c>additionalHeaders</c> RecordArray attribute (a JSON array of
+    /// <c>HttpHeader</c> records: <c>{ name, value, isSecret }</c>) into a header
+    /// map, mirroring the <c>ValueOverride</c> shape. Entries with a blank name are
+    /// skipped; later duplicates win. Header values are never logged.
+    /// <para>
+    /// At-rest encryption note: like <c>BearerToken</c>, header values are currently
+    /// stored and shipped as plaintext (the Communication Controller serializes the
+    /// config entity raw in <c>AdapterService</c>). The <c>isSecret</c> flag is
+    /// carried for the planned encryption-at-rest slice — at which point the
+    /// controller will decrypt secret values before shipping (the same
+    /// <c>enc:v1</c> pattern <c>PoolService</c> uses for Helm <c>ValueOverride</c>),
+    /// and this method will keep treating <c>value</c> as the resolved plaintext.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> ParseHeaders(JArray? headers)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (headers is null) return result;
+
+        foreach (var entry in headers.OfType<JObject>())
+        {
+            var name = entry.Value<string>("name");
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            result[name.Trim()] = entry.Value<string>("value") ?? string.Empty;
+        }
+        return result;
     }
 }

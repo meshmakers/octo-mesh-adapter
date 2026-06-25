@@ -5,6 +5,8 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -23,11 +25,14 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
     private const string DataPath = "$.updateInfos";
     private const string ArchiveRtIdString = "65d5c447b420da3fb12381bc";
     private static readonly OctoObjectId ArchiveRtId = new(ArchiveRtIdString);
+    private const string SourceRtIdString = "000000000000000000000001";
 
     private readonly IMeshEtlContext _etlContext;
     private readonly ISystemContext _systemContext;
     private readonly ITenantContext _tenantContext;
     private readonly IStreamDataRepository _streamDataRepository;
+    private readonly ITenantRepository _tenantRepository;
+    private readonly IOctoSession _session;
 
     public SaveTimeRangeStreamDataInArchiveNodeTests()
     {
@@ -37,15 +42,45 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         _systemContext = A.Fake<ISystemContext>();
         _tenantContext = A.Fake<ITenantContext>();
         _streamDataRepository = A.Fake<IStreamDataRepository>();
+        _tenantRepository = A.Fake<ITenantRepository>();
+        _session = A.Fake<IOctoSession>();
 
         A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
         A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
+        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
+        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+
+        // By default every source rtId is treated as existing in the rt-model so the existing
+        // behavioural tests are unaffected by the integrity guard. Individual tests override this.
+        SetupExistingRtIds(new OctoObjectId(SourceRtIdString));
+    }
+
+    /// <summary>
+    /// Stubs the type-agnostic existence check (<c>GetRtEntitiesByIdAsync&lt;RtEntity&gt;</c>) to
+    /// return exactly the supplied rtIds as existing entities.
+    /// </summary>
+    private void SetupExistingRtIds(params OctoObjectId[] existingRtIds)
+    {
+        var resultSet = A.Fake<IResultSet<RtEntity>>();
+        var entities = existingRtIds
+            .Select(id => new RtEntity(new RtCkId<CkTypeId>("Industry.Energy/Meter"), id))
+            .ToList();
+        A.CallTo(() => resultSet.Items).Returns(entities);
+        A.CallTo(() => resultSet.TotalCount).Returns(entities.Count);
+
+        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync<RtEntity>(
+                A<IOctoSession>._,
+                A<IReadOnlyList<OctoObjectId>>._,
+                A<RtEntityQueryOptions>._,
+                A<int?>._,
+                A<int?>._))
+            .Returns(Task.FromResult<IResultSet<RtEntity>>(resultSet));
     }
 
     private static RtEntity CreateEntityWithWindow(DateTime? from, DateTime? to, string fromKey = "From", string toKey = "To")
     {
         var ckTypeId = new RtCkId<CkTypeId>("Industry.Energy/Meter");
-        var rtId = new OctoObjectId("000000000000000000000001");
+        var rtId = new OctoObjectId(SourceRtIdString);
         var entity = new RtEntity(ckTypeId, rtId);
         if (from is not null) entity.SetAttributeRawValue(fromKey, from.Value);
         if (to is not null) entity.SetAttributeRawValue(toKey, to.Value);
@@ -188,5 +223,51 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
                 .ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task IntegrityGuard_AllSourceRtIdsExist_InsertsNormally()
+    {
+        var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
+        var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
+        var entity = CreateEntityWithWindow(from, to);
+        SetupDataContext(dataContext, new() { CreateInsert(entity) });
+
+        // The source rtId (SourceRtIdString) is registered as existing by the ctor default.
+        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                ArchiveRtId, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task IntegrityGuard_SourceRtIdMissing_Throws_AndDoesNotInsert()
+    {
+        var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
+        var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
+        var entity = CreateEntityWithWindow(from, to);
+        SetupDataContext(dataContext, new() { CreateInsert(entity) });
+
+        // The rt-model no longer contains the source rtId → guard must fail loudly.
+        SetupExistingRtIds(/* none exist */);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+                .ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(SourceRtIdString, ex.Message);
+        Assert.Contains(ArchiveRtIdString, ex.Message);
+
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                A<OctoObjectId>._, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .MustNotHaveHappened();
     }
 }

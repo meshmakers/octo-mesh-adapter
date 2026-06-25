@@ -3,6 +3,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -126,12 +127,57 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
         if (toInsert.Count != 0)
         {
+            // Integrity guard: every distinct source rtId must resolve to an entity that still
+            // exists in the rt-model. This catches the orphan-rows bug where datapoints were
+            // written for rtIds that never existed as EnergyMeasurement entities.
+            await EnsureSourceRtIdsExistAsync(toInsert, archiveRtId);
+
             nodeContext.Debug(
                 $"Inserting {toInsert.Count} time-range data point(s) into archive '{archiveRtId}'");
             await streamDataRepo.InsertTimeRangeAsync(archiveRtId, toInsert);
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Validates that every distinct source <c>RtId</c> in the batch resolves to an entity that
+    /// exists in the rt-model. Throws an <see cref="InvalidOperationException"/> naming the missing
+    /// rtId(s) and the archive if any does not exist, so the orphan-rows class of bug fails loudly
+    /// instead of writing datapoints that no entity owns.
+    /// </summary>
+    private async Task EnsureSourceRtIdsExistAsync(
+        IReadOnlyList<TimeRangeStreamDataPoint> toInsert, OctoObjectId archiveRtId)
+    {
+        var distinctRtIds = toInsert
+            .Select(p => p.RtId)
+            .Where(id => id != OctoObjectId.Empty)
+            .Distinct()
+            .ToList();
+
+        if (distinctRtIds.Count == 0)
+        {
+            return;
+        }
+
+        var session = await etlContext.TenantRepository.GetSessionAsync();
+        session.StartTransaction();
+        // Type-agnostic existence check across the tenant — the archive's target type isn't required
+        // here; we only need to know whether each rtId names an existing entity.
+        var existing = await etlContext.TenantRepository.GetRtEntitiesByIdAsync<RtEntity>(
+            session, distinctRtIds, RtEntityQueryOptions.Create(), 0, distinctRtIds.Count);
+        await session.CommitTransactionAsync();
+
+        var existingRtIds = existing.Items.Select(e => e.RtId).ToHashSet();
+        var missing = distinctRtIds.Where(id => !existingRtIds.Contains(id)).ToList();
+
+        if (missing.Count != 0)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeStreamDataInArchive: {missing.Count} source rtId(s) do not exist as " +
+                $"entities in the rt-model and would create orphan rows in archive '{archiveRtId}': " +
+                $"{string.Join(", ", missing)}. Refusing to insert.");
+        }
     }
 
     /// <summary>

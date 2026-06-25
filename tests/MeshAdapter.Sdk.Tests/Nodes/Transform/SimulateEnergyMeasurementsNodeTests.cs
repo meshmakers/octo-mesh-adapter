@@ -21,6 +21,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
 {
     private const string EmCkTypeId = "Basic.Energy/EnergyMeasurement";
+    private const string MeteringPointCkTypeId = "Basic.Energy/MeteringPoint";
     private const string ProducerCkTypeId = "Basic.Energy/Producer";
     private const string ConsumerCkTypeId = "Basic.Energy/Consumer";
     private const string RoleId = "System/ParentChild";
@@ -110,6 +111,7 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
         TimeRangeCkRecordId = "Basic/TimeRange",
         AmountCkRecordId = "Basic/Amount",
         ParentAssociationRoleId = RoleId,
+        MeteringPointCkTypeId = MeteringPointCkTypeId,
         ProducerCkTypeId = ProducerCkTypeId,
         EntityUpdatesOutputPath = OutputPath
     };

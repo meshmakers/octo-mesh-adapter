@@ -54,10 +54,18 @@ public record SimulateEnergyMeasurementsNodeConfiguration : NodeConfiguration
     public required string ParentAssociationRoleId { get; init; }
 
     /// <summary>
+    /// CkTypeId of the (base) MeteringPoint type the parent association points at (e.g.
+    /// <c>Basic.Energy/MeteringPoint</c>). Required as the target-type constraint of the
+    /// EM → MeteringPoint navigation; concrete Producer/Consumer subtypes are returned.
+    /// </summary>
+    [PropertyGroup("Schema", 5)]
+    public required string MeteringPointCkTypeId { get; init; }
+
+    /// <summary>
     /// CkTypeId of the producer MeteringPoint type (e.g. <c>Basic.Energy/Producer</c>). EMs whose
     /// parent MeteringPoint is of this type use the PV profile; all others use the load profile.
     /// </summary>
-    [PropertyGroup("Schema", 5)]
+    [PropertyGroup("Schema", 6)]
     public required string ProducerCkTypeId { get; init; }
 
     /// <summary>BDEW load-profile sub-key for consumer EMs (e.g. <c>H0</c> / <c>G0</c> / <c>L0</c>). Default <c>H0</c>.</summary>

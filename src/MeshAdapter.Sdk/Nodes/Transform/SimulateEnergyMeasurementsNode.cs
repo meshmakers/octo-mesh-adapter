@@ -34,6 +34,7 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
         }
 
         var emCkType = new RtCkId<CkTypeId>(c.EnergyMeasurementCkTypeId);
+        var meteringPointCkType = new RtCkId<CkTypeId>(c.MeteringPointCkTypeId);
         var producerCkType = new RtCkId<CkTypeId>(c.ProducerCkTypeId);
         var timeRangeRecordId = new RtCkId<CkRecordId>(c.TimeRangeCkRecordId);
         var amountRecordId = new RtCkId<CkRecordId>(c.AmountCkRecordId);
@@ -63,14 +64,13 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
         // 2. Resolve each EM's parent MeteringPoint type via the ParentChild association role.
         //    Outbound from the EM origin returns the parent MeteringPoint as the association target.
         var originRtIds = existingEms.Select(e => e.RtId).ToArray();
-        // Type-agnostic target query: navigate outbound from each EM origin via the ParentChild
-        // role to its parent MeteringPoint, whatever its concrete type.
-        // Same overload + direction shape as GetAssociationTargetsNode: multi-origin, target type
-        // left unconstrained (null) so any parent MeteringPoint type is returned as the target.
-        var targetCkTypeId = (RtCkId<CkTypeId>)null!;
+        // Navigate outbound from each EM origin via the ParentChild role to its parent
+        // MeteringPoint. The target-type constraint must be non-null (the repository looks the type
+        // up in the CK cache); the base MeteringPoint type is passed so the concrete Producer /
+        // Consumer subtypes are returned. Same 8-arg call shape as GetAssociationTargetsNode.
         var parentResult = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(
-            session, originRtIds, emCkType, roleId, targetCkTypeId, GraphDirections.Outbound, null,
-            RtEntityQueryOptions.Create(), null, null);
+            session, originRtIds, emCkType, roleId, meteringPointCkType, GraphDirections.Outbound,
+            null, RtEntityQueryOptions.Create());
 
         await session.CommitTransactionAsync();
 

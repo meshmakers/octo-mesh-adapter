@@ -149,27 +149,38 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
     private async Task EnsureSourceRtIdsExistAsync(
         IReadOnlyList<TimeRangeStreamDataPoint> toInsert, OctoObjectId archiveRtId)
     {
-        var distinctRtIds = toInsert
-            .Select(p => p.RtId)
-            .Where(id => id != OctoObjectId.Empty)
-            .Distinct()
+        // Group the source rtIds by their CkTypeId — the by-id lookup resolves the typed runtime
+        // collection from the CK cache, so it needs a concrete ck type (the type-agnostic generic
+        // overload throws "CkTypeId not set" on the base RtEntity). Every datapoint's CkTypeId
+        // matches the archive's TargetCkTypeId, so in practice this is a single group.
+        var rtIdsByType = toInsert
+            .Where(p => p.RtId != OctoObjectId.Empty)
+            .GroupBy(p => p.CkTypeId.ToString())
+            .Select(g => (CkTypeId: g.First().CkTypeId, RtIds: g.Select(p => p.RtId).Distinct().ToList()))
             .ToList();
 
-        if (distinctRtIds.Count == 0)
+        if (rtIdsByType.Count == 0)
         {
             return;
         }
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
         session.StartTransaction();
-        // Type-agnostic existence check across the tenant — the archive's target type isn't required
-        // here; we only need to know whether each rtId names an existing entity.
-        var existing = await etlContext.TenantRepository.GetRtEntitiesByIdAsync<RtEntity>(
-            session, distinctRtIds, RtEntityQueryOptions.Create(), 0, distinctRtIds.Count);
+        var existingRtIds = new HashSet<OctoObjectId>();
+        var requestedRtIds = new List<OctoObjectId>();
+        foreach (var (ckTypeId, rtIds) in rtIdsByType)
+        {
+            requestedRtIds.AddRange(rtIds);
+            var existing = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(
+                session, ckTypeId, rtIds, RtEntityQueryOptions.Create(), 0, rtIds.Count);
+            foreach (var e in existing.Items)
+            {
+                existingRtIds.Add(e.RtId);
+            }
+        }
         await session.CommitTransactionAsync();
 
-        var existingRtIds = existing.Items.Select(e => e.RtId).ToHashSet();
-        var missing = distinctRtIds.Where(id => !existingRtIds.Contains(id)).ToList();
+        var missing = requestedRtIds.Distinct().Where(id => !existingRtIds.Contains(id)).ToList();
 
         if (missing.Count != 0)
         {

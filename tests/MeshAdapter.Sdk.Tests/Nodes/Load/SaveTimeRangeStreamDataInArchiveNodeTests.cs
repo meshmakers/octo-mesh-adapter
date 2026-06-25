@@ -56,8 +56,8 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
     }
 
     /// <summary>
-    /// Stubs the type-agnostic existence check (<c>GetRtEntitiesByIdAsync&lt;RtEntity&gt;</c>) to
-    /// return exactly the supplied rtIds as existing entities.
+    /// Stubs the by-id existence check (<c>GetRtEntitiesByIdAsync(session, ckTypeId, rtIds, …)</c>)
+    /// to return exactly the supplied rtIds as existing entities.
     /// </summary>
     private void SetupExistingRtIds(params OctoObjectId[] existingRtIds)
     {
@@ -68,8 +68,9 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         A.CallTo(() => resultSet.Items).Returns(entities);
         A.CallTo(() => resultSet.TotalCount).Returns(entities.Count);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync<RtEntity>(
+        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
+                A<RtCkId<CkTypeId>>._,
                 A<IReadOnlyList<OctoObjectId>>._,
                 A<RtEntityQueryOptions>._,
                 A<int?>._,

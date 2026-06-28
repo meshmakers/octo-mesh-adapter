@@ -4,8 +4,8 @@ using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.Formulas;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
-using Meshmakers.Octo.Runtime.Engine.MongoDb.Formulas;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -22,7 +22,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 internal class ApplyDataPointMappingsNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
-    ICkCacheService ckCacheService) : IPipelineNode
+    ICkCacheService ckCacheService,
+    IFormulaEngine formulaEngine) : IPipelineNode
 {
     private static readonly RtCkId<CkAssociationRoleId> MapsFromRoleId = new("System.Communication/MapsFrom");
     private static readonly RtCkId<CkAssociationRoleId> MapsToRoleId = new("System.Communication/MapsTo");
@@ -202,7 +203,7 @@ internal class ApplyDataPointMappingsNode(
         await next(dataContext, nodeContext);
     }
 
-    private static object? EvaluateExpression(string expression, object value, INodeContext nodeContext,
+    private object? EvaluateExpression(string expression, object value, INodeContext nodeContext,
         OctoObjectId mappingRtId)
     {
         // Extract numeric value first — fall back to it if the expression fails.
@@ -216,13 +217,8 @@ internal class ApplyDataPointMappingsNode(
 
         try
         {
-            // Convert C-style ternary (cond ? a : b) to mXparser's if(cond, a, b) syntax.
-            var translated = ConvertTernaryToIf(expression);
-
-            var expr = new OctoExpression(translated);
-            expr.addArguments(new org.mariuszgromada.math.mxparser.Argument("value", numericValue));
-
-            var result = expr.calculate();
+            var result = formulaEngine.EvaluateRaw(expression,
+                new Dictionary<string, double> { ["value"] = numericValue });
             if (double.IsNaN(result))
             {
                 nodeContext.Warning(
@@ -238,86 +234,6 @@ internal class ApplyDataPointMappingsNode(
                 $"DataPointMapping {mappingRtId}: expression '{expression}' failed: {ex.Message}, using numeric value {numericValue}");
             return numericValue;
         }
-    }
-
-    /// <summary>
-    /// Converts C-style ternary operators (cond ? a : b) to mXparser's if(cond, a, b) syntax.
-    /// Handles nesting by scanning for the matching ':' at the same depth level.
-    /// </summary>
-    private static string ConvertTernaryToIf(string expression)
-    {
-        if (!expression.Contains('?')) return expression;
-
-        while (true)
-        {
-            var qIdx = expression.IndexOf('?');
-            if (qIdx < 0) break;
-
-            // Find the matching ':' at the same paren depth
-            var depth = 0;
-            var colonIdx = -1;
-            var nestedQCount = 0;
-            for (var i = qIdx + 1; i < expression.Length; i++)
-            {
-                var ch = expression[i];
-                if (ch == '(') depth++;
-                else if (ch == ')') depth--;
-                else if (ch == '?' && depth == 0) nestedQCount++;
-                else if (ch == ':' && depth == 0)
-                {
-                    if (nestedQCount == 0) { colonIdx = i; break; }
-                    nestedQCount--;
-                }
-            }
-
-            if (colonIdx < 0) break;
-
-            // Find condition start: scan backwards for balanced parens or start
-            var condStart = FindConditionStart(expression, qIdx);
-            // Find false-branch end: scan forwards for balanced parens or end
-            var falseEnd = FindFalseEnd(expression, colonIdx);
-
-            var condition = expression.Substring(condStart, qIdx - condStart).Trim();
-            var trueBranch = expression.Substring(qIdx + 1, colonIdx - qIdx - 1).Trim();
-            var falseBranch = expression.Substring(colonIdx + 1, falseEnd - colonIdx - 1).Trim();
-
-            var replacement = $"if({condition}, {trueBranch}, {falseBranch})";
-            expression = expression.Substring(0, condStart) + replacement + expression.Substring(falseEnd);
-        }
-
-        return expression;
-    }
-
-    private static int FindConditionStart(string s, int qIdx)
-    {
-        var depth = 0;
-        for (var i = qIdx - 1; i >= 0; i--)
-        {
-            var ch = s[i];
-            if (ch == ')') depth++;
-            else if (ch == '(')
-            {
-                if (depth == 0) return i + 1;
-                depth--;
-            }
-        }
-        return 0;
-    }
-
-    private static int FindFalseEnd(string s, int colonIdx)
-    {
-        var depth = 0;
-        for (var i = colonIdx + 1; i < s.Length; i++)
-        {
-            var ch = s[i];
-            if (ch == '(') depth++;
-            else if (ch == ')')
-            {
-                if (depth == 0) return i;
-                depth--;
-            }
-        }
-        return s.Length;
     }
 
     /// <summary>

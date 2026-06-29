@@ -510,6 +510,95 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
 
     // ───────────────────────────── Test setup helpers ─────────────────────────────
 
+    [Fact]
+    public async Task ProcessObjectAsync_DirectMappings_WireControlsByNameToEntitiesByName()
+    {
+        var meterType = new RtCkId<CkTypeId>("EnergyIQ/Meter");
+        var gridType = new RtCkId<CkTypeId>("EnergyIQ/GridConnection");
+
+        // Source controls (tenant-wide): a Loxone Meter with actual+total (no totalNeg),
+        // and an EnergyManager2 exposing Gpwr.
+        var meterCtrl = CreateControlWithStates("c0c0e6", "Verbrauch EG", "Meter",
+            ("actual", "u-act"), ("total", "u-tot"));
+        var emCtrl = CreateControlWithStates("c0c0e7", "Energiemanager", "EnergyManager2",
+            ("Gpwr", "u-g"), ("Ppwr", "u-p"), ("Spwr", "u-s"), ("Ssoc", "u-soc"));
+
+        var meterEntity = CreateEntity(meterType, "3001a2", ("Name", "Stromzähler HG-EG"));
+        var gridEntity = CreateEntity(gridType, "3000a1", ("Name", "Hausanschluss"));
+
+        // No containers/targets for the container path; direct path queries controls + per-type targets.
+        SetupGetByType(RoomType);
+        SetupGetByType(SpaceType);
+        SetupGetByType(ControlType, meterCtrl, emCtrl);
+        SetupGetByType(meterType, meterEntity);
+        SetupGetByType(gridType, gridEntity);
+
+        var config = new GenerateDataPointMappingsNodeConfiguration
+        {
+            SourceContainerCkTypeId = "Loxone/Room",
+            SourceControlCkTypeId = "Loxone/Control",
+            TargetCkTypeId = "EnergyIQ/Space",
+            TargetPath = "$.mappingSuggestions",
+            DirectControlMappings = new List<DirectControlMappingConfiguration>
+            {
+                new()
+                {
+                    Id = "meter-verbrauch-eg",
+                    ControlType = "Meter",
+                    ControlName = "Verbrauch EG",
+                    TargetCkTypeId = "EnergyIQ/Meter",
+                    TargetName = "Stromzähler HG-EG",
+                    States = new List<DirectStateMapping>
+                    {
+                        new() { StateName = "actual", TargetAttribute = "ActivePower" },
+                        new() { StateName = "total", TargetAttribute = "ImportedEnergy" },
+                        // Not exposed by this (non-bidirectional) meter → must be skipped.
+                        new() { StateName = "totalNeg", TargetAttribute = "ExportedEnergy" }
+                    }
+                },
+                new()
+                {
+                    Id = "em-grid",
+                    ControlType = "EnergyManager2",
+                    ControlName = "Energiemanager",
+                    TargetCkTypeId = "EnergyIQ/GridConnection",
+                    TargetName = "Hausanschluss",
+                    States = new List<DirectStateMapping>
+                    {
+                        new() { StateName = "Gpwr", TargetAttribute = "ActivePower" }
+                    }
+                }
+            }
+        };
+
+        var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
+        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(captured.Value);
+        var s = captured.Value!;
+        Assert.Equal(3, s.Count); // meter: actual+total (totalNeg skipped) + grid: Gpwr
+
+        var eg = s.Where(x => x.RuleId == "meter-verbrauch-eg").ToList();
+        Assert.Equal(new[] { "ActivePower", "ImportedEnergy" },
+            eg.Select(x => x.TargetAttributePath).OrderBy(x => x).ToArray());
+        Assert.All(eg, x => Assert.Equal(meterEntity.RtId.ToString(), x.SpaceRtId));
+        Assert.All(eg, x => Assert.Equal("EnergyIQ/Meter", x.SpaceCkTypeId));
+        Assert.All(eg, x => Assert.Equal(meterCtrl.RtId.ToString(), x.ControlRtId));
+        var actual = eg.First(x => x.TargetAttributePath == "ActivePower");
+        Assert.Equal($"meter-verbrauch-eg|{meterCtrl.RtId}|actual", actual.Name);
+        Assert.Equal("actual", actual.SourceAttributePath);
+
+        var grid = s.Single(x => x.RuleId == "em-grid");
+        Assert.Equal(gridEntity.RtId.ToString(), grid.SpaceRtId);
+        Assert.Equal("EnergyIQ/GridConnection", grid.SpaceCkTypeId);
+        Assert.Equal("ActivePower", grid.TargetAttributePath);
+        Assert.Equal("Gpwr", grid.SourceAttributePath);
+
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
     private static RtEntity CreateEntity(RtCkId<CkTypeId> ckTypeId, string rtId,
         params (string name, object? value)[] attributes)
     {

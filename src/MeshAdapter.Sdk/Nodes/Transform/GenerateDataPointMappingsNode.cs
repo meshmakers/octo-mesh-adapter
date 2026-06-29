@@ -123,6 +123,9 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
             }
         }
 
+        // Direct (non-container) mappings: building-/area-level data points wired control-name → entity.
+        await ProcessDirectMappingsAsync(session, c, controlCkTypeId, suggestions, rulesHitByRuleId, nodeContext);
+
         nodeContext.Info(
             $"Matched {matched}/{containers.Count} containers, produced {suggestions.Count} mapping suggestions " +
             $"across {rulesHitByRuleId.Count} rule(s).");
@@ -145,7 +148,9 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
                 unmatched,
                 suggestions.Count,
                 rulesHitByRuleId,
-                rulesById.Keys.ToList());
+                rulesById.Keys
+                    .Concat(c.DirectControlMappings.Where(d => !string.IsNullOrWhiteSpace(d.Id)).Select(d => d.Id!))
+                    .Distinct(StringComparer.Ordinal).ToList());
             dataContext.Set(c.StatisticsTargetPath, statistics, c.DocumentMode, ValueKinds.Simple,
                 TargetValueWriteModes.Overwrite);
         }
@@ -254,6 +259,148 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
             session, childCkTypeId, new[] { first.OriginRtId },
             RtEntityQueryOptions.Create());
         return load.Items.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Processes the direct (non-container) control→entity mappings. Loads all source controls once
+    /// (tenant-wide), resolves each mapping's target entity by name/rtId, and emits one suggestion per
+    /// state the control exposes. Appends to <paramref name="suggestions"/> and records per-id hit
+    /// counts in <paramref name="rulesHitByRuleId"/>.
+    /// </summary>
+    private async Task ProcessDirectMappingsAsync(
+        IOctoSession session,
+        GenerateDataPointMappingsNodeConfiguration c,
+        RtCkId<CkTypeId> controlCkTypeId,
+        List<MappingSuggestion> suggestions,
+        Dictionary<string, int> rulesHitByRuleId,
+        INodeContext nodeContext)
+    {
+        if (c.DirectControlMappings.Count == 0) return;
+
+        // All source controls, tenant-wide (direct mappings are not container-scoped).
+        var allControls = (await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
+            session, controlCkTypeId, RtEntityQueryOptions.Create())).Items.ToList();
+
+        // Cache target-entity lists per CkTypeId (each mapping may target a different type).
+        var targetsByType = new Dictionary<string, List<RtEntity>>(StringComparer.Ordinal);
+
+        foreach (var dm in c.DirectControlMappings)
+        {
+            if (string.IsNullOrWhiteSpace(dm.Id) || string.IsNullOrWhiteSpace(dm.TargetCkTypeId) ||
+                dm.States.Count == 0)
+            {
+                continue;
+            }
+
+            if (!targetsByType.TryGetValue(dm.TargetCkTypeId!, out var typeTargets))
+            {
+                typeTargets = (await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
+                    session, new RtCkId<CkTypeId>(dm.TargetCkTypeId!),
+                    RtEntityQueryOptions.Create())).Items.ToList();
+                targetsByType[dm.TargetCkTypeId!] = typeTargets;
+            }
+
+            var target = ResolveDirectTarget(dm, typeTargets);
+            if (target == null)
+            {
+                nodeContext.Warning(
+                    $"Direct mapping '{dm.Id}': no {dm.TargetCkTypeId} target matched " +
+                    $"(name '{dm.TargetName}', rtId '{dm.TargetRtId}').");
+                continue;
+            }
+
+            var matchingControls = allControls.Where(ctrl => DirectControlMatches(dm, ctrl)).ToList();
+            if (matchingControls.Count == 0)
+            {
+                nodeContext.Warning(
+                    $"Direct mapping '{dm.Id}': no source control matched " +
+                    $"(type '{dm.ControlType}', name '{dm.ControlName ?? dm.ControlNameRegex}').");
+                continue;
+            }
+
+            foreach (var control in matchingControls)
+            {
+                var hasStatesArray = ControlHasStatesArray(control, c.StatesAttribute);
+                foreach (var st in dm.States)
+                {
+                    if (string.IsNullOrWhiteSpace(st.StateName) || string.IsNullOrWhiteSpace(st.TargetAttribute))
+                    {
+                        continue;
+                    }
+
+                    // When the control publishes a States array, only emit for states it actually has
+                    // (so a non-bidirectional meter produces no totalNeg/ExportedEnergy mapping).
+                    if (hasStatesArray &&
+                        !ControlHasState(control, c.StatesAttribute, c.StateNameAttribute, st.StateName!))
+                    {
+                        continue;
+                    }
+
+                    var controlRtId = control.RtId.ToString();
+                    var name = $"{dm.Id}|{controlRtId}|{st.StateName}";
+                    suggestions.Add(new MappingSuggestion(
+                        name,
+                        controlRtId,
+                        c.SourceControlCkTypeId,
+                        target.RtId.ToString(),
+                        dm.TargetCkTypeId!,
+                        st.StateName!,
+                        st.TargetAttribute!,
+                        st.Expression ?? string.Empty,
+                        dm.Id!,
+                        $"Direct '{dm.Id}': control '{control.GetAttributeValueOrDefault("Name") as string ?? "(unnamed)"}' " +
+                        $"state '{st.StateName}' -> {dm.TargetCkTypeId}.{st.TargetAttribute}"));
+                    rulesHitByRuleId[dm.Id!] = rulesHitByRuleId.GetValueOrDefault(dm.Id!) + 1;
+                }
+            }
+        }
+    }
+
+    private static RtEntity? ResolveDirectTarget(DirectControlMappingConfiguration dm, List<RtEntity> targets)
+    {
+        if (!string.IsNullOrWhiteSpace(dm.TargetRtId))
+        {
+            return targets.FirstOrDefault(t =>
+                string.Equals(t.RtId.ToString(), dm.TargetRtId, StringComparison.Ordinal));
+        }
+        if (!string.IsNullOrWhiteSpace(dm.TargetName))
+        {
+            return targets.FirstOrDefault(t =>
+                string.Equals(t.GetAttributeValueOrDefault("Name") as string, dm.TargetName, StringComparison.Ordinal));
+        }
+        return null;
+    }
+
+    private static bool DirectControlMatches(DirectControlMappingConfiguration dm, RtEntity control)
+    {
+        if (!string.IsNullOrWhiteSpace(dm.ControlType))
+        {
+            var ct = control.GetAttributeValueOrDefault("ControlType") as string;
+            if (!string.Equals(ct, dm.ControlType, StringComparison.Ordinal)) return false;
+        }
+
+        var name = control.GetAttributeValueOrDefault("Name") as string ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(dm.ControlName))
+        {
+            return string.Equals(name, dm.ControlName, StringComparison.Ordinal);
+        }
+        if (!string.IsNullOrWhiteSpace(dm.ControlNameRegex))
+        {
+            return Regex.IsMatch(name, dm.ControlNameRegex);
+        }
+        return false; // a direct mapping must identify the control by name or regex
+    }
+
+    private static bool ControlHasStatesArray(RtEntity control, string statesAttribute)
+    {
+        var v = control.GetAttributeValueOrDefault(statesAttribute);
+        return v switch
+        {
+            string => false,
+            IEnumerable<RtRecord> => true,
+            System.Collections.IEnumerable e => e.OfType<RtRecord>().Any(),
+            _ => false
+        };
     }
 
     /// <summary>

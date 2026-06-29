@@ -101,6 +101,20 @@ public record GenerateDataPointMappingsNodeConfiguration : TargetPathNodeConfigu
     [PropertyGroup("Control Rules", 0)]
     public ICollection<ControlMappingRuleConfiguration> ControlMappingRules { get; set; } =
         new List<ControlMappingRuleConfiguration>();
+
+    /// <summary>
+    /// Direct, non-container control→entity mappings. Unlike <see cref="ControlMappingRules"/>
+    /// (which require Container→Target matching plus per-control hierarchy traversal), these wire a
+    /// source control identified by name directly to a target entity identified by name/rtId — for
+    /// building- or area-level data points that do not live inside a matched container. Examples:
+    /// Loxone energy <c>Meter</c> controls → <c>EnergyIQ/Meter</c>, or a single
+    /// <c>EnergyManager2</c> control → <c>GridConnection</c> + <c>PhotovoltaicSystem</c> +
+    /// <c>BatteryStorage</c> (one entry per target). Each <see cref="DirectStateMapping"/> emits one
+    /// suggestion; the output shape is identical to the rule path, so the same downstream consumes both.
+    /// </summary>
+    [PropertyGroup("Direct Mappings", 0)]
+    public ICollection<DirectControlMappingConfiguration> DirectControlMappings { get; set; } =
+        new List<DirectControlMappingConfiguration>();
 }
 
 /// <summary>
@@ -282,4 +296,55 @@ public class ControlMappingRuleMap
     /// <c>EnergyIQ/SpaceActuators</c>, or <c>EnergyIQ/SpaceTerminals</c>.
     /// </summary>
     public string? ChildTargetAssociationRoleId { get; set; }
+}
+
+/// <summary>
+/// A direct control→entity mapping that bypasses container matching. The source control is found
+/// among all entities of the node's <c>SourceControlCkTypeId</c> by optional ControlType plus name
+/// (exact <see cref="ControlName"/> or <see cref="ControlNameRegex"/>); the target entity is found
+/// among all entities of <see cref="TargetCkTypeId"/> by <see cref="TargetRtId"/> or
+/// <see cref="TargetName"/>. One suggestion is emitted per <see cref="States"/> entry the control exposes.
+/// </summary>
+public class DirectControlMappingConfiguration
+{
+    /// <summary>Stable id, used in the generated DataPointMapping Name (idempotency) + diagnostics. Required.</summary>
+    public string? Id { get; set; }
+
+    /// <summary>Optional exact ControlType filter on the source control (e.g. "Meter", "Wallbox2", "EnergyManager2").</summary>
+    public string? ControlType { get; set; }
+
+    /// <summary>Exact source control Name to match (e.g. "Verbrauch EG"). Takes precedence over <see cref="ControlNameRegex"/>.</summary>
+    public string? ControlName { get; set; }
+
+    /// <summary>Optional case-insensitive regex on the source control Name (used when <see cref="ControlName"/> is null).</summary>
+    public string? ControlNameRegex { get; set; }
+
+    /// <summary>CkTypeId of the target entity (e.g. "EnergyIQ/Meter", "EnergyIQ/GridConnection", "EnergyIQ/BatteryStorage").</summary>
+    public string? TargetCkTypeId { get; set; }
+
+    /// <summary>Target entity Name to match. Used when <see cref="TargetRtId"/> is not set.</summary>
+    public string? TargetName { get; set; }
+
+    /// <summary>Explicit target entity RtId. Takes precedence over <see cref="TargetName"/>.</summary>
+    public string? TargetRtId { get; set; }
+
+    /// <summary>State→attribute pairs. One suggestion per entry whose state the control exposes.</summary>
+    public ICollection<DirectStateMapping> States { get; set; } = new List<DirectStateMapping>();
+}
+
+/// <summary>One source-state → target-attribute mapping within a <see cref="DirectControlMappingConfiguration"/>.</summary>
+public class DirectStateMapping
+{
+    /// <summary>
+    /// Source state name (e.g. "actual", "total", "totalNeg", "Gpwr"). Emitted as the mapping's
+    /// SourceAttributePath. When the control exposes a States RecordArray the state must be present;
+    /// otherwise the mapping is skipped (so a non-bidirectional meter produces no ExportedEnergy mapping).
+    /// </summary>
+    public string? StateName { get; set; }
+
+    /// <summary>Target attribute on the target entity (e.g. "ActivePower", "ImportedEnergy", "ExportedEnergy").</summary>
+    public string? TargetAttribute { get; set; }
+
+    /// <summary>Optional mXparser expression applied at runtime (e.g. "value / 1000" for W→kW).</summary>
+    public string? Expression { get; set; }
 }

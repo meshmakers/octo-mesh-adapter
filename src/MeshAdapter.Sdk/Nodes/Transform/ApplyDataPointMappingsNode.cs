@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -164,7 +165,12 @@ internal class ApplyDataPointMappingsNode(
             // Step 4: Evaluate mapping expression if present
             if (!string.IsNullOrWhiteSpace(mappingExpression) && valueToMap != null)
             {
-                valueToMap = EvaluateExpression(mappingExpression, valueToMap, nodeContext, mappingRtId);
+                // Cast the formula result to the target attribute's CK value type so non-Double
+                // targets (Boolean/Int/Int64/DateTime) receive a correctly typed value. The
+                // AttributeValueConverter does not coerce a raw double into e.g. a bool
+                // (bool.TryParse("1") == false), so without this a boolean target would never be set.
+                var resultType = ResolveFormulaResultType(targetCkTypeId, targetAttributePath);
+                valueToMap = EvaluateExpression(mappingExpression, valueToMap, resultType, nodeContext, mappingRtId);
             }
             else if (valueToMap != null && TryExtractNumber(valueToMap, out var numericValue))
             {
@@ -203,8 +209,8 @@ internal class ApplyDataPointMappingsNode(
         await next(dataContext, nodeContext);
     }
 
-    private object? EvaluateExpression(string expression, object value, INodeContext nodeContext,
-        OctoObjectId mappingRtId)
+    private object? EvaluateExpression(string expression, object value, FormulaResultType? resultType,
+        INodeContext nodeContext, OctoObjectId mappingRtId)
     {
         // Extract numeric value first — fall back to it if the expression fails.
         var hasNumber = TryExtractNumber(value, out var numericValue);
@@ -215,10 +221,26 @@ internal class ApplyDataPointMappingsNode(
             return value;
         }
 
+        var args = new Dictionary<string, double> { ["value"] = numericValue };
+
         try
         {
-            var result = formulaEngine.EvaluateRaw(expression,
-                new Dictionary<string, double> { ["value"] = numericValue });
+            // Non-Double targets need a typed result: the formula engine casts the numeric result
+            // back to Boolean/Int/Int64/DateTime. Double and unresolved targets keep the raw double
+            // path (byte-identical to the previous behaviour).
+            if (resultType is { } rt && rt != FormulaResultType.Double)
+            {
+                var typed = formulaEngine.Evaluate(expression, args, rt);
+                if (typed == null)
+                {
+                    nodeContext.Warning(
+                        $"DataPointMapping {mappingRtId}: expression '{expression}' returned null/NaN for value {value}, skipping");
+                }
+
+                return typed;
+            }
+
+            var result = formulaEngine.EvaluateRaw(expression, args);
             if (double.IsNaN(result))
             {
                 nodeContext.Warning(
@@ -231,10 +253,55 @@ internal class ApplyDataPointMappingsNode(
         catch (Exception ex)
         {
             nodeContext.Warning(
-                $"DataPointMapping {mappingRtId}: expression '{expression}' failed: {ex.Message}, using numeric value {numericValue}");
-            return numericValue;
+                $"DataPointMapping {mappingRtId}: expression '{expression}' failed: {ex.Message}");
+            // For a typed (non-Double) target, a raw double fallback would not convert cleanly
+            // (e.g. into a bool), so skip the write instead of producing a wrong-typed value.
+            return resultType is { } rt2 && rt2 != FormulaResultType.Double ? null : numericValue;
         }
     }
+
+    /// <summary>
+    /// Resolves the target attribute's CK value type to a <see cref="FormulaResultType"/> so a
+    /// formula result can be cast to the right CLR type before it is written. Returns <c>null</c>
+    /// for nested/navigation paths and for non-scalar / string / record types — those keep the raw
+    /// double path. Enums are treated as <see cref="FormulaResultType.Int"/> (their numeric key).
+    /// </summary>
+    private FormulaResultType? ResolveFormulaResultType(RtCkId<CkTypeId> targetCkTypeId,
+        string targetAttributePath)
+    {
+        // Only simple, single-segment attribute names are resolved here; anything with navigation
+        // (. [ ] -> ::) falls back to the raw double path.
+        if (targetAttributePath.IndexOfAny(['.', '[', ']', '-', ':']) >= 0)
+        {
+            return null;
+        }
+
+        if (!ckCacheService.TryGetRtCkType(etlContext.TenantId, targetCkTypeId, out var ckTypeGraph)
+            || !ckTypeGraph.AllAttributesByName.TryGetValue(targetAttributePath, out var attribute))
+        {
+            return null;
+        }
+
+        return MapValueTypeToFormulaResultType(attribute.ValueType);
+    }
+
+    /// <summary>
+    /// Maps a CK scalar <see cref="AttributeValueTypesDto"/> to the formula engine's
+    /// <see cref="FormulaResultType"/>. Returns <c>null</c> for string / record / array / geospatial
+    /// and other non-scalar types, signalling the caller to keep the raw double path. Enums map to
+    /// <see cref="FormulaResultType.Int"/> (their numeric key). Pure, side-effect-free testable seam.
+    /// </summary>
+    internal static FormulaResultType? MapValueTypeToFormulaResultType(AttributeValueTypesDto valueType) =>
+        valueType switch
+        {
+            AttributeValueTypesDto.Boolean => FormulaResultType.Boolean,
+            AttributeValueTypesDto.Int => FormulaResultType.Int,
+            AttributeValueTypesDto.Enum => FormulaResultType.Int,
+            AttributeValueTypesDto.Int64 => FormulaResultType.Int64,
+            AttributeValueTypesDto.Double => FormulaResultType.Double,
+            AttributeValueTypesDto.DateTime => FormulaResultType.DateTime,
+            _ => null
+        };
 
     /// <summary>
     /// Extracts a numeric value from an input that may be a number, a string with a unit

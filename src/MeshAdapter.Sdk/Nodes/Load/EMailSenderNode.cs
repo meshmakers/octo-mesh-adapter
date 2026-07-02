@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Mail;
+using System.Net.Sockets;
 using Markdig;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -24,6 +25,12 @@ public class EMailSenderNode(
     : IPipelineNode
 {
     private const string EmailSemaphoresKey = "EmailSenderNode.Semaphores";
+
+    // Transient SMTP failures (e.g. a relay throttling a burst of messages and closing the
+    // connection mid-EHLO) are retried with exponential backoff so a single dropped connection
+    // does not fail the whole ForEach batch. See EMailSenderNode retry handling below.
+    private const int MaxSendAttempts = 4;
+    private const double InitialRetryDelaySeconds = 2.0;
     // ReSharper disable once ClassNeverInstantiated.Local
     private record EMailSenderConfiguration
     {
@@ -116,14 +123,6 @@ public class EMailSenderNode(
 
             var bodyInHtml = Markdown.ToHtml(body, _pipeline);
 
-
-            var client = new SmtpClient(eMailSenderConfiguration.Host, eMailSenderConfiguration.Port)
-            {
-                Credentials =
-                    new NetworkCredential(eMailSenderConfiguration.Username, eMailSenderConfiguration.Password),
-                EnableSsl = eMailSenderConfiguration.IsSslEnabled
-            };
-
             var mailMessage = new MailMessage
             {
                 Subject = subject,
@@ -153,15 +152,7 @@ public class EMailSenderNode(
             
             AddReciepients(dataContext, recipients, mailMessage, c);
 
-            await emailSemaphore.WaitAsync();
-            try
-            {
-                await client.SendMailAsync(mailMessage);
-            }
-            finally
-            {
-                emailSemaphore.Release();
-            }
+            await SendMailWithRetryAsync(eMailSenderConfiguration, mailMessage, emailSemaphore, nodeContext);
         }
         catch (Exception e)
         {
@@ -170,6 +161,81 @@ public class EMailSenderNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Sends the mail, retrying transient SMTP failures with exponential backoff. A fresh
+    /// <see cref="SmtpClient"/> is created per attempt (the .NET client is not reusable after a
+    /// failed send), and the backoff delay is awaited outside the concurrency semaphore so other
+    /// sends are not blocked while this one waits.
+    /// </summary>
+    private static async Task SendMailWithRetryAsync(
+        EMailSenderConfiguration configuration,
+        MailMessage mailMessage,
+        SemaphoreSlim emailSemaphore,
+        INodeContext nodeContext)
+    {
+        var attempt = 0;
+        while (true)
+        {
+            attempt++;
+
+            // Reset seekable attachment streams so a retry re-sends the complete payload even if a
+            // previous attempt already consumed part of the stream.
+            foreach (var attachment in mailMessage.Attachments)
+            {
+                if (attachment.ContentStream.CanSeek)
+                {
+                    attachment.ContentStream.Position = 0;
+                }
+            }
+
+            TimeSpan retryDelay;
+            using (var client = new SmtpClient(configuration.Host, configuration.Port)
+                   {
+                       Credentials = new NetworkCredential(configuration.Username, configuration.Password),
+                       EnableSsl = configuration.IsSslEnabled
+                   })
+            {
+                await emailSemaphore.WaitAsync();
+                try
+                {
+                    await client.SendMailAsync(mailMessage);
+                    return;
+                }
+                catch (Exception e) when (attempt < MaxSendAttempts && IsTransientSmtpFailure(e))
+                {
+                    retryDelay = TimeSpan.FromSeconds(InitialRetryDelaySeconds * Math.Pow(2, attempt - 1));
+                    nodeContext.Warning(
+                        "Transient e-mail send failure on attempt {0}/{1} to {2}:{3}, retrying in {4}s: {5}",
+                        attempt, MaxSendAttempts, configuration.Host, configuration.Port,
+                        retryDelay.TotalSeconds, e.Message);
+                }
+                finally
+                {
+                    emailSemaphore.Release();
+                }
+            }
+
+            await Task.Delay(retryDelay);
+        }
+    }
+
+    /// <summary>
+    /// Determines whether an SMTP send failure is transient and worth retrying. Connection-level
+    /// failures (dropped/reset socket, relay throttling closing the connection) are transient;
+    /// a permanent recipient rejection is not.
+    /// </summary>
+    private static bool IsTransientSmtpFailure(Exception e)
+    {
+        return e switch
+        {
+            SmtpFailedRecipientException => false,
+            SmtpException => true,
+            IOException => true,
+            SocketException => true,
+            _ => false
+        };
     }
 
     private async Task<IDownloadStreamHandler?> GetAttachment(

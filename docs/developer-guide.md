@@ -344,6 +344,12 @@ Sends emails with optional Markdown-to-HTML conversion.
 - Concurrent email limit control (semaphore-based)
 - Markdown to HTML conversion
 - Multiple recipients support
+- **Transient-failure retry**: each send is retried up to 4 attempts with exponential backoff
+  (2s → 4s → 8s) on transient SMTP failures (dropped/reset connection, relay throttling closing
+  the connection mid-EHLO, socket errors). A fresh `SmtpClient` is created per attempt and the
+  backoff is awaited outside the concurrency semaphore. Permanent recipient rejections
+  (`SmtpFailedRecipientException`) are not retried. This prevents a single dropped connection
+  from failing an entire `ForEach` batch of e-mails when only one message could not be delivered.
 
 #### SftpUploadNode
 

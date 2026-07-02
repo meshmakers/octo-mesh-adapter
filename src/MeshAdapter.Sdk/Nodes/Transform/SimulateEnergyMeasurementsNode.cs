@@ -27,11 +27,12 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
     {
         var c = nodeContext.GetNodeConfiguration<SimulateEnergyMeasurementsNodeConfiguration>();
 
-        if (c.NumDays <= 0)
-        {
-            throw new InvalidOperationException(
-                $"SimulateEnergyMeasurements: NumDays must be > 0 (got {c.NumDays}).");
-        }
+        // AB#4306: the window may be fixed on the node (StartDate / NumDays) or supplied at execution
+        // time via the input DataContext (StartDateAttributePath / NumDaysAttributePath) so one
+        // parameterised pipeline can generate any requested range on demand. Resolve the effective
+        // values here; the path form wins when set.
+        var startUtc = DateTime.SpecifyKind(ResolveStartDate(c, dataContext), DateTimeKind.Utc);
+        var numDays = ResolveNumDays(c, dataContext);
 
         var emCkType = new RtCkId<CkTypeId>(c.EnergyMeasurementCkTypeId);
         var meteringPointCkType = new RtCkId<CkTypeId>(c.MeteringPointCkTypeId);
@@ -39,7 +40,6 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
         var timeRangeRecordId = new RtCkId<CkRecordId>(c.TimeRangeCkRecordId);
         var amountRecordId = new RtCkId<CkRecordId>(c.AmountCkRecordId);
         var roleId = new RtCkId<CkAssociationRoleId>(c.ParentAssociationRoleId);
-        var startUtc = DateTime.SpecifyKind(c.StartDate, DateTimeKind.Utc);
         var slotDuration = TimeSpan.FromMinutes(15);
 
         var session = await etlContext.TenantRepository.GetSessionAsync();
@@ -108,7 +108,7 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
             var magnitude = profileIsPv ? c.ProducerPeakKWp : c.ConsumerDailyKWh;
             magnitude *= MagnitudeFactor(em.RtId);
 
-            for (var day = 0; day < c.NumDays; day++)
+            for (var day = 0; day < numDays; day++)
             {
                 var dayStart = startUtc.AddDays(day);
                 var dayOfYear = dayStart.DayOfYear;
@@ -156,7 +156,7 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
 
         nodeContext.Debug(
             $"SimulateEnergyMeasurements: produced {datapoints.Count} archive datapoint(s) " +
-            $"for {existingEms.Count} existing EnergyMeasurement(s) across {c.NumDays} day(s).");
+            $"for {existingEms.Count} existing EnergyMeasurement(s) across {numDays} day(s).");
 
         // 5. Output ONLY the datapoints. No entity creation, no association updates.
         dataContext.Set(c.EntityUpdatesOutputPath, datapoints, DocumentModes.Extend, ValueKinds.Simple,
@@ -174,5 +174,35 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(rtId.ToString()));
         var fraction = (bytes[0] | (bytes[1] << 8)) / (double)ushort.MaxValue; // [0, 1]
         return 0.8 + (0.4 * fraction);
+    }
+
+    // AB#4306: resolve the effective simulation window. The input-path form (StartDateAttributePath /
+    // NumDaysAttributePath) wins when set — a parameterised pipeline supplies the range via its
+    // ExecutePipelineCommand payload — otherwise the fixed node config is used. Exactly one source
+    // must provide a value for each.
+    private static DateTime ResolveStartDate(SimulateEnergyMeasurementsNodeConfiguration c, IDataContext dataContext)
+    {
+        if (!string.IsNullOrWhiteSpace(c.StartDateAttributePath))
+        {
+            return dataContext.Get<DateTime>(c.StartDateAttributePath);
+        }
+        return c.StartDate ?? throw new InvalidOperationException(
+            "SimulateEnergyMeasurements: neither StartDate nor StartDateAttributePath resolves a value.");
+    }
+
+    private static int ResolveNumDays(SimulateEnergyMeasurementsNodeConfiguration c, IDataContext dataContext)
+    {
+        var numDays = !string.IsNullOrWhiteSpace(c.NumDaysAttributePath)
+            ? dataContext.Get<int>(c.NumDaysAttributePath)
+            : c.NumDays ?? throw new InvalidOperationException(
+                "SimulateEnergyMeasurements: neither NumDays nor NumDaysAttributePath resolves a value.");
+
+        if (numDays <= 0)
+        {
+            throw new InvalidOperationException(
+                $"SimulateEnergyMeasurements: NumDays must be > 0 (got {numDays}).");
+        }
+
+        return numDays;
     }
 }

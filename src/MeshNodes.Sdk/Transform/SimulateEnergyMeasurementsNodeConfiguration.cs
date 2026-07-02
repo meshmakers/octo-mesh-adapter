@@ -21,13 +21,38 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 [NodeName("SimulateEnergyMeasurements", 1)]
 public record SimulateEnergyMeasurementsNodeConfiguration : NodeConfiguration
 {
-    /// <summary>Inclusive UTC start of the simulation window. The first slot is <c>[StartDate, StartDate + PT15M)</c>.</summary>
+    /// <summary>
+    /// Inclusive UTC start of the simulation window (the first slot is <c>[StartDate, StartDate +
+    /// PT15M)</c>). Optional: a pipeline may instead supply it at execution time via
+    /// <see cref="StartDateAttributePath"/> (e.g. a FromExecutePipelineCommand payload). Exactly one
+    /// of the two must resolve a value.
+    /// </summary>
     [PropertyGroup("Window", 0)]
-    public required DateTime StartDate { get; init; }
+    public DateTime? StartDate { get; init; }
 
-    /// <summary>Number of full UTC days to backfill. Each day produces 96 slots per existing EnergyMeasurement.</summary>
+    /// <summary>
+    /// Number of full UTC days to backfill (each day produces 96 slots per existing
+    /// EnergyMeasurement). Optional: may instead be supplied at execution time via
+    /// <see cref="NumDaysAttributePath"/>. Exactly one of the two must resolve a value.
+    /// </summary>
     [PropertyGroup("Window", 1)]
-    public required int NumDays { get; init; }
+    public int? NumDays { get; init; }
+
+    /// <summary>
+    /// Optional JSONPath into the input DataContext for the start date (AB#4306). When set, it
+    /// overrides <see cref="StartDate"/> — lets a parameterised pipeline take the window start from
+    /// its ExecutePipelineCommand input (e.g. <c>$.startDate</c>) so the same pipeline can generate
+    /// data for any requested range on demand.
+    /// </summary>
+    [PropertyGroup("Window", 2, "jsonpath")]
+    public string? StartDateAttributePath { get; init; }
+
+    /// <summary>
+    /// Optional JSONPath into the input DataContext for the day count (AB#4306). When set, it
+    /// overrides <see cref="NumDays"/> (e.g. <c>$.numDays</c>).
+    /// </summary>
+    [PropertyGroup("Window", 3, "jsonpath")]
+    public string? NumDaysAttributePath { get; init; }
 
     /// <summary>CkTypeId of the EnergyMeasurement type whose existing entities are backfilled (e.g. <c>Basic.Energy/EnergyMeasurement</c>).</summary>
     [PropertyGroup("Schema", 0)]

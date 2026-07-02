@@ -165,6 +165,49 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task WindowFromInputPaths_TakesStartDateAndNumDaysFromDataContext()
+    {
+        // AB#4306: the parameterised pipeline leaves StartDate/NumDays unset and supplies JSONPaths,
+        // so the window is read from the ExecutePipelineCommand input at run time.
+        const int numDays = 3;
+        var producerEm = CreateEm(ProducerEmRtId, "EM-Producer", "1-0:1.8.0");
+        SetupExistingEms(producerEm);
+        SetupParents(new Dictionary<OctoObjectId, string> { [ProducerEmRtId] = ProducerCkTypeId });
+
+        var config = new SimulateEnergyMeasurementsNodeConfiguration
+        {
+            StartDateAttributePath = "$.startDate",
+            NumDaysAttributePath = "$.numDays",
+            EnergyMeasurementCkTypeId = EmCkTypeId,
+            TimeRangeCkRecordId = "Basic/TimeRange",
+            AmountCkRecordId = "Basic/Amount",
+            ParentAssociationRoleId = RoleId,
+            MeteringPointCkTypeId = MeteringPointCkTypeId,
+            ProducerCkTypeId = ProducerCkTypeId,
+            EntityUpdatesOutputPath = OutputPath
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<SimulateEnergyMeasurementsNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.startDate", new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc));
+        SetupGetSimpleValueByPath(dataContext, "$.numDays", numDays);
+
+        List<EntityUpdateInfo<RtEntity>>? captured = null;
+        A.CallTo(() => dataContext.Set(
+                OutputPath,
+                A<List<EntityUpdateInfo<RtEntity>>>._,
+                A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .Invokes(call => captured = call.Arguments.Get<List<EntityUpdateInfo<RtEntity>>>(1));
+
+        await new SimulateEnergyMeasurementsNode(next, _etlContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(captured);
+        const int slotsPerDay = 96;
+        // 1 EM × numDays × 96 — the day count came from the input path, not from config.
+        Assert.Equal(numDays * slotsPerDay, captured!.Count);
+        Assert.All(captured, u => Assert.Equal(ProducerEmRtId, u.RtEntity!.RtId));
+    }
+
+    [Fact]
     public async Task ProducerUsesPvPath_ConsumerUsesLoadPath_BothProduceNonZeroAmounts()
     {
         var producerEm = CreateEm(ProducerEmRtId, "EM-Producer", "1-0:1.8.0");

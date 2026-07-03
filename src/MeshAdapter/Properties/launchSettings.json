@@ -5,7 +5,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "meshtest",
-        "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -14,7 +14,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "octosystem",
-        "OCTO_ADAPTER__ADAPTERRTID": "66004fda527ac79a03ecedd7"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -23,7 +23,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "sbeg",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -32,7 +32,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "dankl",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -41,7 +41,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "processautomationdemo",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -50,7 +50,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "maco",
-        "OCTO_ADAPTER__ADAPTERRTID": "667ac108ef60ca86e830e47e"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -59,16 +59,16 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "octogrid",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
-    "meshadapter (tenant voest)": {
+    "meshadapter (tenant voestalpine)": {
       "commandName": "Project",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "OCTO_ADAPTER__TENANTID": "voest",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
+        "OCTO_ADAPTER__TENANTID": "voestalpine",
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     },
@@ -77,7 +77,7 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "OCTO_ADAPTER__TENANTID": "energyiqdemo",
-        "OCTO_ADAPTER__ADAPTERRTID": "67e10c0bfe3e19891bbfd261"
+        "OCTO_ADAPTER__ADAPTERRTID": "670000000000000000000002"
       },
       "applicationUrl": "https://localhost:5020;http://localhost:5021"
     }

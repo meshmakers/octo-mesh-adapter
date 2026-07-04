@@ -76,6 +76,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<ApplyDataPointMappingsNode>()
             .RegisterNode<BuildMappingTargetsNode>()
             .RegisterNode<GenerateDataPointMappingsNode>()
+            .RegisterNode<ExportDataPointMappingsNode>()
+            .RegisterNode<ImportDataPointMappingsNode>()
             .RegisterNode<ValidateDataPointCoverageNode>()
             .RegisterNode<DeployPipelineNode>()
             .RegisterNode<MapToRecordArrayNode>()

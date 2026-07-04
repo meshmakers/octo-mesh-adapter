@@ -50,6 +50,8 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<CreateUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<BuildMappingTargetsNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateDataPointMappingsNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ExportDataPointMappingsNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ImportDataPointMappingsNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MapToRecordArrayNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<UpdateRecordArrayItemNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();

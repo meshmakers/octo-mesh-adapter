@@ -239,6 +239,8 @@ Processes content using Claude AI API.
 
 > **MCP authentication:** the node authenticates to the OctoMesh MCP server via a `ServiceAccountConfiguration` (`McpServiceAccountConfigName`), reusing `IServiceAccountTokenService` (same mechanism as `DeployPipelineNode`). The acquired bearer token is attached to the `initialize` / `tools/list` / `tools/call` requests. Without a config name the calls are unauthenticated (local/dev only). Server-side enforcement is tracked in AB#4315.
 
+> **JSON response recovery (`responseFormat: json`):** the node first tries to parse the whole response as JSON; if the model wrapped it in prose or a ```` ```json ```` fence, `ExtractJsonFromText` recovers the first top-level JSON value — **array `[…]` or object `{…}`, whichever comes first** — with string/escape-aware bracket matching. The array case is load-bearing for mapping pipelines: a prose-wrapped array (`"Here are the mappings: [ … ]"`) must be returned whole, not reduced to its first inner object (which made the downstream `ForEach` fail with *"value is not an array"*).
+
 #### StatisticalAnomalyNode
 
 Detects anomalies using statistical methods.

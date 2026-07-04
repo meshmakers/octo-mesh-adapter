@@ -73,4 +73,56 @@ public class AnthropicAiQueryNodeTests
 
         Assert.Equal("42", result);
     }
+
+    // ── ExtractJsonFromText: prose/markdown-wrapped JSON recovery ──
+    // Regression: a prose-wrapped top-level ARRAY (the mapping-suggestions shape) must be extracted
+    // whole. The old extractor only handled '{' objects, so it grabbed the first inner mapping
+    // object instead of the array — downstream ForEach then failed with "value is not an array".
+
+    [Fact]
+    public void ExtractJsonFromText_ProseWrappedArray_ReturnsWholeArray()
+    {
+        var text = "Here are the mappings I found:\n[{\"name\":\"a\"},{\"name\":\"b\"}]\nThat's all.";
+
+        var json = AnthropicAiQueryNode.ExtractJsonFromText(text);
+
+        Assert.Equal("[{\"name\":\"a\"},{\"name\":\"b\"}]", json);
+    }
+
+    [Fact]
+    public void ExtractJsonFromText_FencedJsonArray_ReturnsArray()
+    {
+        var text = "Result:\n```json\n[{\"x\":1}]\n```\ndone";
+
+        var json = AnthropicAiQueryNode.ExtractJsonFromText(text);
+
+        Assert.Equal("[{\"x\":1}]", json);
+    }
+
+    [Fact]
+    public void ExtractJsonFromText_ArrayWithBracketsInStringValues_StaysBalanced()
+    {
+        // Brackets/braces inside a JSON string value must not unbalance the scan.
+        var text = "note: [{\"reason\":\"matched [Wohnen] and {closed}\"},{\"reason\":\"ok\"}]";
+
+        var json = AnthropicAiQueryNode.ExtractJsonFromText(text);
+
+        Assert.Equal("[{\"reason\":\"matched [Wohnen] and {closed}\"},{\"reason\":\"ok\"}]", json);
+    }
+
+    [Fact]
+    public void ExtractJsonFromText_ProseWrappedObject_StillReturnsObject()
+    {
+        var text = "The answer is {\"a\":1,\"b\":2} exactly.";
+
+        var json = AnthropicAiQueryNode.ExtractJsonFromText(text);
+
+        Assert.Equal("{\"a\":1,\"b\":2}", json);
+    }
+
+    [Fact]
+    public void ExtractJsonFromText_NoJson_ReturnsNull()
+    {
+        Assert.Null(AnthropicAiQueryNode.ExtractJsonFromText("no json here at all"));
+    }
 }

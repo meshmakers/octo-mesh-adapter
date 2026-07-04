@@ -852,39 +852,104 @@ internal class AnthropicAiQueryNode(
         return aiResponse;
     }
 
-    private static string? ExtractJsonFromText(string text)
+    /// <summary>
+    /// Extracts a JSON value embedded in a mixed prose/markdown response. Handles a fenced
+    /// <c>```json … ```</c> block first, otherwise takes the first top-level JSON value — array
+    /// <c>[ … ]</c> or object <c>{ … }</c>, whichever appears first — via string/escape-aware brace
+    /// matching. The array case matters for this node: the prompt asks for a JSON array of mappings,
+    /// and when the model wraps it in prose ("Here are the mappings: [ … ]") the direct
+    /// deserialize fails and the fallback must return the whole array, not the first inner object.
+    /// </summary>
+    internal static string? ExtractJsonFromText(string text)
     {
-        var jsonBlockStart = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
-        if (jsonBlockStart >= 0)
+        var fenced = ExtractFencedJson(text);
+        if (fenced != null)
         {
-            var jsonStart = text.IndexOf('\n', jsonBlockStart) + 1;
-            var jsonEnd = text.IndexOf("```", jsonStart);
-            if (jsonEnd > jsonStart)
-            {
-                return text.Substring(jsonStart, jsonEnd - jsonStart).Trim();
-            }
+            return fenced;
         }
 
-        var braceStart = text.IndexOf('{');
-        if (braceStart >= 0)
+        var arrayStart = text.IndexOf('[');
+        var objectStart = text.IndexOf('{');
+
+        if (arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart))
         {
-            var braceCount = 0;
-            var jsonStart = braceStart;
+            return ExtractBalanced(text, arrayStart, '[', ']');
+        }
 
-            for (var i = braceStart; i < text.Length; i++)
+        if (objectStart >= 0)
+        {
+            return ExtractBalanced(text, objectStart, '{', '}');
+        }
+
+        return null;
+    }
+
+    private static string? ExtractFencedJson(string text)
+    {
+        var fenceStart = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
+        if (fenceStart < 0)
+        {
+            return null;
+        }
+
+        var jsonStart = text.IndexOf('\n', fenceStart);
+        if (jsonStart < 0)
+        {
+            return null;
+        }
+
+        jsonStart++;
+        var jsonEnd = text.IndexOf("```", jsonStart, StringComparison.Ordinal);
+        return jsonEnd > jsonStart ? text.Substring(jsonStart, jsonEnd - jsonStart).Trim() : null;
+    }
+
+    /// <summary>
+    /// Returns the balanced <paramref name="open" />…<paramref name="close" /> span starting at
+    /// <paramref name="start" />, ignoring brackets inside JSON string literals (honouring
+    /// backslash escapes) so a bracket in a value like a reason text does not unbalance the scan.
+    /// </summary>
+    private static string? ExtractBalanced(string text, int start, char open, char close)
+    {
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+
+            if (inString)
             {
-                if (text[i] == '{')
-                    braceCount++;
-                else if (text[i] == '}')
-                    braceCount--;
-
-                if (braceCount == 0)
+                if (escaped)
                 {
-                    var jsonCandidate = text.Substring(jsonStart, i - jsonStart + 1);
-                    if (jsonCandidate.Contains("\"") && jsonCandidate.Contains(":"))
-                    {
-                        return jsonCandidate;
-                    }
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                {
+                    escaped = true;
+                }
+                else if (ch == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = true;
+            }
+            else if (ch == open)
+            {
+                depth++;
+            }
+            else if (ch == close)
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return text.Substring(start, i - start + 1);
                 }
             }
         }

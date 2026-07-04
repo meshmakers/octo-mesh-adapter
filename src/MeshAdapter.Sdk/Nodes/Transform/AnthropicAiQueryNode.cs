@@ -7,12 +7,19 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
+using Meshmakers.Octo.Sdk.ServiceClient;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 [NodeConfiguration(typeof(AnthropicAiQueryNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContext, IHttpClientFactory httpClientFactory)
+internal class AnthropicAiQueryNode(
+    NodeDelegate next,
+    IMeshEtlContext etlContext,
+    IHttpClientFactory httpClientFactory,
+    IServiceAccountTokenService serviceAccountTokenService,
+    IServiceClientAccessToken serviceClientAccessToken)
     : IPipelineNode
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -49,12 +56,13 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             // Resolve MCP server URL from AiConfiguration if available
             var mcpServerUrl = ResolveMcpServerUrl(config, etlContext, nodeContext);
 
+            // Resolve the model from AiConfiguration (aiModel) with fallback to the node config
+            var model = ResolveModel(config, etlContext, nodeContext);
+
             nodeContext.Debug("Starting Anthropic AI query");
 
-            // Get the main content from the configured path (optional when using MCP tools)
-            var mainContent = !string.IsNullOrEmpty(config.Path)
-                ? dataContext.Get<string>(config.Path)
-                : null;
+            // Get the main content from the configured path (optional when using MCP tools).
+            var mainContent = ResolveMainContent(dataContext, config.Path);
 
             if (string.IsNullOrEmpty(mainContent) && string.IsNullOrEmpty(mcpServerUrl))
             {
@@ -123,6 +131,10 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             List<JsonElement>? mcpTools = null;
             if (!string.IsNullOrEmpty(mcpServerUrl))
             {
+                // Authenticate to the MCP server via a ServiceAccountConfiguration when configured
+                // (AB#4315). No config name → calls stay unauthenticated (local/dev only).
+                await EnsureMcpAccessTokenAsync(config, nodeContext);
+
                 mcpTools = await LoadMcpToolsAsync(mcpServerUrl, etlContext.TenantId, nodeContext);
 
                 // Filter tools if mcpToolNames is specified
@@ -159,7 +171,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -205,6 +217,39 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Resolves the optional "main content" for the AI prompt from <paramref name="path" />.
+    /// The node's base-class default <c>Path</c> is <c>"$"</c> (the whole root object); reading that
+    /// as a string throws ("Cannot get the value of a token type 'StartObject' as a string"), which
+    /// broke MCP-only pipelines that never set an explicit path. Rules:
+    /// <list type="bullet">
+    /// <item>empty path → no main content;</item>
+    /// <item>path resolves to a string scalar → that string;</item>
+    /// <item>explicit (non-<c>"$"</c>) path to any other concrete value → rendered as indented JSON;</item>
+    /// <item>default <c>"$"</c> root object, or an absent path → no main content (rely on MCP tools).</item>
+    /// </list>
+    /// </summary>
+    internal static string? ResolveMainContent(IDataContext dataContext, string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return null;
+        }
+
+        var kind = dataContext.GetKind(path);
+        if (kind == DataKind.String)
+        {
+            return dataContext.Get<string>(path);
+        }
+
+        if (kind != DataKind.Undefined && path != "$")
+        {
+            return JsonSerializer.Serialize(dataContext.Get<object?>(path), IndentedPromptOptions);
+        }
+
+        return null;
     }
 
     private static string? ResolveApiKey(AnthropicAiQueryNodeConfiguration config, IMeshEtlContext etlContext,
@@ -260,9 +305,44 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         return config.McpServerUrl;
     }
 
+    private static string ResolveModel(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        // Prefer the model configured on the AiConfiguration entity (aiModel), mirroring how the
+        // API key and MCP server URL are resolved from it. Falls back to the node's own Model
+        // property (and thus its default) when the AiConfiguration has no aiModel.
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
+            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        {
+            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
+            if (rawJson != null)
+            {
+                var configDoc = JsonNode.Parse(rawJson);
+                var model = configDoc?["aiModel"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(model))
+                {
+                    nodeContext.Debug(
+                        $"AI model '{model}' loaded from configuration '{config.ApiKeyConfigurationName}'");
+                    return model;
+                }
+            }
+        }
+
+        if (string.IsNullOrEmpty(config.Model))
+        {
+            // No hard-coded default: a pinned model id goes out of date (e.g. a retired
+            // "…-20250514" snapshot returns HTTP 404 not_found). The model must be provided.
+            throw new ArgumentException(
+                "AI model is required. Set 'aiModel' on the AiConfiguration (recommended) or 'model' on the node.",
+                nameof(config.Model));
+        }
+
+        return config.Model;
+    }
+
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
-        string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools, INodeContext nodeContext,
-        List<object>? historyMessages = null)
+        string model, string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools,
+        INodeContext nodeContext, List<object>? historyMessages = null)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
 
@@ -281,7 +361,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             // Build request
             var requestObj = new Dictionary<string, object>
             {
-                ["model"] = config.Model,
+                ["model"] = model,
                 ["max_tokens"] = config.MaxTokens,
                 ["temperature"] = config.Temperature,
                 ["system"] = config.SystemPrompt,
@@ -409,6 +489,57 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
     /// </summary>
     private string? _mcpSessionId;
 
+    /// <summary>
+    /// Service-account bearer token for the MCP server, acquired once per execution when a
+    /// <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> is configured.
+    /// Null when no service-account config is set (MCP calls are then unauthenticated — local/dev).
+    /// </summary>
+    private string? _mcpAccessToken;
+
+    /// <summary>
+    /// Acquires an OAuth2 client-credentials token from the configured ServiceAccountConfiguration
+    /// and caches it in <see cref="_mcpAccessToken" /> for the MCP requests. No-op (clears the token)
+    /// when no service-account config name is set.
+    /// </summary>
+    private async Task EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (string.IsNullOrEmpty(config.McpServiceAccountConfigName))
+        {
+            _mcpAccessToken = null;
+            return;
+        }
+
+        await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository,
+            config.McpServiceAccountConfigName);
+        _mcpAccessToken = serviceClientAccessToken.AccessToken;
+
+        if (string.IsNullOrEmpty(_mcpAccessToken))
+        {
+            nodeContext.Warning(
+                $"MCP ServiceAccountConfiguration '{config.McpServiceAccountConfigName}' did not yield an " +
+                "access token; MCP calls will be sent unauthenticated.");
+        }
+        else
+        {
+            nodeContext.Debug(
+                $"MCP access token acquired via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}'");
+        }
+    }
+
+    /// <summary>
+    /// Adds the <c>Authorization: Bearer</c> header to an MCP request when a service-account token
+    /// has been acquired. No-op otherwise (unauthenticated local/dev calls).
+    /// </summary>
+    private void AddMcpAuthHeader(HttpRequestMessage request)
+    {
+        if (!string.IsNullOrEmpty(_mcpAccessToken))
+        {
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _mcpAccessToken);
+        }
+    }
+
     private async Task<List<JsonElement>?> LoadMcpToolsAsync(string mcpServerUrl, string tenantId,
         INodeContext nodeContext)
     {
@@ -435,6 +566,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
             };
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+            AddMcpAuthHeader(request);
             if (_mcpSessionId != null)
             {
                 request.Headers.Add("Mcp-Session-Id", _mcpSessionId);
@@ -525,6 +657,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         };
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+        AddMcpAuthHeader(request);
 
         using var response = await client.SendAsync(request);
         var responseText = await response.Content.ReadAsStringAsync();
@@ -571,6 +704,7 @@ internal class AnthropicAiQueryNode(NodeDelegate next, IMeshEtlContext etlContex
         };
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+        AddMcpAuthHeader(request);
         if (_mcpSessionId != null)
         {
             request.Headers.Add("Mcp-Session-Id", _mcpSessionId);

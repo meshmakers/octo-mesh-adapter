@@ -224,11 +224,20 @@ Processes content using Claude AI API.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `Path` | string | Main content path |
+| `Path` | string | Main content path. Optional — read only when it resolves to a string value; a non-string value at an explicit path is rendered as JSON. The default `"$"` (root object) is treated as "no main content" so **MCP-only** pipelines (no `path` set) work without error (AB#4313). |
 | `Question` | string | Query to ask Claude |
 | `DataPaths` | ICollection | Additional context data |
-| `ApiKey` | string | Anthropic API key |
+| `ApiKey` | string | Anthropic API key (prefer `ApiKeyConfigurationName`) |
+| `Model` | string? | Claude model id. **No default** (a pinned id goes out of date). Resolved as `AiConfiguration.aiModel` → node `model`; if neither is set the node fails with a clear "AI model is required" error. |
+| `ApiKeyConfigurationName` | string? | Well-known name of the `AiConfiguration` entity that supplies `apiKey`, `mcpServerUrl` **and `aiModel`** (all take precedence over the node's own values). |
+| `McpServiceAccountConfigName` | string? | Well-known name of a `System.Communication/ServiceAccountConfiguration` entity. When set, the node acquires an OAuth2 client-credentials token and sends `Authorization: Bearer` on every MCP request — required once the MCP server enforces auth (AB#4315). |
 | `TargetPath` | string | Response storage location |
+
+> **MCP-only mode:** when `McpServerUrl` / `apiKeyConfigurationName` supplies MCP tools, the node needs no `path` — Claude queries live data via the tools. `ResolveMainContent` returns null for the default `"$"` root object instead of trying to read it as a string (which previously threw *"Cannot get the value of a token type 'StartObject' as a string"*).
+
+> **Model resolution:** `apiKey`, `mcpServerUrl` **and** `aiModel` are all read from the referenced `AiConfiguration` entity (with node-config fallback), so the AI settings live in one place. `ResolveModel` prefers `AiConfiguration.aiModel`; there is deliberately no hard-coded default model.
+
+> **MCP authentication:** the node authenticates to the OctoMesh MCP server via a `ServiceAccountConfiguration` (`McpServiceAccountConfigName`), reusing `IServiceAccountTokenService` (same mechanism as `DeployPipelineNode`). The acquired bearer token is attached to the `initialize` / `tools/list` / `tools/call` requests. Without a config name the calls are unauthenticated (local/dev only). Server-side enforcement is tracked in AB#4315.
 
 #### StatisticalAnomalyNode
 

@@ -24,10 +24,13 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public string? ApiKey { get; set; }
 
     /// <summary>
-    /// The Claude model to use (e.g., "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307")
+    /// The Claude model to use (e.g., "claude-sonnet-4-6", "claude-opus-4-1").
+    /// Optional on the node when the referenced AiConfiguration supplies <c>aiModel</c>; that
+    /// value takes precedence. There is deliberately no hard-coded default model — a pinned model
+    /// id goes out of date, so the model must be provided explicitly (node or AiConfiguration).
     /// </summary>
     [PropertyGroup("AI Configuration", 0)]
-    public string Model { get; set; } = "claude-sonnet-4-20250514";
+    public string? Model { get; set; }
 
     /// <summary>
     /// The question/prompt to ask the AI about the data
@@ -103,6 +106,16 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Connection", 2)]
     public string[]? McpToolNames { get; set; }
+
+    /// <summary>
+    /// Optional well-known name of a <c>System.Communication/ServiceAccountConfiguration</c> entity
+    /// used to authenticate the MCP tool calls. When set, the node acquires an OAuth2
+    /// client-credentials token and sends it as a <c>Authorization: Bearer</c> header on the
+    /// <c>{McpServerUrl}/{tenantId}/mcp</c> requests. Required once the MCP server enforces
+    /// authentication (see AB#4315).
+    /// </summary>
+    [PropertyGroup("Connection", 3)]
+    public string? McpServiceAccountConfigName { get; set; }
 
     /// <summary>
     /// Optional JSON path to conversation history array.

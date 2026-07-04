@@ -1,5 +1,6 @@
 using FakeItEasy;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -10,9 +11,13 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Trigger;
 
 public class FromExecutePipelineCommandNodeTests
 {
+    private const string PipelineRtId = "67f0b00ec4ff02221e0b600b";
+    private const string DataFlowRtId = "67f0b00ec4ff02221e0b600a";
+
     private readonly IEventHubControl _eventHubControl;
     private readonly ITriggerContext _triggerContext;
     private ExecuteCommandHandler<ExecutePipelineRequest>? _capturedHandler;
+    private string? _capturedAddress;
 
     public FromExecutePipelineCommandNodeTests()
     {
@@ -22,15 +27,34 @@ public class FromExecutePipelineCommandNodeTests
 
         A.CallTo(() => _triggerContext.TenantId).Returns("test-tenant");
         A.CallTo(() => _triggerContext.NodeContext).Returns(nodeContext);
+        A.CallTo(() => _triggerContext.DataFlowRtId).Returns(new OctoObjectId(DataFlowRtId));
+        A.CallTo(() => _triggerContext.PipelineRtEntityId)
+            .Returns(new RtEntityId("System.Communication/Pipeline-1", new OctoObjectId(PipelineRtId)));
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>._,
                 A<ExecuteCommandHandler<ExecutePipelineRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<ExecutePipelineRequest> handler) =>
+            .Invokes((string address, ExecuteCommandHandler<ExecutePipelineRequest> handler) =>
             {
+                _capturedAddress = address;
                 _capturedHandler = handler;
             })
             .Returns(A.Fake<EndpointHandle>());
+    }
+
+    [Fact]
+    public async Task StartAsync_KeysEndpointByPipelineRtId_NotDataFlowRtId()
+    {
+        // Regression: two FromExecutePipelineCommand pipelines in the same DataFlow must register
+        // distinct receive endpoints. Keying by DataFlowRtId collided ("A receive endpoint with the
+        // same key was already added"), so the endpoint must be scoped by the pipeline rtId.
+        var node = new FromExecutePipelineCommandNode(_eventHubControl);
+
+        await node.StartAsync(_triggerContext);
+
+        Assert.NotNull(_capturedAddress);
+        Assert.Contains(PipelineRtId, _capturedAddress);
+        Assert.DoesNotContain(DataFlowRtId, _capturedAddress);
     }
 
     [Fact]

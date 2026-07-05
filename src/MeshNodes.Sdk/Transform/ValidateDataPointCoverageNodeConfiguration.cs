@@ -114,6 +114,20 @@ public record ValidateDataPointCoverageNodeConfiguration : TargetPathNodeConfigu
     public int MaxDepth { get; set; } = 16;
 
     /// <summary>
+    /// Additional association roles traversed INBOUND at every node besides
+    /// <see cref="ChildRoleId"/> — e.g. "EnergyIQ/SpaceSensors" or
+    /// "EnergyIQ/SpaceTerminals" in v2-style models where measurements live on
+    /// device entities (sensors / actuators / terminals) attached to a Space via
+    /// dedicated roles. Entities reached this way become report nodes of their
+    /// own, so per-type <see cref="Rules"/> (e.g. TemperatureSensor requires a
+    /// CurrentValue mapping) apply to them and the Studio coverage tree — which
+    /// surfaces the same entities via association auto-discovery — can show
+    /// their status. Empty by default (spatial hierarchy only).
+    /// </summary>
+    [PropertyGroup("Hierarchy", 3)]
+    public List<string> AdditionalChildRoleIds { get; set; } = new();
+
+    /// <summary>
     /// Association role used to find DataPointMappings pointing at a node. Defaults
     /// to <c>System.Communication/MapsTo</c>.
     /// </summary>

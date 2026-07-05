@@ -56,7 +56,9 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         // — it tells the operator which CK type the role is *intended* to link.
         // We no longer pass it to the engine filter because polymorphism doesn't
         // work there (see comment in the BFS loop below).
-        var childRoleId = new RtCkId<CkAssociationRoleId>(c.ChildRoleId);
+        var traversalRoleIds = BuildTraversalRoleIds(c.ChildRoleId, c.AdditionalChildRoleIds)
+            .Select(r => new RtCkId<CkAssociationRoleId>(r))
+            .ToList();
         var mappingRoleId = new RtCkId<CkAssociationRoleId>(c.MappingRoleId);
         var mappingCkTypeId = new RtCkId<CkTypeId>(c.MappingCkTypeId);
 
@@ -106,7 +108,8 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
 
             if (depth >= c.MaxDepth) continue;
 
-            // Inbound ParentChild → children of `current`.
+            // Inbound traversal roles (ParentChild + configured device roles)
+            // → children of `current`.
             //
             // We deliberately do NOT pass `targetTypeId: childCkTypeId` here:
             // the MongoDB engine's relatedRtCkTypeId filter is strict and does
@@ -115,24 +118,28 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             // strict filter on Basic/TreeNode returns zero rows. We accept any
             // origin type and read its concrete ckTypeId from the association,
             // then load each entity batch under its own type.
-            var childAssocs = await etlContext.TenantRepository.GetRtAssociationsAsync(
-                session,
-                new RtEntityId(currentCkTypeId, current.RtId),
-                RtAssociationExtendedQueryOptions.Create(GraphDirections.Inbound, childRoleId));
-
+            //
             // Group child ids by their concrete origin ckTypeId — we need the
             // right type to look the entity up in its MongoDB collection.
             var childrenByType = new Dictionary<RtCkId<CkTypeId>, List<OctoObjectId>>();
-            foreach (var assoc in childAssocs.Items)
+            foreach (var traversalRoleId in traversalRoleIds)
             {
-                if (assoc.OriginCkTypeId == null) continue;
-                if (!visited.Add(assoc.OriginRtId)) continue;
-                if (!childrenByType.TryGetValue(assoc.OriginCkTypeId, out var bucket))
+                var childAssocs = await etlContext.TenantRepository.GetRtAssociationsAsync(
+                    session,
+                    new RtEntityId(currentCkTypeId, current.RtId),
+                    RtAssociationExtendedQueryOptions.Create(GraphDirections.Inbound, traversalRoleId));
+
+                foreach (var assoc in childAssocs.Items)
                 {
-                    bucket = new List<OctoObjectId>();
-                    childrenByType[assoc.OriginCkTypeId] = bucket;
+                    if (assoc.OriginCkTypeId == null) continue;
+                    if (!visited.Add(assoc.OriginRtId)) continue;
+                    if (!childrenByType.TryGetValue(assoc.OriginCkTypeId, out var bucket))
+                    {
+                        bucket = new List<OctoObjectId>();
+                        childrenByType[assoc.OriginCkTypeId] = bucket;
+                    }
+                    bucket.Add(assoc.OriginRtId);
                 }
-                bucket.Add(assoc.OriginRtId);
             }
 
             if (childrenByType.Count == 0) continue;
@@ -299,6 +306,21 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
     /// </summary>
     internal static string FormatAssociationKey(RequiredAssociation req) =>
         $"{req.AssociationRoleId}→{req.TargetCkTypeId}";
+
+    /// <summary>
+    /// The role ids the BFS traverses INBOUND at every node: the spatial child role
+    /// plus the configured additional device roles (e.g. EnergyIQ/SpaceSensors —
+    /// AB#4262 follow-up so device entities become report nodes). Blank entries are
+    /// dropped and duplicates removed, so a redundantly configured ChildRoleId does
+    /// not double-visit children; the spatial role always comes first.
+    /// </summary>
+    internal static IReadOnlyList<string> BuildTraversalRoleIds(
+        string childRoleId, IEnumerable<string>? additionalChildRoleIds) =>
+        new[] { childRoleId }
+            .Concat(additionalChildRoleIds ?? Array.Empty<string>())
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>
     /// Pure-function coverage evaluator. Given the rule for an entity's CK type, the

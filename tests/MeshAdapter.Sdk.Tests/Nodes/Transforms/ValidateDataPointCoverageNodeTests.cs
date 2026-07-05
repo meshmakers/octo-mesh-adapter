@@ -15,6 +15,39 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 public class ValidateDataPointCoverageNodeTests
 {
     [Fact]
+    public void BuildTraversalRoleIds_NoAdditionalRoles_ReturnsChildRoleOnly()
+    {
+        var result = ValidateDataPointCoverageNode.BuildTraversalRoleIds(
+            "System/ParentChild", additionalChildRoleIds: null);
+
+        Assert.Equal(new[] { "System/ParentChild" }, result);
+    }
+
+    [Fact]
+    public void BuildTraversalRoleIds_AdditionalRoles_AppendAfterChildRole()
+    {
+        var result = ValidateDataPointCoverageNode.BuildTraversalRoleIds(
+            "System/ParentChild",
+            new[] { "EnergyIQ/SpaceSensors", "EnergyIQ/SpaceTerminals" });
+
+        Assert.Equal(
+            new[] { "System/ParentChild", "EnergyIQ/SpaceSensors", "EnergyIQ/SpaceTerminals" },
+            result);
+    }
+
+    [Fact]
+    public void BuildTraversalRoleIds_DropsBlanksAndDuplicates()
+    {
+        var result = ValidateDataPointCoverageNode.BuildTraversalRoleIds(
+            "System/ParentChild",
+            new[] { "", "  ", "System/ParentChild", "EnergyIQ/SpaceSensors", "EnergyIQ/SpaceSensors" });
+
+        Assert.Equal(
+            new[] { "System/ParentChild", "EnergyIQ/SpaceSensors" },
+            result);
+    }
+
+    [Fact]
     public void EvaluateCoverage_NoRule_ReturnsInfoWithEmptyLists()
     {
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Temperature" };

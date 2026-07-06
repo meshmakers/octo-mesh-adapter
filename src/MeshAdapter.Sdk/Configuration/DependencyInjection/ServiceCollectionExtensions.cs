@@ -94,6 +94,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<PdfOcrExtractionNode>()
             .RegisterNode<AnthropicAiQueryNode>()
             .RegisterNode<LlmQueryNode>()
+            .RegisterNode<McpToolCallNode>()
             .RegisterNode<StatisticalAnomalyNode>()
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<ReplyToTeamsChannelNode>()

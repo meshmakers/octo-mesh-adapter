@@ -38,6 +38,14 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(config.TimeoutSeconds));
         var ct = timeoutCts.Token;
 
+        // MCP clients opened for this execution. They must stay alive for the
+        // duration of the LLM call (the tool loop invokes them) and MUST be
+        // disposed afterwards — a stdio client owns a spawned subprocess, an
+        // HTTP/SSE client an open connection. Without disposal the adapter
+        // leaks one subprocess/connection per processed data object. Disposal
+        // happens in the finally block below, on success and failure alike.
+        var mcpClients = new List<McpClient>();
+
         try
         {
             // Validate
@@ -114,9 +122,9 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // remaining servers still contribute their tools. Loading happens
             // before message construction so a connection failure surfaces in
             // logs before we send a useless prompt.
-            var mcpServers = ResolveMcpServers(config, etlContext, nodeContext);
+            var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
             var mcpTools = mcpServers.Count > 0
-                ? await LoadMcpToolsAsync(mcpServers, nodeContext, ct)
+                ? await LoadMcpToolsAsync(mcpServers, mcpClients, nodeContext, ct)
                 : (IList<AIFunction>)Array.Empty<AIFunction>();
 
             // Build messages list: System, optional history, then current user prompt.
@@ -272,6 +280,10 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
 
             nodeContext.Error($"Error during LlmQuery ({ex.GetType().Name}): {ex.Message}");
         }
+        finally
+        {
+            await DisposeMcpClientsAsync(mcpClients, nodeContext);
+        }
 
         await next(dataContext, nodeContext);
     }
@@ -327,6 +339,9 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         // for MCP integration — McpClientTool extends AIFunction, so MCP tools
         // become callable through this same path. The middleware is harmless
         // when ChatOptions.Tools is empty (no MCP configured).
+        // MaximumIterationsPerRequest enforces the configured MaxToolRounds
+        // budget — without it, MEAI's own default applies and the node-level
+        // knob would be dead config.
         return new OpenAI.Chat.ChatClient(
                 model: config.Model,
                 credential: credential,
@@ -334,7 +349,8 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             .AsIChatClient()
             .AsBuilder()
             .UseOpenTelemetry(sourceName: ActivitySourceName)
-            .UseFunctionInvocation()
+            .UseFunctionInvocation(configure: c =>
+                c.MaximumIterationsPerRequest = config.MaxToolRounds)
             .Build();
     }
 
@@ -378,11 +394,14 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         // the SDK's IChatClient adapter; the MEAI middleware then invokes the
         // matching AIFunction from ChatOptions.Tools. MCP tools flow through
         // this path identically to the OpenAI-compat branch.
+        // MaximumIterationsPerRequest enforces the configured MaxToolRounds
+        // budget (same wiring as the OpenAI-compat factory).
         return client
             .AsIChatClient(config.Model)
             .AsBuilder()
             .UseOpenTelemetry(sourceName: ActivitySourceName)
-            .UseFunctionInvocation()
+            .UseFunctionInvocation(configure: c =>
+                c.MaximumIterationsPerRequest = config.MaxToolRounds)
             .Build();
     }
 
@@ -570,7 +589,15 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             {
                 try
                 {
-                    var jsonElement = JToken.Parse(extractedJson);
+                    // STJ here, deliberately: (1) the unqualified JsonException
+                    // in the catch below is System.Text.Json's (only
+                    // Newtonsoft.Json.Linq is imported), so Newtonsoft's
+                    // JsonReaderException from JToken.Parse would escape the
+                    // fallback and fail the whole node; (2) the clean-parse
+                    // branch above returns a JsonElement — returning a JToken
+                    // here would hand the STJ-native IDataContext.Set a
+                    // Newtonsoft tree it cannot serialize faithfully.
+                    var jsonElement = JsonSerializer.Deserialize<JsonElement>(extractedJson);
                     nodeContext.Debug("Successfully extracted JSON from mixed response");
                     return jsonElement;
                 }
@@ -646,107 +673,11 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
     // still contribute their tools. Empty McpConfigurationNames = no MCP,
     // LLM runs in plain chat mode.
     //
-    // Wire-format note: McpConfiguration.transport in GlobalConfiguration JSON
-    // may serialize as either the integer key (0/1/2) or the enum name string
-    // ("Stdio"/"Sse"/"Http"), depending on the runtime engine's JSON converter
-    // configuration. We accept both forms.
-
-    private enum McpTransport { Stdio = 0, Sse = 1, Http = 2 }
-
-    private sealed record McpServerConfig(
-        string Name,
-        string? Url,
-        McpTransport Transport,
-        string? Command,
-        string? Arguments,
-        string? BearerToken,
-        IReadOnlyDictionary<string, string> AdditionalHeaders);
-
-    // ---------------------------------------------------------------------------
-    // McpConfiguration v0.1 — known follow-up enhancements (post-thesis backlog)
-    // ---------------------------------------------------------------------------
-    // The current CK type ships 5 attributes (Url, Transport, Command, Arguments,
-    // BearerToken). The MCP SDK transport options expose several more knobs that
-    // we'll want to surface as McpConfiguration attributes once real-world MCP
-    // servers force the issue:
-    //
-    //   1. EnvironmentVariables (Stdio) — needed when the spawned MCP subprocess
-    //      reads API keys from env (e.g. the GitHub MCP wants GITHUB_TOKEN). The
-    //      shortest path is to mirror LlmQueryNode's ApiKeyConfigurationName
-    //      indirection: a new attribute on McpConfiguration that references another
-    //      configuration entity holding the secret blob, resolved at run-time via
-    //      IConfigurationCache. Same pattern keeps secrets out of the pipeline YAML.
-    //      Alternative (richer): a RecordArray attribute holding key/value/isSecret
-    //      tuples directly on McpConfiguration — mirrors the established Workload
-    //      ValueOverride pattern (octo-communication-controller-services CLAUDE.md
-    //      → "Workload Chart Management").
-    //
-    //   2. WorkingDirectory (Stdio) — for MCP servers with relative file paths
-    //      (filesystem MCP rooted at a project directory). Plain string attribute.
-    //
-    //   3. AdditionalHeaders (HTTP) — free-form header map for MCP servers behind
-    //      non-bearer auth (custom API-key headers, mTLS-proxy identity headers).
-    //      Currently we only populate the Authorization header from BearerToken;
-    //      this would be additive.
-    //
-    //   4. OAuth (HTTP) — full ClientOAuthOptions for MCP servers using OAuth2
-    //      authorization-code flow instead of a static bearer token. The SDK has
-    //      first-class support; we'd surface it via a separate
-    //      OAuthConfigurationName reference (mirrors ApiKeyConfigurationName).
-    //
-    // Per-tool-call timeout intentionally omitted in v0.1 — covered by node-level TimeoutSeconds + MaxToolRounds.
-    // ---------------------------------------------------------------------------
-
-    private static IList<McpServerConfig> ResolveMcpServers(
-        LlmQueryNodeConfiguration config,
-        IMeshEtlContext etlContext,
-        INodeContext nodeContext)
-    {
-        var result = new List<McpServerConfig>();
-        foreach (var name in config.McpConfigurationNames)
-        {
-            if (string.IsNullOrWhiteSpace(name)) continue;
-            if (!etlContext.GlobalConfiguration.IsDefined(name))
-            {
-                nodeContext.Warning(
-                    $"McpConfiguration '{name}' not found in GlobalConfiguration; skipping. " +
-                    "Create one via Studio (General → Configurations → MCP Server) or via " +
-                    "runtime.systemCommunicationMcpConfigurations.create.");
-                continue;
-            }
-
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(name);
-            if (string.IsNullOrEmpty(rawJson)) continue;
-            var doc = JObject.Parse(rawJson);
-
-            var transportToken = doc["transport"];
-            var transport = transportToken?.Type switch
-            {
-                JTokenType.Integer => (McpTransport)transportToken.Value<int>(),
-                JTokenType.String => Enum.TryParse<McpTransport>(
-                    transportToken.Value<string>()!, ignoreCase: true, out var t) ? t : McpTransport.Sse,
-                _ => McpTransport.Sse
-            };
-
-            var additionalHeaders = ParseHeaders(doc["additionalHeaders"] as JArray);
-
-            result.Add(new McpServerConfig(
-                Name: name,
-                Url: doc.Value<string>("url"),
-                Transport: transport,
-                Command: doc.Value<string>("command"),
-                Arguments: doc.Value<string>("arguments"),
-                BearerToken: doc.Value<string>("bearerToken"),
-                AdditionalHeaders: additionalHeaders));
-
-            // Header *names* are safe to log (values are secrets and are never logged).
-            var headerInfo = additionalHeaders.Count > 0
-                ? $", additionalHeaders=[{string.Join(", ", additionalHeaders.Keys)}]"
-                : string.Empty;
-            nodeContext.Debug($"McpConfiguration '{name}' loaded: transport={transport}{headerInfo}");
-        }
-        return result;
-    }
+    // MCP server resolution, transport construction (Bearer / AdditionalHeaders
+    // auth) and the McpTransport / McpServerConfig types live in the shared
+    // McpServerResolver, reused by McpToolCall@1. LlmQuery lists the resolved
+    // servers' tools and hands them to the model (below); McpToolCall invokes a
+    // single tool directly without an LLM.
 
     /// <summary>
     /// Logs the MCP tool invocations of a chat call for reproducibility and
@@ -823,7 +754,8 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
     }
 
     private static async Task<IList<AIFunction>> LoadMcpToolsAsync(
-        IList<McpServerConfig> servers,
+        IList<McpServerResolver.McpServerConfig> servers,
+        List<McpClient> clients,
         INodeContext nodeContext,
         CancellationToken ct)
     {
@@ -832,15 +764,12 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         {
             try
             {
-                IClientTransport transport = server.Transport switch
-                {
-                    McpTransport.Stdio => BuildStdioTransport(server),
-                    McpTransport.Sse or McpTransport.Http => BuildHttpTransport(server),
-                    _ => throw new InvalidOperationException(
-                        $"Unsupported MCP transport: {server.Transport}")
-                };
+                IClientTransport transport = McpServerResolver.BuildTransport(server);
 
                 var client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+                // Register for disposal immediately — if ListToolsAsync throws,
+                // the caller's finally still cleans up this client.
+                clients.Add(client);
                 var tools = await client.ListToolsAsync(cancellationToken: ct);
 
                 nodeContext.Debug(
@@ -859,121 +788,27 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
         return allTools;
     }
 
-    private static StdioClientTransport BuildStdioTransport(McpServerConfig server)
-    {
-        if (string.IsNullOrEmpty(server.Command))
-        {
-            throw new InvalidOperationException(
-                $"McpConfiguration '{server.Name}' uses Stdio transport but Command is empty. " +
-                "Set Command to the executable (e.g. 'dotnet', 'npx') and Arguments to its " +
-                "command-line arguments (one per line, or JSON array).");
-        }
-
-        return new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = server.Name,
-            Command = server.Command,
-            Arguments = ParseStdioArguments(server.Arguments),
-            // SDK default ShutdownTimeout (5s) is fine — tool-call duration is bounded by
-            // the outer chat-call cancellation token from the LlmQuery pipeline node.
-        });
-    }
-
-    private static HttpClientTransport BuildHttpTransport(McpServerConfig server)
-    {
-        if (string.IsNullOrEmpty(server.Url))
-        {
-            throw new InvalidOperationException(
-                $"McpConfiguration '{server.Name}' uses {server.Transport} transport but Url is empty. " +
-                "Set Url to the MCP server endpoint (e.g. https://mcp.example.com).");
-        }
-
-        // HttpClientTransport unifies SSE and Streamable HTTP — TransportMode picks
-        // between them. McpTransport.Http → Streamable HTTP (the newer spec, faster);
-        // McpTransport.Sse → legacy Server-Sent Events. Default AutoDetect tries
-        // Streamable HTTP first and falls back to SSE if the server doesn't support it.
-        var options = new HttpClientTransportOptions
-        {
-            Name = server.Name,
-            Endpoint = new Uri(server.Url),
-            TransportMode = server.Transport switch
-            {
-                McpTransport.Http => HttpTransportMode.StreamableHttp,
-                McpTransport.Sse => HttpTransportMode.Sse,
-                _ => HttpTransportMode.AutoDetect,
-            },
-            // SDK default ConnectionTimeout (30s) is fine — tool-call duration is bounded
-            // by the outer chat-call cancellation token from the LlmQuery pipeline node.
-        };
-        // Compose request headers from two sources:
-        //   1. BearerToken  → Authorization: Bearer {token}   (the common case)
-        //   2. AdditionalHeaders → arbitrary header map        (custom API-key
-        //      headers like Exa's `x-api-key`, Devin's `X-Org-Id`, mTLS-proxy
-        //      identity headers, etc.)
-        // AdditionalHeaders is applied last so an explicit "Authorization" entry
-        // there can override the BearerToken-derived one if a server needs a
-        // non-Bearer scheme. Header values are secrets — never logged.
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrEmpty(server.BearerToken))
-        {
-            headers["Authorization"] = $"Bearer {server.BearerToken}";
-        }
-        foreach (var (key, value) in server.AdditionalHeaders)
-        {
-            headers[key] = value;
-        }
-        if (headers.Count > 0)
-        {
-            options.AdditionalHeaders = headers;
-        }
-        return new HttpClientTransport(options);
-    }
-
-    private static IList<string> ParseStdioArguments(string? arguments)
-    {
-        if (string.IsNullOrWhiteSpace(arguments)) return new List<string>();
-        var trimmed = arguments.Trim();
-        if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
-        {
-            // JSON-array form: ["--project", "./my-mcp"]
-            return JArray.Parse(trimmed)
-                .Select(t => t.ToString())
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToList();
-        }
-        // One argument per line
-        return arguments
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(s => !string.IsNullOrEmpty(s))
-            .ToList();
-    }
-
     /// <summary>
-    /// Parses the <c>additionalHeaders</c> RecordArray attribute (a JSON array of
-    /// <c>HttpHeader</c> records: <c>{ name, value, isSecret }</c>) into a header
-    /// map, mirroring the <c>ValueOverride</c> shape. Entries with a blank name are
-    /// skipped; later duplicates win. Header values are never logged.
-    /// <para>
-    /// At-rest encryption note: like <c>BearerToken</c>, header values are currently
-    /// stored and shipped as plaintext (the Communication Controller serializes the
-    /// config entity raw in <c>AdapterService</c>). The <c>isSecret</c> flag is
-    /// carried for the planned encryption-at-rest slice — at which point the
-    /// controller will decrypt secret values before shipping (the same
-    /// <c>enc:v1</c> pattern <c>PoolService</c> uses for Helm <c>ValueOverride</c>),
-    /// and this method will keep treating <c>value</c> as the resolved plaintext.
-    /// </para>
+    /// Disposes every MCP client opened for this execution. Stdio clients shut
+    /// down their spawned subprocess (SDK default ShutdownTimeout 5s); HTTP/SSE
+    /// clients close their connection. Disposal failures are logged and do not
+    /// mask the original pipeline outcome.
     /// </summary>
-    private static IReadOnlyDictionary<string, string> ParseHeaders(JArray? headers)
+    private static async Task DisposeMcpClientsAsync(List<McpClient> clients, INodeContext nodeContext)
     {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (headers is null) return result;
-
-        foreach (var entry in headers.OfType<JObject>())
+        foreach (var client in clients)
         {
-            var name = entry.Value<string>("name");
-            if (string.IsNullOrWhiteSpace(name)) continue;
-            result[name.Trim()] = entry.Value<string>("value") ?? string.Empty;
+            try
+            {
+                await client.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                nodeContext.Warning($"Failed to dispose MCP client: {ex.Message}");
+            }
         }
-        return result;
+
+        clients.Clear();
     }
+
 }

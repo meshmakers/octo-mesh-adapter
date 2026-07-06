@@ -246,15 +246,19 @@ public class LlmQuerySmokeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_WithShortTimeout_PropagatesOperationCanceledException()
+    public async Task ProcessObjectAsync_WithShortTimeout_WrapsTimeoutInPipelineException()
     {
         await EnsureOllamaReachableAsync();
 
-        // The node uses CancellationTokenSource(config.Timeout) and passes the
-        // token to IChatClient.GetResponseAsync. The catch block deliberately
-        // rethrows OperationCanceledException so that the pipeline runtime sees
-        // cancellation cleanly, REGARDLESS of ContinueOnError — that's the
-        // contract this test pins down.
+        // The node uses CancellationTokenSource(config.TimeoutSeconds) and passes
+        // the token to IChatClient.GetResponseAsync. Contract (since the MCP
+        // logging/timeout-diagnostics commit): the node's OWN timeout budget
+        // elapsing is a pipeline ERROR — wrapped in
+        // MeshAdapterPipelineExecutionException with the OperationCanceledException
+        // as inner and an actionable log message — REGARDLESS of ContinueOnError
+        // (a timeout is never silently absorbed). Only genuine UPSTREAM
+        // cancellation (pipeline shutdown) is rethrown as a raw
+        // OperationCanceledException. This test pins the self-timeout half.
         var config = new LlmQueryNodeConfiguration
         {
             Provider = LlmProvider.OpenAiCompatible,
@@ -294,9 +298,11 @@ public class LlmQuerySmokeTests
 
         var act = async () => await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "the node must surface OperationCanceledException up the pipeline " +
-            "even with ContinueOnError=true — cancellation is never silently swallowed");
+        (await act.Should().ThrowAsync<MeshAdapterPipelineExecutionException>(
+                "the node must surface its own elapsed timeout as a pipeline error " +
+                "even with ContinueOnError=true — a timeout is never silently swallowed"))
+            .WithInnerException<OperationCanceledException>(
+                "the wrapped exception must preserve the cancellation cause for diagnosis");
 
         A.CallTo(() => next(dataContext, nodeContext))
             .MustNotHaveHappened();

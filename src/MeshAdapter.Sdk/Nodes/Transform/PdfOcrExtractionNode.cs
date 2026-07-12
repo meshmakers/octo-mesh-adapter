@@ -32,9 +32,9 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
 
             nodeContext.Debug($"Starting OCR extraction for PDF ({pdfData.Length} bytes)");
 
-            if (pdfData.Length > 1_000_000)
+            if (pdfData.Length > config.MaxFileSizeBytes)
             {
-                throw MeshAdapterPipelineExecutionException.FileTooLarge(nodeContext, pdfData.Length, 1_000_000);
+                throw MeshAdapterPipelineExecutionException.FileTooLarge(nodeContext, pdfData.Length, config.MaxFileSizeBytes);
             }
 
             // Initialize IronOCR with explicit configuration

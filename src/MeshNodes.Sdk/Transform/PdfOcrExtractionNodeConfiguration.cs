@@ -61,4 +61,12 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Options", 5)]
     public bool ContinueOnError { get; set; } = false;
+
+    /// <summary>
+    /// Maximum accepted PDF size in bytes. Files larger than this abort the node
+    /// with a FileTooLarge error. Defaults to 1 MB (the previously hard-coded
+    /// limit); raise it for pipelines that process real-world scans.
+    /// </summary>
+    [PropertyGroup("Options", 6)]
+    public int MaxFileSizeBytes { get; set; } = 1_000_000;
 }

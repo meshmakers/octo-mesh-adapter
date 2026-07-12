@@ -43,6 +43,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<ComputeFileHashNode>()
             .RegisterNode<CreateUpdateInfoNode>()
             .RegisterNode<CreateFileSystemItemUpdateNode>()
+            .RegisterNode<GetFileSystemContentNode>()
             .RegisterNode<ApplyChangesNode>()
             .RegisterNode<ApplyChangesNode2>()
             .RegisterNode<FilterLatestUpdateInfoNode>()

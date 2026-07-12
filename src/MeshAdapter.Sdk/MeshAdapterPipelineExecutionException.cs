@@ -384,6 +384,18 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Query with RtId '{queryRtId}' not found.");
     }
 
+    public static Exception EntityNotFound(INodeContext nodeContext, OctoObjectId rtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Entity with RtId '{rtId}' not found.");
+    }
+
+    public static Exception FileContentNotFound(INodeContext nodeContext, OctoObjectId rtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: File system item '{rtId}' has no binary content.");
+    }
+
     public static Exception UnsupportedQueryType(INodeContext nodeContext, string queryTypeName)
     {
         return new MeshAdapterPipelineExecutionException(

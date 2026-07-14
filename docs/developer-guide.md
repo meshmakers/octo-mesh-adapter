@@ -124,7 +124,33 @@ Fetches existing entities or creates them if not found (idempotent retrieval).
 
 #### GetQueryByIdNode
 
-Executes pre-defined queries stored in the system.
+Executes a persisted query entity (`RtPersistentQuery`) by its RtId and writes a `QueryResult`
+(`Columns` + `Rows`) to `TargetPath`. The concrete query kind is resolved from the loaded entity, so
+the caller does not need to know it in advance.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `QueryRtId` | OctoObjectId | RtId of the persisted query entity |
+| `Skip` / `Take` | int? | Paging (runtime queries: DB paging for simple, in-memory for grouped; stream-data: offset / page size) |
+| `FieldFilters` | collection | Additional field filters AND-combined with the query's persisted filters |
+| `From` / `To` | DateTime? | Stream-data only: override the persisted time range |
+| `Limit` | int? | Stream-data only: override the persisted row cap |
+
+**Supported query types:**
+
+| Query entity | Path | Result shape |
+|--------------|------|--------------|
+| `RtSimpleRtQuery` | runtime graph query | one row per entity (RtId, CkTypeId, projected columns) |
+| `RtAggregationRtQuery` | runtime graph query | single row of aggregate values |
+| `RtGroupingAggregationRtQuery` | runtime graph query | one row per group (group keys + aggregates) |
+| `RtSimpleSdQuery` | stream-data repository | **time series**: leading `Timestamp` column + projected columns, one row per data point |
+
+Stream-data queries are executed against the tenant's `IStreamDataRepository` (obtained via
+`ISystemContext.FindTenantContextAsync(...).GetStreamDataRepository()`), reading the `CkArchive`
+referenced by the query's `ArchiveRtId`. Errors surface through the standard pipeline-exception
+channel (query not found, missing `ArchiveRtId`, stream data not enabled, execution failure) — no
+silent empty results. Aggregated / grouped-aggregated / downsampling stream-data queries are not yet
+supported and throw `UnsupportedQueryType`. See Azure DevOps AB#4195.
 
 #### BackfillFromRtEntityNode
 

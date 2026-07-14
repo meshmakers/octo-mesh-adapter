@@ -8,10 +8,12 @@ using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
@@ -30,6 +32,9 @@ public class GetQueryByIdNodeTests : NodeTestBase
     private readonly ITenantRepository _tenantRepository;
     private readonly IOctoSession _session;
     private readonly ICkCacheService _ckCacheService;
+    private readonly ISystemContext _systemContext;
+    private readonly ITenantContext _tenantContext;
+    private readonly IStreamDataRepository _streamDataRepository;
 
     public GetQueryByIdNodeTests()
     {
@@ -37,11 +42,18 @@ public class GetQueryByIdNodeTests : NodeTestBase
         _tenantRepository = A.Fake<ITenantRepository>();
         _session = A.Fake<IOctoSession>();
         _ckCacheService = A.Fake<ICkCacheService>();
+        _systemContext = A.Fake<ISystemContext>();
+        _tenantContext = A.Fake<ITenantContext>();
+        _streamDataRepository = A.Fake<IStreamDataRepository>();
 
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _etlContext.TenantId).Returns(TestTenantId);
         A.CallTo(() => _tenantRepository.TenantId).Returns(TestTenantId);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+
+        A.CallTo(() => _systemContext.FindTenantContextAsync(TestTenantId))
+            .Returns(Task.FromResult(_tenantContext));
+        A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
 
         var ckTypeDto = new CkCompiledTypeDto { TypeId = new CkTypeId("TestType-1") };
         var ckTypeGraph = new CkTypeGraph(TestCkTypeId, ckTypeDto);
@@ -54,7 +66,7 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     private GetQueryByIdNode CreateNode(NodeDelegate next)
     {
-        return new GetQueryByIdNode(next, _etlContext, _ckCacheService);
+        return new GetQueryByIdNode(next, _etlContext, _ckCacheService, _systemContext);
     }
 
     private void SetupQueryEntityNotFound()
@@ -544,6 +556,197 @@ public class GetQueryByIdNodeTests : NodeTestBase
         SetupGroupingAggregationQuery(groupedQuery);
 
         SetupGraphByTypeResult(CreateEmptyGraphResultSet(fieldAggregationResult: null));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    #endregion
+
+    #region Simple Stream-Data Query Tests
+
+    private static readonly OctoObjectId TestArchiveRtId = new("000000000000000000000042");
+
+    private void SetupSimpleStreamDataQuery(RtSimpleSdQuery simpleSdQuery)
+    {
+        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+                A<IOctoSession>._, A<OctoObjectId>._))
+            .Returns(Task.FromResult<RtPersistentQuery?>(simpleSdQuery));
+    }
+
+    private void SetupExecuteQueryResult(StreamDataQueryResult result)
+    {
+        A.CallTo(() => _streamDataRepository.ExecuteQueryAsync(
+                A<OctoObjectId>._, A<StreamDataQueryOptions>._))
+            .Invokes((OctoObjectId _, StreamDataQueryOptions o) => _capturedStreamOptions = o)
+            .Returns(Task.FromResult(result));
+    }
+
+    private StreamDataQueryOptions? _capturedStreamOptions;
+
+    private static RtSimpleSdQuery CreateSimpleStreamDataQuery(
+        string[] columns, string? archiveRtId = "000000000000000000000042")
+    {
+        return new RtSimpleSdQuery
+        {
+            QueryCkTypeId = "TestModel/TestType",
+            ArchiveRtId = archiveRtId!,
+            Columns = new AttributeStringValueList(columns.ToList())
+        };
+    }
+
+    private static StreamDataQueryResult CreateStreamDataResult(params StreamDataRow[] rows)
+    {
+        return new StreamDataQueryResult { Rows = rows, TotalCount = rows.Length };
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_CallsNext()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_BuildsTimeSeriesResult()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+
+        var ts = new DateTime(2026, 7, 14, 10, 0, 0, DateTimeKind.Utc);
+        var row = new StreamDataRow
+        {
+            RtId = new OctoObjectId("000000000000000000000123"),
+            Timestamp = ts,
+            Values = new Dictionary<string, object?> { ["temperature"] = 21.5 }
+        };
+        SetupExecuteQueryResult(CreateStreamDataResult(row));
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedResult);
+        // Leading Timestamp column, then the projected attribute columns.
+        Assert.Equal(2, capturedResult!.Columns.Count);
+        Assert.Equal("Timestamp", capturedResult.Columns[0].Header);
+        Assert.Equal("temperature", capturedResult.Columns[1].Header);
+
+        Assert.Single(capturedResult.Rows);
+        Assert.Equal(ts, capturedResult.Rows[0].Values[0]);
+        Assert.Equal(21.5, capturedResult.Rows[0].Values[1]);
+        Assert.Equal(new OctoObjectId("000000000000000000000123"), capturedResult.Rows[0].RtId);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_MapsPhysicalColumnNames()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        // Columns as the user projects them (dotted / mixed-case) plus a standard column.
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(
+            ["window_start", "amount.value", "obisCode", "was_updated"]));
+
+        // The store keys Values by the physical column name: dots stripped + lower-cased. Standard
+        // columns (window_start, was_updated) already equal their physical name.
+        var row = new StreamDataRow
+        {
+            Timestamp = new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc),
+            Values = new Dictionary<string, object?>
+            {
+                ["window_start"] = new DateTime(2026, 6, 9, 22, 0, 0, DateTimeKind.Utc),
+                ["amountvalue"] = 42.5,
+                ["obiscode"] = "1-0:1.8.0",
+                ["was_updated"] = true
+            }
+        };
+        SetupExecuteQueryResult(CreateStreamDataResult(row));
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedResult);
+        // Headers keep the user's attribute-path form (Timestamp prepended).
+        Assert.Equal(["Timestamp", "window_start", "amount.value", "obisCode", "was_updated"],
+            capturedResult!.Columns.Select(c => c.Header));
+
+        var rowValues = capturedResult.Rows.Single().Values;
+        Assert.Equal(new DateTime(2026, 6, 9, 22, 0, 0, DateTimeKind.Utc), rowValues[1]);
+        Assert.Equal(42.5, rowValues[2]);           // amount.value -> amountvalue
+        Assert.Equal("1-0:1.8.0", rowValues[3]);    // obisCode -> obiscode
+        Assert.Equal(true, rowValues[4]);           // was_updated (standard column, exact match)
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_AppliesConfigOverrides()
+    {
+        var from = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var to = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc);
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            From = from,
+            To = to,
+            Limit = 500
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var options = _capturedStreamOptions;
+        Assert.NotNull(options);
+        Assert.Equal(from, options!.From);
+        Assert.Equal(to, options.To);
+        Assert.Equal(500, options.Limit);
+        A.CallTo(() => _streamDataRepository.ExecuteQueryAsync(TestArchiveRtId, A<StreamDataQueryOptions>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_MissingArchiveRtId_Throws()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"], archiveRtId: null));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_StreamDataNotEnabled_Throws()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns((IStreamDataRepository?)null);
 
         var node = CreateNode(next);
 

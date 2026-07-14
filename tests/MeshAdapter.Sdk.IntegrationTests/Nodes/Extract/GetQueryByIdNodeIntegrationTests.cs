@@ -49,7 +49,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
 
         Task TrackingNext(IDataContext dataContext1, INodeContext nodeContext1) => Task.CompletedTask;
 
-        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService);
+        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService, systemContext);
 
         // Act & Assert - should throw when query is not found
         var act = () => node.ProcessObjectAsync(dataContext, nodeContext);
@@ -71,7 +71,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         Task Next(IDataContext dataContext, INodeContext nodeContext) => Task.CompletedTask;
 
         // Act & Assert - should not throw
-        var node = new GetQueryByIdNode(Next, meshEtlContext, ckCacheService);
+        var node = new GetQueryByIdNode(Next, meshEtlContext, ckCacheService, systemContext);
         node.Should().NotBeNull();
         return Task.CompletedTask;
     }
@@ -99,7 +99,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
 
         Task TrackingNext(IDataContext dataContext1, INodeContext nodeContext1) => Task.CompletedTask;
 
-        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService);
+        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService, systemContext);
 
         // Act & Assert - should throw when query is not found
         var act = () => node.ProcessObjectAsync(dataContext, nodeContext);
@@ -136,7 +136,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
             return Task.CompletedTask;
         }
 
-        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService);
+        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService, systemContext);
 
         // Act
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -201,7 +201,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
             return Task.CompletedTask;
         }
 
-        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService);
+        var node = new GetQueryByIdNode(TrackingNext, meshEtlContext, ckCacheService, systemContext);
 
         // Act
         Exception? caughtException = null;
@@ -282,7 +282,7 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         var nodeContext = rootContext.RegisterChildNode("GetQueryById", 0, config, dataContext);
 
         Task Next(IDataContext dataContext1, INodeContext nodeContext1) => Task.CompletedTask;
-        var node = new GetQueryByIdNode(Next, meshEtlContext, ckCacheService);
+        var node = new GetQueryByIdNode(Next, meshEtlContext, ckCacheService, systemContext);
 
         // Act
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -753,7 +753,8 @@ public class GetQueryByIdNodeIntegrationTests(SampleDataFixture fixture) : IClas
         var nodeContext = rootContext.RegisterChildNode("GetQueryById", 0, config, dataContext);
 
         Task DefaultNext(IDataContext dc, INodeContext nc) => Task.CompletedTask;
-        var node = new GetQueryByIdNode(customNext ?? DefaultNext, meshEtlContext, ckCacheService);
+        var systemContext = fixture.GetSystemContext();
+        var node = new GetQueryByIdNode(customNext ?? DefaultNext, meshEtlContext, ckCacheService, systemContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

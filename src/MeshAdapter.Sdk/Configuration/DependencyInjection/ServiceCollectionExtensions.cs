@@ -87,6 +87,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GrafanaDeprovisionTenantNode>()
             .RegisterTriggerNode<FromEmailNode>()
             .RegisterTriggerNode<FromMicrosoftGraphNode>()
+            .RegisterTriggerNode<FromMicrosoftGraphEmailNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()
             .RegisterTriggerNode<FromSendNotificationNode>()

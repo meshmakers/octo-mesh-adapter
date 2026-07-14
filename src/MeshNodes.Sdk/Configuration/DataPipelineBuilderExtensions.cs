@@ -73,6 +73,7 @@ public static class DataPipelineBuilderExtensions
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromMicrosoftGraphNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromMicrosoftGraphEmailNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromSendNotificationNodeConfiguration>();

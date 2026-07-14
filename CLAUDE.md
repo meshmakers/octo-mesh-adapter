@@ -73,6 +73,9 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - FromWatchRtEntityNode
    - FromExecutePipelineCommandNode
    - FromSendNotificationNode
+   - FromEmailNode (IMAP folder polling via MailKit)
+   - FromMicrosoftGraphNode (Teams channel polling via Microsoft Graph)
+   - **FromMicrosoftGraphEmailNode** — Polls an Office 365 mailbox FOLDER (path like `Archive/Invoices/ToDo`, '/'-separated, resolved from the mailbox root — never the inbox unless configured) via Microsoft Graph client credentials. Executes the pipeline ONCE PER MESSAGE (batch of one `EmailData`) so success maps 1:1 to the per-message action: on success the mail is moved to `moveToFolderPathOnSuccess` (leaf folder auto-created); on failure it stays in the source folder and is retried up to `maxAttemptsPerMessage` times per adapter lifetime. Only `fileAttachment` contents are downloaded (item/reference attachments skipped). Requires Graph application permission `Mail.ReadWrite`.
 
 ### Core Services
 

@@ -5,6 +5,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
@@ -100,7 +101,7 @@ public class LlmQueryAnthropicSmokeTests
             });
 
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------
 
@@ -169,7 +170,7 @@ public class LlmQueryAnthropicSmokeTests
 
         var (dataContext, nodeContext, next) = PrepareTest(config, input);
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------
 

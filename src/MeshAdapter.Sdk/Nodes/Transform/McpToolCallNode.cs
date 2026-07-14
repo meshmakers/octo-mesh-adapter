@@ -5,6 +5,7 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using ModelContextProtocol.Client;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -21,7 +22,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 [NodeConfiguration(typeof(McpToolCallNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class McpToolCallNode(NodeDelegate next, IMeshEtlContext etlContext)
+internal class McpToolCallNode(
+    NodeDelegate next,
+    IMeshEtlContext etlContext,
+    IServiceAccountTokenService serviceAccountTokenService)
     : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -52,14 +56,19 @@ internal class McpToolCallNode(NodeDelegate next, IMeshEtlContext etlContext)
 
             // Resolve the single named server. Resolve() already logs a warning for an
             // unknown name; in that case we have nothing to call, so pass through.
-            var server = McpServerResolver
-                .Resolve([config.McpConfigurationName], etlContext, nodeContext)
-                .FirstOrDefault();
-            if (server is null)
+            var servers = McpServerResolver
+                .Resolve([config.McpConfigurationName], etlContext, nodeContext);
+            if (servers.Count == 0)
             {
                 await next(dataContext, nodeContext);
                 return;
             }
+
+            // Acquire a client-credentials bearer when the configuration references a
+            // ServiceAccountConfiguration (AB#4315) — identical path to LlmQuery@1.
+            servers = await McpServerResolver.ApplyServiceAccountTokensAsync(
+                servers, serviceAccountTokenService, etlContext, nodeContext, ct);
+            var server = servers[0];
 
             var arguments = ParseArguments(config, dataContext, nodeContext);
 

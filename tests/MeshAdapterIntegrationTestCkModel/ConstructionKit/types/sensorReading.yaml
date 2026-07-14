@@ -1,0 +1,13 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+- typeId: SensorReading
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/SerialNumber
+    name: SerialNumber
+  - id: ${this}/Temperature
+    name: Temperature
+    isOptional: true
+  - id: ${this}/Amount
+    name: Amount
+    isOptional: true

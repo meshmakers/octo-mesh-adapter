@@ -14,6 +14,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshAdapter.Sdk.Integration
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshAdapterIntegrationTestCkModel", "tests\MeshAdapterIntegrationTestCkModel\MeshAdapterIntegrationTestCkModel.csproj", "{3054529C-C366-4D4E-BE35-5588E1D501E6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -117,11 +119,30 @@ Global
 		{812CEDD2-9B55-4062-A64D-0EE0FB80C92E}.DebugL|x64.Build.0 = DebugL|Any CPU
 		{812CEDD2-9B55-4062-A64D-0EE0FB80C92E}.DebugL|x86.ActiveCfg = DebugL|Any CPU
 		{812CEDD2-9B55-4062-A64D-0EE0FB80C92E}.DebugL|x86.Build.0 = DebugL|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Debug|x64.Build.0 = Debug|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Debug|x86.Build.0 = Debug|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Release|x64.ActiveCfg = Release|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Release|x64.Build.0 = Release|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Release|x86.ActiveCfg = Release|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.Release|x86.Build.0 = Release|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.DebugL|Any CPU.ActiveCfg = DebugL|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.DebugL|Any CPU.Build.0 = DebugL|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.DebugL|x64.ActiveCfg = DebugL|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.DebugL|x64.Build.0 = DebugL|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.DebugL|x86.ActiveCfg = DebugL|Any CPU
+		{3054529C-C366-4D4E-BE35-5588E1D501E6}.DebugL|x86.Build.0 = DebugL|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{812CEDD2-9B55-4062-A64D-0EE0FB80C92E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{3054529C-C366-4D4E-BE35-5588E1D501E6} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

@@ -1,0 +1,9 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+records:
+- recordId: Measurement
+  attributes:
+    - id: ${this}/MeasurementValue
+      name: Value
+    - id: ${this}/MeasurementUnit
+      name: Unit
+      isOptional: true

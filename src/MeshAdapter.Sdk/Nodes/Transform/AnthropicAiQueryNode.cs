@@ -20,8 +20,7 @@ internal class AnthropicAiQueryNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
     IHttpClientFactory httpClientFactory,
-    IServiceAccountTokenService serviceAccountTokenService,
-    IServiceClientAccessToken serviceClientAccessToken)
+    IServiceAccountTokenService serviceAccountTokenService)
     : IPipelineNode
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -751,8 +750,12 @@ internal class AnthropicAiQueryNode(
 
         try
         {
-            await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository,
-                config.McpServiceAccountConfigName);
+            // AB#4315 consolidation: side-effect-free keyed acquisition. The previous
+            // EnsureTokenAsync path overwrote the adapter-global IServiceClientAccessToken
+            // (the credential of the adapter's own service clients) and returned whichever
+            // token was cached regardless of the requested configuration name.
+            _mcpAccessToken = await serviceAccountTokenService.GetAccessTokenAsync(
+                etlContext.TenantRepository, etlContext.TenantId, config.McpServiceAccountConfigName);
         }
         catch (Exception ex)
         {
@@ -766,8 +769,6 @@ internal class AnthropicAiQueryNode(
                 $"Token acquisition via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}' " +
                 $"failed: {ex.Message}. MCP calls will be sent unauthenticated.");
         }
-
-        _mcpAccessToken = serviceClientAccessToken.AccessToken;
 
         if (string.IsNullOrEmpty(_mcpAccessToken))
         {

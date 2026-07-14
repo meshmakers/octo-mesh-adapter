@@ -5,6 +5,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
@@ -98,7 +99,7 @@ public class LlmQuerySmokeTests
             });
 
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------
 
@@ -175,7 +176,7 @@ public class LlmQuerySmokeTests
 
         var (dataContext, nodeContext, next) = PrepareTest(config, input);
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------
 
@@ -292,7 +293,7 @@ public class LlmQuerySmokeTests
         var input = new JObject { ["text"] = "lorem ipsum dolor sit amet" };
         var (dataContext, nodeContext, next) = PrepareTest(config, input);
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act + Assert ----------------
 
@@ -341,7 +342,7 @@ public class LlmQuerySmokeTests
             .Invokes(_ => setValueCalled = true);
 
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------
 
@@ -389,7 +390,7 @@ public class LlmQuerySmokeTests
         var input = new JObject { ["text"] = "anything" };
         var (dataContext, nodeContext, next) = PrepareTest(config, input);
         var etlContext = A.Fake<IMeshEtlContext>();
-        var node = new LlmQueryNode(next, etlContext);
+        var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act + Assert ----------------
 

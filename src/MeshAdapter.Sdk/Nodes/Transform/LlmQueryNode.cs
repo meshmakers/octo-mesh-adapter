@@ -6,6 +6,7 @@ using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Client;
 using Newtonsoft.Json.Linq;
@@ -18,7 +19,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 [NodeConfiguration(typeof(LlmQueryNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
+internal class LlmQueryNode(
+    NodeDelegate next,
+    IMeshEtlContext etlContext,
+    IServiceAccountTokenService serviceAccountTokenService)
     : IPipelineNode
 {
     /// <summary>
@@ -123,6 +127,18 @@ internal class LlmQueryNode(NodeDelegate next, IMeshEtlContext etlContext)
             // before message construction so a connection failure surfaces in
             // logs before we send a useless prompt.
             var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
+
+            // Acquire client-credentials bearers for servers that reference a
+            // ServiceAccountConfiguration (AB#4315: octo-mcp-service requires a
+            // bearer on every MCP request). Cached per configuration name in the
+            // singleton provider — typically one identity-server round-trip per
+            // token lifetime, not per pipeline message.
+            if (mcpServers.Count > 0)
+            {
+                mcpServers = await McpServerResolver.ApplyServiceAccountTokensAsync(
+                    mcpServers, serviceAccountTokenService, etlContext, nodeContext, ct);
+            }
+
             var mcpTools = mcpServers.Count > 0
                 ? await LoadMcpToolsAsync(mcpServers, mcpClients, nodeContext, ct)
                 : (IList<AIFunction>)Array.Empty<AIFunction>();

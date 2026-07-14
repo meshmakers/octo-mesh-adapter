@@ -1,4 +1,5 @@
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using ModelContextProtocol.Client;
 using Newtonsoft.Json.Linq;
 
@@ -29,7 +30,21 @@ internal static class McpServerResolver
         string? Command,
         string? Arguments,
         string? BearerToken,
-        IReadOnlyDictionary<string, string> AdditionalHeaders);
+        IReadOnlyDictionary<string, string> AdditionalHeaders,
+        string? AuthServiceAccountConfigurationName)
+    {
+        /// <summary>
+        /// Redacts secrets — the record auto-ToString would print the live bearer
+        /// token and header values into any log or exception message that formats
+        /// the config. Header names are safe; values never.
+        /// </summary>
+        public override string ToString() =>
+            $"McpServerConfig {{ Name = {Name}, Transport = {Transport}, Url = {Url}, " +
+            $"Command = {Command}, Arguments = {Arguments}, " +
+            $"BearerToken = {(string.IsNullOrEmpty(BearerToken) ? "<none>" : "<redacted>")}, " +
+            $"AdditionalHeaders = [{string.Join(", ", AdditionalHeaders.Keys)}], " +
+            $"AuthServiceAccountConfigurationName = {AuthServiceAccountConfigurationName} }}";
+    }
 
     /// <summary>
     /// Resolves the named <c>System.Communication/McpConfiguration</c> entities
@@ -77,7 +92,8 @@ internal static class McpServerResolver
                 Command: doc.Value<string>("command"),
                 Arguments: doc.Value<string>("arguments"),
                 BearerToken: doc.Value<string>("bearerToken"),
-                AdditionalHeaders: additionalHeaders));
+                AdditionalHeaders: additionalHeaders,
+                AuthServiceAccountConfigurationName: doc.Value<string>("authServiceAccountConfigurationName")));
 
             // Header *names* are safe to log (values are secrets and are never logged).
             var headerInfo = additionalHeaders.Count > 0
@@ -86,6 +102,54 @@ internal static class McpServerResolver
             nodeContext.Debug($"McpConfiguration '{name}' loaded: transport={transport}{headerInfo}");
         }
         return result;
+    }
+
+    /// <summary>
+    /// Replaces the static <c>BearerToken</c> of every server that references a
+    /// <c>ServiceAccountConfiguration</c> (via <c>AuthServiceAccountConfigurationName</c>)
+    /// with a freshly acquired client-credentials token. Precedence, matching DD-4:
+    /// service-account token &gt; static BearerToken; an explicit <c>Authorization</c>
+    /// entry in AdditionalHeaders still overrides both (applied later in
+    /// <see cref="BuildTransport"/>). Acquisition failures log a warning and fall
+    /// back to the static token — a broken identity server degrades that one server,
+    /// not the whole pipeline.
+    /// </summary>
+    internal static async Task<IList<McpServerConfig>> ApplyServiceAccountTokensAsync(
+        IList<McpServerConfig> servers,
+        IServiceAccountTokenService tokenService,
+        IMeshEtlContext etlContext,
+        INodeContext nodeContext,
+        CancellationToken ct)
+    {
+        for (var i = 0; i < servers.Count; i++)
+        {
+            var server = servers[i];
+            if (string.IsNullOrWhiteSpace(server.AuthServiceAccountConfigurationName))
+            {
+                continue;
+            }
+
+            var token = await tokenService.GetAccessTokenAsync(
+                etlContext.TenantRepository, etlContext.TenantId,
+                server.AuthServiceAccountConfigurationName, ct);
+
+            if (!string.IsNullOrEmpty(token))
+            {
+                servers[i] = server with { BearerToken = token };
+                nodeContext.Debug(
+                    $"MCP server '{server.Name}': using service-account bearer from " +
+                    $"'{server.AuthServiceAccountConfigurationName}' (overrides static BearerToken)");
+            }
+            else
+            {
+                nodeContext.Warning(
+                    $"MCP server '{server.Name}': could not acquire a service-account token from " +
+                    $"'{server.AuthServiceAccountConfigurationName}'; falling back to the static " +
+                    "BearerToken (requests may be unauthenticated).");
+            }
+        }
+
+        return servers;
     }
 
     /// <summary>

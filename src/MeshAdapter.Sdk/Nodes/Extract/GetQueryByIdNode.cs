@@ -52,13 +52,13 @@ public class GetQueryByIdNode(
         // Stream-data queries share the RtPersistentQuery base but are executed against the
         // tenant's stream-data repository (CrateDB) rather than the runtime graph query. Handle
         // them on a dedicated path; the runtime-graph switch below only knows the *RtQuery types.
-        if (rtQuery is RtSimpleSdQuery simpleSdQuery)
+        if (rtQuery is RtStreamDataQuery streamDataQuery)
         {
             // The load transaction is only needed to read the query entity; the actual stream-data
             // query does not run through the Mongo session, so release it before executing.
             await session.CommitTransactionAsync();
 
-            await ProcessSimpleStreamDataQueryAsync(simpleSdQuery, dataContext, nodeContext, c);
+            await ProcessStreamDataQueryAsync(streamDataQuery, dataContext, nodeContext, c);
             await next(dataContext, nodeContext);
             return;
         }
@@ -340,7 +340,7 @@ public class GetQueryByIdNode(
         };
     }
 
-    private async Task ProcessSimpleStreamDataQueryAsync(RtSimpleSdQuery query,
+    private async Task ProcessStreamDataQueryAsync(RtStreamDataQuery query,
         IDataContext dataContext, INodeContext nodeContext, GetQueryByIdNodeConfiguration c)
     {
         var streamDataRepo = await ResolveStreamDataRepositoryAsync(nodeContext);
@@ -352,7 +352,29 @@ public class GetQueryByIdNode(
 
         var archiveRtId = new OctoObjectId(query.ArchiveRtId);
 
-        var columns = query.Columns?.ToList() ?? [];
+        var queryResult = query switch
+        {
+            RtSimpleSdQuery simple =>
+                await ExecuteSimpleStreamDataQueryAsync(simple, archiveRtId, streamDataRepo, dataContext, c,
+                    nodeContext),
+            RtAggregationSdQuery aggregation =>
+                await ExecuteAggregationStreamDataQueryAsync(aggregation, archiveRtId, streamDataRepo, dataContext,
+                    c, nodeContext),
+            RtGroupingAggregationSdQuery grouped =>
+                await ExecuteGroupedAggregationStreamDataQueryAsync(grouped, archiveRtId, streamDataRepo,
+                    dataContext, c, nodeContext),
+            // Downsampling and any future stream-data query types are not yet supported.
+            _ => throw MeshAdapterPipelineExecutionException.UnsupportedQueryType(nodeContext,
+                query.GetType().Name)
+        };
+
+        dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+    }
+
+    private async Task<QueryResult> ExecuteSimpleStreamDataQueryAsync(RtSimpleSdQuery query,
+        OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo, IDataContext dataContext,
+        GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+    {
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
         var sortOrders = query.Sorting?
             .Select(s => new SortOrderItem(s.AttributePath, (SortOrders)(int)s.SortOrder))
@@ -360,7 +382,7 @@ public class GetQueryByIdNode(
 
         var options = StreamDataQueryOptions.Create()
             .WithCkTypeId(query.QueryCkTypeId)
-            .WithColumns(columns)
+            .WithColumns(query.Columns?.ToList() ?? [])
             .WithRtIds(rtIds)
             // Values from the node configuration win over the values persisted on the query.
             .WithTimeRange(c.From ?? query.From, c.To ?? query.To)
@@ -371,19 +393,63 @@ public class GetQueryByIdNode(
             // Skip/Take map onto the paginated read (offset / page size); the row cap is Limit.
             .WithPagination(c.Skip, c.Take);
 
-        StreamDataQueryResult result;
+        var result = await ExecuteAsync(() => streamDataRepo.ExecuteQueryAsync(archiveRtId, options),
+            nodeContext, c);
+
+        return BuildSimpleStreamDataQueryResult(query, result);
+    }
+
+    private async Task<QueryResult> ExecuteAggregationStreamDataQueryAsync(RtAggregationSdQuery query,
+        OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo, IDataContext dataContext,
+        GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+    {
+        var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
+
+        var options = StreamDataAggregationQueryOptions.Create()
+            .WithCkTypeId(query.QueryCkTypeId)
+            .WithAggregationColumns(BuildStreamAggregationColumns(query.Columns))
+            .WithRtIds(rtIds)
+            .WithTimeRange(c.From ?? query.From, c.To ?? query.To)
+            .WithFieldFilters(BuildStreamDataFieldFilters(query.FieldFilter, dataContext, c));
+
+        var result = await ExecuteAsync(
+            () => streamDataRepo.ExecuteAggregationQueryAsync(archiveRtId, options), nodeContext, c);
+
+        return BuildAggregationStreamDataQueryResult(query, result);
+    }
+
+    private async Task<QueryResult> ExecuteGroupedAggregationStreamDataQueryAsync(
+        RtGroupingAggregationSdQuery query, OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo,
+        IDataContext dataContext, GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+    {
+        var groupingColumns = query.GroupingColumns?.ToList() ?? [];
+        var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
+
+        var options = StreamDataGroupedAggregationQueryOptions.Create()
+            .WithCkTypeId(query.QueryCkTypeId)
+            .WithGroupByColumns(groupingColumns)
+            .WithAggregationColumns(BuildStreamAggregationColumns(query.Columns))
+            .WithRtIds(rtIds)
+            .WithTimeRange(c.From ?? query.From, c.To ?? query.To)
+            .WithFieldFilters(BuildStreamDataFieldFilters(query.FieldFilter, dataContext, c));
+
+        var result = await ExecuteAsync(
+            () => streamDataRepo.ExecuteGroupedAggregationQueryAsync(archiveRtId, options), nodeContext, c);
+
+        return BuildGroupedAggregationStreamDataQueryResult(query, groupingColumns, result);
+    }
+
+    private static async Task<StreamDataQueryResult> ExecuteAsync(
+        Func<Task<StreamDataQueryResult>> execute, INodeContext nodeContext, GetQueryByIdNodeConfiguration c)
+    {
         try
         {
-            result = await streamDataRepo.ExecuteQueryAsync(archiveRtId, options);
+            return await execute();
         }
         catch (Exception ex)
         {
             throw MeshAdapterPipelineExecutionException.StreamDataQueryFailed(nodeContext, c.QueryRtId, ex);
         }
-
-        var queryResult = BuildSimpleStreamDataQueryResult(query, result);
-
-        dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
     }
 
     private async Task<IStreamDataRepository> ResolveStreamDataRepositoryAsync(INodeContext nodeContext)
@@ -475,5 +541,105 @@ public class GetQueryByIdNode(
 
         var physicalColumnName = attributePath.Replace(".", string.Empty).ToLowerInvariant();
         return values.TryGetValue(physicalColumnName, out var mapped) ? mapped : null;
+    }
+
+    private static QueryResult BuildAggregationStreamDataQueryResult(RtAggregationSdQuery query,
+        StreamDataQueryResult result)
+    {
+        var columns = query.Columns.ToList();
+
+        var queryResult = new QueryResult();
+        // Parity with the runtime aggregation result: one column per aggregation, headed by the
+        // attribute path, and a single row of aggregate values (RtId null).
+        queryResult.Columns.AddRange(columns.Select(column =>
+            new QueryResultColumns { Header = column.AttributePath }));
+
+        var row = result.Rows.FirstOrDefault();
+        var values = columns
+            .Select(column => row is null
+                ? null
+                : ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType))
+            .ToList();
+
+        queryResult.Rows.Add(new QueryResultRow { Values = values });
+
+        return queryResult;
+    }
+
+    private static QueryResult BuildGroupedAggregationStreamDataQueryResult(
+        RtGroupingAggregationSdQuery query, List<string> groupingColumns, StreamDataQueryResult result)
+    {
+        var aggregationColumns = query.Columns.ToList();
+
+        var queryResult = new QueryResult();
+        // Parity with the runtime grouped aggregation: group-by columns first, then the aggregation
+        // columns; one row per group (RtId null).
+        queryResult.Columns.AddRange(groupingColumns.Select(col =>
+            new QueryResultColumns { Header = col }));
+        queryResult.Columns.AddRange(aggregationColumns.Select(column =>
+            new QueryResultColumns { Header = column.AttributePath }));
+
+        foreach (var row in result.Rows)
+        {
+            var values = new List<object?>();
+            // Group-key columns are keyed by their physical column name, same as simple projections.
+            values.AddRange(groupingColumns.Select(col => ResolveStreamColumnValue(row.Values, col)));
+            values.AddRange(aggregationColumns.Select(column =>
+                ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType)));
+
+            queryResult.Rows.Add(new QueryResultRow { Values = values });
+        }
+
+        return queryResult;
+    }
+
+    private static IReadOnlyList<AggregationColumn> BuildStreamAggregationColumns(
+        IEnumerable<RtAggregationQueryColumnRecord>? columns)
+    {
+        return columns?
+            .Select(col => new AggregationColumn(col.AttributePath, MapStreamAggregation(col.AggregationType).Function))
+            .ToList() ?? [];
+    }
+
+    /// <summary>
+    /// Resolves an aggregation value from a <see cref="StreamDataRow"/>. The stream-data store keys
+    /// aggregate results by the friendly output name <c>{physicalColumn}_{funcToken}</c> (e.g.
+    /// <c>amountvalue_avg</c>) — the attribute path stripped of dots and lower-cased, suffixed with
+    /// the lower-case function token. Falls back to the SQL-alias form <c>{Func}_{physicalColumn}</c>
+    /// (e.g. <c>Avg_amountvalue</c>) that the store also surfaces.
+    /// </summary>
+    private static object? ResolveStreamAggregationValue(IReadOnlyDictionary<string, object?> values,
+        string attributePath, Enum aggregationType)
+    {
+        var token = MapStreamAggregation(aggregationType).KeyToken;
+        var column = attributePath.Replace(".", string.Empty).ToLowerInvariant();
+
+        var outputName = $"{column}_{token}";
+        if (values.TryGetValue(outputName, out var v))
+        {
+            return v;
+        }
+
+        var sqlAlias = $"{char.ToUpperInvariant(token[0])}{token[1..]}_{column}";
+        return values.TryGetValue(sqlAlias, out var v2) ? v2 : null;
+    }
+
+    /// <summary>
+    /// Maps the persisted aggregation-type enum to the engine <see cref="AggregationFunction"/> (used
+    /// to build the query options) and the lower-case result-key token the storage layer uses when
+    /// naming the aggregate output column.
+    /// </summary>
+    private static (AggregationFunction Function, string KeyToken) MapStreamAggregation(Enum aggregationType)
+    {
+        return aggregationType.ToString() switch
+        {
+            "Count" => (AggregationFunction.Count, "count"),
+            "Sum" => (AggregationFunction.Sum, "sum"),
+            "Average" => (AggregationFunction.Average, "avg"),
+            "Minimum" => (AggregationFunction.Minimum, "min"),
+            "Maximum" => (AggregationFunction.Maximum, "max"),
+            _ => throw new ArgumentOutOfRangeException(nameof(aggregationType), aggregationType,
+                $"Unknown aggregation type: {aggregationType}")
+        };
     }
 }

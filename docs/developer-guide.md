@@ -144,13 +144,19 @@ the caller does not need to know it in advance.
 | `RtAggregationRtQuery` | runtime graph query | single row of aggregate values |
 | `RtGroupingAggregationRtQuery` | runtime graph query | one row per group (group keys + aggregates) |
 | `RtSimpleSdQuery` | stream-data repository | **time series**: leading `Timestamp` column + projected columns, one row per data point |
+| `RtAggregationSdQuery` | stream-data repository | single row of aggregate values (RtId null) |
+| `RtGroupingAggregationSdQuery` | stream-data repository | one row per group (group-by columns + aggregates, RtId null) |
 
 Stream-data queries are executed against the tenant's `IStreamDataRepository` (obtained via
 `ISystemContext.FindTenantContextAsync(...).GetStreamDataRepository()`), reading the `CkArchive`
-referenced by the query's `ArchiveRtId`. Errors surface through the standard pipeline-exception
-channel (query not found, missing `ArchiveRtId`, stream data not enabled, execution failure) — no
-silent empty results. Aggregated / grouped-aggregated / downsampling stream-data queries are not yet
-supported and throw `UnsupportedQueryType`. See Azure DevOps AB#4195.
+referenced by the query's `ArchiveRtId`. Projected values are keyed in the engine result by their
+physical CrateDB column name (attribute path with dots stripped, lower-cased — e.g. `amount.value`
+→ `amountvalue`); aggregate values by `{physicalColumn}_{funcToken}` (e.g. `amountvalue_sum`). The
+node resolves both forms so the `QueryResult` headers keep the caller's original attribute paths.
+Errors surface through the standard pipeline-exception channel (query not found, missing
+`ArchiveRtId`, stream data not enabled, execution failure) — no silent empty results.
+`RtDownsamplingSdQuery` is not yet supported and throws `UnsupportedQueryType`. See Azure DevOps
+AB#4195.
 
 #### BackfillFromRtEntityNode
 

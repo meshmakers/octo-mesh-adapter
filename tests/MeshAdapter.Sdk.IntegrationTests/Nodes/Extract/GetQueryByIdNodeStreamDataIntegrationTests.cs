@@ -90,6 +90,126 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
         result!.Rows.Should().HaveCount(2, "Limit=2 caps the returned rows");
     }
 
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationStreamDataQuery_ReturnsSingleAggregatedRow()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // Seeded points: Temperature = 20..24 (avg 22), Amount.Value = 100..104 (sum 510).
+        var queryRtId = await CreateAggregationStreamDataQueryAsync(
+            "AggregationSdQuery",
+            ("Temperature", RtAggregationTypesEnum.Average),
+            ("Amount.Value", RtAggregationTypesEnum.Sum));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var result = await ExecuteNodeAndGetQueryResultAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Columns.Select(c => c.Header).Should().ContainInOrder("Temperature", "Amount.Value");
+        result.Rows.Should().ContainSingle();
+
+        Convert.ToDouble(result.Rows[0].Values[0]).Should().Be(22.0, "average of 20..24");
+        Convert.ToDouble(result.Rows[0].Values[1]).Should().Be(510.0, "sum of 100..104");
+        result.Rows[0].RtId.Should().BeNull("aggregation rows have no entity RtId");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithGroupedAggregationStreamDataQuery_ReturnsRowPerGroup()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // Each seeded point has a distinct SerialNumber, so grouping yields one row per point,
+        // each summing that point's Temperature. The grand total is 20+21+22+23+24 = 110.
+        var queryRtId = await CreateGroupedAggregationStreamDataQueryAsync(
+            "GroupedSdQuery",
+            new[] { "SerialNumber" },
+            ("Temperature", RtAggregationTypesEnum.Sum));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var result = await ExecuteNodeAndGetQueryResultAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Columns.Select(c => c.Header).Should().ContainInOrder("SerialNumber", "Temperature");
+        result.Rows.Should().HaveCount(fixture.TestDataPointCount);
+
+        result.Rows.Select(r => r.Values[0]).Should().OnlyContain(v => v != null,
+            "the group-by SerialNumber must resolve for every row");
+        result.Rows.Sum(r => Convert.ToDouble(r.Values[1])).Should().Be(110.0);
+    }
+
+    private async Task<OctoObjectId> CreateAggregationStreamDataQueryAsync(
+        string name, params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        return await CreateStreamDataQueryAsync<RtAggregationSdQuery>(name, query =>
+        {
+            foreach (var (path, type) in columns)
+            {
+                query.Columns.Add(new RtAggregationQueryColumnRecord
+                {
+                    AttributePath = path,
+                    AggregationType = type
+                });
+            }
+        });
+    }
+
+    private async Task<OctoObjectId> CreateGroupedAggregationStreamDataQueryAsync(
+        string name, string[] groupingColumns, params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        return await CreateStreamDataQueryAsync<RtGroupingAggregationSdQuery>(name, query =>
+        {
+            query.GroupingColumns = new AttributeStringValueList(groupingColumns.ToList());
+            foreach (var (path, type) in columns)
+            {
+                query.Columns.Add(new RtAggregationQueryColumnRecord
+                {
+                    AttributePath = path,
+                    AggregationType = type
+                });
+            }
+        });
+    }
+
+    private async Task<OctoObjectId> CreateStreamDataQueryAsync<TQuery>(string name, Action<TQuery> configure)
+        where TQuery : RtStreamDataQuery, new()
+    {
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+        await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
+
+        using var session = await tenantRepository.GetSessionAsync();
+        session.StartTransaction();
+
+        var query = await tenantRepository.CreateTransientRtEntityAsync<TQuery>();
+        query.Name = name;
+        query.RtWellKnownName = name;
+        query.QueryCkTypeId = fixture.TestCkTypeId;
+        query.ArchiveRtId = fixture.ArchiveRtIdString;
+        configure(query);
+
+        await tenantRepository.InsertOneRtEntityAsync(session, query);
+        await session.CommitTransactionAsync();
+
+        return query.RtId;
+    }
+
     private async Task<OctoObjectId> CreateSimpleStreamDataQueryAsync(string name, params string[] columns)
     {
         var systemContext = fixture.GetSystemContext();

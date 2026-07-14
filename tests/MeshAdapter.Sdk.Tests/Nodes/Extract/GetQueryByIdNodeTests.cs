@@ -756,6 +756,162 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     #endregion
 
+    #region Aggregation / Grouped Stream-Data Query Tests
+
+    private void SetupPersistentQuery(RtPersistentQuery query)
+    {
+        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+                A<IOctoSession>._, A<OctoObjectId>._))
+            .Returns(Task.FromResult<RtPersistentQuery?>(query));
+    }
+
+    private void SetupExecuteAggregationResult(StreamDataQueryResult result)
+    {
+        A.CallTo(() => _streamDataRepository.ExecuteAggregationQueryAsync(
+                A<OctoObjectId>._, A<StreamDataAggregationQueryOptions>._))
+            .Returns(Task.FromResult(result));
+    }
+
+    private void SetupExecuteGroupedAggregationResult(StreamDataQueryResult result)
+    {
+        A.CallTo(() => _streamDataRepository.ExecuteGroupedAggregationQueryAsync(
+                A<OctoObjectId>._, A<StreamDataGroupedAggregationQueryOptions>._))
+            .Returns(Task.FromResult(result));
+    }
+
+    private static RtAggregationSdQuery CreateAggregationStreamDataQuery(
+        params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        var query = new RtAggregationSdQuery
+        {
+            QueryCkTypeId = "TestModel/TestType",
+            ArchiveRtId = "000000000000000000000042"
+        };
+        foreach (var (path, type) in columns)
+        {
+            query.Columns.Add(new RtAggregationQueryColumnRecord { AttributePath = path, AggregationType = type });
+        }
+
+        return query;
+    }
+
+    private static RtGroupingAggregationSdQuery CreateGroupedAggregationStreamDataQuery(
+        string[] groupingColumns, params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        var query = new RtGroupingAggregationSdQuery
+        {
+            QueryCkTypeId = "TestModel/TestType",
+            ArchiveRtId = "000000000000000000000042",
+            GroupingColumns = new AttributeStringValueList(groupingColumns.ToList())
+        };
+        foreach (var (path, type) in columns)
+        {
+            query.Columns.Add(new RtAggregationQueryColumnRecord { AttributePath = path, AggregationType = type });
+        }
+
+        return query;
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationStreamDataQuery_BuildsSingleRow()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateAggregationStreamDataQuery(
+            ("Temperature", RtAggregationTypesEnum.Average),
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+
+        // Store keys aggregates by the friendly output name {physicalColumn}_{funcToken}.
+        var row = new StreamDataRow
+        {
+            Values = new Dictionary<string, object?>
+            {
+                ["temperature_avg"] = 21.5,
+                ["amountvalue_sum"] = 302.0
+            }
+        };
+        SetupExecuteAggregationResult(new StreamDataQueryResult { Rows = [row], TotalCount = 1 });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedResult);
+        Assert.Equal(["Temperature", "Amount.Value"], capturedResult!.Columns.Select(col => col.Header));
+        Assert.Single(capturedResult.Rows);
+        Assert.Equal(21.5, capturedResult.Rows[0].Values[0]);
+        Assert.Equal(302.0, capturedResult.Rows[0].Values[1]);
+        Assert.Null(capturedResult.Rows[0].RtId);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithGroupedAggregationStreamDataQuery_BuildsGroupedRows()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateGroupedAggregationStreamDataQuery(
+            ["SerialNumber"], ("Temperature", RtAggregationTypesEnum.Sum)));
+
+        var rows = new[]
+        {
+            new StreamDataRow
+            {
+                Values = new Dictionary<string, object?>
+                {
+                    ["serialnumber"] = "A",
+                    ["temperature_sum"] = 100.0
+                }
+            },
+            new StreamDataRow
+            {
+                Values = new Dictionary<string, object?>
+                {
+                    ["serialnumber"] = "B",
+                    ["temperature_sum"] = 50.0
+                }
+            }
+        };
+        SetupExecuteGroupedAggregationResult(new StreamDataQueryResult { Rows = rows, TotalCount = 2 });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedResult);
+        Assert.Equal(["SerialNumber", "Temperature"], capturedResult!.Columns.Select(col => col.Header));
+        Assert.Equal(2, capturedResult.Rows.Count);
+        Assert.Equal("A", capturedResult.Rows[0].Values[0]);
+        Assert.Equal(100.0, capturedResult.Rows[0].Values[1]);
+        Assert.Equal("B", capturedResult.Rows[1].Values[0]);
+        Assert.Equal(50.0, capturedResult.Rows[1].Values[1]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_Throws()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(new RtDownsamplingSdQuery
+        {
+            QueryCkTypeId = "TestModel/TestType",
+            ArchiveRtId = "000000000000000000000042"
+        });
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    #endregion
+
     #region Transaction Tests
 
     [Fact]

@@ -402,6 +402,28 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Unsupported query type '{queryTypeName}'.");
     }
 
+    public static Exception StreamDataNotEnabled(INodeContext nodeContext, string tenantId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Stream data repository is not available for tenant '{tenantId}'. " +
+            "Ensure stream data is enabled for the tenant (AddCrateDbStreamDataRepository() during startup).");
+    }
+
+    public static Exception ArchiveRtIdMissing(INodeContext nodeContext, OctoObjectId queryRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Stream-data query '{queryRtId}' has no ArchiveRtId set. " +
+            "The query must reference the CkArchive it reads from.");
+    }
+
+    public static Exception StreamDataQueryFailed(INodeContext nodeContext, OctoObjectId queryRtId,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Execution of stream-data query '{queryRtId}' failed: {inner.Message}",
+            inner);
+    }
+
     public static Exception AggregationResultNull(INodeContext nodeContext, OctoObjectId queryRtId)
     {
         return new MeshAdapterPipelineExecutionException(

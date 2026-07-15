@@ -1,0 +1,16 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # Simple scalar columns
+  - id: SerialNumber
+    valueType: String
+  - id: Temperature
+    valueType: Double
+  # Record-typed attribute for testing dotted stream-data column paths (Amount.Value / Amount.Unit)
+  - id: Amount
+    valueType: Record
+    valueCkRecordId: ${this}/Measurement
+  # Record member attributes
+  - id: MeasurementValue
+    valueType: Double
+  - id: MeasurementUnit
+    valueType: String

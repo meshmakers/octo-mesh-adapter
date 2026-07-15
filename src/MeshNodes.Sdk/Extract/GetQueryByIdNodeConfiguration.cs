@@ -34,4 +34,25 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("Query", 2)]
     public ICollection<FieldFilterWithPathDto>? FieldFilters { get; set; }
+
+    /// <summary>
+    /// Optional start of the time range (UTC), only applied to stream-data queries. When set it
+    /// overrides the value persisted on the query entity; otherwise the persisted value is used.
+    /// </summary>
+    [PropertyGroup("StreamData", 0)]
+    public DateTime? From { get; init; }
+
+    /// <summary>
+    /// Optional end of the time range (UTC), only applied to stream-data queries. When set it
+    /// overrides the value persisted on the query entity; otherwise the persisted value is used.
+    /// </summary>
+    [PropertyGroup("StreamData", 1)]
+    public DateTime? To { get; init; }
+
+    /// <summary>
+    /// Optional row cap, only applied to stream-data queries. When set it overrides the limit
+    /// persisted on the query entity; otherwise the persisted value is used.
+    /// </summary>
+    [PropertyGroup("StreamData", 2)]
+    public int? Limit { get; init; }
 }

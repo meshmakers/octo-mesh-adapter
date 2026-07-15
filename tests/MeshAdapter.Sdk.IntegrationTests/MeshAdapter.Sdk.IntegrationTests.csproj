@@ -35,6 +35,7 @@
     <ItemGroup>
         <ProjectReference Include="..\..\src\MeshAdapter.Sdk\MeshAdapter.Sdk.csproj" />
         <ProjectReference Include="..\..\src\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />
+        <ProjectReference Include="..\MeshAdapterIntegrationTestCkModel\MeshAdapterIntegrationTestCkModel.csproj" />
     </ItemGroup>
 
     <!-- Test configuration and data -->

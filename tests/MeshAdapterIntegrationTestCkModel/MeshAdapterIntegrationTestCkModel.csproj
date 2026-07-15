@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <AssemblyName>MeshAdapterIntegrationTestCkModel</AssemblyName>
+        <RootNamespace>MeshAdapterIntegrationTestCkModel</RootNamespace>
+        <Configurations>Debug;Release;DebugL</Configurations>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Meshmakers.Octo.Runtime.Contracts" Version="$(OctoCoreLibVersion)" />
+        <PackageReference Include="Meshmakers.Octo.ConstructionKit.SourceGeneration" OutputItemType="Analyzer" ReferenceOutputAssembly="false" Version="$(OctoCoreLibVersion)" />
+        <PackageReference Include="Meshmakers.Octo.ConstructionKit.MsBuildTasks" Version="$(OctoCoreLibVersion)" PrivateAssets="all" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ConstructionKitFolder Visible="false" Include="$(MSBuildProjectDirectory)\ConstructionKit"/>
+    </ItemGroup>
+</Project>

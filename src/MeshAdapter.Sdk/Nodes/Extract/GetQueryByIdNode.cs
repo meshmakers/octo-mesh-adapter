@@ -15,9 +15,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 /// <summary>
 /// Node get query by id. Supports runtime-data queries (simple, aggregation, grouped aggregation)
-/// and simple stream-data queries. The caller does not need to know the query kind in advance — the
-/// persisted query entity (a shared <see cref="RtPersistentQuery"/> subtype) is resolved and
-/// dispatched based on its concrete type.
+/// and stream-data queries (simple, aggregation, grouped aggregation). The caller does not need to
+/// know the query kind in advance — the persisted query entity (a shared
+/// <see cref="RtPersistentQuery"/> subtype) is resolved and dispatched based on its concrete type.
 /// </summary>
 /// <param name="next">Next node delegate in the pipeline</param>
 /// <param name="context">Mesh ETL context</param>
@@ -37,7 +37,9 @@ public class GetQueryByIdNode(
     {
         var c = nodeContext.GetNodeConfiguration<GetQueryByIdNodeConfiguration>();
 
-        var session = await context.TenantRepository.GetSessionAsync();
+        // Disposed on every exit path (runtime, stream-data, and the QueryNotFound throw) so the
+        // session is never left alive until GC.
+        using var session = await context.TenantRepository.GetSessionAsync();
         session.StartTransaction();
 
         var rtQuery =

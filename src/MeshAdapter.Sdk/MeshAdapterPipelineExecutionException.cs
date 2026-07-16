@@ -467,4 +467,49 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Discord API returned HTTP {statusCode} for channel '{channelId}'.{retryPart} Response body: {responseBody}");
     }
+
+    public static Exception DataSheetModelInvalid(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The data-sheet model at path '{path}' is missing or is not a JSON object. " +
+            "Please provide an object with 'title', optional 'subtitle', a 'sections' array and an optional footer.");
+    }
+
+    public static Exception PdfRenderFailed(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Rendering the data-sheet PDF failed: {exception.Message}", exception);
+    }
+
+    public static Exception PdfMergeInputEmpty(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No PDFs to merge at path '{path}'. Please provide a non-empty array of base64 PDFs.");
+    }
+
+    public static Exception PdfMergeItemInvalid(INodeContext nodeContext, int index, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: PDF at index {index} could not be imported for merging: {exception.Message}. " +
+            "Set FailOnInvalidPdf=false to skip unreadable PDFs instead.", exception);
+    }
+
+    public static Exception PdfMergeProducedNothing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: None of the supplied PDFs could be imported, so no merged document was produced.");
+    }
+
+    public static Exception ZipEntriesInvalid(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The ZIP entries at path '{path}' are missing or are not a JSON array of " +
+            "{{ fileName, contentBase64 }} objects.");
+    }
+
+    public static Exception ZipEntryInvalid(INodeContext nodeContext, int index, string reason)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ZIP entry at index {index} is invalid: {reason}.");
+    }
 }

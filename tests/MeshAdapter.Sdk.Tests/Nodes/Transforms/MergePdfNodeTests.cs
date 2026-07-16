@@ -43,7 +43,8 @@ public class MergePdfNodeTests : NodeTestBase
     [Fact]
     public async Task ProcessObjectAsync_MergesTwoPdfs_IntoAllPages()
     {
-        var config = new MergePdfNodeConfiguration { Path = "$.pdfs", TargetPath = "$.merged" };
+        var config = new MergePdfNodeConfiguration
+            { Path = "$.pdfs", TargetPath = "$.merged", ContentLengthTargetPath = "$.mergedLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
             .Returns(new List<string?> { MakePdfBase64(1), MakePdfBase64(2) });
@@ -55,6 +56,9 @@ public class MergePdfNodeTests : NodeTestBase
         var merged = CapturedString(dataContext, config.TargetPath);
         Assert.NotNull(merged);
         Assert.Equal(3, PageCountOf(merged!));
+        var len = Fake.GetCalls(dataContext).First(c => c.Method.Name == "Set"
+            && (string?)c.Arguments[0] == "$.mergedLen").Arguments[1];
+        Assert.Equal((long)Convert.FromBase64String(merged!).Length, len);
     }
 
     [Fact]

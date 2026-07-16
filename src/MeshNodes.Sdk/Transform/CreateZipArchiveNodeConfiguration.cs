@@ -15,4 +15,13 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// </para>
 /// </summary>
 [NodeName("CreateZipArchive", 1)]
-public record CreateZipArchiveNodeConfiguration : SourceTargetPathNodeConfiguration;
+public record CreateZipArchiveNodeConfiguration : SourceTargetPathNodeConfiguration
+{
+    /// <summary>
+    /// Optional path to write the archive's byte length to (as a long). Handy for
+    /// feeding a following <c>CreateFileSystemUpdate@1</c>, which requires the
+    /// content length explicitly.
+    /// </summary>
+    [PropertyGroup("Data", 0, "jsonpath")]
+    public string? ContentLengthTargetPath { get; set; }
+}

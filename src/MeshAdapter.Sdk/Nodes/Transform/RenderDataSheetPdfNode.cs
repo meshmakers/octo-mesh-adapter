@@ -155,6 +155,12 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
         dataContext.Set(config.TargetPath, Convert.ToBase64String(bytes),
             config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
 
+        if (!string.IsNullOrEmpty(config.ContentLengthTargetPath))
+        {
+            dataContext.Set(config.ContentLengthTargetPath, (long)bytes.Length,
+                config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
+        }
+
         await next(dataContext, nodeContext);
     }
 

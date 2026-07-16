@@ -39,7 +39,8 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     [Fact]
     public async Task ProcessObjectAsync_BundlesEntries_IncludingFolders()
     {
-        var config = new CreateZipArchiveNodeConfiguration { Path = "$.entries", TargetPath = "$.zip" };
+        var config = new CreateZipArchiveNodeConfiguration
+            { Path = "$.entries", TargetPath = "$.zip", ContentLengthTargetPath = "$.zipLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var entries = new JsonArray(
             new JsonObject { ["fileName"] = "AP/RE-2025-001.pdf", ["contentBase64"] = B64("first") },
@@ -53,6 +54,10 @@ public class CreateZipArchiveNodeTests : NodeTestBase
         VerifyNextCalled(next, dataContext, nodeContext);
         var zip = CapturedString(dataContext, config.TargetPath);
         Assert.NotNull(zip);
+        // the byte length is emitted and matches the decoded archive
+        var len = Fake.GetCalls(dataContext).First(c => c.Method.Name == "Set"
+            && (string?)c.Arguments[0] == "$.zipLen").Arguments[1];
+        Assert.Equal((long)Convert.FromBase64String(zip!).Length, len);
         var contents = ReadZip(zip!);
         Assert.Equal(3, contents.Count);
         Assert.Equal("first", contents["AP/RE-2025-001.pdf"]);

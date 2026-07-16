@@ -26,4 +26,12 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// </para>
 /// </summary>
 [NodeName("RenderDataSheetPdf", 1)]
-public record RenderDataSheetPdfNodeConfiguration : SourceTargetPathNodeConfiguration;
+public record RenderDataSheetPdfNodeConfiguration : SourceTargetPathNodeConfiguration
+{
+    /// <summary>
+    /// Optional path to write the rendered PDF's byte length to (as a long), for
+    /// feeding a following <c>CreateFileSystemUpdate@1</c>.
+    /// </summary>
+    [PropertyGroup("Data", 0, "jsonpath")]
+    public string? ContentLengthTargetPath { get; set; }
+}

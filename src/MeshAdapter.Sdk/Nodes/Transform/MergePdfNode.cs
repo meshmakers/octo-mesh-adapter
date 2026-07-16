@@ -83,6 +83,12 @@ public class MergePdfNode(NodeDelegate next) : IPipelineNode
         dataContext.Set(config.TargetPath, Convert.ToBase64String(outBytes),
             config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
 
+        if (!string.IsNullOrEmpty(config.ContentLengthTargetPath))
+        {
+            dataContext.Set(config.ContentLengthTargetPath, (long)outBytes.Length,
+                config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
+        }
+
         await next(dataContext, nodeContext);
     }
 }

@@ -46,7 +46,8 @@ public class RenderDataSheetPdfNodeTests : NodeTestBase
     [Fact]
     public async Task ProcessObjectAsync_RendersPdf_WithPdfSignature()
     {
-        var config = new RenderDataSheetPdfNodeConfiguration { Path = "$.model", TargetPath = "$.pdf" };
+        var config = new RenderDataSheetPdfNodeConfiguration
+            { Path = "$.model", TargetPath = "$.pdf", ContentLengthTargetPath = "$.pdfLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.Get<JsonNode>("$.model")).Returns(SampleModel());
 
@@ -60,6 +61,9 @@ public class RenderDataSheetPdfNodeTests : NodeTestBase
         // Every PDF starts with "%PDF".
         Assert.True(bytes.Length > 4);
         Assert.Equal("%PDF", System.Text.Encoding.ASCII.GetString(bytes, 0, 4));
+        var len = Fake.GetCalls(dataContext).First(c => c.Method.Name == "Set"
+            && (string?)c.Arguments[0] == "$.pdfLen").Arguments[1];
+        Assert.Equal((long)bytes.Length, len);
     }
 
     [Fact]

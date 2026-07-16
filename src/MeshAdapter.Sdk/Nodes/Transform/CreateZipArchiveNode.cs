@@ -73,6 +73,12 @@ public class CreateZipArchiveNode(NodeDelegate next) : IPipelineNode
         dataContext.Set(config.TargetPath, Convert.ToBase64String(zipBytes),
             config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
 
+        if (!string.IsNullOrEmpty(config.ContentLengthTargetPath))
+        {
+            dataContext.Set(config.ContentLengthTargetPath, (long)zipBytes.Length,
+                config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
+        }
+
         await next(dataContext, nodeContext);
     }
 

@@ -20,4 +20,11 @@ public record MergePdfNodeConfiguration : SourceTargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("Behavior", 0)]
     public bool FailOnInvalidPdf { get; set; } = false;
+
+    /// <summary>
+    /// Optional path to write the merged PDF's byte length to (as a long), for
+    /// feeding a following <c>CreateFileSystemUpdate@1</c>.
+    /// </summary>
+    [PropertyGroup("Data", 0, "jsonpath")]
+    public string? ContentLengthTargetPath { get; set; }
 }

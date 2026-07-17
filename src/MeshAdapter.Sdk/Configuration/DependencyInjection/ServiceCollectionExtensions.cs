@@ -76,6 +76,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<StatisticalAnomalyNode>()
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<ReplyToTeamsChannelNode>()
+            .RegisterNode<TeamsBotReplyNode>()
             .RegisterNode<MinMaxNode>()
             .RegisterNode<ApplyDataPointMappingsNode>()
             .RegisterNode<BuildMappingTargetsNode>()
@@ -95,6 +96,7 @@ public static class ServiceCollectionExtensions
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()
             .RegisterTriggerNode<FromSendNotificationNode>()
             .RegisterTriggerNode<FromWatchRtEntityNode>()
+            .RegisterTriggerNode<FromTeamsBotNode>()
             .RegisterEtlContext<IMeshEtlContext>();
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();

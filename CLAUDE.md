@@ -70,6 +70,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - EMailSenderNode
    - SftpUploadNode
    - **DeployPipelineNode** — Deploys a specific pipeline within the same data flow via the Communication Controller REST API. Uses `ServiceAccountConfiguration` for OAuth2 authentication. Safety: cannot deploy self, must be in same data flow.
+   - **TeamsBotReplyNode** (`TeamsBotReply@1`) — sends a reply into a Microsoft Teams conversation via the Bot Framework REST API (`POST {serviceUrl}/v3/conversations/{conversationId}/activities`). Bot token via client-credentials against the `botframework.com` authority; credentials read from a `MicrosoftGraphConfiguration` (its ClientId/ClientSecret double as the bot App ID/secret). Outbound counterpart of `FromTeamsBot@1`.
 
 4. **Trigger Nodes** (`src/MeshAdapter.Sdk/Nodes/Trigger/`): Pipeline initiation nodes
    - FromHttpRequestNode
@@ -78,6 +79,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - FromSendNotificationNode
    - FromEmailNode (IMAP folder polling via MailKit)
    - FromMicrosoftGraphNode (Teams channel polling via Microsoft Graph)
+   - **FromTeamsBotNode** (`FromTeamsBot@1`) — hosts the Bot Framework messaging endpoint `POST /{tenant}/teamsBot` (via `IHttpRequestService`), parses the inbound Teams activity, downloads file attachments (1:1 `application/vnd.microsoft.teams.file.download.info` via pre-authenticated URL; channel `reference` via Microsoft Graph SharePoint share), and emits the `EmailData`/`AttachmentData` shape at `$.Emails` plus conversation routing at `$.Conversation` (serviceUrl/conversationId/activityId/from) for `TeamsBotReply@1`. Credentials read from `MicrosoftGraphConfiguration`. Inbound JWT check via `ValidateInboundToken` (default false; validates aud+exp only — NOT the signature yet, harden before public exposure). Requires `HttpRequestService` to surface request headers (`input["headers"]`).
    - **FromMicrosoftGraphEmailNode** — Polls an Office 365 mailbox FOLDER (path like `Archive/Invoices/ToDo`, '/'-separated, resolved from the mailbox root — never the inbox unless configured) via Microsoft Graph client credentials. Executes the pipeline ONCE PER MESSAGE (batch of one `EmailData`) so success maps 1:1 to the per-message action: on success the mail is moved to `moveToFolderPathOnSuccess` (leaf folder auto-created); on failure it stays in the source folder and is retried up to `maxAttemptsPerMessage` times per adapter lifetime. Only `fileAttachment` contents are downloaded (item/reference attachments skipped). Requires Graph application permission `Mail.ReadWrite`.
 
 ### Core Services

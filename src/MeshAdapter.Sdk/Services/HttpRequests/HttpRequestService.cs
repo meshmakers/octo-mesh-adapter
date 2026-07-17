@@ -49,6 +49,19 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
             ["path"] = path.ToLower(),
             ["method"] = route.Method.ToString().ToUpper()
         };
+
+        // Expose request headers so trigger nodes can authenticate the caller
+        // (e.g. FromTeamsBot validates the Bot Framework JWT in the Authorization
+        // header). Existing nodes simply ignore the extra field.
+        if (context.Request.Headers.Count > 0)
+        {
+            var headers = new JsonObject();
+            foreach (var (headerKey, headerValue) in context.Request.Headers)
+            {
+                headers[headerKey] = headerValue.ToString();
+            }
+            input["headers"] = headers;
+        }
         if (context.Request.ContentLength > 0)
         {
             if (context.Request.ContentType == MimeTypes.MimeTypeJson)

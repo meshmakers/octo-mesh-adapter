@@ -69,4 +69,24 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Options", 6)]
     public int MaxFileSizeBytes { get; set; } = 1_000_000;
+
+    /// <summary>
+    /// Input handling: the node auto-detects PDF vs. image (JPEG/PNG/TIFF/…) by
+    /// magic bytes. When the input is an image and this is enabled (default),
+    /// IronOCR pre-processing filters (deskew + denoise) are applied first so
+    /// casual phone photos of documents OCR much better. Disable to feed the raw
+    /// image unmodified.
+    /// </summary>
+    [PropertyGroup("Options", 7)]
+    public bool EnhanceImage { get; set; } = true;
+
+    /// <summary>
+    /// Maximum in-plane skew angle (degrees) the deskew filter corrects on image
+    /// input. Higher values catch more tilt but are slower and can misfire.
+    /// Only used when <see cref="EnhanceImage"/> is enabled. Note: this corrects
+    /// rotation, not perspective distortion (angled shots) — that needs a
+    /// separate document-detection step.
+    /// </summary>
+    [PropertyGroup("Options", 8)]
+    public int MaxDeskewAngle { get; set; } = 40;
 }

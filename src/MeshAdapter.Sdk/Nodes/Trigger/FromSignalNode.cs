@@ -111,7 +111,9 @@ internal class FromSignalNode(
             return null;
         }
 
-        var source = GetString(envelope, "source");
+        // Prefer the phone number (human-readable + replyable) over the ACI/PNI UUID
+        // that modern Signal puts in "source"; fall back to it when no number is shared.
+        var source = GetString(envelope, "sourceNumber") ?? GetString(envelope, "source");
         if (!string.IsNullOrWhiteSpace(c.SenderFilter)
             && (source == null || !source.Contains(c.SenderFilter)))
         {

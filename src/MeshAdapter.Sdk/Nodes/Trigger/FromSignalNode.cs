@@ -84,7 +84,16 @@ internal class FromSignalNode(
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error while polling the Signal bridge");
-                await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Stop requested during the back-off delay — exit cleanly so the task
+                    // completes normally and StopAsync's WaitAsync does not observe a fault.
+                    break;
+                }
             }
         }
     }
@@ -189,6 +198,10 @@ internal class FromSignalNode(
             catch (TimeoutException)
             {
                 logger.LogWarning("Signal polling task did not complete within timeout");
+            }
+            catch (OperationCanceledException)
+            {
+                // The polling task was cancelled mid-request — expected on stop; not a failure.
             }
         }
 

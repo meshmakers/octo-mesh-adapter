@@ -66,6 +66,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ReplyToTeamsChannelNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<TeamsBotReplyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<StatisticalAnomalyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MachineLearningAnomalyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SimulateEnergyMeasurementsNodeConfiguration>();
@@ -80,6 +81,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<FromSendNotificationNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromWatchRtEntityNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromSignalNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromTeamsBotNodeConfiguration>();
 
         return pipelineBuilder;
     }

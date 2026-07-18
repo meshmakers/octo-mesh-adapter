@@ -35,6 +35,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SignalSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<UpdateRtEntityIfNewerNodeConfiguration>();
@@ -78,6 +79,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromSendNotificationNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromWatchRtEntityNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromSignalNodeConfiguration>();
 
         return pipelineBuilder;
     }

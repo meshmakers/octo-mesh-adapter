@@ -66,6 +66,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<EMailSenderNode>()
             .RegisterNode<SftpUploadNode>()
             .RegisterNode<ToDiscordNode>()
+            .RegisterNode<SignalSenderNode>()
             .RegisterNode<GetQueryByIdNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
@@ -97,6 +98,7 @@ public static class ServiceCollectionExtensions
             .RegisterTriggerNode<FromSendNotificationNode>()
             .RegisterTriggerNode<FromWatchRtEntityNode>()
             .RegisterTriggerNode<FromTeamsBotNode>()
+            .RegisterTriggerNode<FromSignalNode>()
             .RegisterEtlContext<IMeshEtlContext>();
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
@@ -129,6 +131,7 @@ public static class ServiceCollectionExtensions
         // the MakeHttpRequestNode requires an HttpClient to make requests
         services.AddHttpClient();
         services.AddHttpClient("Discord");
+        services.AddHttpClient("Signal");
 
         // Named HttpClient for OctoMesh MCP server calls — uses a long timeout because
         // some MCP tool calls (e.g. tree queries) can take a while.

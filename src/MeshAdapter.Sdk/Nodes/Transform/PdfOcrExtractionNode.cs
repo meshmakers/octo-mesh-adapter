@@ -28,14 +28,15 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 throw PipelineExecutionException.ValueNotSet(nodeContext, config.Path);
             }
 
-            var pdfData = Convert.FromBase64String(content);
+            var fileData = Convert.FromBase64String(content);
 
-            nodeContext.Debug($"Starting OCR extraction for PDF ({pdfData.Length} bytes)");
-
-            if (pdfData.Length > config.MaxFileSizeBytes)
+            if (fileData.Length > config.MaxFileSizeBytes)
             {
-                throw MeshAdapterPipelineExecutionException.FileTooLarge(nodeContext, pdfData.Length, config.MaxFileSizeBytes);
+                throw MeshAdapterPipelineExecutionException.FileTooLarge(nodeContext, fileData.Length, config.MaxFileSizeBytes);
             }
+
+            var isPdf = IsPdf(fileData);
+            nodeContext.Debug($"Starting OCR extraction for {(isPdf ? "PDF" : "image")} ({fileData.Length} bytes)");
 
             // Initialize IronOCR with explicit configuration
             License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
@@ -51,9 +52,20 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 ocr.Configuration.PageSegmentationMode = TesseractPageSegmentationMode.AutoOsd;
             }
 
-            using var pdfInput = new OcrPdfInput(pdfData);
+            using OcrInputBase ocrInput = isPdf
+                ? new OcrPdfInput(fileData)
+                : new OcrImageInput(fileData);
 
-            var result = ocr.Read(pdfInput);
+            // A photographed document benefits from geometric + noise correction
+            // before OCR (deskew straightens tilt, denoise removes sensor grain).
+            // Skipped for PDFs (already page-rendered) and when EnhanceImage is off.
+            if (!isPdf && config.EnhanceImage)
+            {
+                ocrInput.Deskew(config.MaxDeskewAngle);
+                ocrInput.DeNoise(false);
+            }
+
+            var result = ocr.Read(ocrInput);
 
             var extractedText = result.Text;
 
@@ -108,7 +120,7 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 );
             }
 
-            nodeContext.Info($"Successfully extracted {extractedText.Length} characters from PDF");
+            nodeContext.Info($"Successfully extracted {extractedText.Length} characters from {(isPdf ? "PDF" : "image")}");
         }
         catch (Exception ex)
         {
@@ -123,6 +135,14 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
     
+    /// <summary>
+    /// Detects a PDF by its <c>%PDF-</c> magic header. Anything else (JPEG/PNG/TIFF/…)
+    /// is handled as an image via <see cref="OcrImageInput"/>.
+    /// </summary>
+    private static bool IsPdf(byte[] data) =>
+        data.Length >= 5 && data[0] == 0x25 && data[1] == 0x50
+                         && data[2] == 0x44 && data[3] == 0x46 && data[4] == 0x2D;
+
     private static OcrLanguage GetOcrLanguage(string language)
     {
         return language.ToLowerInvariant() switch

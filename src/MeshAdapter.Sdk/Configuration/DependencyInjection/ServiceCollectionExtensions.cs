@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<CheckDuplicateNode>()
             .RegisterNode<ComputeFileHashNode>()
             .RegisterNode<RenderDataSheetPdfNode>()
+            .RegisterNode<RenderHtmlPdfNode>()
             .RegisterNode<MergePdfNode>()
             .RegisterNode<CreateZipArchiveNode>()
             .RegisterNode<CreateUpdateInfoNode>()

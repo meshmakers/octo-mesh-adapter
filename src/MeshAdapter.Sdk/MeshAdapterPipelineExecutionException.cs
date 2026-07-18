@@ -481,6 +481,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Rendering the data-sheet PDF failed: {exception.Message}", exception);
     }
 
+    public static Exception HtmlPdfRenderFailed(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Rendering the HTML PDF failed: {exception.Message}", exception);
+    }
+
     public static Exception PdfMergeInputEmpty(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException(

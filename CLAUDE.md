@@ -54,6 +54,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - GenerateAndStoreReportNode
    - **RenderDataSheetPdfNode** (`RenderDataSheetPdf@1`) — renders a generic structured data sheet (title, subtitle, labelled sections, optional footer note) to a base64 PDF via QuestPDF (Community license set in the node). Domain-agnostic: the model is assembled by the pipeline. Used for the accounting BMD handover cover sheet.
    - **MergePdfNode** (`MergePdf@1`) — concatenates an ordered array of base64 PDFs into one (PdfSharp). Skips unreadable PDFs with a warning unless `FailOnInvalidPdf`. Used to prepend the cover sheet to the original document.
+   - **RenderHtmlPdfNode** (`RenderHtmlPdf@1`) — renders an HTML (or plain-text) document to a base64 PDF via AngleSharp (parsing) + QuestPDF (layout). Browser-free and cross-platform; supports a pragmatic HTML subset (headings, paragraphs, `<br>`, bold/italic/underline, links, ordered/unordered lists, tables, blockquotes, `<pre>`, `<hr>`, inline `data:`-URI images — image dimensions read from PNG/GIF/JPEG/BMP headers). Optional `Title`/`TitlePath` heading and `IsHtml`/`IsHtmlPath` override (auto-detects markup otherwise). Used by the accounting email import to turn a forwarded mail that carries no PDF attachment into a receipt from its body.
    - **CreateZipArchiveNode** (`CreateZipArchive@1`) — bundles `{ fileName, contentBase64 }` entries into a base64 ZIP (`System.IO.Compression`); `fileName` may contain `/` for folders (e.g. AP/AR grouping).
    - **ApplyDataPointMappingsNode** — Evaluates `System.Communication/DataPointMapping` entities for a source entity, applies mXparser expressions, produces update items for target entities. Supports state-name filtering via `sourceStateNamePath`. See [DataPointMapping concept](../octo-communication-controller-services/docs/concepts/DataPointMapping.md).
    - **BuildMappingTargetsNode** — Resolves all active DataPointMappings into `MappingTarget` records for data acquisition. Generic for any adapter (Loxone, MQTT, OPC-UA, Modbus). Supports sub-state resolution via RecordArray lookup.
@@ -117,6 +118,7 @@ The solution uses:
 
 - Meshmakers.Octo.Sdk.* packages (various SDK components)
 - IronOCR for PDF text extraction
+- AngleSharp for HTML parsing (`RenderHtmlPdf`); QuestPDF + PdfSharp for PDF generation/merge
 - MongoDB for data persistence
 - SignalR for real-time communication
 

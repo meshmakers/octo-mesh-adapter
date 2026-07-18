@@ -294,6 +294,14 @@ public class EmailData
     /// List of email attachments
     /// </summary>
     public List<AttachmentData> Attachments { get; set; } = new();
+
+    /// <summary>
+    /// True when at least one attachment is a PDF. Lets a pipeline decide whether
+    /// the mail carries a document to stage or should be kept as a receipt itself
+    /// (render the mail body). Inline images/logos are not PDFs and do not count.
+    /// </summary>
+    public bool HasPdfAttachment =>
+        Attachments.Any(a => string.Equals(a.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>

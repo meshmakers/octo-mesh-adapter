@@ -441,12 +441,20 @@ internal class FromMicrosoftGraphEmailNode(
             }
 
             var data = contentBytes.GetString()!;
+            var fileName = att.TryGetProperty("name", out var n) ? n.GetString() ?? "unknown" : "unknown";
+            var rawContentType = att.TryGetProperty("contentType", out var ct)
+                ? ct.GetString() ?? "application/octet-stream"
+                : "application/octet-stream";
             attachments.Add(new AttachmentData
             {
-                FileName = att.TryGetProperty("name", out var n) ? n.GetString() ?? "unknown" : "unknown",
-                ContentType = att.TryGetProperty("contentType", out var ct)
-                    ? ct.GetString() ?? "application/octet-stream"
-                    : "application/octet-stream",
+                FileName = fileName,
+                // AB#4433: many senders deliver a PDF invoice with a generic
+                // contentType (e.g. application/octet-stream). Normalize to
+                // application/pdf when the file-name extension or the %PDF- magic
+                // header says so, otherwise HasPdfAttachment and the pipeline's
+                // ContentType filter both miss the real attachment and the mail
+                // body gets rendered as the receipt instead of the invoice.
+                ContentType = NormalizePdfContentType(fileName, rawContentType, data),
                 Data = data,
                 Length = att.TryGetProperty("size", out var size) && size.TryGetInt64(out var sizeValue)
                     ? sizeValue
@@ -455,6 +463,54 @@ internal class FromMicrosoftGraphEmailNode(
         }
 
         return attachments;
+    }
+
+    /// <summary>
+    /// Normalizes an attachment content type to <c>application/pdf</c> when a sender
+    /// mislabeled a PDF (commonly <c>application/octet-stream</c>). Keys on the
+    /// <c>.pdf</c> file-name extension first — matching the MIME map in
+    /// <see cref="FromMicrosoftGraphNode"/> — and falls back to sniffing the
+    /// <c>%PDF-</c> magic header on the base64 content. AB#4433.
+    /// </summary>
+    private static string NormalizePdfContentType(string fileName, string contentType, string base64Content)
+    {
+        if (string.Equals(contentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
+        {
+            return contentType;
+        }
+
+        if (fileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) || StartsWithPdfHeader(base64Content))
+        {
+            return "application/pdf";
+        }
+
+        return contentType;
+    }
+
+    /// <summary>
+    /// True when the base64-encoded content begins with the <c>%PDF-</c> magic header.
+    /// Only the first few base64 characters are decoded (the signature is 5 bytes).
+    /// </summary>
+    private static bool StartsWithPdfHeader(string base64Content)
+    {
+        if (string.IsNullOrEmpty(base64Content))
+        {
+            return false;
+        }
+
+        // 8 base64 chars decode to 6 bytes — enough for the 5-byte "%PDF-" signature.
+        var prefix = base64Content.Length >= 8 ? base64Content[..8] : base64Content;
+        try
+        {
+            var bytes = Convert.FromBase64String(prefix);
+            return bytes.Length >= 5 &&
+                   bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 &&
+                   bytes[3] == 0x46 && bytes[4] == 0x2D; // %PDF-
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
     private async Task MoveMessageAsync(string accessToken, string mailbox, string messageId,

@@ -300,8 +300,13 @@ public class EmailData
     /// the mail carries a document to stage or should be kept as a receipt itself
     /// (render the mail body). Inline images/logos are not PDFs and do not count.
     /// </summary>
+    // AB#4433: a PDF may arrive with a generic contentType (application/octet-stream);
+    // also treat a ".pdf" file name as a PDF so a mislabeled invoice is not dropped
+    // in favor of rendering the mail body.
     public bool HasPdfAttachment =>
-        Attachments.Any(a => string.Equals(a.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase));
+        Attachments.Any(a =>
+            string.Equals(a.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase) ||
+            a.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>

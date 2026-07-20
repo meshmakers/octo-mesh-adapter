@@ -120,7 +120,7 @@ internal class DeployPipelineNode(
         }
 
         // Ensure we have a valid access token for the Communication Controller REST API
-        await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository, c.ServiceAccountConfigName);
+        await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository, etlContext.TenantId, c.ServiceAccountConfigName);
 
         // Deploy the pipeline
         nodeContext.Debug($"Deploying pipeline {targetPipelineRtId} to adapter {adapterEntity.RtId}");

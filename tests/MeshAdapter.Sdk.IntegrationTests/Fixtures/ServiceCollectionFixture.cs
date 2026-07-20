@@ -3,7 +3,6 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace MeshAdapter.Sdk.IntegrationTests.Fixtures;
 
@@ -49,7 +48,7 @@ public abstract class ServiceCollectionFixture : ITestOutputHelperAccessor, IAsy
         }
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         await DisposeServicesAsync();
 
@@ -59,7 +58,7 @@ public abstract class ServiceCollectionFixture : ITestOutputHelperAccessor, IAsy
         }
     }
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (_isInitialized)
         {

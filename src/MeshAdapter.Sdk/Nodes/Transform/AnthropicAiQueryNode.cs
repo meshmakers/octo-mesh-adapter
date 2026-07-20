@@ -178,7 +178,7 @@ internal class AnthropicAiQueryNode(
             if (!string.IsNullOrEmpty(mcpServerUrl))
             {
                 // Authenticate to the MCP server via a ServiceAccountConfiguration when configured
-                // (AB#4315). No config name → calls stay unauthenticated (local/dev only).
+                // No config name → calls stay unauthenticated (local/dev only).
                 // With mcpDelegateToCaller the token instead runs on the calling user's identity and
                 // any failure is fatal rather than degrading (AB#5031).
                 await EnsureMcpAccessTokenAsync(config, nodeContext);
@@ -750,7 +750,7 @@ internal class AnthropicAiQueryNode(
 
         try
         {
-            // AB#4315 consolidation: side-effect-free keyed acquisition. The previous
+            // Side-effect-free keyed acquisition: the previous
             // EnsureTokenAsync path overwrote the adapter-global IServiceClientAccessToken
             // (the credential of the adapter's own service clients) and returned whichever
             // token was cached regardless of the requested configuration name.

@@ -129,7 +129,7 @@ internal class LlmQueryNode(
             var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
 
             // Acquire client-credentials bearers for servers that reference a
-            // ServiceAccountConfiguration (AB#4315: octo-mcp-service requires a
+            // ServiceAccountConfiguration (octo-mcp-service requires a
             // bearer on every MCP request). Cached per configuration name in the
             // singleton provider — typically one identity-server round-trip per
             // token lifetime, not per pipeline message.

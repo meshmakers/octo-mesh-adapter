@@ -65,7 +65,7 @@ internal class McpToolCallNode(
             }
 
             // Acquire a client-credentials bearer when the configuration references a
-            // ServiceAccountConfiguration (AB#4315) — identical path to LlmQuery@1.
+            // ServiceAccountConfiguration — identical path to LlmQuery@1.
             servers = await McpServerResolver.ApplyServiceAccountTokensAsync(
                 servers, serviceAccountTokenService, etlContext, nodeContext, ct);
             var server = servers[0];

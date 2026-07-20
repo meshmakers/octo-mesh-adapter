@@ -9,7 +9,6 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
-using Xunit.Abstractions;
 
 namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Transform;
 
@@ -479,12 +478,9 @@ public class LlmQuerySmokeTests
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            throw new InvalidOperationException(
-                $"Ollama is not reachable at {OllamaBaseUrl}. " +
-                "Start it with `ollama serve` and pull the model with " +
-                $"`ollama pull {Model}` before running this smoke test. " +
-                "CI runs should exclude it via `--filter Category!=RequiresOllama`.",
-                ex);
+            Assert.Skip(
+                $"Ollama is not reachable at {OllamaBaseUrl} ({ex.GetType().Name}) — skipping smoke test. " +
+                $"Start it with `ollama serve` and `ollama pull {Model}` to run this locally.");
         }
     }
 }

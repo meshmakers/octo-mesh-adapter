@@ -9,7 +9,6 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
-using Xunit.Abstractions;
 
 namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Transform;
 
@@ -302,14 +301,9 @@ public class LlmQueryAnthropicSmokeTests
     private static string RequireApiKey()
     {
         var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                "ANTHROPIC_API_KEY environment variable is not set. " +
-                "Either set it locally (`export ANTHROPIC_API_KEY=sk-ant-...`) " +
-                "before running the test, or exclude these tests via " +
-                "`dotnet test --filter \"Category!=RequiresAnthropic\"`.");
-        }
-        return apiKey;
+        Assert.SkipWhen(string.IsNullOrWhiteSpace(apiKey),
+            "ANTHROPIC_API_KEY not set — skipping Anthropic smoke test. " +
+            "Set it locally (`export ANTHROPIC_API_KEY=sk-ant-...`) to run this.");
+        return apiKey!;
     }
 }

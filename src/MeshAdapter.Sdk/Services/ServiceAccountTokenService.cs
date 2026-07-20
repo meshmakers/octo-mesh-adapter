@@ -29,7 +29,7 @@ public interface IServiceAccountTokenService
     /// <summary>
     ///     Acquires a valid access token for the named ServiceAccountConfiguration and
     ///     returns it <b>without touching the adapter-global <see cref="IServiceClientAccessToken" /></b>
-    ///     (AB#4315/AB#4377 consolidation). Tokens are cached per <c>(tenantId, wellKnownName)</c>
+    ///     Tokens are cached per <c>(tenantId, wellKnownName)</c>
     ///     (60 s expiry buffer, single-flight acquisition), so two nodes referencing different
     ///     service accounts never receive each other's token. Returns <c>null</c> when the
     ///     configuration cannot be resolved or the grant fails — callers decide their own
@@ -170,11 +170,11 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     private DateTime _tokenExpiresAt = DateTime.MinValue;
 
-    /// <summary>Safety margin for the keyed token cache (AB#4377) — mirrors <see cref="IdentityCacheSkew" />.</summary>
+    /// <summary>Safety margin for the keyed token cache — mirrors <see cref="IdentityCacheSkew" />.</summary>
     private static readonly TimeSpan ExpiryBuffer = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    ///     Keyed token cache for <see cref="GetAccessTokenAsync" /> (AB#4377): key is
+    ///     Keyed token cache for <see cref="GetAccessTokenAsync" />: key is
     ///     <c>tenantId::wellKnownName</c>. Deliberately separate from <see cref="_tokenExpiresAt" />
     ///     (the adapter's own service identity) and from <see cref="_identityCache" /> (identity
     ///     answers, not credentials).

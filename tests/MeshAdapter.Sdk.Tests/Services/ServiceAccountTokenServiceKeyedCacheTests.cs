@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace MeshAdapter.Sdk.Tests.Services;
 
 /// <summary>
-/// Pins the AB#4315 consolidation contracts of <see cref="ServiceAccountTokenService"/>:
+/// Pins the keyed token-service contracts of <see cref="ServiceAccountTokenService"/>:
 /// (1) tokens are cached PER configuration name — two service accounts on one adapter
 /// never receive each other's token (the pre-consolidation identity-blind cache bug);
 /// (2) <c>GetAccessTokenAsync</c> never touches the adapter-global

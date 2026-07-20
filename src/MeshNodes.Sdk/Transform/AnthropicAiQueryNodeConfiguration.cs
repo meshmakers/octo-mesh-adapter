@@ -114,7 +114,7 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// used to authenticate the MCP tool calls. When set, the node acquires an OAuth2
     /// client-credentials token and sends it as a <c>Authorization: Bearer</c> header on the
     /// <c>{McpServerUrl}/{tenantId}/mcp</c> requests. Required once the MCP server enforces
-    /// authentication (see AB#4315).
+    /// authentication.
     /// </summary>
     [PropertyGroup("Connection", 3)]
     public string? McpServiceAccountConfigName { get; set; }

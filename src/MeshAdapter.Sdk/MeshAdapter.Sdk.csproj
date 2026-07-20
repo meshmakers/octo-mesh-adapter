@@ -60,6 +60,7 @@
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.MongoDb" Version="$(OctoCoreLibVersion)" />
         <PackageReference Include="Meshmakers.Octo.Runtime.Engine.CrateDb" Version="$(OctoCoreLibVersion)" />
         <PackageReference Include="MailKit" Version="4.17.0" />
+        <PackageReference Include="MimeKit" Version="4.17.0" />
         <PackageReference Include="SSH.NET" Version="2025.1.0" />
     </ItemGroup>
 

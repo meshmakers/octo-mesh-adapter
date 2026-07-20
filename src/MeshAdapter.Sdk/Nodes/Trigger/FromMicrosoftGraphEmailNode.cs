@@ -1,7 +1,9 @@
 using System.Net.Http.Headers;
+using System.Security.Cryptography.Pkcs;
 using System.Text;
 using System.Text.Json;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
+using MimeKit;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -445,6 +447,30 @@ internal class FromMicrosoftGraphEmailNode(
             var rawContentType = att.TryGetProperty("contentType", out var ct)
                 ? ct.GetString() ?? "application/octet-stream"
                 : "application/octet-stream";
+
+            // AB#4433: S/MIME-signed senders (e.g. Magenta) deliver the whole mail as a
+            // single "smime.p7m" PKCS#7 container; the real PDF invoice is encapsulated
+            // inside the signed envelope, so the adapter otherwise sees no PDF and renders
+            // the mail body instead. Unwrap the container and surface the inner PDFs as
+            // normal attachments. On any failure we fall through and keep the raw p7m
+            // (pre-AB#4433 behaviour) rather than dropping the poll.
+            if (IsSmimeContainer(fileName, rawContentType))
+            {
+                if (TryExtractSmimePdfAttachments(data, out var smimePdfs) && smimePdfs.Count > 0)
+                {
+                    attachments.AddRange(smimePdfs);
+                    logger.LogInformation(
+                        "Extracted {Count} PDF attachment(s) from an S/MIME container on message {MessageId}",
+                        smimePdfs.Count, messageId);
+                    continue;
+                }
+
+                logger.LogWarning(
+                    "Could not surface a PDF from the S/MIME container on message {MessageId} " +
+                    "(no inline signed content, no PDF part, or a parse failure); keeping the raw attachment",
+                    messageId);
+            }
+
             attachments.Add(new AttachmentData
             {
                 FileName = fileName,
@@ -510,6 +536,194 @@ internal class FromMicrosoftGraphEmailNode(
         catch (FormatException)
         {
             return false;
+        }
+    }
+
+    private static readonly HashSet<string> SmimeContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "multipart/signed",
+        "application/pkcs7-mime",
+        "application/x-pkcs7-mime",
+        "application/pkcs7-signature",
+        "application/x-pkcs7-signature"
+    };
+
+    /// <summary>
+    /// True when an attachment is an S/MIME (PKCS#7) container rather than a real
+    /// document — either by the canonical <c>smime.p7m</c> file name or by one of the
+    /// S/MIME content types. AB#4433.
+    /// </summary>
+    private static bool IsSmimeContainer(string fileName, string contentType)
+    {
+        return string.Equals(fileName, "smime.p7m", StringComparison.OrdinalIgnoreCase)
+               || SmimeContentTypes.Contains(contentType);
+    }
+
+    /// <summary>
+    /// Unwraps an S/MIME container attachment into its PDF invoices. The mails we see
+    /// are SIGNED (not encrypted), so the original MIME is recoverable WITHOUT any
+    /// certificate or private key. Two wire formats exist and BOTH are handled:
+    /// <list type="number">
+    /// <item>Opaque PKCS#7 signed-data (DER): <see cref="SignedCms"/> decodes the
+    /// container and hands back the encapsulated MIME, which MimeKit then parses.</item>
+    /// <item>Clear-signed <c>multipart/signed</c> MIME: the raw bytes ARE a MIME entity
+    /// whose FIRST child is the original content (second child is the detached
+    /// pkcs7-signature). Parsed directly with MimeKit; no CMS decode involved.</item>
+    /// </list>
+    /// The extracted parts run through <see cref="NormalizePdfContentType"/> as well
+    /// (the inner PDF may itself be a mislabeled octet-stream). Returns true (with the
+    /// PDFs in <paramref name="pdfs"/>) when at least one PDF was surfaced; on an
+    /// encrypted container, a PDF-less body, or ANY parse failure returns false with an
+    /// empty list so the caller keeps the raw container (pre-AB#4433 behaviour) instead
+    /// of dropping the poll. Pure/static for unit testing (InternalsVisibleTo). AB#4433.
+    /// </summary>
+    internal static bool TryExtractSmimePdfAttachments(string base64Container, out List<AttachmentData> pdfs)
+    {
+        pdfs = new List<AttachmentData>();
+
+        byte[] raw;
+        try
+        {
+            raw = Convert.FromBase64String(base64Container);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        // Attempt 1 — opaque PKCS#7 signed-data: the original MIME entity is the
+        // encapsulated content. Decode + ContentInfo.Content extracts it without
+        // verifying the signature or needing any key. (Detached/encrypted variants
+        // yield no inline content; a clear-signed MIME container is not DER at all
+        // and makes Decode throw — both fall through to attempt 2.)
+        try
+        {
+            var signedCms = new SignedCms();
+            signedCms.Decode(raw);
+            var innerBytes = signedCms.ContentInfo.Content;
+            if (innerBytes.Length > 0)
+            {
+                using var innerStream = new MemoryStream(innerBytes);
+                var entity = MimeEntity.Load(innerStream, CancellationToken.None);
+                CollectPdfLeafParts(entity, pdfs);
+                if (pdfs.Count > 0)
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Not opaque CMS — try the clear-signed MIME shape next.
+        }
+
+        // Attempt 2 — clear-signed multipart/signed: the raw bytes are themselves a
+        // MIME entity (Content-Type: multipart/signed) whose first child is the
+        // original, readable content and whose second child is the detached
+        // pkcs7-signature. Signature verification is deliberately skipped — we only
+        // need the content, and the signature part can never pass the PDF filter, so
+        // the whole entity is walked (also covers other multipart layouts).
+        try
+        {
+            using var rawStream = new MemoryStream(raw);
+            var entity = MimeEntity.Load(rawStream, CancellationToken.None);
+            CollectPdfLeafParts(entity, pdfs);
+            if (pdfs.Count > 0)
+            {
+                return true;
+            }
+        }
+        catch
+        {
+            // Not a bare MIME entity either — last resort: a full rfc822 message.
+        }
+
+        try
+        {
+            using var rawStream = new MemoryStream(raw);
+            var message = MimeMessage.Load(rawStream, CancellationToken.None);
+            if (message.Body != null)
+            {
+                CollectPdfLeafParts(message.Body, pdfs);
+            }
+        }
+        catch
+        {
+            // Malformed container / encrypted / not MIME at all — never let an
+            // unexpected attachment abort the mailbox poll; the raw attachment is kept.
+        }
+
+        if (pdfs.Count > 0)
+        {
+            return true;
+        }
+
+        pdfs = new List<AttachmentData>();
+        return false;
+    }
+
+    /// <summary>
+    /// Walks a MIME entity and appends every leaf part that is (or normalizes to) a PDF
+    /// to <paramref name="pdfs"/>. AB#4433.
+    /// </summary>
+    private static void CollectPdfLeafParts(MimeEntity entity, List<AttachmentData> pdfs)
+    {
+        foreach (var part in EnumerateLeafParts(entity))
+        {
+            if (part.Content == null)
+            {
+                continue;
+            }
+
+            var name = part.FileName ?? part.ContentType.Name ?? "attachment";
+            using var content = new MemoryStream();
+            part.Content.DecodeTo(content);
+            var bytes = content.ToArray();
+            var base64 = Convert.ToBase64String(bytes);
+            var normalized = NormalizePdfContentType(name, part.ContentType.MimeType, base64);
+            if (!string.Equals(normalized, "application/pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            pdfs.Add(new AttachmentData
+            {
+                FileName = name,
+                ContentType = normalized,
+                Data = base64,
+                Length = bytes.Length
+            });
+        }
+    }
+
+    /// <summary>
+    /// Depth-first walk yielding every leaf <see cref="MimePart"/> of a MIME entity
+    /// (recursing into <see cref="Multipart"/> and encapsulated <see cref="MessagePart"/>).
+    /// </summary>
+    private static IEnumerable<MimePart> EnumerateLeafParts(MimeEntity entity)
+    {
+        switch (entity)
+        {
+            case Multipart multipart:
+                foreach (var child in multipart)
+                {
+                    foreach (var leaf in EnumerateLeafParts(child))
+                    {
+                        yield return leaf;
+                    }
+                }
+
+                break;
+            case MessagePart messagePart when messagePart.Message?.Body != null:
+                foreach (var leaf in EnumerateLeafParts(messagePart.Message.Body))
+                {
+                    yield return leaf;
+                }
+
+                break;
+            case MimePart part:
+                yield return part;
+                break;
         }
     }
 

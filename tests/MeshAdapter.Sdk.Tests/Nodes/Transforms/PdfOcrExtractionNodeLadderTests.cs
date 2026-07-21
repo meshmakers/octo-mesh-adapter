@@ -103,6 +103,38 @@ public class PdfOcrExtractionNodeLadderTests
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_TextOnImagePages_DowngradesTierToTextLayerFromOcr()
+    {
+        var config = new PdfOcrExtractionNodeConfiguration
+        {
+            Path = "$.file",
+            TargetPath = "$.text",
+            PreferTextLayer = true
+        };
+
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        // Scanned document with a baked-in OCR text layer ("searchable PDF"): pages have
+        // BOTH a text layer and a dominating full-page image.
+        var extractor = A.Fake<IPdfTextExtractor>();
+        A.CallTo(() => extractor.Extract(A<byte[]>._, A<int>._))
+            .Returns(new PdfTextExtractionResult(
+                [
+                    new PdfPageText(1, "Gescannter Vertragstext", true, IsTextOnImage: true),
+                    new PdfPageText(2, "Zweite gescannte Seite", true, IsTextOnImage: true)
+                ],
+                []));
+
+        var node = new PdfOcrExtractionNode(next, extractor);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // Text is still used (no re-OCR), but the tier must carry the trust downgrade.
+        Assert.Equal("Gescannter Vertragstext\n\nZweite gescannte Seite", dataContext.Get<string>("$.text"));
+        Assert.Equal("TextLayerFromOcr", dataContext.Get<string>("$.ExtractionTier"));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_PreferTextLayerOff_ExtractorNeverCalled()
     {
         var config = new PdfOcrExtractionNodeConfiguration

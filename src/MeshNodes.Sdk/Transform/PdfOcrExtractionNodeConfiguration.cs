@@ -126,7 +126,9 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     /// <summary>
     /// Where the extraction tier used for the main text is written when
     /// <see cref="PreferTextLayer"/> is enabled: "TextLayer" (all pages from the text
-    /// layer, no OCR), "Mixed" (text layer + OCR for pages without one) or "Ocr".
+    /// layer, no OCR, born-digital fidelity), "TextLayerFromOcr" (text layer present but
+    /// pages are scans with a baked-in OCR text layer — usable, OCR-grade trust),
+    /// "Mixed" (text layer + OCR for pages without one) or "Ocr".
     /// Defaults to $.ExtractionTier. Downstream consumers can scale trust accordingly.
     /// </summary>
     [PropertyGroup("Output", 4, "jsonpath")]

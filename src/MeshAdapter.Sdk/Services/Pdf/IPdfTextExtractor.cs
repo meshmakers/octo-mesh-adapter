@@ -10,7 +10,14 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf;
 ///     minimum number of non-whitespace characters). Pages without one (scans, pure
 ///     image pages) need OCR.
 /// </param>
-public record PdfPageText(int PageNumber, string Text, bool HasTextLayer);
+/// <param name="IsTextOnImage">
+///     True when the page has a text layer AND is dominated by a (near) full-page image —
+///     the "text-on-image" pattern of scanned documents whose text layer was written by a
+///     previous OCR pass (scanner/Acrobat "searchable PDF"). Such a text layer carries
+///     OCR-grade trust, not born-digital losslessness, and consumers should treat it
+///     accordingly.
+/// </param>
+public record PdfPageText(int PageNumber, string Text, bool HasTextLayer, bool IsTextOnImage = false);
 
 /// <summary>
 ///     A file embedded in the PDF (PDF file attachment), e.g. the structured e-invoice XML

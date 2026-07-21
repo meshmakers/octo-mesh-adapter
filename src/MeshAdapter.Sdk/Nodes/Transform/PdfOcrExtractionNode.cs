@@ -14,6 +14,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfTextExtractor) : IPipelineNode
 {
     private const string TierTextLayer = "TextLayer";
+    private const string TierTextLayerFromOcr = "TextLayerFromOcr";
     private const string TierMixed = "Mixed";
     private const string TierOcr = "Ocr";
 
@@ -93,9 +94,13 @@ internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfText
                 if (pagesMissingLayer == 0)
                 {
                     extractedText = string.Join("\n\n", textLayerResult.Pages.Select(p => p.Text));
-                    extractionTier = TierTextLayer;
-                    nodeContext.Info(
-                        $"All {textLayerResult.Pages.Count} page(s) have a text layer; OCR skipped");
+                    // Text-on-image pages (scan + baked-in OCR text layer) downgrade the tier:
+                    // the text is usable but carries OCR-grade trust, not born-digital fidelity.
+                    var textOnImagePages = textLayerResult.Pages.Count(p => p.IsTextOnImage);
+                    extractionTier = textOnImagePages > 0 ? TierTextLayerFromOcr : TierTextLayer;
+                    nodeContext.Info(textOnImagePages > 0
+                        ? $"All {textLayerResult.Pages.Count} page(s) have a text layer, but {textOnImagePages} are text-on-image (previous OCR pass); OCR skipped, trust downgraded"
+                        : $"All {textLayerResult.Pages.Count} page(s) have a text layer; OCR skipped");
                 }
                 else if (pagesMissingLayer < textLayerResult.Pages.Count)
                 {

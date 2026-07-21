@@ -35,6 +35,8 @@ public class PdfPigTextExtractorTests
         var page = Assert.Single(result.Pages);
         Assert.Equal(1, page.PageNumber);
         Assert.True(page.HasTextLayer);
+        // Born-digital text page without a dominating image: NOT text-on-image.
+        Assert.False(page.IsTextOnImage);
         // Lossless: the marker must come back exactly (OCR could not guarantee this).
         Assert.Contains(Marker, page.Text);
     }

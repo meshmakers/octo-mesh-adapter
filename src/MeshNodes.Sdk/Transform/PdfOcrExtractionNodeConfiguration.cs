@@ -89,4 +89,46 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Options", 8)]
     public int MaxDeskewAngle { get; set; } = 40;
+
+    /// <summary>
+    /// When true (and the input is a PDF), the embedded text layer is preferred over OCR:
+    /// pages with a usable text layer are read losslessly, only pages without one are
+    /// OCR'd, and born-digital PDFs skip OCR entirely (faster, and no recognition errors
+    /// on amounts/IBANs/identifiers). Default false = pre-existing OCR-only behavior.
+    /// Note: the text layer does NOT contain text that only exists inside embedded
+    /// images/screenshots — if that text matters, keep OCR.
+    /// </summary>
+    [PropertyGroup("Options", 9)]
+    public bool PreferTextLayer { get; set; } = false;
+
+    /// <summary>
+    /// Minimum number of non-whitespace characters for a page to count as having a
+    /// usable text layer (guards against PDFs whose "text layer" is a stray watermark
+    /// character). Only used when <see cref="PreferTextLayer"/> is enabled.
+    /// </summary>
+    [PropertyGroup("Options", 10)]
+    public int TextLayerMinChars { get; set; } = 32;
+
+    /// <summary>
+    /// When true, embedded XML file attachments (ZUGFeRD / Factur-X / XRechnung hybrid
+    /// e-invoices, PDF/A-3) are extracted to <see cref="EmbeddedXmlOutputPath"/> —
+    /// structured invoice data without OCR or LLM involvement.
+    /// </summary>
+    [PropertyGroup("Options", 11)]
+    public bool ExtractEmbeddedXml { get; set; } = false;
+
+    /// <summary>
+    /// Output path for the embedded e-invoice XML (defaults to $.EmbeddedXml).
+    /// </summary>
+    [PropertyGroup("Output", 3, "jsonpath")]
+    public string? EmbeddedXmlOutputPath { get; set; }
+
+    /// <summary>
+    /// Where the extraction tier used for the main text is written when
+    /// <see cref="PreferTextLayer"/> is enabled: "TextLayer" (all pages from the text
+    /// layer, no OCR), "Mixed" (text layer + OCR for pages without one) or "Ocr".
+    /// Defaults to $.ExtractionTier. Downstream consumers can scale trust accordingly.
+    /// </summary>
+    [PropertyGroup("Output", 4, "jsonpath")]
+    public string? ExtractionTierOutputPath { get; set; }
 }

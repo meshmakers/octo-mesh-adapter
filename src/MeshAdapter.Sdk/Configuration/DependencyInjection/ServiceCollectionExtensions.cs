@@ -107,6 +107,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
 
+        // Text-layer/attachment extraction for PdfOcrExtractionNode's extraction ladder
+        // (AB#4464). Interface-based so the PdfPig implementation can be swapped (e.g.
+        // for IronPDF) without touching the node.
+        services.AddSingleton<Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf.IPdfTextExtractor,
+            Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf.PdfPigTextExtractor>();
+
         // Register CommunicationServicesClient for DeployDataFlow node
         services.AddOptions<CommunicationServiceClientOptions>()
             .Configure<IOptions<AdapterOptions>>((options, adapterOptions) =>

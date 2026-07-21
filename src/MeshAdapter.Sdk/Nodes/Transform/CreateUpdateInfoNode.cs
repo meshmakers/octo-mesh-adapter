@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
@@ -191,8 +192,27 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     // Objects may carry a CkRecordId → RtRecord; the structural conversion in
                     // GetAttributeValue needs the JsonObject, so read it via Get<JsonNode>.
                     var jObject = (JsonObject?)match.Get<JsonNode>("$");
-                    if (jObject is not null &&
-                        SetAttributeValueSingle(nodeContext, attributeName, jObject, rtTypeWithAttributes))
+                    if (jObject is null) break;
+
+                    // Plain objects (no {CkRecordId, Attributes} envelope): coerce to the record
+                    // type DECLARED by the CK schema when the target attribute is a
+                    // Record/RecordArray. LLM/JSON payloads carry no CkRecordId discriminator;
+                    // the schema already knows the record type (valueCkRecordId), so requiring
+                    // the data to repeat it is redundant for non-polymorphic attributes.
+                    // Envelope-shaped objects keep the existing GetAttributeValue path (and
+                    // remain the ONLY way to address derived/polymorphic record types).
+                    object valueToSet = jObject;
+                    if (!IsRecordEnvelope(jObject))
+                    {
+                        var declaredRecordGraph =
+                            TryResolveDeclaredRecordGraph(attributeName, rtTypeWithAttributes);
+                        if (declaredRecordGraph is not null)
+                        {
+                            valueToSet = BuildRecordFromPlainObject(nodeContext, declaredRecordGraph, jObject);
+                        }
+                    }
+
+                    if (SetAttributeValueSingle(nodeContext, attributeName, valueToSet, rtTypeWithAttributes))
                     {
                         hasUpdate = true;
                     }
@@ -203,11 +223,19 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 {
                     // Convert JsonArray items: primitives stay as primitives, objects get converted
                     // via GetAttributeValue (which handles CkRecordId → RtRecord conversion).
+                    // Plain objects without the record envelope coerce against the record type
+                    // declared by the CK schema for this attribute (see DataKind.Object above);
+                    // declaredRecordGraph is null when the target is not a schema-declared
+                    // Record/RecordArray, in which case the pre-existing behavior applies.
                     var jArray = (JsonArray?)match.Get<JsonNode>("$");
                     if (jArray is null) break;
+                    var declaredRecordGraph = TryResolveDeclaredRecordGraph(attributeName, rtTypeWithAttributes);
                     var list = jArray.Select(item => item switch
                     {
                         JsonValue v => JsonScalar.ToClr(v),
+                        JsonObject plainObject when declaredRecordGraph is not null &&
+                                                    !IsRecordEnvelope(plainObject) =>
+                            BuildRecordFromPlainObject(nodeContext, declaredRecordGraph, plainObject),
                         _ => GetAttributeValue(nodeContext, item)
                     }).ToList();
                     if (SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
@@ -318,6 +346,134 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, rtTypeWithAttributes, attributeName,
             convertedValue);
         return true;
+    }
+
+    /// <summary>
+    ///     True when the object carries the {CkRecordId, Attributes} record envelope handled by
+    ///     <see cref="GetAttributeValue"/>.
+    /// </summary>
+    private static bool IsRecordEnvelope(JsonObject jObject)
+    {
+        return jObject.TryGetPropertyValue("CkRecordId", out _) &&
+               jObject.TryGetPropertyValue("Attributes", out var attributes) &&
+               attributes is JsonObject;
+    }
+
+    /// <summary>
+    ///     Resolves the CK record graph DECLARED for a Record/RecordArray attribute of the target
+    ///     entity type (the schema's valueCkRecordId). Returns null whenever the record type cannot
+    ///     be inferred unambiguously — dotted attribute paths (nested targets), unknown attributes,
+    ///     non-record value types, or a missing valueCkRecordId — in which case the caller keeps the
+    ///     pre-existing behavior (plain objects require the {CkRecordId, Attributes} envelope).
+    /// </summary>
+    private CkRecordGraph? TryResolveDeclaredRecordGraph(string attributeName,
+        RtTypeWithAttributes rtTypeWithAttributes)
+    {
+        // Dotted paths address attributes of nested records; the leaf schema is not resolved
+        // here, so nested targets keep the envelope requirement.
+        if (attributeName.Contains('.'))
+        {
+            return null;
+        }
+
+        if (rtTypeWithAttributes is not RtEntity { CkTypeId: { } entityCkTypeId } ||
+            !ckCacheService.TryGetRtCkType(etlContext.TenantId, entityCkTypeId, out var ckTypeGraph))
+        {
+            return null;
+        }
+
+        // Exact match first, case-insensitive fallback second — mirrors how RtPathEvaluator
+        // resolves configured attribute names against the CK graph.
+        if (!ckTypeGraph!.AllAttributesByName.TryGetValue(attributeName, out var attributeGraph))
+        {
+            attributeGraph = ckTypeGraph.AllAttributesByName.Values.FirstOrDefault(a =>
+                string.Equals(a.AttributeName, attributeName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (attributeGraph is null ||
+            attributeGraph.ValueType is not (AttributeValueTypesDto.Record or AttributeValueTypesDto.RecordArray) ||
+            attributeGraph.ValueCkRecordId is null)
+        {
+            return null;
+        }
+
+        return ckCacheService.GetRtCkRecord(etlContext.TenantId, attributeGraph.ValueCkRecordId.ToRtCkId());
+    }
+
+    /// <summary>
+    ///     Converts a plain JSON object (no {CkRecordId, Attributes} envelope) into an
+    ///     <see cref="RtRecord"/> of the record type declared by the CK schema. Property names match
+    ///     record attributes case-insensitively (LLM/JSON payloads are typically camelCase while CK
+    ///     attributes are PascalCase); unknown properties throw — the same strictness as the envelope
+    ///     path, so typos fail loudly instead of silently dropping data. Nested Record/RecordArray
+    ///     attributes recurse with their own declared record type.
+    /// </summary>
+    private RtRecord BuildRecordFromPlainObject(INodeContext nodeContext, CkRecordGraph recordGraph,
+        JsonObject plainObject)
+    {
+        if (recordGraph.IsAbstract)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext,
+                (object)($"Record type '{recordGraph.CkRecordId}' is abstract; a plain JSON object cannot be " +
+                         "coerced to it. Provide the {CkRecordId, Attributes} envelope with a concrete record type."));
+        }
+
+        var record = new RtRecord
+        {
+            CkRecordId = recordGraph.CkRecordId.ToRtCkId()
+        };
+
+        foreach (var kvp in plainObject)
+        {
+            if (!recordGraph.AllAttributesByName.TryGetValue(kvp.Key, out var attribute))
+            {
+                attribute = recordGraph.AllAttributesByName.Values.FirstOrDefault(a =>
+                    string.Equals(a.AttributeName, kvp.Key, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (attribute is null)
+            {
+                throw MeshAdapterPipelineExecutionException.InvalidValue(nodeContext,
+                    (object)($"Property '{kvp.Key}' does not match any attribute of record type " +
+                             $"'{recordGraph.CkRecordId}'"));
+            }
+
+            var childValue = ConvertRecordChildValue(nodeContext, attribute, kvp.Value);
+            record.SetAttributeValue(attribute.AttributeName, attribute.ValueType, childValue);
+        }
+
+        return record;
+    }
+
+    /// <summary>
+    ///     Converts a single property value while building a record from a plain JSON object.
+    ///     Nested plain records/record-arrays coerce against the child attribute's declared record
+    ///     type; everything else (scalars, envelope-shaped objects) takes the
+    ///     <see cref="GetAttributeValue"/> path.
+    /// </summary>
+    private object? ConvertRecordChildValue(INodeContext nodeContext, CkTypeAttributeGraph attribute,
+        JsonNode? value)
+    {
+        if (attribute is { ValueType: AttributeValueTypesDto.Record, ValueCkRecordId: not null } &&
+            value is JsonObject plainChild && !IsRecordEnvelope(plainChild))
+        {
+            var childGraph = ckCacheService.GetRtCkRecord(etlContext.TenantId,
+                attribute.ValueCkRecordId.ToRtCkId());
+            return BuildRecordFromPlainObject(nodeContext, childGraph, plainChild);
+        }
+
+        if (attribute is { ValueType: AttributeValueTypesDto.RecordArray, ValueCkRecordId: not null } &&
+            value is JsonArray childArray)
+        {
+            var childGraph = ckCacheService.GetRtCkRecord(etlContext.TenantId,
+                attribute.ValueCkRecordId.ToRtCkId());
+            return childArray.Select(item =>
+                item is JsonObject plainItem && !IsRecordEnvelope(plainItem)
+                    ? BuildRecordFromPlainObject(nodeContext, childGraph, plainItem)
+                    : GetAttributeValue(nodeContext, item)).ToList();
+        }
+
+        return GetAttributeValue(nodeContext, value);
     }
 
     private static OctoObjectId? GetRtId(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)

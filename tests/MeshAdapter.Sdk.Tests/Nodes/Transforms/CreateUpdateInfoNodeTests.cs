@@ -382,6 +382,223 @@ public class CreateUpdateInfoNodeTests
     }
 
     /// <summary>
+    /// Schema-inferred record coercion: a RecordArray attribute fed PLAIN JSON objects (no
+    /// {CkRecordId, Attributes} envelope — the natural shape of LLM/webhook payloads) must
+    /// materialize RtRecords using the record type DECLARED by the CK schema (valueCkRecordId),
+    /// with property names matched case-insensitively (camelCase JSON → PascalCase CK attributes).
+    /// Pre-enhancement these items fell through as JsonObjects and crashed downstream in
+    /// AttributeValueConverter with "Unable to cast ... JsonObject to ... RtRecord".
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_RecordArrayFromPlainObjects_CoercesViaDeclaredRecordType()
+    {
+        var config = new CreateUpdateInfoNodeConfiguration
+        {
+            UpdateKind = UpdateKind.Update,
+            RtId = TestRtId,
+            CkTypeId = TestRtCkTypeId,
+            TargetPath = "$.result",
+            AttributeUpdates = new List<AttributeUpdateConfiguration>
+            {
+                new()
+                {
+                    // camelCase on purpose: attribute resolution must be case-insensitive,
+                    // mirroring RtPathEvaluator's semantics.
+                    AttributeName = "sections",
+                    AttributeValueType = AttributeValueTypesDto.RecordArray,
+                    ValuePath = "$.sections"
+                }
+            }
+        };
+
+        // Plain objects, camelCase properties — no envelope anywhere.
+        var testData = new JsonObject
+        {
+            ["sections"] = new JsonArray(
+                new JsonObject { ["heading"] = "Summary", ["sortOrder"] = 0 },
+                new JsonObject { ["heading"] = "Decisions", ["sortOrder"] = 1 })
+        };
+
+        var (dataContextReal, nodeContext, meshEtlContext, ckCacheService, next) =
+            PrepareTest(config, testData);
+
+        // Entity type declares "Sections" as RecordArray of TestModel/Section-1.
+        var sectionRecordCkId = new CkId<CkRecordId>("TestModel/Section-1");
+        SetupCacheForRecordArrayAttribute(ckCacheService, "Sections", sectionRecordCkId);
+
+        var sectionRecordGraph = BuildRecordGraph("TestModel/Section-1",
+            ("Heading", AttributeValueTypesDto.String),
+            ("SortOrder", AttributeValueTypesDto.Int));
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+            .Returns(sectionRecordGraph);
+
+        var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
+
+        EntityUpdateInfo<RtEntity>? capturedUpdate = null;
+        A.CallTo(() => dataContext.Set(
+                "$.result",
+                A<EntityUpdateInfo<RtEntity>?>._,
+                A<DocumentModes>._,
+                A<ValueKinds>._,
+                A<TargetValueWriteModes>._))
+            .Invokes((string _, EntityUpdateInfo<RtEntity>? u, DocumentModes _, ValueKinds _,
+                TargetValueWriteModes _) => capturedUpdate = u);
+
+        var node = new CreateUpdateInfoNode(next, meshEtlContext, ckCacheService);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedUpdate);
+        Assert.NotNull(capturedUpdate!.RtEntity);
+        Assert.True(capturedUpdate.RtEntity!.Attributes.ContainsKey("Sections"));
+
+        var storedList = Assert.IsAssignableFrom<IEnumerable>(capturedUpdate.RtEntity.Attributes["Sections"])
+            .Cast<object?>().ToList();
+        Assert.Equal(2, storedList.Count);
+
+        var first = Assert.IsType<RtRecord>(storedList[0]);
+        // camelCase "heading" must land on the PascalCase CK attribute "Heading".
+        Assert.Equal("Summary", first.Attributes["Heading"]);
+        Assert.True(first.Attributes.ContainsKey("SortOrder"));
+
+        var second = Assert.IsType<RtRecord>(storedList[1]);
+        Assert.Equal("Decisions", second.Attributes["Heading"]);
+    }
+
+    /// <summary>
+    /// Strictness parity with the envelope path: a plain-object property that matches no attribute
+    /// of the declared record type must throw (loud failure on LLM typos / schema drift), not be
+    /// silently dropped or stored raw.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_PlainObjectWithUnknownProperty_Throws()
+    {
+        var config = new CreateUpdateInfoNodeConfiguration
+        {
+            UpdateKind = UpdateKind.Update,
+            RtId = TestRtId,
+            CkTypeId = TestRtCkTypeId,
+            TargetPath = "$.result",
+            AttributeUpdates = new List<AttributeUpdateConfiguration>
+            {
+                new()
+                {
+                    AttributeName = "Sections",
+                    AttributeValueType = AttributeValueTypesDto.RecordArray,
+                    ValuePath = "$.sections"
+                }
+            }
+        };
+
+        var testData = new JsonObject
+        {
+            ["sections"] = new JsonArray(
+                new JsonObject { ["headnig"] = "typo" }) // misspelled property
+        };
+
+        var (dataContextReal, nodeContext, meshEtlContext, ckCacheService, next) =
+            PrepareTest(config, testData);
+
+        var sectionRecordCkId = new CkId<CkRecordId>("TestModel/Section-1");
+        SetupCacheForRecordArrayAttribute(ckCacheService, "Sections", sectionRecordCkId);
+
+        var sectionRecordGraph = BuildRecordGraph("TestModel/Section-1",
+            ("Heading", AttributeValueTypesDto.String));
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+            .Returns(sectionRecordGraph);
+
+        var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
+        var node = new CreateUpdateInfoNode(next, meshEtlContext, ckCacheService);
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    /// <summary>
+    /// Configures the cache with a type graph whose single attribute is a RecordArray with the
+    /// given declared record type — the precondition for schema-inferred coercion.
+    /// </summary>
+    private static void SetupCacheForRecordArrayAttribute(ICkCacheService ckCacheService,
+        string attributeName, CkId<CkRecordId> valueCkRecordId)
+    {
+        var attrId = new CkId<CkAttributeId>("TestModel", new CkAttributeId(attributeName));
+        var attributeGraph = new CkTypeAttributeGraph(
+            ckAttributeId: attrId,
+            attributeName: attributeName,
+            autoCompleteValues: null,
+            valueType: AttributeValueTypesDto.RecordArray,
+            valueCkRecordId: valueCkRecordId,
+            valueCkEnumId: null,
+            autoIncrementReference: null,
+            metaData: null,
+            defaultValues: null,
+            isOptional: true,
+            description: null);
+
+        var allAttributes = new Dictionary<CkId<CkAttributeId>, CkTypeAttributeGraph>
+        {
+            [attrId] = attributeGraph
+        };
+
+        var ckTypeGraph = new CkTypeGraph(
+            ckTypeId: new CkId<CkTypeId>("TestModel", new CkTypeId("TestType")),
+            isAbstract: false,
+            isFinal: false,
+            isCollectionRoot: false,
+            baseTypes: [],
+            derivedFromCkTypeId: null,
+            definingCollectionRootCkTypeId: null,
+            derivedTypes: [],
+            definedAttributes: [],
+            allAttributes: allAttributes,
+            indexes: [],
+            associations: new CkGraphDirectedAssociations([]),
+            description: string.Empty,
+            enableChangeStreamPreAndPostImages: false);
+
+        A.CallTo(() => ckCacheService.TryGetRtCkType(TestTenantId, A<RtCkId<CkTypeId>>._, out ckTypeGraph!))
+            .Returns(true)
+            .AssignsOutAndRefParameters(ckTypeGraph);
+    }
+
+    /// <summary>
+    /// Builds a <see cref="CkRecordGraph"/> with the given (name, valueType) attributes.
+    /// </summary>
+    private static CkRecordGraph BuildRecordGraph(string ckRecordIdString,
+        params (string Name, AttributeValueTypesDto ValueType)[] attributes)
+    {
+        var ckRecordId = new CkId<CkRecordId>(ckRecordIdString);
+        var allAttributes = new Dictionary<CkId<CkAttributeId>, CkTypeAttributeGraph>();
+        foreach (var (name, valueType) in attributes)
+        {
+            var attrId = new CkId<CkAttributeId>("TestModel", new CkAttributeId(name));
+            allAttributes[attrId] = new CkTypeAttributeGraph(
+                ckAttributeId: attrId,
+                attributeName: name,
+                autoCompleteValues: null,
+                valueType: valueType,
+                valueCkRecordId: null,
+                valueCkEnumId: null,
+                autoIncrementReference: null,
+                metaData: null,
+                defaultValues: null,
+                isOptional: true,
+                description: null);
+        }
+
+        return new CkRecordGraph(
+            ckRecordId: ckRecordId,
+            isAbstract: false,
+            isFinal: false,
+            baseRecords: [],
+            derivedFromCkRecordId: null,
+            derivedRecords: [],
+            definedAttributes: [],
+            allAttributes: allAttributes,
+            description: string.Empty);
+    }
+
+    /// <summary>
     /// Builds a <see cref="CkRecordGraph"/> for a record whose only attribute is a String attribute of
     /// the given name. Used so <see cref="CreateUpdateInfoNode.GetAttributeValue"/> can validate the
     /// inner attribute name and apply its String value to the reconstructed <see cref="RtRecord"/>.

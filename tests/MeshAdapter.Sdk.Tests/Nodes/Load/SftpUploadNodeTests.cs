@@ -347,6 +347,70 @@ public class SftpUploadNodeTests : NodeTestBase
         Assert.Contains(TestContentPath, ex.Message);
     }
 
+    [Fact]
+    public async Task GetUploadStreamAsync_BinarySource_IgnoresEncodingConfiguration()
+    {
+        // Ticket criterion "binary sources are unaffected": bytes must pass through 1:1,
+        // even with a restrictive encoding and Fail mode configured.
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            FileRtId = TestFileRtId,
+            Path = null!,
+            Encoding = "windows-1252",
+            OnEncodingError = EncodingErrorHandling.Fail
+        };
+
+        // UTF-8 bytes of "€" + a musical symbol — as STRING content this would be
+        // unencodable in windows-1252; as binary payload it must survive untouched.
+        var payload = new byte[] { 0xE2, 0x82, 0xAC, 0xF0, 0x9D, 0x84, 0x9E };
+        var handler = A.Fake<IDownloadStreamHandler>();
+        A.CallTo(() => handler.Stream).Returns(new MemoryStream(payload));
+        A.CallTo(() => _tenantRepository.DownloadLargeBinaryAsync(
+                _session, A<OctoObjectId>._, A<CancellationToken>._))
+            .Returns(Task.FromResult(handler));
+
+        var (dataContext, nodeContext, _) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        var node = CreateNode(A.Fake<NodeDelegate>());
+
+        await using var stream = await node.GetUploadStreamAsync(config, dataContext, nodeContext);
+
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        Assert.Equal(payload, buffer.ToArray());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_EncodingFailModeWithUnencodableContent_ThrowsBeforeUpload()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath,
+            Encoding = "windows-1252",
+            OnEncodingError = EncodingErrorHandling.Fail
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestContentPath, "a\U0001D11Eb");
+
+        var node = CreateNode(next);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains("U+1D11E", ex.Message);
+        Assert.Contains("no file was written", ex.Message);
+        Assert.DoesNotContain("Cannot upload file via SFTP", ex.Message);
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
     #endregion
 
     #region Semaphore Thread-Safety Tests

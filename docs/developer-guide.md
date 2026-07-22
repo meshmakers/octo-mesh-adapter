@@ -407,6 +407,8 @@ Uploads files to an SFTP server. Supports both binary files from MongoDB storage
 | `FileRtId` | string | Static RtId of binary file (content source; exactly one source required) |
 | `FileRtIdPath` | string | Dynamic RtId path in data context (content source; takes precedence over `FileRtId`) |
 | `Path` | string | Data context path for string content (content source; exactly one source required) |
+| `Encoding` | string | Encoding for string content (default `utf-8`; e.g. `windows-1252`, `iso-8859-1`). Validated when the pipeline configuration is bound — unknown names and byte-order-sensitive encodings (`utf-16*`, `utf-32*`) fail the deployment. Binary sources are uploaded byte-for-byte regardless. |
+| `OnEncodingError` | enum | `Replace` (default): each unencodable character becomes one `?` and a warning lists the offending code points. `Fail`: the upload aborts before any data reaches the target. |
 
 **Configuration rules**:
 - You **must** configure a file name using either `FileName` (static) or `FileNamePath` (dynamic). If both are set, `FileNamePath` takes precedence.

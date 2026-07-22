@@ -269,7 +269,8 @@ public class SftpUploadNode(
             throw PipelineExecutionException.ValueNotSet(nodeContext, configuration.Path);
         }
 
-        return new MemoryStream(Encoding.UTF8.GetBytes(content));
+        return new MemoryStream(SftpContentEncoder.Encode(content, configuration.Encoding,
+            configuration.OnEncodingError, nodeContext));
     }
 
     private static SftpClient CreateSftpClient(SftpServerConfiguration serverConfiguration)

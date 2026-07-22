@@ -347,6 +347,35 @@ public class SftpUploadNodeTests : NodeTestBase
         Assert.Contains(TestContentPath, ex.Message);
     }
 
+    [Fact]
+    public async Task ProcessObjectAsync_EncodingFailModeWithUnencodableContent_ThrowsBeforeUpload()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath,
+            Encoding = "windows-1252",
+            OnEncodingError = EncodingErrorHandling.Fail
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestContentPath, "a\U0001D11Eb");
+
+        var node = CreateNode(next);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains("U+1D11E", ex.Message);
+        Assert.Contains("no file was written", ex.Message);
+        Assert.DoesNotContain("Cannot upload file via SFTP", ex.Message);
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
     #endregion
 
     #region Semaphore Thread-Safety Tests

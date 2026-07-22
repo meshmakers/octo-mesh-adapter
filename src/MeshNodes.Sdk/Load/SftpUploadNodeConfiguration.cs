@@ -43,4 +43,45 @@ public record SftpUploadNodeConfiguration : PathNodeConfiguration
     /// </summary>
     [PropertyGroup("Data Mapping", 3, "jsonpath")]
     public string? FileRtIdPath { get; set; }
+
+    /// <summary>
+    /// Encoding used for string content (e.g. utf-8, windows-1252, iso-8859-1).
+    /// Applies only to content resolved via <see cref="PathNodeConfiguration.Path"/>;
+    /// binary sources are uploaded byte-for-byte. Unknown names are rejected when the
+    /// pipeline configuration is bound, so a typo fails the deployment instead of the
+    /// first upload.
+    /// </summary>
+    [PropertyGroup("Options", 0)]
+    public string Encoding
+    {
+        get => _encoding;
+        set
+        {
+            SftpUploadEncoding.Resolve(value);
+            _encoding = value;
+        }
+    }
+
+    private string _encoding = "utf-8";
+
+    /// <summary>
+    /// How to handle characters the configured encoding cannot represent:
+    /// Replace substitutes a single '?' per character and logs a warning naming the
+    /// affected code points; Fail aborts before the upload starts, so no degraded file
+    /// reaches the target.
+    /// </summary>
+    [PropertyGroup("Options", 1)]
+    public EncodingErrorHandling OnEncodingError { get; set; } = EncodingErrorHandling.Replace;
+}
+
+/// <summary>
+/// Handling of characters that cannot be represented in the configured upload encoding
+/// </summary>
+public enum EncodingErrorHandling
+{
+    /// <summary>Replace each unencodable character with '?' and log a warning</summary>
+    Replace,
+
+    /// <summary>Abort the upload before any data is written to the target</summary>
+    Fail
 }

@@ -71,7 +71,22 @@ public record SftpUploadNodeConfiguration : PathNodeConfiguration
     /// reaches the target.
     /// </summary>
     [PropertyGroup("Options", 1)]
-    public EncodingErrorHandling OnEncodingError { get; set; } = EncodingErrorHandling.Replace;
+    public EncodingErrorHandling OnEncodingError
+    {
+        get => _onEncodingError;
+        set
+        {
+            if (!Enum.IsDefined(value))
+            {
+                throw new ArgumentException(
+                    $"Unknown onEncodingError value '{(int)value}'. Use Replace or Fail.", nameof(value));
+            }
+
+            _onEncodingError = value;
+        }
+    }
+
+    private EncodingErrorHandling _onEncodingError = EncodingErrorHandling.Replace;
 }
 
 /// <summary>

@@ -77,7 +77,9 @@ public class SftpUploadNode(
                     fileName,
                     hasBinarySource = !string.IsNullOrWhiteSpace(c.FileRtId) ||
                                       !string.IsNullOrWhiteSpace(c.FileRtIdPath),
-                    contentPath = c.Path
+                    contentPath = c.Path,
+                    encoding = c.Encoding,
+                    onEncodingError = c.OnEncodingError.ToString()
                 });
                 await next(dataContext, nodeContext);
                 return;
@@ -216,7 +218,8 @@ public class SftpUploadNode(
         }
     }
 
-    private async Task<Stream> GetUploadStreamAsync(
+    // Internal; tests access via InternalsVisibleTo.
+    internal async Task<Stream> GetUploadStreamAsync(
         SftpUploadNodeConfiguration configuration,
         IDataContext dataContext,
         INodeContext nodeContext)

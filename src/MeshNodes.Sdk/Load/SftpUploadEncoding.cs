@@ -29,9 +29,10 @@ public static class SftpUploadEncoding
                 nameof(encodingName));
         }
 
+        Encoding encoding;
         try
         {
-            return Encoding.GetEncoding(encodingName);
+            encoding = Encoding.GetEncoding(encodingName);
         }
         catch (ArgumentException e)
         {
@@ -39,5 +40,14 @@ public static class SftpUploadEncoding
                 $"Unknown encoding '{encodingName}'. Use an IANA or code-page name such as utf-8, windows-1252 or iso-8859-1.",
                 nameof(encodingName), e);
         }
+
+        if (encoding is UnicodeEncoding or UTF32Encoding)
+        {
+            throw new ArgumentException(
+                $"Encoding '{encodingName}' is not supported: SftpUpload writes no byte-order mark, so multi-byte encodings with byte-order semantics would produce ambiguous files. Use utf-8 or a single-byte code page such as windows-1252.",
+                nameof(encodingName));
+        }
+
+        return encoding;
     }
 }

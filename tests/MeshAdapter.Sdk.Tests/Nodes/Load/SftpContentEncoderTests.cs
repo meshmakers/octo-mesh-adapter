@@ -107,6 +107,46 @@ public class SftpContentEncoderTests
     }
 
     [Fact]
+    public void Encode_Windows1252Replace_NfdInputIsNormalizedInsteadOfReplaced()
+    {
+        // "Müller" in NFD (u + combining diaeresis): windows-1252 cannot encode U+0308,
+        // but the NFC form (ü = 0xFC) is fully representable — no data loss, no warning.
+        var bytes = SftpContentEncoder.Encode("Mu\u0308ller", "windows-1252", EncodingErrorHandling.Replace,
+            _nodeContext);
+
+        Assert.Equal(new byte[] { 0x4D, 0xFC, 0x6C, 0x6C, 0x65, 0x72 }, bytes);
+        Assert.Empty(_warnings);
+    }
+
+    [Fact]
+    public void Encode_Iso88591Replace_ManyDistinctBadCharacters_ReportIsCapped()
+    {
+        // 25 distinct cyrillic letters — more than the 20-code-point report cap.
+        const string content = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШ";
+
+        var bytes = SftpContentEncoder.Encode(content, "iso-8859-1", EncodingErrorHandling.Replace, _nodeContext);
+
+        Assert.Equal(25, bytes.Length);
+        Assert.All(bytes, b => Assert.Equal(0x3F, b));
+        var warning = Assert.Single(_warnings);
+        Assert.Contains("25 character", warning);
+        Assert.Contains("…", warning);
+    }
+
+    [Fact]
+    public void Encode_Windows1252Fail_ManyDistinctBadCharacters_ThrowsWithCappedReport()
+    {
+        const string content = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШ";
+
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => SftpContentEncoder.Encode(content, "windows-1252", EncodingErrorHandling.Fail, _nodeContext));
+
+        Assert.Contains("U+0410", ex.Message);
+        Assert.Contains("…", ex.Message);
+        Assert.Empty(_warnings);
+    }
+
+    [Fact]
     public void Encode_ReplaceCleanContent_DoesNotWarn()
     {
         var bytes = SftpContentEncoder.Encode("plain ascii", "windows-1252", EncodingErrorHandling.Replace, _nodeContext);

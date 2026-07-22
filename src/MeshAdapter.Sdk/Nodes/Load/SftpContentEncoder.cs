@@ -9,7 +9,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// encoding-error handling. Detection uses a strict (exception-fallback) probe so
 /// replacement is single-pass and deterministic: exactly one '?' per Unicode scalar.
 /// A surrogate pair collapses to one '?' — the built-in EncoderReplacementFallback
-/// would emit one per UTF-16 unit, i.e. two.
+/// would emit one per UTF-16 unit, i.e. two. Decomposed input (NFD) is normalized to
+/// NFC before any character is replaced, so text that is representable in its
+/// precomposed form survives losslessly.
 /// </summary>
 internal static class SftpContentEncoder
 {
@@ -27,20 +29,50 @@ internal static class SftpContentEncoder
         }
         catch (EncoderFallbackException)
         {
-            // At least one character is not representable; fall through to the scalar walk.
+            // At least one character is not representable; fall through.
         }
 
-        var (sanitized, distinctCodePoints, count) = Sanitize(content, strict);
+        // Decomposed input (NFD) may be representable in its precomposed form
+        // (e.g. "u + U+0308" → ü = 0xFC in windows-1252): try NFC before replacing
+        // anything. Normalize throws on invalid UTF-16 (lone surrogates) — such
+        // content goes to the scalar walk unchanged.
+        try
+        {
+            var normalized = content.Normalize(NormalizationForm.FormC);
+            if (!string.Equals(normalized, content, StringComparison.Ordinal))
+            {
+                try
+                {
+                    return strict.GetBytes(normalized);
+                }
+                catch (EncoderFallbackException)
+                {
+                    content = normalized;
+                }
+            }
+        }
+        catch (ArgumentException)
+        {
+            // Invalid Unicode units — keep the original string for the walk.
+        }
+
+        // In Fail mode the sanitized string is discarded, so stop the probe walk once
+        // the report is full: the probes are exception-driven (µs each) and would take
+        // seconds on multi-megabyte content that is entirely unencodable.
+        var stopAtReportCap = onEncodingError == EncodingErrorHandling.Fail;
+        var (sanitized, distinctCodePoints, count, truncated) = Sanitize(content, strict, stopAtReportCap);
 
         var reported = string.Join(", ", distinctCodePoints.Take(MaxReportedCodePoints));
-        if (distinctCodePoints.Count > MaxReportedCodePoints)
+        if (truncated || distinctCodePoints.Count > MaxReportedCodePoints)
         {
             reported += ", …";
         }
 
         if (onEncodingError == EncodingErrorHandling.Fail)
         {
-            throw MeshAdapterPipelineExecutionException.UnencodableContent(nodeContext, encodingName, count, reported);
+            var countText = truncated ? $"{count}+" : count.ToString();
+            throw MeshAdapterPipelineExecutionException.UnencodableContent(nodeContext, encodingName, countText,
+                reported);
         }
 
         nodeContext.Warning(
@@ -50,8 +82,8 @@ internal static class SftpContentEncoder
         return strict.GetBytes(sanitized);
     }
 
-    private static (string Sanitized, List<string> DistinctCodePoints, int Count) Sanitize(string content,
-        Encoding strict)
+    private static (string Sanitized, List<string> DistinctCodePoints, int Count, bool Truncated) Sanitize(
+        string content, Encoding strict, bool stopAtReportCap)
     {
         var builder = new StringBuilder(content.Length);
         var distinctCodePoints = new List<string>();
@@ -92,9 +124,14 @@ internal static class SftpContentEncoder
 
                 i += 1;
             }
+
+            if (stopAtReportCap && distinctCodePoints.Count >= MaxReportedCodePoints)
+            {
+                return (builder.ToString(), distinctCodePoints, count, Truncated: true);
+            }
         }
 
-        return (builder.ToString(), distinctCodePoints, count);
+        return (builder.ToString(), distinctCodePoints, count, Truncated: false);
     }
 
     private static bool CanEncode(Encoding strict, ReadOnlySpan<char> chars)

@@ -58,6 +58,29 @@ public class SftpUploadNodeConfigurationTests
         Assert.Throws<ArgumentException>(() => config.Encoding = encodingName);
     }
 
+    [Theory]
+    [InlineData("utf-16")]
+    [InlineData("utf-16BE")]
+    [InlineData("utf-32")]
+    public void Encoding_ByteOrderSensitiveEncoding_IsRejected(string encodingName)
+    {
+        var config = CreateConfig();
+
+        var ex = Assert.Throws<ArgumentException>(() => config.Encoding = encodingName);
+
+        Assert.Contains(encodingName, ex.Message);
+    }
+
+    [Fact]
+    public void OnEncodingError_UndefinedEnumValue_Throws()
+    {
+        var config = CreateConfig();
+
+        var ex = Assert.Throws<ArgumentException>(() => config.OnEncodingError = (EncodingErrorHandling)5);
+
+        Assert.Contains("5", ex.Message);
+    }
+
     [Fact]
     public void Deserialize_WithoutEncodingProperties_KeepsBackwardCompatibleDefaults()
     {

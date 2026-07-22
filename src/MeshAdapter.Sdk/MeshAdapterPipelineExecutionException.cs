@@ -158,11 +158,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Cannot upload file via SFTP: {exception.Message}", exception);
     }
 
-    public static Exception UnencodableContent(INodeContext nodeContext, string encodingName, int count,
+    public static Exception UnencodableContent(INodeContext nodeContext, string encodingName, string countText,
         string codePoints)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: {count} character(s) of the string content are not representable in encoding '{encodingName}' and onEncodingError is 'Fail'. Offending code points: {codePoints}. The upload was aborted; no file was written to the target.");
+            $"[{nodeContext.NodePath}]: {countText} character(s) of the string content are not representable in encoding '{encodingName}' and onEncodingError is 'Fail'. Offending code points: {codePoints}. The upload was aborted; no file was written to the target.");
     }
 
     public static Exception NoFileSourceSpecified(INodeContext nodeContext)

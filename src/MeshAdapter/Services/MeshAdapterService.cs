@@ -51,6 +51,25 @@ internal class MeshAdapterService(
         }
     }
 
+    public Task CkModelChangedAsync(string tenantId)
+    {
+        // AB#4456: the CK model cache is populated load-once per tenant (ModelLoaderService guard),
+        // so without this unload a CK model import would keep validating pipeline writes against
+        // the old model until the process restarts. The next pipeline execution reloads the cache
+        // lazily via MeshContextCreatorService.
+        if (ckCacheService.IsTenantLoaded(tenantId))
+        {
+            logger.LogInformation("CK model changed, unloading CK cache for tenant: {TenantId}", tenantId);
+            ckCacheService.Unload(tenantId);
+        }
+        else
+        {
+            logger.LogInformation("CK model changed, no CK cache loaded for tenant: {TenantId}", tenantId);
+        }
+
+        return Task.CompletedTask;
+    }
+
     public async Task ShutdownAsync(AdapterShutdown adapterShutdown, CancellationToken stoppingToken)
     {
         try

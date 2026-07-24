@@ -85,7 +85,12 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 
 ### Core Services
 
-- **MeshAdapterService**: Main service handling adapter startup/shutdown and pipeline registration
+- **MeshAdapterService**: Main service handling adapter startup/shutdown and pipeline registration.
+  Also implements `IAdapterService.CkModelChangedAsync` (AB#4456): when the communication controller
+  broadcasts a CK model change (after `ImportCk` / `ClearCache`), the tenant's CK cache is unloaded
+  and lazily reloaded on the next pipeline execution — without this, the load-once CK cache
+  (`ModelLoaderService` guard) would keep validating pipeline writes (`CreateUpdateInfo@1` /
+  `ApplyChanges@2`) against the old model until the process restarts.
 - **MeshEtlContext**: ETL context implementation providing access to repositories and pipeline state
 - **HttpRequestService**: Handles dynamic HTTP routing and request processing
 - **MeshContextCreatorService**: Creates contexts for pipeline execution

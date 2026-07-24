@@ -83,17 +83,22 @@ service:
   type: ClusterIP
   port: 80
 
-resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+# A memory LIMIT is deliberately set so an adapter can never consume a whole
+# node's memory. Without it the mesh adapter grew unbounded during heavy work
+# (e.g. the accounting PDF-OCR + AI analysis batches — ~1.4Gi idle plus spikes)
+# and the kernel OOM-killer terminated a random pod once the node hit memory
+# pressure (prod-1 meshmakers, 2026-07-24). The limit converts an unpredictable
+# NODE-level OOM into an isolated, fast-restarting CONTAINER-level OOM. The
+# request makes scheduling memory-aware so the operator does not pack too many
+# adapters onto one node. Heavy per-tenant adapters (accounting) should raise
+# these via a per-workload override; light adapters stay well under the ceiling.
+# No CPU limit on purpose (CPU throttling hurts latency; memory is the OOM lever).
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 3Gi
 
 livenessProbe:
   httpGet:

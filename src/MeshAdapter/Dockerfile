@@ -69,4 +69,8 @@ RUN dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPriv
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "Meshmakers.Octo.MeshAdapter.dll"]
+# Launch dotnet through a shell so LD_PRELOAD-based injectors (Dash0 OpenTelemetry
+# auto-instrumentation) can intercept the execve and activate the CLR profiler.
+# With dotnet as PID 1 there is no child exec to intercept and the service emits
+# no traces (AB#4347). `exec` keeps dotnet as the signal-receiving process.
+ENTRYPOINT ["/bin/sh", "-c", "exec dotnet Meshmakers.Octo.MeshAdapter.dll"]

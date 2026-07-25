@@ -41,6 +41,11 @@
              in RenderDataSheetPdfNode; PdfSharp (MIT) does the page-level merge. -->
         <PackageReference Include="QuestPDF" Version="2026.7.1" />
         <PackageReference Include="PdfSharp" Version="6.2.4" />
+        <!-- Embedded PDF text-layer extraction (PdfOcrExtraction) — used for digital
+             PDFs before falling back to Tesseract OCR. MIT, pure-managed, no license
+             key, cross-platform. Tesseract rasterizes and drops alphanumeric codes
+             (e.g. invoice numbers) and non-German diacritics; the text layer is exact. AB#4528. -->
+        <PackageReference Include="PdfPig" Version="0.1.11" />
         <!-- HTML parsing for RenderHtmlPdf (browser-free, cross-platform). Turns a
              forwarded e-mail body (HTML or plain text) into a receipt PDF via QuestPDF. -->
         <PackageReference Include="AngleSharp" Version="1.5.2" />

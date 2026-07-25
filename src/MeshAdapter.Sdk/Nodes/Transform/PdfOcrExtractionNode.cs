@@ -1,9 +1,12 @@
+using System.Text;
 using IronOcr;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.Services;
+using UglyToad.PdfPig;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -37,6 +40,49 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
 
             var isPdf = IsPdf(fileData);
             nodeContext.Debug($"Starting OCR extraction for {(isPdf ? "PDF" : "image")} ({fileData.Length} bytes)");
+
+            // Digital PDFs carry an exact embedded text layer; prefer it over raster+OCR.
+            // Tesseract drops separator-less alphanumeric codes (e.g. invoice numbers) and
+            // mangles non-German diacritics, whereas the text layer is verbatim. Tables and
+            // barcodes only come from the OCR path, so the shortcut is skipped when either is
+            // requested; scanned/image PDFs (empty text layer) fall through to OCR. AB#4528.
+            var handledByTextLayer = false;
+            if (isPdf && config.PreferTextLayer && !config.ExtractTables && !config.ExtractBarcodes)
+            {
+                var textLayer = TryExtractPdfTextLayer(fileData, config.PageNumbers, nodeContext);
+                if (textLayer is not null && textLayer.Length >= config.MinTextLayerChars)
+                {
+                    dataContext.Set(
+                        config.TargetPath,
+                        textLayer,
+                        config.DocumentMode,
+                        config.TargetValueKind,
+                        config.TargetValueWriteMode
+                    );
+
+                    if (config.IncludeConfidence)
+                    {
+                        // The text layer is authoritative, not a probabilistic OCR read.
+                        dataContext.Set(
+                            config.ConfidenceOutputPath ?? "$.Confidence",
+                            100d,
+                            config.DocumentMode,
+                            config.TargetValueKind,
+                            config.TargetValueWriteMode
+                        );
+                    }
+
+                    handledByTextLayer = true;
+                    nodeContext.Info($"Extracted {textLayer.Length} characters from the PDF text layer (OCR skipped)");
+                }
+                else
+                {
+                    nodeContext.Debug($"PDF text layer absent or below {config.MinTextLayerChars} chars — falling back to OCR");
+                }
+            }
+
+            if (!handledByTextLayer)
+            {
 
             // Initialize IronOCR with explicit configuration
             License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
@@ -121,6 +167,8 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
             }
 
             nodeContext.Info($"Successfully extracted {extractedText.Length} characters from {(isPdf ? "PDF" : "image")}");
+
+            } // end !handledByTextLayer
         }
         catch (Exception ex)
         {
@@ -135,6 +183,36 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
     
+    /// <summary>
+    /// Extracts the embedded text layer of a digital PDF in reading order (PdfPig).
+    /// Returns <c>null</c> on any parse failure — encrypted, malformed, or an image-only
+    /// PDF with no text — so the caller transparently falls back to OCR. AB#4528.
+    /// </summary>
+    private static string? TryExtractPdfTextLayer(byte[] fileData, int[]? pageNumbers, INodeContext nodeContext)
+    {
+        try
+        {
+            using var document = PdfDocument.Open(fileData);
+
+            var pages = pageNumbers is { Length: > 0 }
+                ? pageNumbers.Where(p => p >= 1 && p <= document.NumberOfPages)
+                : Enumerable.Range(1, document.NumberOfPages);
+
+            var sb = new StringBuilder();
+            foreach (var pageNumber in pages)
+            {
+                sb.AppendLine(ContentOrderTextExtractor.GetText(document.GetPage(pageNumber)));
+            }
+
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            nodeContext.Debug($"PDF text-layer extraction failed ({ex.Message}); falling back to OCR");
+            return null;
+        }
+    }
+
     /// <summary>
     /// Detects a PDF by its <c>%PDF-</c> magic header. Anything else (JPEG/PNG/TIFF/…)
     /// is handled as an image via <see cref="OcrImageInput"/>.

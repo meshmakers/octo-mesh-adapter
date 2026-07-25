@@ -50,7 +50,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - FilterLatestUpdateInfoNode
    - MakeHttpRequestNode
    - ImportFromExcelNode
-   - PdfOcrExtractionNode (uses IronOCR for PDF processing)
+   - PdfOcrExtractionNode — for PDF input, extracts the embedded text layer first (PdfPig) and falls back to raster+Tesseract OCR (IronOCR) only for scans/image PDFs or when the text layer is below `MinTextLayerChars`. The text layer is exact where OCR is lossy (separator-less codes like invoice numbers, non-German diacritics). `PreferTextLayer` (default on) is bypassed when `ExtractTables`/`ExtractBarcodes` is requested (those need the OCR path). AB#4528.
    - GenerateAndStoreReportNode
    - **RenderDataSheetPdfNode** (`RenderDataSheetPdf@1`) — renders a generic structured data sheet (title, subtitle, labelled sections, optional footer note) to a base64 PDF via QuestPDF (Community license set in the node). Domain-agnostic: the model is assembled by the pipeline. Used for the accounting BMD handover cover sheet.
    - **MergePdfNode** (`MergePdf@1`) — concatenates an ordered array of base64 PDFs into one (PdfSharp). Skips unreadable PDFs with a warning unless `FailOnInvalidPdf`. Used to prepend the cover sheet to the original document.

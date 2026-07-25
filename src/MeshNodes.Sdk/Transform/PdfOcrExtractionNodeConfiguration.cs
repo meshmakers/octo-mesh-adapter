@@ -89,4 +89,25 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Options", 8)]
     public int MaxDeskewAngle { get; set; } = 40;
+
+    /// <summary>
+    /// For PDF input, extract the embedded text layer first (digital PDFs) and only
+    /// fall back to raster+Tesseract OCR when the layer is missing or too sparse
+    /// (scanned/image PDFs). The text layer is exact where OCR is lossy: Tesseract
+    /// drops separator-less alphanumeric codes such as invoice numbers and mangles
+    /// non-German diacritics. Enabled by default. Ignored for image input and when
+    /// <see cref="ExtractTables"/> or <see cref="ExtractBarcodes"/> is requested
+    /// (those only come from the OCR path). AB#4528.
+    /// </summary>
+    [PropertyGroup("Options", 9)]
+    public bool PreferTextLayer { get; set; } = true;
+
+    /// <summary>
+    /// Minimum number of characters the embedded PDF text layer must yield for it to
+    /// be treated as a digital PDF and used in place of OCR. Below this threshold the
+    /// PDF is assumed to be a scan (empty/near-empty text layer) and the node falls
+    /// back to Tesseract OCR. Only used when <see cref="PreferTextLayer"/> is enabled.
+    /// </summary>
+    [PropertyGroup("Options", 10)]
+    public int MinTextLayerChars { get; set; } = 100;
 }

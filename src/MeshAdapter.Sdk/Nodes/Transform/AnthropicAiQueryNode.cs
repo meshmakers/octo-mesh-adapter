@@ -510,8 +510,24 @@ internal class AnthropicAiQueryNode(
             return;
         }
 
-        await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository,
-            config.McpServiceAccountConfigName);
+        try
+        {
+            await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository,
+                config.McpServiceAccountConfigName);
+        }
+        catch (Exception ex)
+        {
+            // AB#4541: a broken ServiceAccountConfiguration (e.g. a placeholder
+            // IssuerUri left by a blueprint re-apply makes the OIDC discovery throw
+            // "Malformed URL") must degrade to an unauthenticated MCP attempt — the
+            // same path as a missing token — instead of failing the whole pipeline.
+            // An auth-enforcing MCP server then rejects the handshake, the node
+            // answers without tools, and the chat keeps working.
+            nodeContext.Warning(
+                $"Token acquisition via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}' " +
+                $"failed: {ex.Message}. MCP calls will be sent unauthenticated.");
+        }
+
         _mcpAccessToken = serviceClientAccessToken.AccessToken;
 
         if (string.IsNullOrEmpty(_mcpAccessToken))

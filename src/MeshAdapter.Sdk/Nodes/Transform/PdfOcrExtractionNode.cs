@@ -38,7 +38,18 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 throw MeshAdapterPipelineExecutionException.FileTooLarge(nodeContext, fileData.Length, config.MaxFileSizeBytes);
             }
 
-            var isPdf = IsPdf(fileData);
+            // Invoice-archive systems (e.g. UTA's "Transform Foundation Server") deliver PDFs
+            // with a proprietary metadata preamble before the %PDF header; the spec grants
+            // readers a 1024-byte tolerance for locating it. Strip the preamble so IronOCR's
+            // strict input classification sees the document from the real header on. AB#4533.
+            var pdfHeaderOffset = FindPdfHeader(fileData);
+            var isPdf = pdfHeaderOffset >= 0;
+            if (pdfHeaderOffset > 0)
+            {
+                nodeContext.Debug($"PDF header found at offset {pdfHeaderOffset}; stripping preamble");
+                fileData = fileData[pdfHeaderOffset..];
+            }
+
             nodeContext.Debug($"Starting OCR extraction for {(isPdf ? "PDF" : "image")} ({fileData.Length} bytes)");
 
             // Digital PDFs carry an exact embedded text layer; prefer it over raster+OCR.
@@ -214,12 +225,17 @@ internal class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
     }
 
     /// <summary>
-    /// Detects a PDF by its <c>%PDF-</c> magic header. Anything else (JPEG/PNG/TIFF/…)
-    /// is handled as an image via <see cref="OcrImageInput"/>.
+    /// Locates the <c>%PDF-</c> magic header within the first 1024 bytes — the tolerance
+    /// the PDF spec grants readers, needed for archive systems that prepend metadata
+    /// before the header (AB#4533). Returns the header offset, or -1 for anything that
+    /// is not a PDF (JPEG/PNG/TIFF/… are handled as images via <see cref="OcrImageInput"/>).
     /// </summary>
-    private static bool IsPdf(byte[] data) =>
-        data.Length >= 5 && data[0] == 0x25 && data[1] == 0x50
-                         && data[2] == 0x44 && data[3] == 0x46 && data[4] == 0x2D;
+    private static int FindPdfHeader(byte[] data)
+    {
+        ReadOnlySpan<byte> marker = "%PDF-"u8;
+        var searchLength = Math.Min(data.Length, 1024 + marker.Length);
+        return data.AsSpan(0, searchLength).IndexOf(marker);
+    }
 
     private static OcrLanguage GetOcrLanguage(string language)
     {

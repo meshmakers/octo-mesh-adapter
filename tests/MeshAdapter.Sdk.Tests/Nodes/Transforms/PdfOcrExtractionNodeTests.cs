@@ -78,4 +78,40 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
         // Text-layer path stamps a deterministic confidence of 100 (not an OCR estimate).
         Assert.Equal(100d, CapturedValue(dataContext, "$.Confidence"));
     }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PdfWithArchivePreamble_IsTreatedAsPdfNotImage()
+    {
+        // Invoice-archive systems (e.g. UTA's "Transform Foundation Server") deliver PDFs
+        // with a proprietary metadata preamble before the %PDF header. The PDF spec grants
+        // readers a 1024-byte tolerance for locating the header; classifying such a file
+        // as an image sends it down the OcrImageInput path, which fails. AB#4533.
+        var pdf = await RenderTextPdfAsync(
+            "Gesamtsummenblatt (Nicht gueltig fuer Umsatzsteuerzwecke)\n" +
+            "Abrechnungs-Nr. 56719006, Abrechnungsdatum 15.12.2025\n" +
+            "Gesamtbetrag exkl. USt 158,76 EUR, USt 31,75 EUR\n" +
+            "Gesamtbetrag inkl. USt 190,51 EUR");
+
+        var preamble =
+            "%%_Typ|ArchivCM\r\n%%_Server|vTrans-3\r\n%%_Seiten|1\r\n" +
+            "%%_dokType|KUNDENABRECHNUNG\r\n%%_Format|PDF\r\n%%_Art|Original\r\n";
+        var wrapped = Convert.ToBase64String(
+            System.Text.Encoding.ASCII.GetBytes(preamble)
+                .Concat(Convert.FromBase64String(pdf))
+                .ToArray());
+
+        var config = new PdfOcrExtractionNodeConfiguration
+            { Path = "$.pdf", TargetPath = "$.text", Language = "de", IncludeConfidence = true };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(wrapped);
+
+        await new PdfOcrExtractionNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = CapturedString(dataContext, "$.text");
+        Assert.NotNull(text);
+        Assert.Contains("56719006", text);
+        // Confidence 100 proves the text-layer path ran, i.e. the file was seen as a PDF.
+        Assert.Equal(100d, CapturedValue(dataContext, "$.Confidence"));
+    }
 }

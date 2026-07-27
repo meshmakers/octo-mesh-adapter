@@ -51,7 +51,8 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public string SystemPrompt { get; set; } = "You are a helpful AI assistant that extracts specific information from documents. Always provide accurate, structured responses based only on the information provided.";
 
     /// <summary>
-    /// Maximum tokens for the response
+    /// Maximum tokens for the response. A maxTokens value on the referenced
+    /// AiConfiguration entity takes precedence; this property is the fallback.
     /// </summary>
     [PropertyGroup("AI Configuration", 3)]
     public int MaxTokens { get; set; } = 1000;

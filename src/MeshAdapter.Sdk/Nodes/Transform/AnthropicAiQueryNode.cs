@@ -59,6 +59,9 @@ internal class AnthropicAiQueryNode(
             // Resolve the model from AiConfiguration (aiModel) with fallback to the node config
             var model = ResolveModel(config, etlContext, nodeContext);
 
+            // Resolve max tokens from AiConfiguration (maxTokens) with fallback to the node config
+            var maxTokens = ResolveMaxTokens(config, etlContext, nodeContext);
+
             nodeContext.Debug("Starting Anthropic AI query");
 
             // Get the main content from the configured path (optional when using MCP tools).
@@ -171,7 +174,7 @@ internal class AnthropicAiQueryNode(
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -340,8 +343,35 @@ internal class AnthropicAiQueryNode(
         return config.Model;
     }
 
+    internal static int ResolveMaxTokens(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        // Prefer the max tokens configured on the AiConfiguration entity (maxTokens), mirroring
+        // how the model is resolved from it. Falls back to the node's own MaxTokens property
+        // (and thus its default) when the AiConfiguration has no usable maxTokens. int.TryParse
+        // on JsonNode.ToString() accepts the value both as JSON number and as string.
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
+            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        {
+            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
+            if (rawJson != null)
+            {
+                var configDoc = JsonNode.Parse(rawJson);
+                var value = configDoc?["maxTokens"];
+                if (value != null && int.TryParse(value.ToString(), out var maxTokens) && maxTokens > 0)
+                {
+                    nodeContext.Debug(
+                        $"Max tokens {maxTokens} loaded from configuration '{config.ApiKeyConfigurationName}'");
+                    return maxTokens;
+                }
+            }
+        }
+
+        return config.MaxTokens;
+    }
+
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
-        string model, string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools,
+        string model, int maxTokens, string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools,
         INodeContext nodeContext, List<object>? historyMessages = null)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
@@ -362,7 +392,7 @@ internal class AnthropicAiQueryNode(
             var requestObj = new Dictionary<string, object>
             {
                 ["model"] = model,
-                ["max_tokens"] = config.MaxTokens,
+                ["max_tokens"] = maxTokens,
                 ["temperature"] = config.Temperature,
                 ["system"] = config.SystemPrompt,
                 ["messages"] = messages

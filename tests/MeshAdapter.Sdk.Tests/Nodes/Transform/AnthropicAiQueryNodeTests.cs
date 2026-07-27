@@ -1,5 +1,8 @@
 using FakeItEasy;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
@@ -124,5 +127,85 @@ public class AnthropicAiQueryNodeTests
     public void ExtractJsonFromText_NoJson_ReturnsNull()
     {
         Assert.Null(AnthropicAiQueryNode.ExtractJsonFromText("no json here at all"));
+    }
+
+    // --- ResolveMaxTokens (AB#4544) -------------------------------------------------
+    // The AiConfiguration entity carries a maxTokens attribute; the node must prefer it
+    // over its own MaxTokens property (which stays the fallback). Regression: the match
+    // pipeline ran with the node value while the configuration said 8000 — long answers
+    // were cut mid-JSON and the whole batch degraded.
+
+    private static IMeshEtlContext EtlContextWithConfig(string configName, string? rawJson)
+    {
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => globalConfiguration.IsDefined(configName)).Returns(rawJson != null);
+        if (rawJson != null)
+        {
+            A.CallTo(() => globalConfiguration.GetRawJson(configName)).Returns(rawJson);
+        }
+
+        var etlContext = A.Fake<IMeshEtlContext>();
+        A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
+        return etlContext;
+    }
+
+    private static AnthropicAiQueryNodeConfiguration ConfigWith(string? configName, int nodeMaxTokens)
+    {
+        return new AnthropicAiQueryNodeConfiguration
+        {
+            ApiKeyConfigurationName = configName,
+            MaxTokens = nodeMaxTokens,
+            Question = "q",
+        };
+    }
+
+    [Theory]
+    [InlineData("{\"apiKey\": \"k\", \"maxTokens\": 8000}")] // JSON number
+    [InlineData("{\"apiKey\": \"k\", \"maxTokens\": \"8000\"}")] // JSON string
+    public void ResolveMaxTokens_ConfiguredOnEntity_WinsOverNodeProperty(string rawJson)
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", rawJson);
+
+        var result = AnthropicAiQueryNode.ResolveMaxTokens(
+            ConfigWith("AnthropicAiConfig", 4000), etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(8000, result);
+    }
+
+    [Theory]
+    [InlineData("{\"apiKey\": \"k\"}")] // attribute absent
+    [InlineData("{\"apiKey\": \"k\", \"maxTokens\": 0}")] // not a usable value
+    [InlineData("{\"apiKey\": \"k\", \"maxTokens\": -1}")]
+    [InlineData("{\"apiKey\": \"k\", \"maxTokens\": \"lots\"}")] // not numeric
+    public void ResolveMaxTokens_NoUsableEntityValue_FallsBackToNodeProperty(string rawJson)
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", rawJson);
+
+        var result = AnthropicAiQueryNode.ResolveMaxTokens(
+            ConfigWith("AnthropicAiConfig", 4000), etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(4000, result);
+    }
+
+    [Fact]
+    public void ResolveMaxTokens_NoConfigurationName_FallsBackToNodeProperty()
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", "{\"maxTokens\": 8000}");
+
+        var result = AnthropicAiQueryNode.ResolveMaxTokens(
+            ConfigWith(null, 4000), etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(4000, result);
+    }
+
+    [Fact]
+    public void ResolveMaxTokens_ConfigurationNotDefined_FallsBackToNodeProperty()
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", null);
+
+        var result = AnthropicAiQueryNode.ResolveMaxTokens(
+            ConfigWith("AnthropicAiConfig", 4000), etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(4000, result);
     }
 }

@@ -256,4 +256,50 @@ public class AnthropicAiQueryNodeTests
 
         Assert.Equal(0.4, result);
     }
+
+    /// <summary>
+    /// Pins <see cref="AnthropicAiQueryNode.BuildEffectiveSystemPrompt" /> (AB#4562 follow-up).
+    /// When MCP is configured but zero tools were loaded, the tools-promising pipeline system
+    /// prompt must be extended with the no-tools instruction — otherwise the model imitates
+    /// tool calls as text and fabricates their results (observed with invented invoice data
+    /// in the accounting chat). All other combinations must return the prompt unchanged.
+    /// </summary>
+    [Fact]
+    public void BuildEffectiveSystemPrompt_McpConfiguredButNoTools_AppendsNoToolsInstruction()
+    {
+        const string prompt = "You have tools to query live data.";
+
+        var result = AnthropicAiQueryNode.BuildEffectiveSystemPrompt(prompt, mcpConfigured: true, mcpToolCount: 0);
+
+        Assert.StartsWith(prompt, result);
+        Assert.EndsWith(AnthropicAiQueryNode.NoToolsSystemPromptSuffix, result);
+    }
+
+    [Fact]
+    public void BuildEffectiveSystemPrompt_McpConfiguredWithTools_ReturnsPromptUnchanged()
+    {
+        const string prompt = "You have tools to query live data.";
+
+        var result = AnthropicAiQueryNode.BuildEffectiveSystemPrompt(prompt, mcpConfigured: true, mcpToolCount: 3);
+
+        Assert.Same(prompt, result);
+    }
+
+    [Fact]
+    public void BuildEffectiveSystemPrompt_McpNotConfigured_ReturnsPromptUnchanged()
+    {
+        const string prompt = "You are a document extraction assistant.";
+
+        var result = AnthropicAiQueryNode.BuildEffectiveSystemPrompt(prompt, mcpConfigured: false, mcpToolCount: 0);
+
+        Assert.Same(prompt, result);
+    }
+
+    [Fact]
+    public void BuildEffectiveSystemPrompt_EmptyPromptWithoutTools_ReturnsOnlyInstruction()
+    {
+        var result = AnthropicAiQueryNode.BuildEffectiveSystemPrompt(string.Empty, mcpConfigured: true, mcpToolCount: 0);
+
+        Assert.Equal(AnthropicAiQueryNode.NoToolsSystemPromptSuffix.TrimStart(), result);
+    }
 }

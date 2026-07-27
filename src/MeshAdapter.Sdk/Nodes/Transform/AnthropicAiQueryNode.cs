@@ -154,6 +154,20 @@ internal class AnthropicAiQueryNode(
                 nodeContext.Info($"Loaded {mcpTools?.Count ?? 0} MCP tools from OctoMesh");
             }
 
+            // AB#4562 follow-up: when MCP was configured but no tools could be loaded (server
+            // unreachable, auth rejected, name filter matched nothing), the pipeline's static
+            // system prompt still promises tools. Without a correction the model imitates tool
+            // calls as text and fabricates their results (observed on prod-1: invented invoice
+            // data in the accounting chat). Append an explicit no-tools instruction instead.
+            var systemPrompt = BuildEffectiveSystemPrompt(config.SystemPrompt,
+                mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl), mcpToolCount: mcpTools?.Count ?? 0);
+            if (!ReferenceEquals(systemPrompt, config.SystemPrompt))
+            {
+                nodeContext.Warning(
+                    "MCP is configured but no tools are available — appending a no-tools instruction " +
+                    "to the system prompt so the model does not simulate tool calls.");
+            }
+
             // Load conversation history if configured
             List<object>? historyMessages = null;
             if (!string.IsNullOrEmpty(config.ConversationHistoryPath))
@@ -176,7 +190,7 @@ internal class AnthropicAiQueryNode(
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -222,6 +236,37 @@ internal class AnthropicAiQueryNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// The system-prompt suffix appended when MCP is configured but no tools are available.
+    /// Without it, a tools-promising pipeline prompt makes the model imitate tool calls as
+    /// plain text and fabricate their results (AB#4562 follow-up; observed in the accounting
+    /// chat: invented invoice data). Kept as a constant so tests and callers stay in sync.
+    /// </summary>
+    internal const string NoToolsSystemPromptSuffix =
+        "\n\nIMPORTANT: No live data tools are available in this session (the tool service could not " +
+        "be reached). Do NOT simulate, imitate or fabricate tool calls or tool results, and do NOT " +
+        "invent any data. If answering requires live data, state clearly that live data access is " +
+        "currently unavailable and answer only from the content provided in this conversation.";
+
+    /// <summary>
+    /// Returns the system prompt to send to the model. When MCP is configured for the node but
+    /// zero tools were loaded (server unreachable, handshake rejected, name filter matched
+    /// nothing), the <see cref="NoToolsSystemPromptSuffix" /> is appended so the model does not
+    /// act on a prompt that promises tools it does not have. Returns the original reference
+    /// unchanged in all other cases (callers detect modification via ReferenceEquals).
+    /// </summary>
+    internal static string BuildEffectiveSystemPrompt(string systemPrompt, bool mcpConfigured, int mcpToolCount)
+    {
+        if (!mcpConfigured || mcpToolCount > 0)
+        {
+            return systemPrompt;
+        }
+
+        return string.IsNullOrEmpty(systemPrompt)
+            ? NoToolsSystemPromptSuffix.TrimStart()
+            : systemPrompt + NoToolsSystemPromptSuffix;
     }
 
     /// <summary>
@@ -403,8 +448,8 @@ internal class AnthropicAiQueryNode(
     }
 
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
-        string model, int maxTokens, double temperature, string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools,
-        INodeContext nodeContext, List<object>? historyMessages = null)
+        string model, int maxTokens, double temperature, string systemPrompt, string? mcpServerUrl, string userPrompt,
+        List<JsonElement>? mcpTools, INodeContext nodeContext, List<object>? historyMessages = null)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
 
@@ -426,7 +471,7 @@ internal class AnthropicAiQueryNode(
                 ["model"] = model,
                 ["max_tokens"] = maxTokens,
                 ["temperature"] = temperature,
-                ["system"] = config.SystemPrompt,
+                ["system"] = systemPrompt,
                 ["messages"] = messages
             };
 

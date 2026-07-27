@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -59,8 +60,9 @@ internal class AnthropicAiQueryNode(
             // Resolve the model from AiConfiguration (aiModel) with fallback to the node config
             var model = ResolveModel(config, etlContext, nodeContext);
 
-            // Resolve max tokens from AiConfiguration (maxTokens) with fallback to the node config
+            // Resolve max tokens and temperature from AiConfiguration with fallback to the node config
             var maxTokens = ResolveMaxTokens(config, etlContext, nodeContext);
+            var temperature = ResolveTemperature(config, etlContext, nodeContext);
 
             nodeContext.Debug("Starting Anthropic AI query");
 
@@ -174,7 +176,7 @@ internal class AnthropicAiQueryNode(
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -370,8 +372,38 @@ internal class AnthropicAiQueryNode(
         return config.MaxTokens;
     }
 
+    internal static double ResolveTemperature(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        // Prefer the temperature configured on the AiConfiguration entity (temperature),
+        // mirroring the maxTokens/aiModel resolution. 0.0 is a meaningful value, so the only
+        // rejection criteria are absence and the API's valid range (0.0 to 1.0). Parsed with
+        // the invariant culture; accepts the value both as JSON number and as string.
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
+            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        {
+            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
+            if (rawJson != null)
+            {
+                var configDoc = JsonNode.Parse(rawJson);
+                var value = configDoc?["temperature"];
+                if (value != null &&
+                    double.TryParse(value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture,
+                        out var temperature) &&
+                    temperature is >= 0.0 and <= 1.0)
+                {
+                    nodeContext.Debug(
+                        $"Temperature {temperature} loaded from configuration '{config.ApiKeyConfigurationName}'");
+                    return temperature;
+                }
+            }
+        }
+
+        return config.Temperature;
+    }
+
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
-        string model, int maxTokens, string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools,
+        string model, int maxTokens, double temperature, string? mcpServerUrl, string userPrompt, List<JsonElement>? mcpTools,
         INodeContext nodeContext, List<object>? historyMessages = null)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
@@ -393,7 +425,7 @@ internal class AnthropicAiQueryNode(
             {
                 ["model"] = model,
                 ["max_tokens"] = maxTokens,
-                ["temperature"] = config.Temperature,
+                ["temperature"] = temperature,
                 ["system"] = config.SystemPrompt,
                 ["messages"] = messages
             };

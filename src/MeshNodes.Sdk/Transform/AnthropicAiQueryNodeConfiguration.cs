@@ -58,7 +58,8 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public int MaxTokens { get; set; } = 1000;
 
     /// <summary>
-    /// Temperature for response generation (0.0 to 1.0)
+    /// Temperature for response generation (0.0 to 1.0). A temperature value on the
+    /// referenced AiConfiguration entity takes precedence; this property is the fallback.
     /// </summary>
     [PropertyGroup("AI Configuration", 4)]
     public double Temperature { get; set; } = 0.1;

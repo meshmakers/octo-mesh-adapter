@@ -208,4 +208,52 @@ public class AnthropicAiQueryNodeTests
 
         Assert.Equal(4000, result);
     }
+
+    // --- ResolveTemperature (AB#4544) -----------------------------------------------
+    // Same dead-configuration defect as maxTokens: the AiConfiguration's temperature was
+    // never read. 0.0 is a meaningful value (the accounting configuration uses it), so
+    // only absence and out-of-range values fall back to the node property.
+
+    [Theory]
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": 0.0}", 0.0)] // 0.0 is a real value, not "unset"
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": 0.7}", 0.7)]
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": \"0.7\"}", 0.7)] // JSON string
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": 1}", 1.0)] // integer literal
+    public void ResolveTemperature_ConfiguredOnEntity_WinsOverNodeProperty(string rawJson, double expected)
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", rawJson);
+
+        var result = AnthropicAiQueryNode.ResolveTemperature(
+            ConfigWith("AnthropicAiConfig", 4000), etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData("{\"apiKey\": \"k\"}")] // attribute absent
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": -0.1}")] // out of range
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": 1.5}")]
+    [InlineData("{\"apiKey\": \"k\", \"temperature\": \"warm\"}")] // not numeric
+    public void ResolveTemperature_NoUsableEntityValue_FallsBackToNodeProperty(string rawJson)
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", rawJson);
+        var config = ConfigWith("AnthropicAiConfig", 4000);
+        config.Temperature = 0.4;
+
+        var result = AnthropicAiQueryNode.ResolveTemperature(config, etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(0.4, result);
+    }
+
+    [Fact]
+    public void ResolveTemperature_NoConfigurationName_FallsBackToNodeProperty()
+    {
+        var etlContext = EtlContextWithConfig("AnthropicAiConfig", "{\"temperature\": 0.7}");
+        var config = ConfigWith(null, 4000);
+        config.Temperature = 0.4;
+
+        var result = AnthropicAiQueryNode.ResolveTemperature(config, etlContext, A.Fake<INodeContext>());
+
+        Assert.Equal(0.4, result);
+    }
 }

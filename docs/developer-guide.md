@@ -135,6 +135,17 @@ the caller does not need to know it in advance.
 | `FieldFilters` | collection | Additional field filters AND-combined with the query's persisted filters |
 | `From` / `To` | DateTime? | Stream-data only: override the persisted time range |
 | `Limit` | int? | Stream-data only: override the persisted row cap |
+| `FromPath` / `ToPath` / `LimitPath` | string | Stream-data only: read the same three values from the pipeline data via JSONPath |
+
+**Time range from pipeline data.** `From` / `To` / `Limit` can alternatively be read from the data
+context with `FromPath` / `ToPath` / `LimitPath`, for ranges computed upstream (HTTP trigger,
+preceding node) instead of configured on the node. Precedence per value: literal (`From`) →
+path (`FromPath`) → value persisted on the query entity. Timestamps may be ISO-8601 strings or
+date/time values; a value without a time-zone offset is read as UTC (the node's `From`/`To`
+contract), so the adapter's local time zone never shifts the queried window. A path that resolves
+to nothing falls back to the persisted value and logs a warning; a value that is present but not a
+date/time (or not an integer for `LimitPath`) fails the node instead of silently widening the range.
+For a multi-match JSONPath the first match is used.
 
 **Supported query types:**
 

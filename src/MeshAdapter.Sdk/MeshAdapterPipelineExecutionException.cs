@@ -416,6 +416,19 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "The query must reference the CkArchive it reads from.");
     }
 
+    public static Exception InvalidDateTimeAtPath(INodeContext nodeContext, string path, object? value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The value '{value}' at path '{path}' cannot be read as a date/time. " +
+            "Provide an ISO-8601 timestamp; values without a time-zone offset are interpreted as UTC.");
+    }
+
+    public static Exception InvalidIntegerAtPath(INodeContext nodeContext, string path, object? value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The value '{value}' at path '{path}' cannot be read as a 32-bit integer.");
+    }
+
     public static Exception StreamDataQueryFailed(INodeContext nodeContext, OctoObjectId queryRtId,
         Exception inner)
     {

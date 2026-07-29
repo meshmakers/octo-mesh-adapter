@@ -912,6 +912,264 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     #endregion
 
+    #region Stream-Data Time Range From Pipeline Data (FromPath / ToPath / LimitPath)
+
+    /// <summary>
+    /// Fakes a scalar read at <paramref name="path" />. Production code calls
+    /// <c>GetValue(path)</c>, i.e. with <c>parseDateStrings: true</c>, which is why ISO-8601 strings
+    /// arrive at the node already boxed as <see cref="DateTime" /> (see JsonScalar.ToClr).
+    /// </summary>
+    private static void SetupPathValue(IDataContext dataContext, string path, object? value)
+    {
+        A.CallTo(() => dataContext.GetValue(path, true)).Returns(value);
+    }
+
+    private StreamDataAggregationQueryOptions? _capturedAggregationOptions;
+
+    private void SetupExecuteAggregationResultCapturingOptions(StreamDataQueryResult result)
+    {
+        A.CallTo(() => _streamDataRepository.ExecuteAggregationQueryAsync(
+                A<OctoObjectId>._, A<StreamDataAggregationQueryOptions>._))
+            .Invokes((OctoObjectId _, StreamDataAggregationQueryOptions o) =>
+                _capturedAggregationOptions = o)
+            .Returns(Task.FromResult(result));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithFromPathAndToPath_ResolvesTimeRangeFromPipelineData()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            FromPath = "$.timeRange.from",
+            ToPath = "$.timeRange.to"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        // from: already a DateTime (the usual case — GetValue parses ISO-8601 strings).
+        // to: a string ISO detection rejects, covered by the node's lenient parse arm.
+        SetupPathValue(dataContext, "$.timeRange.from",
+            new DateTime(2026, 3, 1, 6, 0, 0, DateTimeKind.Utc));
+        SetupPathValue(dataContext, "$.timeRange.to", "2026-03-02 06:00:00");
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var options = _capturedStreamOptions;
+        Assert.NotNull(options);
+        Assert.Equal(new DateTime(2026, 3, 1, 6, 0, 0, DateTimeKind.Utc), options!.From);
+        Assert.Equal(new DateTime(2026, 3, 2, 6, 0, 0, DateTimeKind.Utc), options.To);
+        Assert.Equal(DateTimeKind.Utc, options.To!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithUnspecifiedKindAtFromPath_ReadsValueAsUtc()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            FromPath = "$.from"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        // JSON without an offset ("2026-03-01T06:00:00") surfaces as Unspecified — the node's
+        // contract is UTC, so it must not be shifted by the server's local time zone.
+        SetupPathValue(dataContext, "$.from",
+            new DateTime(2026, 3, 1, 6, 0, 0, DateTimeKind.Unspecified));
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(new DateTime(2026, 3, 1, 6, 0, 0, DateTimeKind.Utc), _capturedStreamOptions!.From);
+        Assert.Equal(DateTimeKind.Utc, _capturedStreamOptions.From!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithLiteralAndPath_LiteralWins()
+    {
+        var literalFrom = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            From = literalFrom,
+            FromPath = "$.from",
+            Limit = 100,
+            LimitPath = "$.limit"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPathValue(dataContext, "$.from", new DateTime(2026, 5, 5, 0, 0, 0, DateTimeKind.Utc));
+        SetupPathValue(dataContext, "$.limit", 7);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(literalFrom, _capturedStreamOptions!.From);
+        Assert.Equal(100, _capturedStreamOptions.Limit);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithLimitPath_ResolvesRowCapFromPipelineData()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            LimitPath = "$.limit"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPathValue(dataContext, "$.limit", 250);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(250, _capturedStreamOptions!.Limit);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithStringLimitPathValue_ResolvesRowCapFromPipelineData()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            LimitPath = "$.limit"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        // HTTP triggers deliver query-string values as strings.
+        SetupPathValue(dataContext, "$.limit", "250");
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(250, _capturedStreamOptions!.Limit);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithUnresolvableFromPath_UsesPersistedValue()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            FromPath = "$.missing"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        // An absent path yields null from GetValue in production (FakeItEasy would otherwise return
+        // a dummy object for the object-typed return, so the null has to be configured explicitly).
+        SetupPathValue(dataContext, "$.missing", null);
+
+        var persistedFrom = new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc);
+        var query = CreateSimpleStreamDataQuery(["temperature"]);
+        query.From = persistedFrom;
+        SetupSimpleStreamDataQuery(query);
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(persistedFrom, _capturedStreamOptions!.From);
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithNonDateValueAtFromPath_Throws()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            FromPath = "$.from"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPathValue(dataContext, "$.from", "not-a-timestamp");
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithNonIntegerValueAtLimitPath_Throws()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            LimitPath = "$.limit"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPathValue(dataContext, "$.limit", "many");
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationStreamDataQuery_ResolvesTimeRangeFromPaths()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            FromPath = "$.timeRange.from",
+            ToPath = "$.timeRange.to"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
+        var to = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        SetupPathValue(dataContext, "$.timeRange.from", from);
+        SetupPathValue(dataContext, "$.timeRange.to", to);
+
+        SetupPersistentQuery(CreateAggregationStreamDataQuery(
+            ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteAggregationResultCapturingOptions(
+            new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(_capturedAggregationOptions);
+        Assert.Equal(from, _capturedAggregationOptions!.From);
+        Assert.Equal(to, _capturedAggregationOptions.To);
+    }
+
+    #endregion
+
     #region Transaction Tests
 
     [Fact]

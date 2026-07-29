@@ -1,3 +1,4 @@
+using System.Globalization;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
@@ -354,17 +355,21 @@ public class GetQueryByIdNode(
 
         var archiveRtId = new OctoObjectId(query.ArchiveRtId);
 
+        // Resolved once for every stream-data query kind: literal config value, else the value read
+        // from the data context via *Path, else (in the executors) the value persisted on the query.
+        var overrides = ResolveStreamDataOverrides(dataContext, nodeContext, c);
+
         var queryResult = query switch
         {
             RtSimpleSdQuery simple =>
                 await ExecuteSimpleStreamDataQueryAsync(simple, archiveRtId, streamDataRepo, dataContext, c,
-                    nodeContext),
+                    overrides, nodeContext),
             RtAggregationSdQuery aggregation =>
                 await ExecuteAggregationStreamDataQueryAsync(aggregation, archiveRtId, streamDataRepo, dataContext,
-                    c, nodeContext),
+                    c, overrides, nodeContext),
             RtGroupingAggregationSdQuery grouped =>
                 await ExecuteGroupedAggregationStreamDataQueryAsync(grouped, archiveRtId, streamDataRepo,
-                    dataContext, c, nodeContext),
+                    dataContext, c, overrides, nodeContext),
             // Downsampling and any future stream-data query types are not yet supported.
             _ => throw MeshAdapterPipelineExecutionException.UnsupportedQueryType(nodeContext,
                 query.GetType().Name)
@@ -375,7 +380,7 @@ public class GetQueryByIdNode(
 
     private async Task<QueryResult> ExecuteSimpleStreamDataQueryAsync(RtSimpleSdQuery query,
         OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo, IDataContext dataContext,
-        GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+        GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides, INodeContext nodeContext)
     {
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
         var sortOrders = query.Sorting?
@@ -387,8 +392,8 @@ public class GetQueryByIdNode(
             .WithColumns(query.Columns?.ToList() ?? [])
             .WithRtIds(rtIds)
             // Values from the node configuration win over the values persisted on the query.
-            .WithTimeRange(c.From ?? query.From, c.To ?? query.To)
-            .WithLimit(c.Limit ?? (query.Limit.HasValue ? (int)query.Limit.Value : null))
+            .WithTimeRange(overrides.From ?? query.From, overrides.To ?? query.To)
+            .WithLimit(overrides.Limit ?? (query.Limit.HasValue ? (int)query.Limit.Value : null))
             .WithSortOrders(sortOrders)
             // Persisted field filters AND-combined with the node's configured filters.
             .WithFieldFilters(BuildStreamDataFieldFilters(query.FieldFilter, dataContext, c))
@@ -403,7 +408,7 @@ public class GetQueryByIdNode(
 
     private async Task<QueryResult> ExecuteAggregationStreamDataQueryAsync(RtAggregationSdQuery query,
         OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo, IDataContext dataContext,
-        GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+        GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides, INodeContext nodeContext)
     {
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
 
@@ -411,7 +416,7 @@ public class GetQueryByIdNode(
             .WithCkTypeId(query.QueryCkTypeId)
             .WithAggregationColumns(BuildStreamAggregationColumns(query.Columns))
             .WithRtIds(rtIds)
-            .WithTimeRange(c.From ?? query.From, c.To ?? query.To)
+            .WithTimeRange(overrides.From ?? query.From, overrides.To ?? query.To)
             .WithFieldFilters(BuildStreamDataFieldFilters(query.FieldFilter, dataContext, c));
 
         var result = await ExecuteAsync(
@@ -422,7 +427,8 @@ public class GetQueryByIdNode(
 
     private async Task<QueryResult> ExecuteGroupedAggregationStreamDataQueryAsync(
         RtGroupingAggregationSdQuery query, OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo,
-        IDataContext dataContext, GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+        IDataContext dataContext, GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides,
+        INodeContext nodeContext)
     {
         var groupingColumns = query.GroupingColumns?.ToList() ?? [];
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
@@ -432,7 +438,7 @@ public class GetQueryByIdNode(
             .WithGroupByColumns(groupingColumns)
             .WithAggregationColumns(BuildStreamAggregationColumns(query.Columns))
             .WithRtIds(rtIds)
-            .WithTimeRange(c.From ?? query.From, c.To ?? query.To)
+            .WithTimeRange(overrides.From ?? query.From, overrides.To ?? query.To)
             .WithFieldFilters(BuildStreamDataFieldFilters(query.FieldFilter, dataContext, c));
 
         var result = await ExecuteAsync(
@@ -452,6 +458,109 @@ public class GetQueryByIdNode(
         {
             throw MeshAdapterPipelineExecutionException.StreamDataQueryFailed(nodeContext, c.QueryRtId, ex);
         }
+    }
+
+    /// <summary>
+    /// Effective time range and row cap for a stream-data query, as configured on the node — either
+    /// literally or resolved from the pipeline data via <c>FromPath</c> / <c>ToPath</c> /
+    /// <c>LimitPath</c>. A <c>null</c> member means "not overridden": the caller falls back to the
+    /// value persisted on the query entity.
+    /// </summary>
+    private readonly record struct StreamDataOverrides(DateTime? From, DateTime? To, int? Limit);
+
+    /// <summary>
+    /// Resolves the stream-data overrides. Precedence per value: the literal configuration value wins
+    /// over the path-resolved value, which wins over the persisted value (applied by the callers).
+    /// The literal is checked first so an existing configuration keeps behaving identically even when
+    /// a path is configured alongside it.
+    /// </summary>
+    private static StreamDataOverrides ResolveStreamDataOverrides(IDataContext dataContext,
+        INodeContext nodeContext, GetQueryByIdNodeConfiguration c)
+    {
+        return new StreamDataOverrides(
+            c.From ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.FromPath, nameof(c.FromPath)),
+            c.To ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.ToPath, nameof(c.ToPath)),
+            c.Limit ?? ResolveIntFromPath(dataContext, nodeContext, c.LimitPath, nameof(c.LimitPath)));
+    }
+
+    /// <summary>
+    /// Reads a time-range boundary from the data context. <see cref="IDataContext.GetValue"/> already
+    /// converts ISO-8601 strings to <see cref="DateTime"/> (and takes the first match for a multi-match
+    /// JSONPath); the string arm below covers looser formats that ISO detection rejects. A path that
+    /// resolves to nothing is not an error — the persisted value is used — but a present value that is
+    /// not a date/time is, because silently widening the queried range would hide the misconfiguration.
+    /// </summary>
+    private static DateTime? ResolveDateTimeFromPath(IDataContext dataContext, INodeContext nodeContext,
+        string? path, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var value = dataContext.GetValue(path);
+        switch (value)
+        {
+            case null:
+                nodeContext.Warning(
+                    $"{propertyName} '{path}' resolved to no value; using the value persisted on the query.");
+                return null;
+            case DateTime dateTime:
+                return ToUtc(dateTime);
+            case DateTimeOffset dateTimeOffset:
+                return dateTimeOffset.UtcDateTime;
+            case string text when DateTime.TryParse(text, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed):
+                // AdjustToUniversal already yields a UTC-kind value.
+                return parsed;
+            default:
+                throw MeshAdapterPipelineExecutionException.InvalidDateTimeAtPath(nodeContext, path, value);
+        }
+    }
+
+    private static int? ResolveIntFromPath(IDataContext dataContext, INodeContext nodeContext,
+        string? path, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var value = dataContext.GetValue(path);
+        switch (value)
+        {
+            case null:
+                nodeContext.Warning(
+                    $"{propertyName} '{path}' resolved to no value; using the value persisted on the query.");
+                return null;
+            // Integers that fit in Int32 box to int, larger ones to long — see JsonScalar.ToClr.
+            case int number:
+                return number;
+            case long number when number is >= int.MinValue and <= int.MaxValue:
+                return (int)number;
+            case double number when number % 1 == 0 && number is >= int.MinValue and <= int.MaxValue:
+                return (int)number;
+            case string text when int.TryParse(text, CultureInfo.InvariantCulture, out var parsed):
+                return parsed;
+            default:
+                throw MeshAdapterPipelineExecutionException.InvalidIntegerAtPath(nodeContext, path, value);
+        }
+    }
+
+    /// <summary>
+    /// Normalises a resolved boundary to UTC. The node's <c>From</c>/<c>To</c> contract is UTC, so a
+    /// value without a zone (JSON such as <c>"2026-07-01T00:00:00"</c>, which STJ surfaces as
+    /// <see cref="DateTimeKind.Unspecified"/>) is read as UTC rather than being shifted by the
+    /// server's local time zone.
+    /// </summary>
+    private static DateTime ToUtc(DateTime value)
+    {
+        return value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
     }
 
     private async Task<IStreamDataRepository> ResolveStreamDataRepositoryAsync(INodeContext nodeContext)

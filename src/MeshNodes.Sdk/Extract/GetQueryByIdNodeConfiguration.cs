@@ -55,4 +55,29 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("StreamData", 2)]
     public int? Limit { get; init; }
+
+    /// <summary>
+    /// Optional JSONPath to read the start of the time range from the pipeline data, for cases where
+    /// the range is computed upstream (HTTP trigger, previous node) instead of being configured.
+    /// Only applied to stream-data queries. Precedence: <see cref="From" /> (literal) wins over this
+    /// path, which wins over the value persisted on the query entity. The value may be an ISO-8601
+    /// timestamp string or a date/time value; values without an offset are read as UTC. When the path
+    /// resolves to nothing the persisted value is used and a warning is logged.
+    /// </summary>
+    [PropertyGroup("StreamData", 3)]
+    public string? FromPath { get; init; }
+
+    /// <summary>
+    /// Optional JSONPath to read the end of the time range from the pipeline data. Same semantics as
+    /// <see cref="FromPath" />; <see cref="To" /> takes precedence over it.
+    /// </summary>
+    [PropertyGroup("StreamData", 4)]
+    public string? ToPath { get; init; }
+
+    /// <summary>
+    /// Optional JSONPath to read the row cap from the pipeline data. Same semantics as
+    /// <see cref="FromPath" />; <see cref="Limit" /> takes precedence over it.
+    /// </summary>
+    [PropertyGroup("StreamData", 5)]
+    public string? LimitPath { get; init; }
 }

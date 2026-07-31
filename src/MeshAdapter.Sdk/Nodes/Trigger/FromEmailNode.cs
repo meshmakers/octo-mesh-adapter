@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Mail;
+using System.Text.RegularExpressions;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Search;
@@ -307,6 +308,22 @@ public class EmailData
         Attachments.Any(a =>
             string.Equals(a.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase) ||
             a.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// True when the mail carries at least one attachment that looks like a
+    /// photographed/scanned receipt embedded in the message (see
+    /// <see cref="AttachmentData.IsLikelyReceiptImage"/>). Lets the accounting
+    /// email import convert such an image to a PDF instead of rendering the mail
+    /// body. AB#4647.
+    /// </summary>
+    public bool HasReceiptImageAttachment => Attachments.Any(a => a.IsLikelyReceiptImage);
+
+    /// <summary>
+    /// True when the mail carries at least one attachment worth staging as its own
+    /// document (a PDF or a receipt-like image). When false, the accounting email
+    /// import renders the mail body as the receipt instead. AB#4647.
+    /// </summary>
+    public bool HasStageableAttachment => Attachments.Any(a => a.IsLikelyDocument);
 }
 
 /// <summary>
@@ -333,6 +350,50 @@ public class AttachmentData
     /// Content length in bytes
     /// </summary>
     public long Length { get; set; }
+
+    /// <summary>
+    /// True when the attachment is embedded inline in the message body
+    /// (referenced via a cid: content-id, e.g. a photo pasted into the mail),
+    /// rather than a regular file attachment. AB#4647.
+    /// </summary>
+    public bool IsInline { get; set; }
+
+    // AB#4647: camera / scanner / messenger / screenshot file-name patterns. Used to
+    // tell a photographed-or-scanned receipt apart from a signature logo or office
+    // artwork, which cannot be done by size (a 29 KB receipt photo is smaller than
+    // many logos). Deliberately precision-first: a randomly named pasted image is not
+    // matched and falls through to body rendering rather than adding inbox noise.
+    private static readonly Regex CameraFileNameRegex = new(
+        @"(?:^|[^a-z0-9])(?:img|pxl|dsc|dscf|dcim|dji|gopr|scan|scanned|photo|foto|signal|whatsapp|screenshot|bildschirmfoto)(?:[-_ ]?\d|\b)|\.(?:heic|heif)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private const long MinReceiptImageBytes = 5_000;
+
+    /// <summary>
+    /// Heuristic: true when this image attachment should be treated as a receipt/document.
+    /// An image content type (excluding animated/decorative GIF) above a small floor, and
+    /// either a regular (deliberately attached) file — where the user's intent to send a
+    /// document is explicit — or, when embedded <see cref="IsInline"/> in the body, one
+    /// whose file name matches a camera/scanner/messenger/screenshot pattern. The inline
+    /// condition is what tells a photographed receipt apart from a signature logo, which
+    /// only the Microsoft Graph channel surfaces (IMAP/Signal never expose inline parts).
+    /// AB#4647.
+    /// </summary>
+    public bool IsLikelyReceiptImage =>
+        ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) &&
+        !ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase) &&
+        Length >= MinReceiptImageBytes &&
+        (!IsInline || CameraFileNameRegex.IsMatch(FileName));
+
+    /// <summary>
+    /// True when this attachment should be staged as its own accounting document: a
+    /// PDF, or an image that looks like a receipt (<see cref="IsLikelyReceiptImage"/>).
+    /// Signature logos and icons are excluded. AB#4647.
+    /// </summary>
+    public bool IsLikelyDocument =>
+        ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase) ||
+        FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ||
+        IsLikelyReceiptImage;
 }
 
 /// <summary>

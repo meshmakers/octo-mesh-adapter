@@ -387,10 +387,14 @@ internal class FromMicrosoftGraphEmailNode(
                 .Where(a => a != null))
             : null;
 
-        var hasAttachments = message.TryGetProperty("hasAttachments", out var ha) && ha.GetBoolean();
-        var attachments = hasAttachments
-            ? await GetAttachmentsAsync(accessToken, mailbox, messageId)
-            : [];
+        // AB#4647: Graph's `hasAttachments` flag reflects only regular (non-inline)
+        // attachments, so an inline-only mail — e.g. a receipt photo pasted into the
+        // body via a cid: reference — reports hasAttachments=false even though the
+        // image is retrievable from the /attachments endpoint. Gating on the flag
+        // dropped those images and the pipeline rendered the mail body instead.
+        // Always query the endpoint; GetAttachmentsAsync returns an empty list
+        // cheaply when there is nothing to fetch.
+        var attachments = await GetAttachmentsAsync(accessToken, mailbox, messageId);
 
         return new EmailData
         {
@@ -482,6 +486,10 @@ internal class FromMicrosoftGraphEmailNode(
                 // body gets rendered as the receipt instead of the invoice.
                 ContentType = NormalizePdfContentType(fileName, rawContentType, data),
                 Data = data,
+                // AB#4647: surface the inline flag so the pipeline can reason about
+                // embedded images (e.g. a receipt photo referenced via cid:).
+                IsInline = att.TryGetProperty("isInline", out var inl) &&
+                           inl.ValueKind == JsonValueKind.True,
                 Length = att.TryGetProperty("size", out var size) && size.TryGetInt64(out var sizeValue)
                     ? sizeValue
                     : (long)(data.Length * 0.75)

@@ -27,4 +27,15 @@ public record MergePdfNodeConfiguration : SourceTargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("Data", 0, "jsonpath")]
     public string? ContentLengthTargetPath { get; set; }
+
+    /// <summary>
+    /// When <c>true</c>, the merged PDF is written to the per-execution scratch space
+    /// and <see cref="TargetPathNodeConfiguration.TargetPath"/> receives a small
+    /// <c>ScratchFileReference</c> (<c>scratchFileToken</c> + <c>length</c>) instead of a
+    /// base64 string. This keeps large merged PDFs off the JSON data context / LOH — the
+    /// downstream <c>CreateZipArchive@1</c> reads the entry by streaming from the scratch
+    /// file. Falls back to base64 when no scratch space is available. Default <c>false</c>.
+    /// </summary>
+    [PropertyGroup("Behavior", 1)]
+    public bool OutputAsScratchFile { get; set; } = false;
 }

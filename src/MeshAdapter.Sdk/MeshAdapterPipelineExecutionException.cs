@@ -531,4 +531,10 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: ZIP entry at index {index} is invalid: {reason}.");
     }
+
+    public static Exception ScratchSpaceRequired(INodeContext nodeContext, string reason)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: a per-execution scratch space is required ({reason}).");
+    }
 }

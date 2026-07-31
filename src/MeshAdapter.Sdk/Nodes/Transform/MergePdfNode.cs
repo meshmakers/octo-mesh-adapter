@@ -1,6 +1,7 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
@@ -72,6 +73,33 @@ public class MergePdfNode(NodeDelegate next) : IPipelineNode
         // Read the page count before Save(): PdfSharp protects the document
         // against further access once it has been serialised.
         var pageCount = output.PageCount;
+
+        // Scratch mode: stream the merged PDF straight to a scratch file and hand the
+        // downstream node a small reference, instead of materialising a base64 string
+        // (and its LOH byte[] copies) in the data context. See IPipelineScratchSpace.
+        if (config.OutputAsScratchFile && nodeContext.ScratchSpace is { } scratchSpace)
+        {
+            var token = scratchSpace.CreateFile("pdf");
+            await using (var scratchStream = scratchSpace.OpenWrite(token))
+            {
+                output.Save(scratchStream, false);
+            }
+
+            var length = scratchSpace.GetLength(token);
+            nodeContext.Debug(
+                $"Merged {imported}/{base64Pdfs.Count} PDFs into {pageCount} pages ({length} bytes) -> scratch file");
+
+            ScratchFileRef.Write(dataContext, config.TargetPath, token, length, contentType: "application/pdf");
+
+            if (!string.IsNullOrEmpty(config.ContentLengthTargetPath))
+            {
+                dataContext.Set(config.ContentLengthTargetPath, length,
+                    config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode);
+            }
+
+            await next(dataContext, nodeContext);
+            return;
+        }
 
         using var outStream = new MemoryStream();
         output.Save(outStream);

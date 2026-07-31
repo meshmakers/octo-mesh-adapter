@@ -2,6 +2,7 @@ using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
@@ -104,5 +105,33 @@ public class MergePdfNodeTests : NodeTestBase
 
         var node = new MergePdfNode(next);
         await Assert.ThrowsAnyAsync<Exception>(() => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ScratchMode_WritesReferenceAndPdfToScratch()
+    {
+        await using var scratchSpace = new PipelineScratchSpace();
+        var config = new MergePdfNodeConfiguration
+            { Path = "$.pdfs", TargetPath = "$.merged", OutputAsScratchFile = true };
+        var (dataContext, nodeContext, next) = PrepareTest(config, scratchSpace: scratchSpace);
+        A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
+            .Returns(new List<string?> { MakePdfBase64(1), MakePdfBase64(2) });
+
+        var node = new MergePdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+
+        // The target holds a scratch reference (not a base64 string).
+        var setCall = Fake.GetCalls(dataContext).First(c => c.Method.Name == "Set"
+            && (string?)c.Arguments[0] == config.TargetPath);
+        var reference = Assert.IsType<ScratchFileReference>(setCall.Arguments[1]);
+        Assert.False(string.IsNullOrEmpty(reference.Token));
+        Assert.True(reference.Length > 0);
+
+        // The scratch file holds the real merged PDF.
+        await using var read = scratchSpace.OpenRead(reference.Token!);
+        using var doc = PdfReader.Open(read, PdfDocumentOpenMode.Import);
+        Assert.Equal(3, doc.PageCount);
     }
 }

@@ -24,7 +24,8 @@ public abstract class NodeTestBase
         TConfig config,
         JsonNode? testData = null,
         IPipelineExecutionMode? executionMode = null,
-        IPipelineDebugger? pipelineDebugger = null)
+        IPipelineDebugger? pipelineDebugger = null,
+        IPipelineScratchSpace? scratchSpace = null)
         where TConfig : class, INodeConfiguration
     {
         var services = new ServiceCollection();
@@ -39,7 +40,8 @@ public abstract class NodeTestBase
             logger,
             dataContext,
             pipelineDebugger,
-            executionMode);
+            executionMode,
+            scratchSpace);
 
         var nodeContext = rootNodeContext.RegisterChildNode(
             typeof(TConfig).Name.Replace("Configuration", ""),

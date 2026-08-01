@@ -33,10 +33,10 @@ public class AttachmentReceiptClassificationTests
 
     [Theory]
     // Signature logos / office artwork observed inline in the mailbox — must be ignored.
-    [InlineData("image001.png", "image/png", 454344)]  // large, but not a camera name
-    [InlineData("westbahn.jpg", "image/jpeg", 77702)]   // brand logo, jpeg
+    // PNG/GIF (the typical logo formats) and tiny images stay excluded regardless of size.
+    [InlineData("image001.png", "image/png", 454344)]  // large PNG, but not a camera name
     [InlineData("HMRV_Logo_web.png", "image/png", 31988)]
-    [InlineData("~WRD0267.jpg", "image/jpeg", 4575)]    // Word inline artwork
+    [InlineData("~WRD0267.jpg", "image/jpeg", 4575)]    // tiny Word inline artwork (< 5 KB floor)
     [InlineData("external-link.png", "image/png", 649)]
     [InlineData("rci.png", "image/png", 748)]
     [InlineData("Outlook-3txghppo.png", "image/png", 820)]
@@ -46,6 +46,28 @@ public class AttachmentReceiptClassificationTests
         var a = Att(name, ct, len, inline: true);
         Assert.False(a.IsLikelyReceiptImage, $"{name} must not be treated as a receipt");
         Assert.False(a.IsLikelyDocument);
+    }
+
+    [Theory]
+    // AB#4647: a pasted receipt photo the mail client renamed to a generic "imageN.jpeg"
+    // (no camera name) is still a sizable inline JPEG — treat it as a receipt. These are the
+    // real embedded receipts a camera-name-only rule missed (Sandra's "Jysk Dm"/"Ausgaben Büro").
+    [InlineData("image0.jpeg", "image/jpeg", 48770)]
+    [InlineData("image1.jpeg", "image/jpeg", 93601)]
+    [InlineData("image2.jpg", "image/jpeg", 32673)]
+    public void SizableInlineJpegPhotos_AreReceipts_EvenWithoutCameraName(string name, string ct, long len)
+    {
+        var a = Att(name, ct, len, inline: true);
+        Assert.True(a.IsLikelyReceiptImage, $"{name} should be treated as a receipt");
+        Assert.True(a.IsLikelyDocument);
+    }
+
+    [Fact]
+    public void SmallInlineJpeg_WithoutCameraName_IsStillIgnored()
+    {
+        // Between the 5 KB floor and the 30 KB photo threshold, a non-camera-named inline
+        // JPEG stays excluded (small inline JPEGs are Word/signature artwork, e.g. ~WRD*.jpg).
+        Assert.False(Att("image7.jpg", "image/jpeg", 12000, inline: true).IsLikelyReceiptImage);
     }
 
     [Fact]

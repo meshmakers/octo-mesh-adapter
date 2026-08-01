@@ -369,21 +369,39 @@ public class AttachmentData
 
     private const long MinReceiptImageBytes = 5_000;
 
+    // AB#4647: a non-trivial inline JPEG/HEIC without a camera file name is still very
+    // likely a photographed receipt — mail clients (Outlook/Apple Mail) frequently rename
+    // a pasted photo to a generic "imageN.jpeg". Signature logos are overwhelmingly PNG/GIF
+    // (or tiny), so a sizable inline *photo* content type is a strong receipt signal even
+    // without a camera name. Byte size and logo size overlap, so the occasional large JPEG
+    // signature logo is accepted as a false positive — SHA-256 dedup means an identical
+    // recurring logo is staged at most once.
+    private const long InlinePhotoMinBytes = 30_000;
+
+    private static bool IsPhotoContentType(string contentType) =>
+        contentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase) ||
+        contentType.Equals("image/jpg", StringComparison.OrdinalIgnoreCase) ||
+        contentType.Equals("image/pjpeg", StringComparison.OrdinalIgnoreCase) ||
+        contentType.Equals("image/heic", StringComparison.OrdinalIgnoreCase) ||
+        contentType.Equals("image/heif", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Heuristic: true when this image attachment should be treated as a receipt/document.
     /// An image content type (excluding animated/decorative GIF) above a small floor, and
     /// either a regular (deliberately attached) file — where the user's intent to send a
-    /// document is explicit — or, when embedded <see cref="IsInline"/> in the body, one
-    /// whose file name matches a camera/scanner/messenger/screenshot pattern. The inline
-    /// condition is what tells a photographed receipt apart from a signature logo, which
-    /// only the Microsoft Graph channel surfaces (IMAP/Signal never expose inline parts).
-    /// AB#4647.
+    /// document is explicit — or, when embedded <see cref="IsInline"/> in the body, one that
+    /// either matches a camera/scanner/messenger/screenshot file name OR is a sizable JPEG/HEIC
+    /// photo (a pasted receipt the mail client renamed to e.g. "image0.jpeg"). Signature logos,
+    /// which only the Microsoft Graph channel surfaces inline, are typically PNG/GIF or tiny and
+    /// so are excluded. AB#4647.
     /// </summary>
     public bool IsLikelyReceiptImage =>
         ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) &&
         !ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase) &&
         Length >= MinReceiptImageBytes &&
-        (!IsInline || CameraFileNameRegex.IsMatch(FileName));
+        (!IsInline
+         || CameraFileNameRegex.IsMatch(FileName)
+         || (IsPhotoContentType(ContentType) && Length >= InlinePhotoMinBytes));
 
     /// <summary>
     /// True when this attachment should be staged as its own accounting document: a

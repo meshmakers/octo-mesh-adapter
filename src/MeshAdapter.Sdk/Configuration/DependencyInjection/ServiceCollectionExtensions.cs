@@ -79,6 +79,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<MachineLearningAnomalyNode>()
             .RegisterNode<ReplyToTeamsChannelNode>()
             .RegisterNode<TeamsBotReplyNode>()
+            .RegisterNode<SendMicrosoftGraphEmailNode>()
             .RegisterNode<MinMaxNode>()
             .RegisterNode<ApplyDataPointMappingsNode>()
             .RegisterNode<BuildMappingTargetsNode>()

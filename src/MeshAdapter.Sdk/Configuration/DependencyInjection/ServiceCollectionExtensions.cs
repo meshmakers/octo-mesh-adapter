@@ -44,6 +44,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<RenderDataSheetPdfNode>()
             .RegisterNode<RenderHtmlPdfNode>()
             .RegisterNode<MergePdfNode>()
+            .RegisterNode<BuildSepaCreditTransferNode>()
             .RegisterNode<CreateZipArchiveNode>()
             .RegisterNode<CreateUpdateInfoNode>()
             .RegisterNode<CreateFileSystemItemUpdateNode>()

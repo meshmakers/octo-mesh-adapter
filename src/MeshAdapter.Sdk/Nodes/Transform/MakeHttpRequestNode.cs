@@ -58,37 +58,63 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
                 var body = GetBody(dataContext, c);
                 if (!string.IsNullOrEmpty(body))
                 {
-                    request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                    request.Content = CreateContent(body, c, nodeContext);
+                    if (request.Content == null)
+                    {
+                        return;
+                    }
                 }
             }
 
             // Send the request
             using var response = await httpClient.SendAsync(request);
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-
-            if (response.IsSuccessStatusCode)
+            if (!response.IsSuccessStatusCode)
             {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                nodeContext.Error("HTTP request failed. Status: {0}, Response: {1}",
+                    response.StatusCode, errorContent);
+                return;
+            }
+
+            if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
+            {
+                var responseBytes = await response.Content.ReadAsByteArrayAsync();
+                nodeContext.Debug("HTTP request successful. Status: {0}, {1} bytes stored base64-encoded",
+                    response.StatusCode, responseBytes.Length);
+                dataContext.Set(c.TargetPath, Convert.ToBase64String(responseBytes), c.DocumentMode,
+                    c.TargetValueKind, c.TargetValueWriteMode);
+                if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
+                {
+                    dataContext.Set(c.ContentLengthTargetPath, (long)responseBytes.Length);
+                }
+            }
+            else
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
                 nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
                     response.StatusCode, responseContent);
 
                 JsonNode? responseJson = null;
 
-                try
+                if (!string.Equals(c.ResponseFormat, "Text", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Only treat the response as JSON when it parses to an object. The
-                    // legacy JObject.Parse threw for scalars and arrays, falling through
-                    // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
-                    // (scalars, arrays, objects) -- without the JsonObject filter, a
-                    // body like "42" or "[1,2,3]" would be silently stored as a typed
-                    // JSON value, and a downstream Get<string>(targetPath) couldn't
-                    // recover the original wire text. Pre-migration parity:
-                    // objects-as-JSON, everything else as text.
-                    responseJson = JsonNode.Parse(responseContent) as JsonObject;
-                }
-                catch (Exception)
-                {
-                    // this is fine, the response is not json
+                    try
+                    {
+                        // Only treat the response as JSON when it parses to an object. The
+                        // legacy JObject.Parse threw for scalars and arrays, falling through
+                        // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
+                        // (scalars, arrays, objects) -- without the JsonObject filter, a
+                        // body like "42" or "[1,2,3]" would be silently stored as a typed
+                        // JSON value, and a downstream Get<string>(targetPath) couldn't
+                        // recover the original wire text. Pre-migration parity:
+                        // objects-as-JSON, everything else as text.
+                        responseJson = JsonNode.Parse(responseContent) as JsonObject;
+                    }
+                    catch (Exception)
+                    {
+                        // this is fine, the response is not json
+                    }
                 }
 
                 // Store response in data context at the configured path
@@ -102,12 +128,6 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
                     dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
                         c.TargetValueWriteMode);
                 }
-            }
-            else
-            {
-                nodeContext.Error("HTTP request failed. Status: {0}, Response: {1}",
-                    response.StatusCode, responseContent);
-                return;
             }
         }
         catch (Exception ex)
@@ -150,6 +170,22 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
             return false;
         }
 
+        var validResponseFormats = new[] { "Auto", "Text", "Base64" };
+        if (!validResponseFormats.Contains(config.ResponseFormat, StringComparer.OrdinalIgnoreCase))
+        {
+            nodeContext.Error("Invalid response format '{0}'. Valid formats are: {1}",
+                config.ResponseFormat, string.Join(", ", validResponseFormats));
+            return false;
+        }
+
+        var validBodyContentTypes = new[] { "application/json", "application/x-www-form-urlencoded" };
+        if (!validBodyContentTypes.Contains(config.BodyContentType, StringComparer.OrdinalIgnoreCase))
+        {
+            nodeContext.Error("Invalid body content type '{0}'. Valid content types are: {1}",
+                config.BodyContentType, string.Join(", ", validBodyContentTypes));
+            return false;
+        }
+
         // Validate path parameters
         foreach (var pathParam in config.PathParameters)
         {
@@ -183,6 +219,38 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
         }
 
         return true;
+    }
+
+    private static HttpContent? CreateContent(string body, MakeHttpRequestNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (string.Equals(config.BodyContentType, "application/x-www-form-urlencoded",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            // The body must be a JSON object; its properties become the form fields.
+            JsonObject? bodyObject;
+            try
+            {
+                bodyObject = JsonNode.Parse(body) as JsonObject;
+            }
+            catch (Exception)
+            {
+                bodyObject = null;
+            }
+
+            if (bodyObject == null)
+            {
+                nodeContext.Error("Body content type application/x-www-form-urlencoded requires a JSON object body");
+                return null;
+            }
+
+            var formFields = bodyObject
+                .Where(p => p.Value != null)
+                .ToDictionary(p => p.Key, p => p.Value is JsonValue ? p.Value.ToString() : p.Value!.ToJsonString());
+            return new FormUrlEncodedContent(formFields);
+        }
+
+        return new StringContent(body, Encoding.UTF8, config.BodyContentType);
     }
 
     private static string GetUrl(IDataContext dataContext, MakeHttpRequestNodeConfiguration config)

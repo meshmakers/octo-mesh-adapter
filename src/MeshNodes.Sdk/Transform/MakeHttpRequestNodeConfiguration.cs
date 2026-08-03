@@ -90,4 +90,26 @@ public record HttpPathParameter
         /// </summary>
         [PropertyGroup("Connection", 4)]
         public List<HttpHeaderParameter> HeaderParameters { get; set; } = new();
+
+        /// <summary>
+        /// The media type of the request body (values: application/json, application/x-www-form-urlencoded).
+        /// For application/x-www-form-urlencoded the body must be a JSON object whose properties become the form fields.
+        /// </summary>
+        [PropertyGroup("Data Mapping", 2)]
+        public string BodyContentType { get; set; } = "application/json";
+
+        /// <summary>
+        /// How the response body is stored at the target path (values: Auto, Text, Base64).
+        /// Auto stores JSON objects as JSON and everything else as text; Base64 stores the raw
+        /// response bytes base64-encoded (for binary downloads such as PDFs).
+        /// </summary>
+        [PropertyGroup("Data Mapping", 3)]
+        public string ResponseFormat { get; set; } = "Auto";
+
+        /// <summary>
+        /// Optional path where the response content length in bytes is stored (before base64 encoding).
+        /// Useful for feeding nodes that require a content length, e.g. CreateFileSystemUpdate.
+        /// </summary>
+        [PropertyGroup("Data Mapping", 4, "jsonpath")]
+        public string? ContentLengthTargetPath { get; set; }
     }

@@ -74,7 +74,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - **TeamsBotReplyNode** (`TeamsBotReply@1`) — sends a reply into a Microsoft Teams conversation via the Bot Framework REST API (`POST {serviceUrl}/v3/conversations/{conversationId}/activities`). Bot token via client-credentials against the `botframework.com` authority; credentials read from a `MicrosoftGraphConfiguration` (its ClientId/ClientSecret double as the bot App ID/secret). Outbound counterpart of `FromTeamsBot@1`.
 
 4. **Trigger Nodes** (`src/MeshAdapter.Sdk/Nodes/Trigger/`): Pipeline initiation nodes
-   - FromHttpRequestNode
+   - FromHttpRequestNode/FromHttpRequestNode2 (version 1 is deprecated; version 2 rejects callers without a valid access token unless `AllowAnonymous` is set, from another tenant, and without one of `RequiredRoles` when configured)
    - FromWatchRtEntityNode
    - FromExecutePipelineCommandNode
    - FromSendNotificationNode
@@ -95,6 +95,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 - **HttpRequestService**: Handles dynamic HTTP routing and request processing
 - **MeshContextCreatorService**: Creates contexts for pipeline execution
 - **ServiceAccountTokenService**: Acquires OAuth2 tokens from `ServiceAccountConfiguration` entities for service-to-service REST calls (used by `DeployPipelineNode`)
+- **AdapterEventService**: Writes `System.Notification/Event` entries tagged with the `MeshAdapter` source into the tenant's event log, the audit trail Studio shows under Repository → Events. Used to record authorization decisions on secured trigger routes; failures degrade to a log warning so auditing can never fail a request
 
 ### JSON / Serialization (System.Text.Json)
 

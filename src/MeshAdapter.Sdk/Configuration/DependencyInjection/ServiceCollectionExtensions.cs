@@ -1,4 +1,5 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
@@ -14,6 +15,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
+using Meshmakers.Octo.Services.Notifications.Services;
 using Meshmakers.Octo.Sdk.SimulationNodes;
 
 // ReSharper disable once CheckNamespace
@@ -95,6 +97,7 @@ public static class ServiceCollectionExtensions
             .RegisterTriggerNode<FromMicrosoftGraphNode>()
             .RegisterTriggerNode<FromMicrosoftGraphEmailNode>()
             .RegisterTriggerNode<FromHttpRequestNode>()
+            .RegisterTriggerNode<FromHttpRequestNode2>()
             .RegisterTriggerNode<FromPipelineTriggerEventNode>()
             .RegisterTriggerNode<FromSendNotificationNode>()
             .RegisterTriggerNode<FromWatchRtEntityNode>()
@@ -117,6 +120,12 @@ public static class ServiceCollectionExtensions
             (ICommunicationServiceClientAccessToken)provider.GetRequiredService<IServiceClientAccessToken>());
         services.AddCkModelSystemNotificationV2();
 
+        // Only the event repository is taken from the notification package; AddOctoNotification()
+        // would also install a blueprint bootstrap, the notification and markdown services and
+        // replace the runtime engine's audit sink, none of which an adapter needs.
+        services.AddScoped<IEventRepository, EventRepository>();
+        services.AddSingleton<IAdapterEventService, AdapterEventService>();
+
         services.AddRuntimeEngine()
             .AddMongoDbRuntimeRepository()
             .AddCrateDbStreamDataRepository<ConfigureStreamDataConfiguration>();
@@ -128,6 +137,8 @@ public static class ServiceCollectionExtensions
 
         // We want to ensure that all mesh adapters are using the same security configuration
         services.AddCors();
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
+        services.AddSingleton<IConfigureOptions<JwtBearerOptions>, ConfigureJwtBearerOptions>();
 
         // the MakeHttpRequestNode requires an HttpClient to make requests
         services.AddHttpClient();

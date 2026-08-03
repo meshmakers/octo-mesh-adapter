@@ -3,10 +3,19 @@ using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 
-internal class HttpRequestOptions(string route, HttpMethod method, Func<JsonNode, Task<JsonNode?>> executeFunc)
+internal class HttpRequestOptions(
+    string route,
+    HttpMethod method,
+    Func<JsonNode, Task<JsonNode?>> executeFunc,
+    bool allowAnonymous,
+    string[] requiredRoles)
 {
     public string Route { get; } = route;
     public HttpMethod Method { get; } = method;
 
     public Func<JsonNode, Task<JsonNode?>> ExecuteFunc { get; } = executeFunc;
+
+    public bool AllowAnonymous { get; } = allowAnonymous;
+
+    public string[] RequiredRoles { get; } = requiredRoles;
 }

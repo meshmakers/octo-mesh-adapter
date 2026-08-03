@@ -69,7 +69,9 @@ internal class FromTeamsBotNode(
                 logger.LogError(e, "FromTeamsBot: failed to process inbound activity");
                 return null;
             }
-        });
+            // Bot Framework issues its own tokens, so the platform token gate cannot apply here;
+            // the node validates the inbound Authorization header itself (see ValidateInboundToken).
+        }, allowAnonymous: true, requiredRoles: []);
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 
         logger.LogInformation("FromTeamsBot: listening on {Route}", c.Route);

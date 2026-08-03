@@ -161,6 +161,87 @@ public class BuildSepaCreditTransferNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_DebtorWithoutBic_EmitsNotProvided_AndIsXsdValid()
+    {
+        var config = BaseConfig();
+        config.DebtorBic = null; // a BankAccount stores no BIC
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetArray<JsonNode>("$.payments")).Returns(new List<JsonNode?>
+        {
+            Item("A1 Telekom Austria AG", "AT611904300234573201", "BKAUATWWXXX", "149.90",
+                remittance: "Rechnung 2026-0812"),
+        });
+
+        var node = new BuildSepaCreditTransferNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var xml = DecodeXml(dataContext, config.TargetPath);
+        var doc = XDocument.Parse(xml);
+        var dbtrAgt = doc.Descendants(Ns + "DbtrAgt").Single();
+        Assert.Empty(dbtrAgt.Descendants(Ns + "BIC"));
+        Assert.Equal("NOTPROVIDED", dbtrAgt.Descendants(Ns + "Othr").Single().Element(Ns + "Id")!.Value);
+
+        var errors = ValidateAgainstAustrianXsd(xml);
+        Assert.True(errors.Count == 0, "XSD errors:" + Environment.NewLine + string.Join(Environment.NewLine, errors));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_CreditorWithoutBic_OmitsCdtrAgt_AndIsXsdValid()
+    {
+        var config = BaseConfig();
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetArray<JsonNode>("$.payments")).Returns(new List<JsonNode?>
+        {
+            Item("Vendor Without Bic", "AT611904300234573201", null, "42.00", remittance: "Rechnung 7"),
+        });
+
+        var node = new BuildSepaCreditTransferNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var xml = DecodeXml(dataContext, config.TargetPath);
+        var doc = XDocument.Parse(xml);
+        Assert.Empty(doc.Descendants(Ns + "CdtrAgt"));
+
+        var errors = ValidateAgainstAustrianXsd(xml);
+        Assert.True(errors.Count == 0, "XSD errors:" + Environment.NewLine + string.Join(Environment.NewLine, errors));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GroupsByExecutionDate_IntoSeparatePmtInf()
+    {
+        var config = BaseConfig();
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        JsonObject WithDate(JsonObject o, string d) { o["executionDate"] = d; return o; }
+        A.CallTo(() => dataContext.GetArray<JsonNode>("$.payments")).Returns(new List<JsonNode?>
+        {
+            WithDate(Item("A1 Telekom Austria AG", "AT611904300234573201", "BKAUATWWXXX", "100.00", remittance: "R1"), "2026-08-05T00:00:00Z"),
+            WithDate(Item("Hetzner Online GmbH", "DE89370400440532013000", "COBADEFFXXX", "50.00", remittance: "R2"), "2026-08-10"),
+            WithDate(Item("Finanzamt", "AT950100000005554915", "BUNDATWWXXX", "25.00", remittance: "R3"), "2026-08-05"),
+        });
+
+        var node = new BuildSepaCreditTransferNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var xml = DecodeXml(dataContext, config.TargetPath);
+        var doc = XDocument.Parse(xml);
+
+        // GrpHdr totals across all
+        Assert.Equal("3", doc.Descendants(Ns + "GrpHdr").Single().Element(Ns + "NbOfTxs")!.Value);
+        Assert.Equal("175.00", doc.Descendants(Ns + "GrpHdr").Single().Element(Ns + "CtrlSum")!.Value);
+
+        // Two PmtInf blocks: 2026-08-05 (2 txs, 125.00) and 2026-08-10 (1 tx, 50.00)
+        var blocks = doc.Descendants(Ns + "PmtInf").ToList();
+        Assert.Equal(2, blocks.Count);
+        var byDate = blocks.ToDictionary(b => b.Element(Ns + "ReqdExctnDt")!.Value);
+        Assert.Equal("2", byDate["2026-08-05"].Element(Ns + "NbOfTxs")!.Value);
+        Assert.Equal("125.00", byDate["2026-08-05"].Element(Ns + "CtrlSum")!.Value);
+        Assert.Equal("1", byDate["2026-08-10"].Element(Ns + "NbOfTxs")!.Value);
+
+        var errors = ValidateAgainstAustrianXsd(xml);
+        Assert.True(errors.Count == 0, "XSD errors:" + Environment.NewLine + string.Join(Environment.NewLine, errors));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_RejectsInvalidRows()
     {
         var config = BaseConfig();

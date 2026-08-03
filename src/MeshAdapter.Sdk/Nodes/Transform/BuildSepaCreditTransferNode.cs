@@ -40,14 +40,15 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
                          ?? throw new PipelineNodeExecutionException("Debtor name is not set.");
         var debtorIban = Normalize(Resolve(dataContext, config.DebtorIban, config.DebtorIbanPath))
                          ?? throw new PipelineNodeExecutionException("Debtor IBAN is not set.");
-        var debtorBic = Normalize(Resolve(dataContext, config.DebtorBic, config.DebtorBicPath))
-                        ?? throw new PipelineNodeExecutionException("Debtor BIC is not set.");
+        // Debtor BIC is optional: a BankAccount does not store one. When absent the
+        // debtor agent is emitted as Othr/Id=NOTPROVIDED (valid in the Austrian schema).
+        var debtorBic = Normalize(Resolve(dataContext, config.DebtorBic, config.DebtorBicPath));
         var msgId = Resolve(dataContext, config.MessageId, config.MessageIdPath)
-                    ?? throw new PipelineNodeExecutionException("Message id is not set.");
+                    ?? "MM-SEPA-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture);
         var pmtInfId = Resolve(dataContext, config.PaymentInformationId, config.PaymentInformationIdPath)
                        ?? msgId;
         var reqExecDate = Resolve(dataContext, config.RequestedExecutionDate, config.RequestedExecutionDatePath)
-                          ?? throw new PipelineNodeExecutionException("Requested execution date is not set.");
+                          ?? DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var creDtTm = string.IsNullOrWhiteSpace(config.CreationDateTime)
             ? DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture)
             : config.CreationDateTime;
@@ -58,7 +59,7 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
             errors.Add($"Debtor IBAN is invalid: {debtorIban}");
         }
 
-        if (!BicRegex().IsMatch(debtorBic))
+        if (debtorBic != null && !BicRegex().IsMatch(debtorBic))
         {
             errors.Add($"Debtor BIC is invalid: {debtorBic}");
         }
@@ -84,6 +85,7 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
             var remittance = GetString(o, "remittance", "remittanceUnstructured", "ustrd");
             var creditorRef = GetString(o, "creditorReference", "structuredReference", "ref");
             var purposeCode = GetString(o, "purposeCode", "purpose");
+            var executionDate = DatePart(GetString(o, "executionDate", "requestedExecutionDate"));
             var amount = GetDecimal(o, "amount");
 
             if (string.IsNullOrWhiteSpace(name))
@@ -123,7 +125,7 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
 
             payments.Add(new Payment(name ?? string.Empty, iban ?? string.Empty, bic,
                 amount.HasValue ? Round2(amount.Value) : 0m, currency, endToEndId, instructionId,
-                remittance, creditorRef, purposeCode));
+                remittance, creditorRef, purposeCode, executionDate));
         }
 
         if (errors.Count > 0)
@@ -170,7 +172,7 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
         await next(dataContext, nodeContext);
     }
 
-    private static string BuildDocument(string debtorName, string debtorIban, string debtorBic,
+    private static string BuildDocument(string debtorName, string debtorIban, string? debtorBic,
         string debtorCurrency, string? debtorCountry, IReadOnlyList<string> debtorAddressLines,
         string msgId, string creDtTm, string pmtInfId, string reqExecDate, bool batchBooking,
         string? initiatingPartyOrgId, IReadOnlyList<Payment> payments, string nb, string ctrl)
@@ -190,77 +192,114 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
             El("CtrlSum", ctrl),
             initgParty);
 
-        var pmtInf = new XElement(Ns + "PmtInf",
-            El("PmtInfId", pmtInfId),
-            El("PmtMtd", "TRF"),
-            El("BtchBookg", batchBooking ? "true" : "false"),
-            El("NbOfTxs", nb),
-            El("CtrlSum", ctrl),
-            new XElement(Ns + "PmtTpInf", new XElement(Ns + "SvcLvl", El("Cd", "SEPA"))),
-            El("ReqdExctnDt", reqExecDate),
-            Party("Dbtr", debtorName, debtorCountry, debtorAddressLines),
-            new XElement(Ns + "DbtrAcct",
-                new XElement(Ns + "Id", El("IBAN", debtorIban)),
-                El("Ccy", debtorCurrency)),
-            new XElement(Ns + "DbtrAgt", new XElement(Ns + "FinInstnId", El("BIC", debtorBic))),
-            El("ChrgBr", "SLEV"));
+        var cstmr = new XElement(Ns + "CstmrCdtTrfInitn", grpHdr);
 
+        // Group payments by requested execution date — a pain.001 PmtInf carries a
+        // single ReqdExctnDt, so each distinct date becomes its own PmtInf block
+        // (all under the same debtor). Input order is preserved.
+        var groups = new List<(string Date, List<Payment> Items)>();
         foreach (var p in payments)
         {
-            var pmtId = new XElement(Ns + "PmtId");
-            if (!string.IsNullOrWhiteSpace(p.InstructionId))
+            var date = string.IsNullOrWhiteSpace(p.ExecutionDate) ? reqExecDate : p.ExecutionDate!;
+            var grp = groups.FirstOrDefault(g => g.Date == date);
+            if (grp.Items == null)
             {
-                pmtId.Add(El("InstrId", p.InstructionId));
+                grp = (date, new List<Payment>());
+                groups.Add(grp);
             }
 
-            pmtId.Add(El("EndToEndId", string.IsNullOrWhiteSpace(p.EndToEndId) ? "NOTPROVIDED" : p.EndToEndId));
+            grp.Items.Add(p);
+        }
 
-            var tx = new XElement(Ns + "CdtTrfTxInf",
-                pmtId,
-                new XElement(Ns + "Amt",
-                    new XElement(Ns + "InstdAmt",
-                        new XAttribute("Ccy", p.Currency),
-                        p.Amount.ToString("F2", CultureInfo.InvariantCulture))));
+        var idx = 0;
+        foreach (var (date, items) in groups)
+        {
+            idx++;
+            var groupTotal = items.Aggregate(0m, (acc, x) => acc + x.Amount);
+            var pmtInf = new XElement(Ns + "PmtInf",
+                El("PmtInfId", groups.Count > 1 ? $"{pmtInfId}-{idx}" : pmtInfId),
+                El("PmtMtd", "TRF"),
+                El("BtchBookg", batchBooking ? "true" : "false"),
+                El("NbOfTxs", items.Count.ToString(CultureInfo.InvariantCulture)),
+                El("CtrlSum", groupTotal.ToString("F2", CultureInfo.InvariantCulture)),
+                new XElement(Ns + "PmtTpInf", new XElement(Ns + "SvcLvl", El("Cd", "SEPA"))),
+                El("ReqdExctnDt", date),
+                Party("Dbtr", debtorName, debtorCountry, debtorAddressLines),
+                new XElement(Ns + "DbtrAcct",
+                    new XElement(Ns + "Id", El("IBAN", debtorIban)),
+                    El("Ccy", debtorCurrency)),
+                new XElement(Ns + "DbtrAgt", new XElement(Ns + "FinInstnId",
+                    string.IsNullOrWhiteSpace(debtorBic)
+                        // No BIC on file (a BankAccount stores none) — Othr/Id=NOTPROVIDED
+                        // is the schema-valid IBAN-only form for the debtor agent.
+                        ? new XElement(Ns + "Othr", El("Id", "NOTPROVIDED"))
+                        : El("BIC", debtorBic))),
+                El("ChrgBr", "SLEV"));
 
-            if (!string.IsNullOrWhiteSpace(p.Bic))
+            foreach (var p in items)
             {
-                tx.Add(new XElement(Ns + "CdtrAgt", new XElement(Ns + "FinInstnId", El("BIC", p.Bic))));
+                pmtInf.Add(CreateTx(p));
             }
 
-            tx.Add(Party("Cdtr", p.Name, null, Array.Empty<string>()));
-            tx.Add(new XElement(Ns + "CdtrAcct", new XElement(Ns + "Id", El("IBAN", p.Iban))));
-
-            if (!string.IsNullOrWhiteSpace(p.PurposeCode))
-            {
-                tx.Add(new XElement(Ns + "Purp", El("Cd", p.PurposeCode)));
-            }
-
-            if (!string.IsNullOrWhiteSpace(p.CreditorReference))
-            {
-                // Austrian variant requires Tp (SCOR) BEFORE Ref.
-                tx.Add(new XElement(Ns + "RmtInf",
-                    new XElement(Ns + "Strd",
-                        new XElement(Ns + "CdtrRefInf",
-                            new XElement(Ns + "Tp", new XElement(Ns + "CdOrPrtry", El("Cd", "SCOR"))),
-                            El("Ref", p.CreditorReference)))));
-            }
-            else if (!string.IsNullOrWhiteSpace(p.Remittance))
-            {
-                tx.Add(new XElement(Ns + "RmtInf", El("Ustrd", p.Remittance)));
-            }
-
-            pmtInf.Add(tx);
+            cstmr.Add(pmtInf);
         }
 
         var root = new XElement(Ns + "Document",
             new XAttribute(XNamespace.Xmlns + "xsi", Xsi.NamespaceName),
             new XAttribute(Xsi + "schemaLocation", SchemaLocation),
-            new XElement(Ns + "CstmrCdtTrfInitn", grpHdr, pmtInf));
+            cstmr);
 
         var doc = new XDocument(new XDeclaration("1.0", "UTF-8", null), root);
         using var sw = new Utf8StringWriter();
         doc.Save(sw);
         return sw.ToString();
+    }
+
+    private static XElement CreateTx(Payment p)
+    {
+        var pmtId = new XElement(Ns + "PmtId");
+        if (!string.IsNullOrWhiteSpace(p.InstructionId))
+        {
+            pmtId.Add(El("InstrId", p.InstructionId));
+        }
+
+        pmtId.Add(El("EndToEndId", string.IsNullOrWhiteSpace(p.EndToEndId) ? "NOTPROVIDED" : p.EndToEndId));
+
+        var tx = new XElement(Ns + "CdtTrfTxInf",
+            pmtId,
+            new XElement(Ns + "Amt",
+                new XElement(Ns + "InstdAmt",
+                    new XAttribute("Ccy", p.Currency),
+                    p.Amount.ToString("F2", CultureInfo.InvariantCulture))));
+
+        if (!string.IsNullOrWhiteSpace(p.Bic))
+        {
+            tx.Add(new XElement(Ns + "CdtrAgt", new XElement(Ns + "FinInstnId", El("BIC", p.Bic))));
+        }
+
+        tx.Add(Party("Cdtr", p.Name, null, Array.Empty<string>()));
+        tx.Add(new XElement(Ns + "CdtrAcct", new XElement(Ns + "Id", El("IBAN", p.Iban))));
+
+        if (!string.IsNullOrWhiteSpace(p.PurposeCode))
+        {
+            tx.Add(new XElement(Ns + "Purp", El("Cd", p.PurposeCode)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(p.CreditorReference))
+        {
+            // Austrian variant requires Tp (SCOR) BEFORE Ref.
+            tx.Add(new XElement(Ns + "RmtInf",
+                new XElement(Ns + "Strd",
+                    new XElement(Ns + "CdtrRefInf",
+                        new XElement(Ns + "Tp", new XElement(Ns + "CdOrPrtry", El("Cd", "SCOR"))),
+                        El("Ref", p.CreditorReference)))));
+        }
+        else if (!string.IsNullOrWhiteSpace(p.Remittance))
+        {
+            tx.Add(new XElement(Ns + "RmtInf", El("Ustrd", p.Remittance)));
+        }
+
+        return tx;
     }
 
     private static XElement El(string name, string value) => new(Ns + name, value);
@@ -378,6 +417,18 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
     [GeneratedRegex("^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$")]
     private static partial Regex BicRegex();
 
+    /// <summary>Trims an ISO date-time (e.g. "2026-08-05T00:00:00Z") to its date part "2026-08-05".</summary>
+    private static string? DatePart(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var t = value.IndexOf('T');
+        return t >= 10 ? value[..t] : value;
+    }
+
     private sealed record Payment(
         string Name,
         string Iban,
@@ -388,7 +439,8 @@ public partial class BuildSepaCreditTransferNode(NodeDelegate next) : IPipelineN
         string? InstructionId,
         string? Remittance,
         string? CreditorReference,
-        string? PurposeCode);
+        string? PurposeCode,
+        string? ExecutionDate);
 
     private sealed class Utf8StringWriter : StringWriter
     {

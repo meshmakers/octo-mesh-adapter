@@ -151,6 +151,103 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_PathSegments_AreSanitizedAndJoined()
+    {
+        var config = new CreateZipArchiveNodeConfiguration { Path = "$.entries", TargetPath = "$.zip" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var entries = new JsonArray(
+            new JsonObject
+            {
+                // vendor name with a slash and invalid chars must NOT create extra folders
+                ["pathSegments"] = new JsonArray("GJ 2026", "2026-01", "Eingangsrechnungen",
+                    "2026-01-15_Miet/Pacht: GmbH?.pdf"),
+                ["contentBase64"] = B64("doc")
+            });
+        A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
+
+        var node = NewNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var contents = ReadZip(CapturedString(dataContext, config.TargetPath)!);
+        Assert.Equal("doc", contents["GJ 2026/2026-01/Eingangsrechnungen/2026-01-15_Miet_Pacht_ GmbH_.pdf"]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_AppendSequenceNumber_MakesDuplicateNamesUnique()
+    {
+        var config = new CreateZipArchiveNodeConfiguration
+            { Path = "$.entries", TargetPath = "$.zip", AppendSequenceNumber = true };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var entries = new JsonArray(
+            new JsonObject
+            {
+                ["pathSegments"] = new JsonArray("2026-01", "2026-01-15_ACME.pdf"),
+                ["contentBase64"] = B64("first")
+            },
+            new JsonObject
+            {
+                ["pathSegments"] = new JsonArray("2026-01", "2026-01-15_ACME.pdf"),
+                ["contentBase64"] = B64("second")
+            },
+            new JsonObject { ["fileName"] = "no-extension", ["contentBase64"] = B64("third") });
+        A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
+
+        var node = NewNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var contents = ReadZip(CapturedString(dataContext, config.TargetPath)!);
+        Assert.Equal("first", contents["2026-01/2026-01-15_ACME_001.pdf"]);
+        Assert.Equal("second", contents["2026-01/2026-01-15_ACME_002.pdf"]);
+        Assert.Equal("third", contents["no-extension_003"]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_Manifest_ListsFinalNamesAndFields()
+    {
+        var config = new CreateZipArchiveNodeConfiguration
+        {
+            Path = "$.entries", TargetPath = "$.zip", AppendSequenceNumber = true,
+            ManifestFileName = "belege.csv", ManifestFileNameColumn = "Dateiname"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var entries = new JsonArray(
+            new JsonObject
+            {
+                ["pathSegments"] = new JsonArray("Eingangsrechnungen", "2026-01-15_ACME.pdf"),
+                ["contentBase64"] = B64("a"),
+                ["manifest"] = new JsonObject
+                {
+                    ["Datum"] = "2026-01-15", ["Belegnummer"] = "RE-1",
+                    ["LieferantKunde"] = "ACME; \"Söhne\" GmbH", ["Brutto"] = "119.00"
+                }
+            },
+            new JsonObject
+            {
+                ["pathSegments"] = new JsonArray("Ausgangsrechnungen", "2026-02-01_Kunde.pdf"),
+                ["contentBase64"] = B64("b"),
+                ["manifest"] = new JsonObject
+                    { ["Datum"] = "2026-02-01", ["Belegnummer"] = "AR-7", ["Netto"] = "100.00" }
+            });
+        A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
+
+        var node = NewNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var contents = ReadZip(CapturedString(dataContext, config.TargetPath)!);
+        var csv = contents["belege.csv"];
+        var lines = csv.TrimEnd().Split("\r\n");
+        // header = file-name column + ordered union of manifest keys
+        Assert.Equal("Dateiname;Datum;Belegnummer;LieferantKunde;Brutto;Netto", lines[0].TrimStart('\uFEFF'));
+        Assert.Equal(
+            "Eingangsrechnungen/2026-01-15_ACME_001.pdf;2026-01-15;RE-1;\"ACME; \"\"Söhne\"\" GmbH\";119.00;",
+            lines[1]);
+        Assert.Equal("Ausgangsrechnungen/2026-02-01_Kunde_002.pdf;2026-02-01;AR-7;;;100.00", lines[2]);
+        Assert.Equal(3, lines.Length);
+        // the manifest itself carries no sequence number
+        Assert.False(contents.ContainsKey("belege_001.csv"));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_PersistMode_WithoutRootFolder_Throws()
     {
         await using var scratchSpace = new PipelineScratchSpace();

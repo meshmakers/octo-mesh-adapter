@@ -28,6 +28,11 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     // Images larger than this are scaled down; smaller images keep their natural size.
     private const float ContentWidthPt = 480f;
 
+    // A4 (841.89pt) minus the 2cm margins, header, footer and paddings. QuestPDF cannot
+    // break an image across pages, so an image must fit a single page's content area or
+    // the whole document fails with "conflicting size constraints" at layout time.
+    private const float ContentHeightPt = 620f;
+
     static RenderHtmlPdfNode()
     {
         // meshmakers GmbH qualifies for the free QuestPDF Community license.
@@ -378,16 +383,27 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
         try
         {
-            if (TryGetImagePixelWidth(bytes, out var pixelWidth))
+            if (TryGetImageDimensions(bytes, out var pixelWidth, out var pixelHeight))
             {
                 // Map pixels to points at 96 DPI, capped at the content width so a large
                 // image fits the page while a small logo keeps roughly its natural size.
-                var naturalWidthPt = pixelWidth * 72f / 96f;
-                col.Item().Width(Math.Min(naturalWidthPt, ContentWidthPt)).Image(bytes);
+                var widthPt = Math.Min(pixelWidth * 72f / 96f, ContentWidthPt);
+
+                // Cap the resulting height as well: a very tall receipt photo (e.g. a
+                // narrow shop receipt) would otherwise exceed a single page.
+                var heightPt = widthPt * pixelHeight / pixelWidth;
+                if (heightPt > ContentHeightPt)
+                {
+                    widthPt = ContentHeightPt * pixelWidth / (float)pixelHeight;
+                }
+
+                col.Item().Width(widthPt).Image(bytes);
             }
             else
             {
-                col.Item().MaxWidth(ContentWidthPt).Image(bytes);
+                // Unknown header format — constrain both axes and let QuestPDF fit the
+                // image inside; FitArea may upscale but can never overflow the page.
+                col.Item().MaxWidth(ContentWidthPt).MaxHeight(ContentHeightPt).Image(bytes).FitArea();
             }
         }
         catch
@@ -397,33 +413,38 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     }
 
     /// <summary>
-    /// Reads the pixel width from the raw bytes of the common inline-image formats
+    /// Reads the pixel dimensions from the raw bytes of the common inline-image formats
     /// (PNG, GIF, JPEG, BMP) without an image library. Returns false for anything
-    /// else so the caller can fall back to a width-constrained render.
+    /// else so the caller can fall back to a constrained render.
     /// </summary>
-    private static bool TryGetImagePixelWidth(byte[] bytes, out int width)
+    private static bool TryGetImageDimensions(byte[] bytes, out int width, out int height)
     {
         width = 0;
+        height = 0;
 
-        // PNG: 8-byte signature, then IHDR with a big-endian width at offset 16.
+        // PNG: 8-byte signature, then IHDR with big-endian width/height at offsets 16/20.
         if (bytes.Length >= 24 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
         {
             width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-            return width > 0;
+            height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+            return width > 0 && height > 0;
         }
 
-        // GIF: "GIF8", logical screen width is little-endian at offset 6.
+        // GIF: "GIF8", logical screen width/height are little-endian at offsets 6/8.
         if (bytes.Length >= 10 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38)
         {
             width = bytes[6] | (bytes[7] << 8);
-            return width > 0;
+            height = bytes[8] | (bytes[9] << 8);
+            return width > 0 && height > 0;
         }
 
-        // BMP: "BM", width is a little-endian int32 at offset 18.
+        // BMP: "BM", width/height are little-endian int32s at offsets 18/22 (height may
+        // be negative for top-down bitmaps).
         if (bytes.Length >= 26 && bytes[0] == 0x42 && bytes[1] == 0x4D)
         {
             width = bytes[18] | (bytes[19] << 8) | (bytes[20] << 16) | (bytes[21] << 24);
-            return width > 0;
+            height = Math.Abs(bytes[22] | (bytes[23] << 8) | (bytes[24] << 16) | (bytes[25] << 24));
+            return width > 0 && height > 0;
         }
 
         // JPEG: FF D8, then walk the marker segments to the first SOF (frame header).
@@ -444,8 +465,9 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                 if (isSof)
                 {
                     // FF, marker, length(2), precision(1), height(2), width(2).
+                    height = (bytes[pos + 5] << 8) | bytes[pos + 6];
                     width = (bytes[pos + 7] << 8) | bytes[pos + 8];
-                    return width > 0;
+                    return width > 0 && height > 0;
                 }
 
                 var segmentLength = (bytes[pos + 2] << 8) | bytes[pos + 3];

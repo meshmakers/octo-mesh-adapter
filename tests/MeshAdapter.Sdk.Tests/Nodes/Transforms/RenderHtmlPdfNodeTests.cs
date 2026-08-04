@@ -79,6 +79,30 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_VeryTallInlineImage_RendersSinglePagePdf()
+    {
+        // A narrow, very tall receipt photo (real-world case: 484x2016 iPhone shot of a
+        // long shop receipt). Width-only capping made the layout exceed one page and
+        // QuestPDF failed with "conflicting size constraints".
+        var jpeg = QuestPDF.Helpers.Placeholders.Image(484, 2016);
+        var html = $"<p>Von meinem iPhone gesendet</p><img src=\"data:image/jpeg;base64,{Convert.ToBase64String(jpeg)}\"/>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf", Title = "Wirtschaftsforum Rechnung" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var base64 = CapturedString(dataContext, config.TargetPath);
+        AssertIsPdf(base64);
+        using var pdf = PdfSharp.Pdf.IO.PdfReader.Open(
+            new MemoryStream(Convert.FromBase64String(base64!)), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import);
+        Assert.Equal(1, pdf.PageCount);
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_PlainText_RendersPdf()
     {
         const string text = "Simple forwarded note\nSecond line\nThird line";

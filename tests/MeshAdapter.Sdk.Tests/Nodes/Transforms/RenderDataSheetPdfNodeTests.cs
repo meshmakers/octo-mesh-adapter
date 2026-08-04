@@ -85,13 +85,18 @@ public class RenderDataSheetPdfNodeTests : NodeTestBase
     [Fact]
     public async Task ProcessObjectAsync_FormatsNumericRowValues_WithCultureAndSuffix()
     {
-        // Amount rows must render in the model's culture with the currency
-        // appended (e.g. "1.186,96 EUR") so BMD document recognition parses
-        // them as amounts — a raw JSON double ("1186.96") is not recognized.
+        // Amount rows must render with the model's number format and the
+        // currency appended (e.g. "1.186,96 EUR") so BMD document recognition
+        // parses them as amounts — a raw JSON double ("1186.96") is not
+        // recognized. The explicit separators (not the culture) define the
+        // output: CI and production containers may lack ICU and then fall
+        // back to invariant globalization for any culture name.
         var model = new JsonObject
         {
             ["title"] = "Cover sheet",
             ["culture"] = "de-AT",
+            ["numberDecimalSeparator"] = ",",
+            ["numberGroupSeparator"] = ".",
             ["sections"] = new JsonArray(
                 new JsonObject
                 {

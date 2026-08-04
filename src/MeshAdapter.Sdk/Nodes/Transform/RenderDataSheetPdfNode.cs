@@ -41,7 +41,7 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
         var subtitle = AsString(Prop(model, "subtitle"));
         var footerHeading = AsString(Prop(model, "footerHeading"));
         var footerText = AsString(Prop(model, "footerText"));
-        var culture = ResolveCulture(AsString(Prop(model, "culture")));
+        var numberFormat = ResolveNumberFormat(model);
 
         var sections = new List<(string Heading, List<(string Label, string Value)> Rows)>();
         if (Prop(model, "sections") is JsonArray sectionArray)
@@ -60,7 +60,7 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
                     {
                         if (rowNode is JsonObject row)
                         {
-                            rows.Add((AsString(Prop(row, "label")), RowValue(row, culture)));
+                            rows.Add((AsString(Prop(row, "label")), RowValue(row, numberFormat)));
                         }
                     }
                 }
@@ -184,30 +184,56 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
         return node?.ToString() ?? string.Empty;
     }
 
-    private static CultureInfo ResolveCulture(string cultureName)
+    /// <summary>
+    /// Resolves the number format used for numeric row values: the model's
+    /// optional <c>culture</c> (falling back to invariant when missing or
+    /// unknown), with optional explicit <c>numberDecimalSeparator</c> /
+    /// <c>numberGroupSeparator</c> overrides. The explicit separators make the
+    /// output deterministic — container images without ICU silently fall back
+    /// to invariant globalization, where a culture name alone formats with
+    /// "." decimals regardless of the requested culture.
+    /// </summary>
+    private static NumberFormatInfo ResolveNumberFormat(JsonObject model)
     {
-        if (string.IsNullOrEmpty(cultureName))
+        var culture = CultureInfo.InvariantCulture;
+        var cultureName = AsString(Prop(model, "culture"));
+        if (!string.IsNullOrEmpty(cultureName))
         {
-            return CultureInfo.InvariantCulture;
+            try
+            {
+                culture = CultureInfo.GetCultureInfo(cultureName);
+            }
+            catch (CultureNotFoundException)
+            {
+                // keep invariant
+            }
         }
 
-        try
+        var numberFormat = (NumberFormatInfo)culture.NumberFormat.Clone();
+
+        var decimalSeparator = AsString(Prop(model, "numberDecimalSeparator"));
+        if (!string.IsNullOrEmpty(decimalSeparator))
         {
-            return CultureInfo.GetCultureInfo(cultureName);
+            numberFormat.NumberDecimalSeparator = decimalSeparator;
         }
-        catch (CultureNotFoundException)
+
+        // An explicitly empty group separator is meaningful (no grouping), so
+        // only the absence of the property keeps the culture's separator.
+        if (Prop(model, "numberGroupSeparator") is { } groupSeparator)
         {
-            return CultureInfo.InvariantCulture;
+            numberFormat.NumberGroupSeparator = groupSeparator.ToString();
         }
+
+        return numberFormat;
     }
 
     /// <summary>
     /// Builds a row's display value. A row may carry an optional numeric
-    /// <c>format</c> (.NET format string, applied with the model's
-    /// <c>culture</c> when the value is numeric) and an optional <c>suffix</c>
+    /// <c>format</c> (.NET format string, applied with the model's number
+    /// format when the value is numeric) and an optional <c>suffix</c>
     /// (e.g. a currency code) appended to non-empty values.
     /// </summary>
-    private static string RowValue(JsonObject row, CultureInfo culture)
+    private static string RowValue(JsonObject row, NumberFormatInfo numberFormat)
     {
         var valueNode = Prop(row, "value");
         var format = AsString(Prop(row, "format"));
@@ -215,7 +241,7 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
         string value;
         if (!string.IsNullOrEmpty(format) && TryGetDecimal(valueNode, out var number))
         {
-            value = number.ToString(format, culture);
+            value = number.ToString(format, numberFormat);
         }
         else
         {

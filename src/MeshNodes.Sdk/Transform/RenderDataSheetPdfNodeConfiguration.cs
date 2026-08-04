@@ -15,6 +15,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 ///   "title": "Cover sheet",
 ///   "subtitle": "RE-2025-001",
 ///   "culture": "de-AT",
+///   "numberDecimalSeparator": ",",
+///   "numberGroupSeparator": ".",
 ///   "sections": [
 ///     { "heading": "Document", "rows": [
 ///       { "label": "Number", "value": "RE-2025-001" },
@@ -26,12 +28,16 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// }
 /// </code>
 /// Keys are matched case-insensitively. A row's optional <c>format</c> is a
-/// .NET numeric format string applied with the model's optional <c>culture</c>
-/// (default invariant) when the row value is numeric — e.g. rendering
-/// <c>1186.96</c> as <c>1.186,96</c> so document-recognition software (BMD)
-/// parses it as an amount. An optional <c>suffix</c> (e.g. a currency code) is
-/// appended to non-empty values. The base64-encoded PDF is written to
-/// <see cref="TargetPathNodeConfiguration.TargetPath"/>.
+/// .NET numeric format string applied when the row value is numeric — e.g.
+/// rendering <c>1186.96</c> as <c>1.186,96</c> so document-recognition
+/// software (BMD) parses it as an amount. The number format comes from the
+/// model's optional <c>culture</c> (default invariant), optionally overridden
+/// by explicit <c>numberDecimalSeparator</c> / <c>numberGroupSeparator</c> —
+/// pass the separators explicitly for deterministic output: containers
+/// without ICU fall back to invariant globalization where any culture name
+/// formats with "." decimals. An optional <c>suffix</c> (e.g. a currency
+/// code) is appended to non-empty values. The base64-encoded PDF is written
+/// to <see cref="TargetPathNodeConfiguration.TargetPath"/>.
 /// </para>
 /// </summary>
 [NodeName("RenderDataSheetPdf", 1)]

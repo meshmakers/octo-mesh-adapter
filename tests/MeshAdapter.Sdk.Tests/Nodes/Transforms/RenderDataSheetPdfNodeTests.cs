@@ -83,6 +83,58 @@ public class RenderDataSheetPdfNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_FormatsNumericRowValues_WithCultureAndSuffix()
+    {
+        // Amount rows must render in the model's culture with the currency
+        // appended (e.g. "1.186,96 EUR") so BMD document recognition parses
+        // them as amounts — a raw JSON double ("1186.96") is not recognized.
+        var model = new JsonObject
+        {
+            ["title"] = "Cover sheet",
+            ["culture"] = "de-AT",
+            ["sections"] = new JsonArray(
+                new JsonObject
+                {
+                    ["heading"] = "Amounts",
+                    ["rows"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["label"] = "Gross",
+                            ["value"] = JsonNode.Parse("1186.96"),
+                            ["format"] = "N2",
+                            ["suffix"] = "EUR"
+                        },
+                        // Missing value: no formatting, no dangling suffix.
+                        new JsonObject
+                        {
+                            ["label"] = "Net", ["value"] = "", ["format"] = "N2", ["suffix"] = "EUR"
+                        },
+                        // Non-numeric value with a format falls back to the raw string.
+                        new JsonObject
+                        {
+                            ["label"] = "Note", ["value"] = "n/a", ["format"] = "N2"
+                        })
+                })
+        };
+        var config = new RenderDataSheetPdfNodeConfiguration { Path = "$.model", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.Get<JsonNode>("$.model")).Returns(model);
+
+        var node = new RenderDataSheetPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var base64 = CapturedString(dataContext, config.TargetPath);
+        Assert.NotNull(base64);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(Convert.FromBase64String(base64!));
+        var text = string.Join(" ", pdf.GetPages().Select(p => p.Text));
+        Assert.Contains("1.186,96 EUR", text);
+        Assert.DoesNotContain("1186.96", text);
+        Assert.Contains("n/a", text);
+        // The empty Net row must not render a lone "EUR" suffix: exactly one EUR on the sheet.
+        Assert.Equal(1, text.Split("EUR").Length - 1);
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_ModelNotAnObject_Throws()
     {
         var config = new RenderDataSheetPdfNodeConfiguration { Path = "$.model", TargetPath = "$.pdf" };

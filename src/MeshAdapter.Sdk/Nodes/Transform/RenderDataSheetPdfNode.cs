@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -40,6 +41,7 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
         var subtitle = AsString(Prop(model, "subtitle"));
         var footerHeading = AsString(Prop(model, "footerHeading"));
         var footerText = AsString(Prop(model, "footerText"));
+        var culture = ResolveCulture(AsString(Prop(model, "culture")));
 
         var sections = new List<(string Heading, List<(string Label, string Value)> Rows)>();
         if (Prop(model, "sections") is JsonArray sectionArray)
@@ -58,7 +60,7 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
                     {
                         if (rowNode is JsonObject row)
                         {
-                            rows.Add((AsString(Prop(row, "label")), AsString(Prop(row, "value"))));
+                            rows.Add((AsString(Prop(row, "label")), RowValue(row, culture)));
                         }
                     }
                 }
@@ -180,5 +182,75 @@ public class RenderDataSheetPdfNode(NodeDelegate next) : IPipelineNode
     private static string AsString(JsonNode? node)
     {
         return node?.ToString() ?? string.Empty;
+    }
+
+    private static CultureInfo ResolveCulture(string cultureName)
+    {
+        if (string.IsNullOrEmpty(cultureName))
+        {
+            return CultureInfo.InvariantCulture;
+        }
+
+        try
+        {
+            return CultureInfo.GetCultureInfo(cultureName);
+        }
+        catch (CultureNotFoundException)
+        {
+            return CultureInfo.InvariantCulture;
+        }
+    }
+
+    /// <summary>
+    /// Builds a row's display value. A row may carry an optional numeric
+    /// <c>format</c> (.NET format string, applied with the model's
+    /// <c>culture</c> when the value is numeric) and an optional <c>suffix</c>
+    /// (e.g. a currency code) appended to non-empty values.
+    /// </summary>
+    private static string RowValue(JsonObject row, CultureInfo culture)
+    {
+        var valueNode = Prop(row, "value");
+        var format = AsString(Prop(row, "format"));
+
+        string value;
+        if (!string.IsNullOrEmpty(format) && TryGetDecimal(valueNode, out var number))
+        {
+            value = number.ToString(format, culture);
+        }
+        else
+        {
+            value = AsString(valueNode);
+        }
+
+        var suffix = AsString(Prop(row, "suffix"));
+        if (!string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(suffix))
+        {
+            value = $"{value} {suffix}";
+        }
+
+        return value;
+    }
+
+    private static bool TryGetDecimal(JsonNode? node, out decimal number)
+    {
+        number = 0m;
+        if (node is not JsonValue value)
+        {
+            return false;
+        }
+
+        if (value.TryGetValue<decimal>(out number))
+        {
+            return true;
+        }
+
+        if (value.TryGetValue<double>(out var doubleValue))
+        {
+            number = (decimal)doubleValue;
+            return true;
+        }
+
+        return value.TryGetValue<string>(out var text)
+               && decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out number);
     }
 }

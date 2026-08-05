@@ -131,21 +131,29 @@ the caller does not need to know it in advance.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `QueryRtId` | OctoObjectId | RtId of the persisted query entity |
-| `Skip` / `Take` | int? | Paging (runtime queries: DB paging for simple, in-memory for grouped; stream-data: offset / page size) |
+| `Skip` / `Take` | int? | Paging. Runtime queries: DB paging for simple, in-memory for grouped, ignored for aggregation. Stream-data: offset / page size for simple, in-memory over the bins for downsampling, ignored for aggregation and grouped aggregation (a single row resp. one row per group) |
 | `FieldFilters` | collection | Additional field filters AND-combined with the query's persisted filters |
 | `From` / `To` | DateTime? | Stream-data only: override the persisted time range |
-| `Limit` | int? | Stream-data only: override the persisted row cap |
+| `Limit` | int? | Stream-data only: override the persisted row cap — for a downsampling query the bucket count, which doubles as the archive selection's target point count |
 | `FromPath` / `ToPath` / `LimitPath` | string | Stream-data only: read the same three values from the pipeline data via JSONPath |
+| `Aggregation` | AggregationTypesDto? | Downsampling only: override the aggregation persisted on every column of the query (Count / Minimum / Maximum / Average / Sum) |
 
 **Time range from pipeline data.** `From` / `To` / `Limit` can alternatively be read from the data
 context with `FromPath` / `ToPath` / `LimitPath`, for ranges computed upstream (HTTP trigger,
 preceding node) instead of configured on the node. Precedence per value: literal (`From`) →
 path (`FromPath`) → value persisted on the query entity. Timestamps may be ISO-8601 strings or
-date/time values; a value without a time-zone offset is read as UTC (the node's `From`/`To`
-contract), so the adapter's local time zone never shifts the queried window. A path that resolves
-to nothing falls back to the persisted value and logs a warning; a value that is present but not a
-date/time (or not an integer for `LimitPath`) fails the node instead of silently widening the range.
-For a multi-match JSONPath the first match is used.
+date/time values; a path value without a time-zone offset is read as UTC, so the adapter's local time
+zone never shifts the queried window. A path that resolves to nothing falls back to the persisted
+value and logs a warning; a value that is present but not a date/time (or not an integer for
+`LimitPath`) fails the node instead of silently widening the range. For a multi-match JSONPath the
+first match is used.
+
+> A **literal** `From` / `To` written into the node configuration without an offset (`"2026-06-01T00:00:00"`)
+> currently gets the same UTC reading only on the downsampling path, which normalises it explicitly
+> before validating and executing the window. On the simple / aggregation / grouped
+> paths such a literal is passed through as `DateTimeKind.Unspecified` and the storage layer reads it
+> as host-local time, shifting the window on a non-UTC host. Both conditions have to coincide — an
+> offset-less literal and a non-UTC host — which is why it has not surfaced; tracked as a separate fix.
 
 **Supported query types:**
 
@@ -157,6 +165,7 @@ For a multi-match JSONPath the first match is used.
 | `RtSimpleSdQuery` | stream-data repository | **time series**: leading `Timestamp` column + projected columns, one row per data point |
 | `RtAggregationSdQuery` | stream-data repository | single row of aggregate values (RtId null) |
 | `RtGroupingAggregationSdQuery` | stream-data repository | one row per group (group-by columns + aggregates, RtId null) |
+| `RtDownsamplingSdQuery` | stream-data repository | **binned time series**: leading `Timestamp` (bin start) + one column per aggregation, one row per bin (empty bins carry null aggregates) |
 
 Stream-data queries are executed against the tenant's `IStreamDataRepository` (obtained via
 `ISystemContext.FindTenantContextAsync(...).GetStreamDataRepository()`), reading the `CkArchive`
@@ -165,9 +174,79 @@ physical CrateDB column name (attribute path with dots stripped, lower-cased —
 → `amountvalue`); aggregate values by `{physicalColumn}_{funcToken}` (e.g. `amountvalue_sum`). The
 node resolves both forms so the `QueryResult` headers keep the caller's original attribute paths.
 Errors surface through the standard pipeline-exception channel (query not found, missing
-`ArchiveRtId`, stream data not enabled, execution failure) — no silent empty results.
-`RtDownsamplingSdQuery` is not yet supported and throws `UnsupportedQueryType`. See Azure DevOps
-AB#4195.
+`ArchiveRtId`, stream data not enabled, execution failure; for a downsampling query additionally: no
+aggregation columns, an incomplete or inverted time range, a non-positive bucket count, an
+unsupported `Aggregation` override, and a failure inside the archive selection) — no silent empty
+results.
+
+**Downsampling** (`RtDownsamplingSdQuery`, AB#4195 / AB#4233). Executed via
+`IStreamDataRepository.ExecuteDownsamplingQueryAsync`: the window is cut into `Limit` DATE_BIN
+buckets and each persisted column is aggregated per bucket. `From`, `To` and a positive `Limit`
+(the *bucket count*, not a row cap) are mandatory for this query type — resolved through the same
+literal → path → persisted chain as every other stream-data query, and validated on the node so a
+misconfiguration surfaces as a pipeline exception rather than a storage-layer error. A query without
+aggregation columns is rejected as well. `Skip` / `Take` page the returned bins **in memory** — the
+bin axis is generated, not paged, so the storage layer ignores offset / page size on this path. The
+engine additionally clamps the requested bucket count down to the number of distinct source bins in
+range (AB#4246), so a sparsely-populated window can return fewer bins than requested.
+
+**Resolution-aware archive selection** (AB#4290). Inherent to a downsampling query — there is no
+switch to turn it on or off, because choosing the archive is part of answering the query. Instead of
+reading the archive persisted on the query, the node asks `SeriesResolutionService` — composed per
+tenant from `GetArchiveRuntimeStore()` and a `RollupDependencyGraph` over
+`GetRollupArchiveRuntimeStore()`, the same way the asset-repository GraphQL field
+`streamData.resolveSeriesQuery` and the MCP tool `resolve_series_query` do — which archive of the
+family (the persisted base archive plus its transitive rollups) can answer the window at the
+requested number of points. Whether that archive is then actually read is decided by the exactness
+check further down. The effective `Limit` doubles as the target point count and the first column's
+attribute path is the source path the resolver matches a rollup on.
+
+The required aggregation is never guessed (decision O2): it is the first column's persisted
+aggregation, or the node's optional `Aggregation` override. That override mirrors exactly what a
+query definition can carry (Count, Minimum, Maximum, Average, Sum) and, when set, replaces the
+aggregation on **every** column of the query — so the values read back are the ones the selected
+rollup actually stores. The remaining members of the aggregation enum are rejected with an
+actionable error: a time-weighted average and a state duration need per-column metadata (carry
+lookback, comparison value) the node has no way to supply.
+
+**The result never depends on which archive was read.** `From`, `To` and `Limit` are executed exactly as
+the query defines them, and a rollup is only read when it answers the query *identically* to the archive
+persisted on it — so running a query through this node and running it in the query editor can never
+disagree. The bin geometry is never adjusted to fit the rollup.
+
+The reason a rollup can disagree at all: the storage layer bins with an interval of `(To - From) / Limit`
+anchored on `From`, and a windowed source only contributes a row to a bin when its whole window fits
+inside it. A coarser rollup therefore reproduces the base archive exactly only when every stored bucket
+lies completely inside one bin. The node checks that before accepting the rollup:
+
+| Condition | Why |
+|---|---|
+| bin width is a whole multiple of the rollup's bucket size | otherwise one bucket per bin straddles a boundary and is dropped |
+| `From` sits on the rollup's bucket grid (tick-anchored, as the write path aligns it) | otherwise *every* bucket straddles a boundary |
+| alignment is fixed-size, not calendar (day / week / month / year) | a fixed-width bin cannot line up with civil buckets that shift with DST |
+| the rollup's watermark covers `To` | otherwise the newest bins read low |
+
+If any condition fails the persisted archive is read and the reason is logged as a warning, because it is
+nearly always a query-definition detail the author can fix. Worked example from the field (AB#4725): a
+7-day window with **10** buckets gives 16 h 48 min bins over an hourly rollup — not a multiple, so one
+hour per bin would fall out (measured: 8 of 168 hours, −4.1 % on the total and −27 % on a single bin,
+because the dropped hour may be a load peak). The same window with **12** buckets gives 14 h bins, the
+rollup is used, and the values match the base archive to the last digit. As a rule of thumb: pick a
+`Limit` that divides the range into whole multiples of the rollup's bucket size.
+
+The archive actually queried is reported at info level together with the bin width and the rollup's
+bucket size, so the origin of the numbers is visible without guesswork.
+
+Every non-`Ok` signal (`ResolutionLimited`, `NoSuitableRollup`, `UnknownBaseGrain`, `EmptyLadder`) is
+reported as a warning as well. The resolver's own point count is informational only and never overrides
+the query's bucket count. `EmptyLadder` and a tenant without a rollup-archive store fall back to the
+persisted archive, which is why a plain raw archive without rollups behaves exactly as it would without
+any selection at all.
+
+One consequence worth knowing: the node exposes no time-zone option, so the resolver resolves in UTC and a
+calendar-aligned rollup stored in another zone is already excluded from the ladder. Since the exactness
+check rejects calendar-aligned rollups regardless of their zone, that resolver detail cannot influence the
+result at all — the only rungs ever read are fixed-size ones.
 
 #### BackfillFromRtEntityNode
 

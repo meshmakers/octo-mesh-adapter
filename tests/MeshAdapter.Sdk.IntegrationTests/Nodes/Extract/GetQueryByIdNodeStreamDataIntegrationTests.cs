@@ -1,4 +1,4 @@
-using FakeItEasy;
+﻿using FakeItEasy;
 using MeshAdapter.Sdk.IntegrationTests.Fixtures;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
@@ -8,6 +8,7 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
@@ -151,6 +152,177 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
         result.Rows.Select(r => r.Values[0]).Should().OnlyContain(v => v != null,
             "the group-by SerialNumber must resolve for every row");
         result.Rows.Sum(r => Convert.ToDouble(r.Values[1])).Should().Be(110.0);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_ReturnsOneRowPerBin()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // 5 points at 15-minute intervals; a 75-minute window with 5 buckets makes each bin hold
+        // exactly one point. Temperature = 20..24, Amount.Value = 100..104 (sum 510).
+        var queryRtId = await CreateDownsamplingStreamDataQueryAsync(
+            "DownsamplingSdQuery_PerBin",
+            fixture.TestDataStartTime, fixture.TestDataStartTime.AddMinutes(75), 5,
+            ("Temperature", RtAggregationTypesEnum.Average),
+            ("Amount.Value", RtAggregationTypesEnum.Sum));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var result = await ExecuteNodeAndGetQueryResultAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Columns.Select(c => c.Header)
+            .Should().ContainInOrder("Timestamp", "Temperature", "Amount.Value");
+        result.Rows.Should().HaveCount(fixture.TestDataPointCount);
+
+        var timestamps = result.Rows.Select(r => Convert.ToDateTime(r.Values[0])).ToList();
+        timestamps.Should().BeInAscendingOrder();
+        timestamps.Zip(timestamps.Skip(1), (a, b) => b - a)
+            .Should().AllBeEquivalentTo(TimeSpan.FromMinutes(15), "the bin width is 75 min / 5 buckets");
+
+        result.Rows.Select(r => Convert.ToDouble(r.Values[1]))
+            .Should().Equal(20.0, 21.0, 22.0, 23.0, 24.0);
+        result.Rows.Sum(r => Convert.ToDouble(r.Values[2])).Should().Be(510.0);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_CoarserBinsAggregateAcrossPoints()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // One single bucket over the whole window folds all 5 points into one row.
+        var queryRtId = await CreateDownsamplingStreamDataQueryAsync(
+            "DownsamplingSdQuery_SingleBin",
+            fixture.TestDataStartTime, fixture.TestDataStartTime.AddMinutes(75), 1,
+            ("Temperature", RtAggregationTypesEnum.Average),
+            ("Amount.Value", RtAggregationTypesEnum.Sum));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var result = await ExecuteNodeAndGetQueryResultAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Rows.Should().ContainSingle();
+        Convert.ToDouble(result.Rows[0].Values[1]).Should().Be(22.0, "average of 20..24");
+        Convert.ToDouble(result.Rows[0].Values[2]).Should().Be(510.0, "sum of 100..104");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_EmptyBinsKeepTimestampWithNullAggregate()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // The window extends well past the last seeded point, so the trailing bins are empty. The
+        // requested bucket count is clamped down to the distinct source bins (AB#4246), so the row
+        // count is deliberately not asserted.
+        var queryRtId = await CreateDownsamplingStreamDataQueryAsync(
+            "DownsamplingSdQuery_EmptyBins",
+            fixture.TestDataStartTime, fixture.TestDataStartTime.AddMinutes(150), 10,
+            ("Temperature", RtAggregationTypesEnum.Average));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var result = await ExecuteNodeAndGetQueryResultAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Rows.Should().NotBeEmpty();
+        result.Rows.Should().OnlyContain(r => r.Values[0] != null, "every bin keeps its start timestamp");
+        result.Rows.Should().Contain(r => r.Values[1] == null,
+            "bins beyond the last seeded point carry a null aggregate");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_AppliesConfigOverrides()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // The persisted query asks for a single bucket; the node configuration overrides the range
+        // and the bucket count, and must win.
+        var queryRtId = await CreateDownsamplingStreamDataQueryAsync(
+            "DownsamplingSdQuery_Overrides",
+            fixture.TestDataStartTime, fixture.TestDataStartTime.AddMinutes(75), 1,
+            ("Temperature", RtAggregationTypesEnum.Average));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult",
+            From = fixture.TestDataStartTime,
+            To = fixture.TestDataStartTime.AddMinutes(75),
+            Limit = 5
+        };
+
+        // Act
+        var result = await ExecuteNodeAndGetQueryResultAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Rows.Should().HaveCount(fixture.TestDataPointCount, "Limit=5 overrides the persisted single bucket");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_WithoutTimeRange_Throws()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        // Neither persisted nor overridden — the node must reject this before the storage layer does.
+        var queryRtId = await CreateDownsamplingStreamDataQueryAsync(
+            "DownsamplingSdQuery_NoRange", from: null, to: null, limit: 5,
+            ("Temperature", RtAggregationTypesEnum.Average));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act + Assert
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => ExecuteNodeAndGetQueryResultAsync(config));
+    }
+
+    private async Task<OctoObjectId> CreateDownsamplingStreamDataQueryAsync(
+        string name, DateTime? from, DateTime? to, int? limit,
+        params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        return await CreateStreamDataQueryAsync<RtDownsamplingSdQuery>(name, query =>
+        {
+            query.From = from;
+            query.To = to;
+            query.Limit = limit;
+            foreach (var (path, type) in columns)
+            {
+                query.Columns.Add(new RtAggregationQueryColumnRecord
+                {
+                    AttributePath = path,
+                    AggregationType = type
+                });
+            }
+        });
     }
 
     private async Task<OctoObjectId> CreateAggregationStreamDataQueryAsync(

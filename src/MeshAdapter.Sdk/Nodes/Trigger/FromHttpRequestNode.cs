@@ -49,7 +49,7 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
                 // Ensure we return an error response
                 throw;
             }
-        }, allowAnonymous: true, requiredRoles: []);
+        }, allowAnonymous: true, requiredRoles: [], receivesCredentialHeaders: false);
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 
         return Task.CompletedTask;

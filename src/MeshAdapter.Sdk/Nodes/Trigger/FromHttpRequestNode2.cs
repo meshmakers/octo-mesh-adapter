@@ -52,7 +52,7 @@ internal class FromHttpRequestNode2(
                 // Ensure we return an error response
                 throw;
             }
-        }, c.AllowAnonymous, c.RequiredRoles);
+        }, c.AllowAnonymous, c.RequiredRoles, receivesCredentialHeaders: false);
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 
         // An unauthenticated route is a standing exposure, not a per-request occurrence, so the

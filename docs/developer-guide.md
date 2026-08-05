@@ -660,11 +660,11 @@ both logged and written to the tenant's event log (see **Route audit** below):
 3. When roles are configured the caller must hold at least one — `403 Forbidden` otherwise.
    Without roles a valid token of the right tenant is enough.
 
-| Node | Anonymous | Reason |
-|------|-----------|--------|
-| `FromHttpRequest@1` | yes | Deprecated, kept unchanged for existing pipelines |
-| `FromHttpRequest@2` | configurable, default no | `AllowAnonymous` on the node |
-| `FromTeamsBot@1` | yes | Validates its own Bot Framework token |
+| Node | Anonymous | Sees credential headers | Reason |
+|------|-----------|-------------------------|--------|
+| `FromHttpRequest@1` | yes | no | Deprecated, kept unchanged for existing pipelines |
+| `FromHttpRequest@2` | configurable, default no | no | `AllowAnonymous` on the node |
+| `FromTeamsBot@1` | yes | yes | Validates its own Bot Framework token, so it needs the raw header |
 
 ### Route audit
 
@@ -705,12 +705,18 @@ The cost this guards against was measured on a real half-year-old tenant: the ev
 entries/day totalling 704 KB on disk, and nothing prunes it — so a webhook taking one request per
 minute would add roughly 37× the whole existing log every day.
 
-On a route the adapter authorized itself, the `Authorization`, `Proxy-Authorization` and `Cookie`
-headers are withheld from `input["headers"]`. The caller is already verified, and the data root is
+The `Authorization`, `Proxy-Authorization` and `Cookie` headers are withheld from `input["headers"]`
+on every route, unless the trigger node opted in via `ReceivesCredentialHeaders`. The data root is
 echoed back in the response, can be persisted by nodes such as `SetPipelineExecutionResult@1`
 (default `Path: $`) and is rendered in the Studio debug panel when debugging is enabled - so
-forwarding the credential would put a replayable token in all three places. Anonymous routes still
-receive the headers because their trigger node validates the caller on its own.
+forwarding the credential would put a replayable token in all three places.
+
+Whether the adapter authorized the caller (`AllowAnonymous`) and whether the pipeline needs to see
+the credential (`ReceivesCredentialHeaders`) are **separate questions**, and conflating them was a
+defect: platform apps attach the operator's token per host rather than per route, so an anonymous
+route routinely receives a token it never asked for. `FromTeamsBot@1` is the only trigger that opts
+in, because Bot Framework issues its own tokens which the platform gate cannot validate, leaving the
+node to check the header itself.
 
 ### Response Formats
 

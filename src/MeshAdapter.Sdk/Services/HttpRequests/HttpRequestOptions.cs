@@ -8,7 +8,8 @@ internal class HttpRequestOptions(
     HttpMethod method,
     Func<JsonNode, Task<JsonNode?>> executeFunc,
     bool allowAnonymous,
-    string[] requiredRoles)
+    string[] requiredRoles,
+    bool receivesCredentialHeaders = false)
 {
     public string Route { get; } = route;
     public HttpMethod Method { get; } = method;
@@ -18,4 +19,10 @@ internal class HttpRequestOptions(
     public bool AllowAnonymous { get; } = allowAnonymous;
 
     public string[] RequiredRoles { get; } = requiredRoles;
+
+    /// <summary>
+    /// Independent of <see cref="AllowAnonymous" />: that one decides whether the caller must
+    /// authenticate, this one whether the pipeline gets to see the credential.
+    /// </summary>
+    public bool ReceivesCredentialHeaders { get; } = receivesCredentialHeaders;
 }

@@ -71,7 +71,7 @@ internal class FromTeamsBotNode(
             }
             // Bot Framework issues its own tokens, so the platform token gate cannot apply here;
             // the node validates the inbound Authorization header itself (see ValidateInboundToken).
-        }, allowAnonymous: true, requiredRoles: []);
+        }, allowAnonymous: true, requiredRoles: [], receivesCredentialHeaders: true);
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 
         logger.LogInformation("FromTeamsBot: listening on {Route}", c.Route);

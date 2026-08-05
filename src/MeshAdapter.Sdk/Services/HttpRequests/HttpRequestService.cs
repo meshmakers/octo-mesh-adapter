@@ -22,11 +22,9 @@ internal class HttpRequestService(
     private readonly Dictionary<Tuple<string, string>, HttpRequestOptions> _routes = new();
 
     /// <summary>
-    /// Headers carrying the caller's credentials. On a route the adapter itself authorized they are
-    /// withheld from the pipeline data: the caller is already verified, the data root is echoed back
-    /// in the response and can be persisted by nodes such as SetPipelineExecutionResult, and any
-    /// pipeline node could forward it. An anonymous route still receives them because its trigger
-    /// node has to validate the caller on its own (see FromTeamsBot).
+    /// Withheld from the pipeline data unless the trigger opted in via
+    /// <see cref="HttpRequestOptions.ReceivesCredentialHeaders" />, because the data root is echoed
+    /// back in the response, persistable by SetPipelineExecutionResult and forwardable by any node.
     /// </summary>
     private static readonly HashSet<string> CredentialHeaders =
         new(StringComparer.OrdinalIgnoreCase) { "Authorization", "Proxy-Authorization", "Cookie" };
@@ -87,7 +85,7 @@ internal class HttpRequestService(
             var headers = new JsonObject();
             foreach (var (headerKey, headerValue) in context.Request.Headers)
             {
-                if (!route.AllowAnonymous && CredentialHeaders.Contains(headerKey))
+                if (!route.ReceivesCredentialHeaders && CredentialHeaders.Contains(headerKey))
                 {
                     continue;
                 }

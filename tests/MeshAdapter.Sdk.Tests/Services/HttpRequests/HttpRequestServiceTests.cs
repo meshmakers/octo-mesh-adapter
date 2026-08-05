@@ -448,18 +448,49 @@ public class HttpRequestServiceTests
     }
 
     /// <remarks>
-    /// FromTeamsBot registers an anonymous route and validates the inbound Bot Framework token
-    /// itself, so an anonymous route must keep receiving the header.
+    /// An anonymous route does not imply the pipeline may see the caller's credential. Callers may
+    /// present a token to a route that does not require one - every app on the platform attaches it
+    /// per host, not per route - and that token must not reach the pipeline data, which is echoed
+    /// back in the response and can be persisted or forwarded by downstream nodes.
     /// </remarks>
     [Fact]
-    public async Task SendRequestAsync_AnonymousRoute_ForwardsTheAuthorizationHeader()
+    public async Task SendRequestAsync_AnonymousRoute_WithholdsCredentialHeadersFromPipelineData()
+    {
+        JsonNode? receivedInput = null;
+        var options = CreateRouteOptions("/api/public", HttpMethod.Post, input =>
+        {
+            receivedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: true);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/public");
+        context.Request.Headers.Authorization = "Bearer some.access.token";
+        context.Request.Headers.Cookie = "session=secret";
+        context.Request.Headers["X-Correlation-Id"] = "abc";
+        await _service.SendRequestAsync(context);
+
+        var headers = receivedInput?["headers"];
+        Assert.NotNull(headers);
+        Assert.Null(headers!["Authorization"]);
+        Assert.Null(headers["Cookie"]);
+        Assert.Equal("abc", headers["X-Correlation-Id"]?.ToString());
+    }
+
+    /// <remarks>
+    /// FromTeamsBot validates the inbound Bot Framework token itself, because that token is not
+    /// issued by the platform identity service and so cannot pass the adapter's own gate. It is the
+    /// only trigger that opts in.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_RouteReceivingCredentialHeaders_ForwardsTheAuthorizationHeader()
     {
         JsonNode? receivedInput = null;
         var options = CreateRouteOptions("/api/bot", HttpMethod.Post, input =>
         {
             receivedInput = input;
             return Task.FromResult<JsonNode?>(null);
-        }, allowAnonymous: true);
+        }, allowAnonymous: true, receivesCredentialHeaders: true);
         _service.CreateRoute(options);
 
         var context = CreateHttpContext("POST", $"/{TenantId}/api/bot");
@@ -467,6 +498,30 @@ public class HttpRequestServiceTests
         await _service.SendRequestAsync(context);
 
         Assert.Equal("Bearer bot.framework.token",
+            receivedInput?["headers"]?["Authorization"]?.ToString());
+    }
+
+    /// <remarks>
+    /// The two flags are orthogonal: opting in to the credential headers is what forwards them,
+    /// whether or not the adapter authorized the caller first.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_SecuredRouteReceivingCredentialHeaders_ForwardsTheAuthorizationHeader()
+    {
+        JsonNode? receivedInput = null;
+        var options = CreateRouteOptions("/api/secured-bot", HttpMethod.Post, input =>
+        {
+            receivedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, receivesCredentialHeaders: true);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/secured-bot");
+        context.User = CreateAuthenticatedUser();
+        context.Request.Headers.Authorization = "Bearer some.access.token";
+        await _service.SendRequestAsync(context);
+
+        Assert.Equal("Bearer some.access.token",
             receivedInput?["headers"]?["Authorization"]?.ToString());
     }
 
@@ -600,10 +655,11 @@ public class HttpRequestServiceTests
 
     private static HttpRequestOptions CreateRouteOptions(string route, HttpMethod method,
         Func<JsonNode, Task<JsonNode?>>? executeFunc = null, bool allowAnonymous = true,
-        string[]? requiredRoles = null)
+        string[]? requiredRoles = null, bool receivesCredentialHeaders = false)
     {
         executeFunc ??= _ => Task.FromResult<JsonNode?>(null);
-        return new HttpRequestOptions(route, method, executeFunc, allowAnonymous, requiredRoles ?? []);
+        return new HttpRequestOptions(route, method, executeFunc, allowAnonymous, requiredRoles ?? [],
+            receivesCredentialHeaders);
     }
 
     private static ClaimsPrincipal CreateAuthenticatedUser(params string[] roles)

@@ -267,12 +267,16 @@ internal class HttpRequestService(
         if (subject != null &&
             !string.Equals(tenantId, tenantOfAdapter, StringComparison.OrdinalIgnoreCase))
         {
-            logger.LogWarning(
-                "Denied {Method} {Route} for subject {Subject}: token tenant {TokenTenant} does not serve tenant {Tenant}",
-                route.Method, route.Route, subject, tenantId, tenantOfAdapter);
+            // A missing claim is a different story than a foreign tenant, and the audit trail is
+            // read by an operator - naming tenant '' would leave them guessing which one it was.
+            var reason = string.IsNullOrEmpty(tenantId)
+                ? "the user token carries no tenant claim"
+                : $"the token of tenant '{tenantId}' does not serve this tenant";
+
+            logger.LogWarning("Denied {Method} {Route} for subject {Subject} of tenant {Tenant}: {Reason}",
+                route.Method, route.Route, subject, tenantOfAdapter, reason);
             await eventService.StoreWarningEventAsync(tenantOfAdapter,
-                $"Denied {route.Method.ToString().ToUpper()} {route.Route} for subject {subject}: " +
-                $"token of tenant '{tenantId}' does not serve this tenant.");
+                $"Denied {route.Method.ToString().ToUpper()} {route.Route} for subject {subject}: {reason}.");
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return false;
         }

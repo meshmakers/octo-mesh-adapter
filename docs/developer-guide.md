@@ -639,9 +639,9 @@ All components are registered via `ServiceCollectionExtensions.cs`:
 2. Lookup registered route in internal dictionary
 3. Authorize the caller unless the route was registered as anonymous
 4. Parse request body based on Content-Type
-5. Build input JObject with path, method, body, query, files, formData, contentType
+5. Build the input `JsonObject` with path, method, body, query, files, formData, contentType
 6. Execute pipeline with input
-7. Return JToken response as JSON
+7. Return the resulting `JsonNode` as JSON
 
 ### Route Authorization
 

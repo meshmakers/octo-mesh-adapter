@@ -560,6 +560,26 @@ public class HttpRequestServiceTests
         Assert.Contains("does not serve this tenant", entry.Message);
     }
 
+    /// <remarks>
+    /// The audit entry is read by an operator, so a missing claim must not be reported as the
+    /// foreign tenant '' - it names a different failure than a token minted for another tenant.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_UserTokenWithoutTenant_AuditsTheMissingClaim()
+    {
+        var options = CreateRouteOptions("/api/audit", HttpMethod.Post, allowAnonymous: false);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/audit");
+        context.User = CreateAuthenticatedUserOfTenant(null);
+        await _service.SendRequestAsync(context);
+
+        var entry = Assert.Single(_eventService.Events);
+        Assert.Equal(RtEventLevelsEnum.Warning, entry.Level);
+        Assert.Contains("no tenant claim", entry.Message);
+        Assert.DoesNotContain("does not serve this tenant", entry.Message);
+    }
+
     [Fact]
     public async Task SendRequestAsync_MissingRole_AuditsTheDeniedRoles()
     {

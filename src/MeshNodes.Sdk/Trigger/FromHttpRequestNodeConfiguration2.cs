@@ -27,7 +27,7 @@ public record FromHttpRequestNodeConfiguration2 : TriggerNodeConfiguration
     public bool AllowAnonymous { get; set; }
 
     /// <summary>
-    /// Defines the roles that grant access, any one of them is sufficient. Without a role the caller only needs a valid access token
+    /// Defines the roles that grant access, any one of them is sufficient. An empty list accepts any caller with a valid access token
     /// </summary>
     [PropertyGroup("Security", 1, "roleSelector")]
     public string[] RequiredRoles { get; set; } = [];

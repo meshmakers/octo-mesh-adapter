@@ -23,9 +23,10 @@ internal class ConfigureJwtBearerOptions(
         options.Authority = authorityUrl;
         options.Audience = CommonConstants.OctoApi;
 
-        // Explicitly set the valid issuer so token validation does not depend on fetching
-        // the OIDC discovery document. This prevents IDX10204 errors when the identity
-        // service is temporarily unreachable (e.g. during rolling updates).
+        // Explicitly set the valid issuer so the ISSUER check does not depend on the OIDC
+        // discovery document, which is what produced IDX10204 while the identity service was
+        // restarting. Signing keys are still resolved from the discovery metadata, so this
+        // does not make validation work without it - it removes one reason for it to fail.
         options.TokenValidationParameters.ValidIssuer = authorityUrl;
         options.TokenValidationParameters.NameClaimType = JwtClaimTypes.Name;
         options.TokenValidationParameters.RoleClaimType = JwtClaimTypes.Role;

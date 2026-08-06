@@ -62,6 +62,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<DataMappingNode>()
             .RegisterNode<ImportFromCsvNode>()
             .RegisterNode<ImportFromExcelNode>()
+            .RegisterNode<ImportFromCamt053Node>()
             .RegisterNode<CreateAssociationUpdateNode>()
             .RegisterNode<GetNotificationTemplateNode>()
             .RegisterNode<PlaceholderReplaceNode>()

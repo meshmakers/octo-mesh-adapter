@@ -39,6 +39,8 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
     /// <summary>
     /// Optional start of the time range (UTC), only applied to stream-data queries. When set it
     /// overrides the value persisted on the query entity; otherwise the persisted value is used.
+    /// A value written without a time-zone offset ("2026-06-01T00:00:00") is read as UTC, not as the
+    /// adapter host's local time.
     /// </summary>
     [PropertyGroup("StreamData", 0)]
     public DateTime? From { get; init; }
@@ -46,6 +48,8 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
     /// <summary>
     /// Optional end of the time range (UTC), only applied to stream-data queries. When set it
     /// overrides the value persisted on the query entity; otherwise the persisted value is used.
+    /// A value written without a time-zone offset ("2026-06-02T00:00:00") is read as UTC, not as the
+    /// adapter host's local time.
     /// </summary>
     [PropertyGroup("StreamData", 1)]
     public DateTime? To { get; init; }

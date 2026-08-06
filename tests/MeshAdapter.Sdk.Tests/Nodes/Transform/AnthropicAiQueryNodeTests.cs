@@ -1,3 +1,4 @@
+using System.Net;
 using FakeItEasy;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -301,5 +302,79 @@ public class AnthropicAiQueryNodeTests
         var result = AnthropicAiQueryNode.BuildEffectiveSystemPrompt(string.Empty, mcpConfigured: true, mcpToolCount: 0);
 
         Assert.Equal(AnthropicAiQueryNode.NoToolsSystemPromptSuffix.TrimStart(), result);
+    }
+
+    // --- Token-limit / API-error surfacing --------------------------------------------
+    // A truncated answer (stop_reason "max_tokens") and rate-limit / quota / context-window
+    // errors used to be invisible or a bare status code. The messages below are what lands in
+    // the RtPipelineExecution audit record, so they must name the cause and stay actionable.
+
+    [Fact]
+    public void BuildTruncationMessage_NamesTheLimitAndTheFixes()
+    {
+        var message = AnthropicAiQueryNode.BuildTruncationMessage(8000);
+
+        Assert.Contains("truncated", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("max_tokens", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("8000", message);
+        Assert.Contains("Increase maxTokens", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAnthropicApiErrorMessage_RateLimit429_ExplainsQuota()
+    {
+        var message = AnthropicAiQueryNode.BuildAnthropicApiErrorMessage(
+            HttpStatusCode.TooManyRequests, "{\"error\":{\"type\":\"rate_limit_error\"}}");
+
+        Assert.Contains("HTTP 429", message);
+        Assert.Contains("rate limit", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("quota", message, StringComparison.OrdinalIgnoreCase);
+        // Raw body retained for diagnostics.
+        Assert.Contains("rate_limit_error", message);
+    }
+
+    [Fact]
+    public void BuildAnthropicApiErrorMessage_Overloaded529_SaysOverloaded()
+    {
+        var message = AnthropicAiQueryNode.BuildAnthropicApiErrorMessage(
+            (HttpStatusCode)529, "{\"error\":{\"type\":\"overloaded_error\"}}");
+
+        Assert.Contains("HTTP 529", message);
+        Assert.Contains("overloaded", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAnthropicApiErrorMessage_ContextWindow400_SaysReduceInput()
+    {
+        var message = AnthropicAiQueryNode.BuildAnthropicApiErrorMessage(
+            HttpStatusCode.BadRequest,
+            "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 250000 tokens > 200000 maximum\"}}");
+
+        Assert.Contains("HTTP 400", message);
+        Assert.Contains("context window", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Reduce the input", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAnthropicApiErrorMessage_OtherBadRequest_FallsBackToStatus()
+    {
+        // A 400 that is NOT a context-length error keeps the generic status wording.
+        var message = AnthropicAiQueryNode.BuildAnthropicApiErrorMessage(
+            HttpStatusCode.BadRequest, "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"model: field required\"}}");
+
+        Assert.Contains("HTTP 400", message);
+        Assert.DoesNotContain("context window", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("prompt is too long: 250000 tokens > 200000 maximum", true)]
+    [InlineData("this exceeds the maximum context length", true)]
+    [InlineData("input exceeds the model's context window", true)]
+    [InlineData("credit balance is too low", false)] // "too low" is not context wording
+    [InlineData("model: field required", false)]
+    [InlineData("", false)]
+    public void IsContextLengthError_DetectsContextWording(string body, bool expected)
+    {
+        Assert.Equal(expected, AnthropicAiQueryNode.IsContextLengthError(body));
     }
 }

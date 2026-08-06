@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -493,9 +494,13 @@ internal class AnthropicAiQueryNode(
 
             if (!response.IsSuccessStatusCode)
             {
+                // Classify the failure so the pipeline execution's ErrorMessage says *why* the AI
+                // query could not run (rate limit / token quota, overloaded, or input over the
+                // context window) instead of a bare status code. The raw body is kept for
+                // diagnostics. This message is what lands in the RtPipelineExecution audit record.
                 var errorContent = await response.Content.ReadAsStringAsync();
                 throw new HttpRequestException(
-                    $"Anthropic API error ({response.StatusCode}): {errorContent}");
+                    BuildAnthropicApiErrorMessage(response.StatusCode, errorContent));
             }
 
             var responseContent = await response.Content.ReadAsStringAsync();
@@ -570,6 +575,18 @@ internal class AnthropicAiQueryNode(
                 continue;
             }
 
+            // A "max_tokens" stop reason means the model hit the output-token limit before it
+            // finished — the returned text is a truncated fragment (for JSON responses, typically
+            // cut mid-object, so it fails to parse and silently "degrades"). Surface it as a clear,
+            // specific error instead of returning the partial text: the pipeline execution then
+            // records *why* nothing could be processed (e.g. why no documents were assigned). A
+            // pipeline that prefers to skip-and-retry rather than fail can still opt in via
+            // ContinueOnError. See AB#4544 (the root-cause class this makes visible).
+            if (stopReason == "max_tokens")
+            {
+                throw new InvalidOperationException(BuildTruncationMessage(maxTokens));
+            }
+
             // stop_reason == "end_turn" or other — extract text response
             if (apiResponse.TryGetProperty("content", out var finalContent) &&
                 finalContent.ValueKind == JsonValueKind.Array)
@@ -589,6 +606,63 @@ internal class AnthropicAiQueryNode(
 
         throw new InvalidOperationException(
             $"Claude exceeded maximum tool rounds ({config.MaxToolRounds})");
+    }
+
+    /// <summary>
+    /// Builds the message thrown when the model stops with <c>stop_reason: "max_tokens"</c>. The
+    /// answer was truncated at the output-token cap, so the (typically JSON) result is incomplete
+    /// and must not be processed as-is. The message names the cause and the two fixes (raise
+    /// maxTokens or shrink the input) so it reads clearly in the pipeline-execution audit trail.
+    /// </summary>
+    internal static string BuildTruncationMessage(int maxTokens)
+    {
+        return "AI response truncated — the model reached the max_tokens output limit " +
+               $"({maxTokens}) before completing its answer, so the result is incomplete and was " +
+               "not processed. Increase maxTokens (on the AiConfiguration entity or the node) or " +
+               "reduce the input size (e.g. a smaller batch or less context).";
+    }
+
+    /// <summary>
+    /// Turns a non-success Anthropic HTTP response into a clear, cause-first message for the
+    /// pipeline-execution audit trail. Rate limit / token quota (429), overloaded (529) and
+    /// context-window-exceeded (400) are each spelled out; any other status falls back to the
+    /// status code. The raw response body is always appended for diagnostics.
+    /// </summary>
+    internal static string BuildAnthropicApiErrorMessage(HttpStatusCode statusCode, string responseBody)
+    {
+        var code = (int)statusCode;
+        var hint = code switch
+        {
+            429 => "Anthropic rejected the request with a rate limit / token quota error (HTTP 429). " +
+                   "No answer was produced and nothing could be processed — retry later, lower the " +
+                   "request frequency, or reduce the request size.",
+            529 => "The Anthropic API is temporarily overloaded (HTTP 529). No answer was produced — " +
+                   "retry later.",
+            400 when IsContextLengthError(responseBody) =>
+                "Anthropic rejected the request because the input exceeds the model's context window " +
+                "(HTTP 400). Reduce the input size (e.g. a smaller batch or less context) and retry.",
+            _ => $"Anthropic API error (HTTP {code} {statusCode})."
+        };
+
+        return $"{hint} Response body: {responseBody}";
+    }
+
+    /// <summary>
+    /// Heuristic for an Anthropic HTTP 400 that means "the prompt is larger than the context
+    /// window" (an <c>invalid_request_error</c> whose message mentions the prompt being too long /
+    /// the context window / the maximum length), as opposed to any other bad-request cause.
+    /// </summary>
+    internal static bool IsContextLengthError(string? responseBody)
+    {
+        if (string.IsNullOrEmpty(responseBody))
+        {
+            return false;
+        }
+
+        return responseBody.Contains("too long", StringComparison.OrdinalIgnoreCase)
+               || responseBody.Contains("context window", StringComparison.OrdinalIgnoreCase)
+               || responseBody.Contains("maximum context length", StringComparison.OrdinalIgnoreCase)
+               || responseBody.Contains("context length", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

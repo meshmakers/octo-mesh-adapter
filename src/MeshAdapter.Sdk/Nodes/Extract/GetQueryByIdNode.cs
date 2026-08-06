@@ -1,4 +1,5 @@
-using System.Globalization;
+﻿using System.Globalization;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
@@ -8,6 +9,7 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Runtime.Engine.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -16,9 +18,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 /// <summary>
 /// Node get query by id. Supports runtime-data queries (simple, aggregation, grouped aggregation)
-/// and stream-data queries (simple, aggregation, grouped aggregation). The caller does not need to
-/// know the query kind in advance — the persisted query entity (a shared
+/// and stream-data queries (simple, aggregation, grouped aggregation, downsampling). The caller does
+/// not need to know the query kind in advance — the persisted query entity (a shared
 /// <see cref="RtPersistentQuery"/> subtype) is resolved and dispatched based on its concrete type.
+/// A downsampling query is always routed through resolution-aware archive selection, which reads the
+/// coarsest rollup of the archive family that answers the query <b>identically</b> to the archive
+/// persisted on it — so the node and the query editor never disagree on the numbers.
 /// </summary>
 /// <param name="next">Next node delegate in the pipeline</param>
 /// <param name="context">Mesh ETL context</param>
@@ -346,7 +351,7 @@ public class GetQueryByIdNode(
     private async Task ProcessStreamDataQueryAsync(RtStreamDataQuery query,
         IDataContext dataContext, INodeContext nodeContext, GetQueryByIdNodeConfiguration c)
     {
-        var streamDataRepo = await ResolveStreamDataRepositoryAsync(nodeContext);
+        var (tenantContext, streamDataRepo) = await ResolveStreamDataContextAsync(nodeContext);
 
         if (string.IsNullOrWhiteSpace(query.ArchiveRtId))
         {
@@ -370,7 +375,10 @@ public class GetQueryByIdNode(
             RtGroupingAggregationSdQuery grouped =>
                 await ExecuteGroupedAggregationStreamDataQueryAsync(grouped, archiveRtId, streamDataRepo,
                     dataContext, c, overrides, nodeContext),
-            // Downsampling and any future stream-data query types are not yet supported.
+            RtDownsamplingSdQuery downsampling =>
+                await ExecuteDownsamplingStreamDataQueryAsync(downsampling, archiveRtId, streamDataRepo,
+                    tenantContext, dataContext, c, overrides, nodeContext),
+            // Any future stream-data query type is not yet supported.
             _ => throw MeshAdapterPipelineExecutionException.UnsupportedQueryType(nodeContext,
                 query.GetType().Name)
         };
@@ -445,6 +453,82 @@ public class GetQueryByIdNode(
             () => streamDataRepo.ExecuteGroupedAggregationQueryAsync(archiveRtId, options), nodeContext, c);
 
         return BuildGroupedAggregationStreamDataQueryResult(query, groupingColumns, result);
+    }
+
+    /// <summary>
+    /// Executes a persisted downsampling query: DATE_BIN bucketing over the window with one aggregate
+    /// per persisted column, one row per bin (empty bins included, with null aggregates). The engine
+    /// requires From, To and a positive bucket count, so the effective values are validated here
+    /// rather than letting a storage-layer exception surface. The archive is re-routed by the series
+    /// resolver first — resolution-aware selection is inherent to a downsampling query and not separately
+    /// switchable — while the window and bucket count stay exactly as the query defines them, and a rollup
+    /// is only read when it answers the query identically (see <see cref="ResolveEffectiveArchiveAsync" />).
+    /// </summary>
+    private async Task<QueryResult> ExecuteDownsamplingStreamDataQueryAsync(
+        RtDownsamplingSdQuery query, OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo,
+        ITenantContext tenantContext, IDataContext dataContext, GetQueryByIdNodeConfiguration c,
+        StreamDataOverrides overrides, INodeContext nodeContext)
+    {
+        var persistedColumns = query.Columns.ToList();
+        if (persistedColumns.Count == 0)
+        {
+            // Without an aggregation the storage layer leaves the generate_series bin path and emits a
+            // zero-length interval — an SQL error rather than an empty result.
+            throw MeshAdapterPipelineExecutionException.DownsamplingColumnsMissing(nodeContext, c.QueryRtId);
+        }
+
+        var from = ToUtcOrNull(overrides.From ?? query.From);
+        var to = ToUtcOrNull(overrides.To ?? query.To);
+        var limit = overrides.Limit ?? (query.Limit.HasValue ? (int)query.Limit.Value : null);
+
+        if (from is null || to is null || from >= to)
+        {
+            throw MeshAdapterPipelineExecutionException.DownsamplingTimeRangeInvalid(
+                nodeContext, c.QueryRtId, from, to);
+        }
+
+        if (limit is null or <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.DownsamplingLimitInvalid(nodeContext, c.QueryRtId, limit);
+        }
+
+        var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
+
+        // A node-configured aggregation replaces the persisted one on every column; otherwise each
+        // column keeps its own. The archive selection matches a rollup on the first column — its
+        // attribute path plus that column's (possibly overridden) aggregation.
+        var aggregationOverride = MapAggregationOverride(c.Aggregation, nodeContext);
+        var columns = BuildDownsamplingColumns(persistedColumns, aggregationOverride);
+        var sourcePath = persistedColumns[0].AttributePath;
+
+        var resolution = await ResolveSeriesAsync(
+            aggregationOverride ?? persistedColumns[0].AggregationType, sourcePath, archiveRtId, rtIds,
+            from.Value, to.Value, limit.Value, tenantContext, c, nodeContext);
+
+        // Only the archive is re-routed, and only when the rollup provably answers the query
+        // identically — the window and bucket count stay exactly as the query defines them.
+        var effectiveArchiveRtId = resolution is null
+            ? archiveRtId
+            : await ResolveEffectiveArchiveAsync(resolution, archiveRtId, from.Value, to.Value,
+                limit.Value, tenantContext, nodeContext);
+
+        var options = StreamDataDownsamplingQueryOptions.Create()
+            .WithCkTypeId(query.QueryCkTypeId)
+            .WithAggregationColumns(columns
+                .Select(col => new AggregationColumn(col.AttributePath, col.Function))
+                .ToList())
+            .WithRtIds(rtIds)
+            .WithTimeRange(from.Value, to.Value)
+            .WithLimit(limit.Value)
+            // Persisted field filters AND-combined with the node's configured filters.
+            .WithFieldFilters(BuildStreamDataFieldFilters(query.FieldFilter, dataContext, c));
+        // Deliberately no WithPagination: the storage layer's downsampling path returns before the
+        // generic LIMIT/OFFSET is applied, so Skip/Take are paged over the returned bins instead.
+
+        var result = await ExecuteAsync(
+            () => streamDataRepo.ExecuteDownsamplingQueryAsync(effectiveArchiveRtId, options), nodeContext, c);
+
+        return BuildDownsamplingStreamDataQueryResult(columns, result, c);
     }
 
     private static async Task<StreamDataQueryResult> ExecuteAsync(
@@ -563,12 +647,255 @@ public class GetQueryByIdNode(
         };
     }
 
-    private async Task<IStreamDataRepository> ResolveStreamDataRepositoryAsync(INodeContext nodeContext)
+    /// <summary>
+    /// <see cref="ToUtc" /> for an optional boundary. The downsampling path normalises both boundaries
+    /// up front so the window it validates and hands to the storage layer is a genuine UTC instant — a
+    /// literal configuration value deserialized from pipeline JSON without an offset arrives as
+    /// <see cref="DateTimeKind.Unspecified" />, which the storage layer would otherwise read as
+    /// host-local time.
+    /// </summary>
+    private static DateTime? ToUtcOrNull(DateTime? value)
+    {
+        return value.HasValue ? ToUtc(value.Value) : null;
+    }
+
+    /// <summary>
+    /// Resolves the tenant context and its stream-data repository in one go. The tenant context is
+    /// returned alongside the repository because resolution-aware selection needs the archive and
+    /// rollup-archive stores off the same context.
+    /// </summary>
+    private async Task<(ITenantContext TenantContext, IStreamDataRepository Repository)>
+        ResolveStreamDataContextAsync(INodeContext nodeContext)
     {
         var tenantId = context.TenantId;
         var tenantContext = await systemContext.FindTenantContextAsync(tenantId);
-        return tenantContext.GetStreamDataRepository()
-            ?? throw MeshAdapterPipelineExecutionException.StreamDataNotEnabled(nodeContext, tenantId);
+        var repository = tenantContext.GetStreamDataRepository()
+                         ?? throw MeshAdapterPipelineExecutionException.StreamDataNotEnabled(nodeContext, tenantId);
+        return (tenantContext, repository);
+    }
+
+    /// <summary>
+    /// Asks the series resolver which archive of the family — the persisted base archive plus its
+    /// (transitive) rollups — should answer the window at the requested point count. Returns
+    /// <c>null</c> when the tenant has no rollup store at all: there is no family to route through, so
+    /// the persisted archive is queried unchanged (with a warning, since the query could have been
+    /// answered from a coarser rung had one been provisioned).
+    /// </summary>
+    /// <remarks>
+    /// The resolution zone is always UTC: the node exposes no time-zone option, so a calendar-aligned
+    /// rollup (day / week / month / year) whose stored reference zone is not UTC is excluded from the
+    /// ladder by the resolver's per-query zone-match rule. Fixed-size (sub-day) rungs are unaffected.
+    /// </remarks>
+    private static async Task<SeriesResolutionResult?> ResolveSeriesAsync(
+        Enum aggregationType, string sourcePath, OctoObjectId baseArchiveRtId,
+        IReadOnlyList<OctoObjectId>? rtIds, DateTime from, DateTime to, int targetPoints,
+        ITenantContext tenantContext, GetQueryByIdNodeConfiguration c, INodeContext nodeContext)
+    {
+        var rollupStore = tenantContext.GetRollupArchiveRuntimeStore();
+        if (rollupStore == null)
+        {
+            nodeContext.Warning(
+                $"No rollup-archive store is available for tenant '{tenantContext.TenantId}'; querying " +
+                $"the archive persisted on the query ('{baseArchiveRtId}') directly.");
+            return null;
+        }
+
+        // The aggregation semantics are never guessed — they come from the query's first column, or from
+        // the node's Aggregation override when set.
+        var requiredAggregation = MapToRollupFunction(aggregationType);
+
+        // Composed per tenant, exactly as the GraphQL and MCP consumers of the resolver do — the
+        // service is not registered in the container anywhere in the platform.
+        var resolver = new SeriesResolutionService(tenantContext.GetArchiveRuntimeStore(),
+            new RollupDependencyGraph(rollupStore));
+
+        var request = new SeriesResolutionRequest(baseArchiveRtId, TargetCkTypeId: null, from, to,
+            targetPoints, requiredAggregation, sourcePath)
+        {
+            RtIds = rtIds
+        };
+
+        try
+        {
+            return await resolver.ResolveAsync(request);
+        }
+        catch (Exception ex)
+        {
+            // Business "no suitable route" outcomes are signals, not exceptions — anything thrown here
+            // is a store / configuration failure and must not be swallowed.
+            throw MeshAdapterPipelineExecutionException.SeriesResolutionFailed(nodeContext, c.QueryRtId, ex);
+        }
+    }
+
+    /// <summary>
+    /// Picks the archive the downsampling query runs against. A rollup is only accepted when it answers
+    /// the query <b>identically</b> to the archive persisted on it, so executing a query through this
+    /// node and executing the same query in the query editor can never disagree. Where that cannot be
+    /// guaranteed the persisted archive is read instead and the reason is reported as a warning, because
+    /// it is nearly always a query-definition detail the author can fix.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The storage layer bins with an interval of <c>(To - From) / Limit</c> anchored on <c>From</c>, and
+    /// a windowed source only contributes a row to a bin when its whole window fits inside it. A rollup
+    /// therefore reproduces the base archive's numbers exactly only when every stored window lies
+    /// completely inside one bin, which needs the bin width to be a whole multiple of the rollup's bucket
+    /// size <em>and</em> <c>From</c> to sit on that bucket grid. A 7-day window with 10 buckets gives
+    /// 16 h 48 min bins, which is not a multiple of an hourly rollup: one hourly window per bin straddles
+    /// a boundary and silently drops out (measured on real data: 8 of 168 hours, -4.1 % on the total and
+    /// up to -27 % on a single bin, because the dropped hour may be a load peak). The same window with
+    /// 12 buckets gives 14 h bins and matches to the last digit.
+    /// </para>
+    /// <para>
+    /// The rollup must also have aggregated the whole window already: a watermark short of <c>To</c>
+    /// means the newest bins would read low. Calendar-aligned rollups (day / week / month / year) are
+    /// never accepted, because a fixed-width bin cannot line up with civil buckets in general.
+    /// </para>
+    /// </remarks>
+    private static async Task<OctoObjectId> ResolveEffectiveArchiveAsync(SeriesResolutionResult resolution,
+        OctoObjectId persistedArchiveRtId, DateTime from, DateTime to, int limit,
+        ITenantContext tenantContext, INodeContext nodeContext)
+    {
+        if (resolution.Signal != SeriesResolutionSignal.Ok)
+        {
+            nodeContext.Warning(
+                $"Series resolution for archive '{persistedArchiveRtId}' returned {resolution.Signal}: " +
+                $"{resolution.Diagnostic ?? "no diagnostic"}");
+        }
+
+        // An empty ladder carries no archive at all; a resolver that stayed on the persisted archive needs
+        // no check - that is the archive the query names.
+        if (resolution.Signal == SeriesResolutionSignal.EmptyLadder ||
+            resolution.ArchiveRtId == OctoObjectId.Empty ||
+            resolution.ArchiveRtId == persistedArchiveRtId)
+        {
+            nodeContext.Info(
+                $"Downsampling query reads its own archive '{persistedArchiveRtId}' (bin width " +
+                $"{DescribeBinWidth(from, to, limit)}).");
+            return persistedArchiveRtId;
+        }
+
+        // Reading the rollup definition can only ever make the routing better; if it fails, the archive
+        // the query names is still the correct answer, so this degrades instead of failing the pipeline.
+        RollupArchiveSnapshot? rollup = null;
+        var rollupStore = tenantContext.GetRollupArchiveRuntimeStore();
+        if (rollupStore != null)
+        {
+            try
+            {
+                rollup = await rollupStore.GetAsync(resolution.ArchiveRtId);
+            }
+            catch (Exception ex)
+            {
+                nodeContext.Warning(
+                    $"Reading the rollup definition of '{resolution.ArchiveRtId}' failed ({ex.Message}); " +
+                    $"querying the archive persisted on the query ('{persistedArchiveRtId}') instead.");
+                return persistedArchiveRtId;
+            }
+        }
+
+        if (rollup is null)
+        {
+            nodeContext.Warning(
+                $"Series resolution picked archive '{resolution.ArchiveRtId}', but its rollup definition " +
+                $"could not be read; querying the archive persisted on the query " +
+                $"('{persistedArchiveRtId}') instead.");
+            return persistedArchiveRtId;
+        }
+
+        var rollupName = rollup.RtWellKnownName ?? rollup.RtId.ToString();
+
+        if (RollupAnswersExactly(rollup, from, to, limit, out var reason))
+        {
+            nodeContext.Info(
+                $"Downsampling query routed to rollup '{rollupName}' ({rollup.RtId}) instead of " +
+                $"'{persistedArchiveRtId}': bucket size {Describe(rollup.BucketSize)}, bin width " +
+                $"{DescribeBinWidth(from, to, limit)}.");
+            return resolution.ArchiveRtId;
+        }
+
+        nodeContext.Warning(
+            $"Rollup '{rollupName}' ({rollup.RtId}) would not return the same values as the archive " +
+            $"persisted on the query: {reason} Querying '{persistedArchiveRtId}' instead.");
+        return persistedArchiveRtId;
+    }
+
+    /// <summary>
+    /// True when reducing over <paramref name="rollup" /> yields exactly the values the base archive
+    /// would. See the remarks on <see cref="ResolveEffectiveArchiveAsync" /> for the reasoning; the out
+    /// parameter carries an author-facing explanation of the first condition that failed.
+    /// </summary>
+    private static bool RollupAnswersExactly(RollupArchiveSnapshot rollup, DateTime from, DateTime to,
+        int limit, out string reason)
+    {
+        if (rollup.BucketAlignment != BucketAlignment.FixedSize)
+        {
+            reason = $"its buckets are {rollup.BucketAlignment}-aligned, which a fixed-width bin cannot " +
+                     "line up with.";
+            return false;
+        }
+
+        var grainTicks = rollup.BucketSize.Ticks;
+        if (grainTicks <= 0)
+        {
+            reason = "its bucket size is not declared.";
+            return false;
+        }
+
+        // The bin width the storage layer will actually use - whole seconds, rounded, never below 1 s.
+        var binSeconds = EffectiveBinSeconds(from, to, limit);
+        var binTicks = binSeconds * TimeSpan.TicksPerSecond;
+
+        if (binTicks % grainTicks != 0)
+        {
+            reason = $"the bin width {Describe(TimeSpan.FromSeconds(binSeconds))} is not a whole multiple " +
+                     $"of its {Describe(rollup.BucketSize)} bucket size, so one bucket per bin would " +
+                     "straddle a bin boundary and be dropped. Choose a Limit that divides the time range " +
+                     "into whole multiples of the bucket size.";
+            return false;
+        }
+
+        if (from.Ticks % grainTicks != 0)
+        {
+            reason = $"the range start {from:O} does not sit on its {Describe(rollup.BucketSize)} bucket " +
+                     "grid, so every bucket would straddle a bin boundary.";
+            return false;
+        }
+
+        // A watermark short of the range end means the newest buckets are not aggregated yet.
+        if (rollup.LastAggregatedBucketEnd is not { } watermark || watermark < to)
+        {
+            reason = "it has only aggregated up to " +
+                     $"{rollup.LastAggregatedBucketEnd?.ToString("O") ?? "no bucket yet"}, which does not " +
+                     $"cover the requested range end {to:O}.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Bin width in whole seconds as the storage layer derives it: the range divided by the bucket count,
+    /// rounded to the nearest second and never below one second.
+    /// </summary>
+    private static long EffectiveBinSeconds(DateTime from, DateTime to, int limit)
+    {
+        return Math.Max(1L,
+            (long)Math.Round((to - from).TotalSeconds / limit, MidpointRounding.AwayFromZero));
+    }
+
+    private static string DescribeBinWidth(DateTime from, DateTime to, int limit)
+    {
+        return Describe(TimeSpan.FromSeconds(EffectiveBinSeconds(from, to, limit)));
+    }
+
+    private static string Describe(TimeSpan value)
+    {
+        return value.TotalDays >= 1 ? $"{value.TotalDays:0.###} d"
+            : value.TotalHours >= 1 ? $"{value.TotalHours:0.###} h"
+            : value.TotalMinutes >= 1 ? $"{value.TotalMinutes:0.###} min"
+            : $"{value.TotalSeconds:0.###} s";
     }
 
     /// <summary>
@@ -710,6 +1037,137 @@ public class GetQueryByIdNode(
         return columns?
             .Select(col => new AggregationColumn(col.AttributePath, MapStreamAggregation(col.AggregationType).Function))
             .ToList() ?? [];
+    }
+
+    /// <summary>
+    /// One downsampling output column: the header the result keeps (the persisted attribute path), the
+    /// engine aggregation to request, and the lower-case token the storage layer suffixes the output
+    /// key with (<c>{physicalColumn}_{token}</c>).
+    /// </summary>
+    private readonly record struct DownsamplingColumn(
+        string AttributePath, AggregationFunction Function, string KeyToken);
+
+    /// <summary>
+    /// Maps the persisted aggregation columns onto the engine's. The node's optional <c>Aggregation</c>
+    /// override, when set, replaces the persisted function on <b>every</b> column — a single option
+    /// cannot express a per-column choice, and the archive selection matched a rollup on that one
+    /// function, so every value read back should come from it. Not set means each column keeps the
+    /// aggregation persisted on the query.
+    /// </summary>
+    private static List<DownsamplingColumn> BuildDownsamplingColumns(
+        IReadOnlyList<RtAggregationQueryColumnRecord> persistedColumns, Enum? aggregationOverride)
+    {
+        var result = new List<DownsamplingColumn>(persistedColumns.Count);
+
+        foreach (var column in persistedColumns)
+        {
+            var (function, keyToken) = MapStreamAggregation(aggregationOverride ?? column.AggregationType);
+            result.Add(new DownsamplingColumn(column.AttributePath, function, keyToken));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Maps the node's optional aggregation override onto the persisted aggregation-type enum, so the
+    /// override flows through exactly the same mapping as a value read from the query entity. The
+    /// override mirrors the aggregations a query definition can carry (Count, Minimum, Maximum, Average,
+    /// Sum); the remaining enum members have no downsampling counterpart here — a time-weighted average
+    /// and a state duration need per-column metadata (carry lookback, comparison value) the node cannot
+    /// supply — and are rejected with an actionable error rather than a mapping crash.
+    /// </summary>
+    private static Enum? MapAggregationOverride(AggregationTypesDto? aggregation, INodeContext nodeContext)
+    {
+        return aggregation switch
+        {
+            null => null,
+            AggregationTypesDto.Count => RtAggregationTypesEnum.Count,
+            AggregationTypesDto.Minimum => RtAggregationTypesEnum.Minimum,
+            AggregationTypesDto.Maximum => RtAggregationTypesEnum.Maximum,
+            AggregationTypesDto.Average => RtAggregationTypesEnum.Average,
+            AggregationTypesDto.Sum => RtAggregationTypesEnum.Sum,
+            _ => throw MeshAdapterPipelineExecutionException.UnsupportedAggregationType(
+                nodeContext, aggregation.Value.ToString())
+        };
+    }
+
+    /// <summary>
+    /// Maps an aggregation type — persisted on the query column or supplied as the node's override —
+    /// onto the rollup function the resolver matches ladder rungs against. Only the aggregations a query
+    /// definition can carry are expressible; anything else is rejected earlier by
+    /// <see cref="MapAggregationOverride" /> (override) or by
+    /// <see cref="MapStreamAggregation" /> (persisted column).
+    /// </summary>
+    private static CkRollupFunction MapToRollupFunction(Enum aggregationType)
+    {
+        return aggregationType.ToString() switch
+        {
+            "Count" => CkRollupFunction.Count,
+            "Sum" => CkRollupFunction.Sum,
+            "Average" => CkRollupFunction.Avg,
+            "Minimum" => CkRollupFunction.Min,
+            "Maximum" => CkRollupFunction.Max,
+            _ => throw new ArgumentOutOfRangeException(nameof(aggregationType), aggregationType,
+                $"Unknown aggregation type: {aggregationType}")
+        };
+    }
+
+    /// <summary>
+    /// Maps the downsampling rows into a <see cref="QueryResult" />: a leading <c>Timestamp</c> column
+    /// (the bin start, as for a simple stream-data query), then one column per aggregation headed by its
+    /// attribute path. One row per bin; empty bins keep their timestamp and carry null aggregates.
+    /// <c>Skip</c>/<c>Take</c> page the returned bins in memory — the storage layer's downsampling path
+    /// ignores offset / page size because the bin axis is generated, not paged, and the row count is
+    /// governed by the bucket count.
+    /// </summary>
+    private static QueryResult BuildDownsamplingStreamDataQueryResult(List<DownsamplingColumn> columns,
+        StreamDataQueryResult result, GetQueryByIdNodeConfiguration c)
+    {
+        var queryResult = new QueryResult();
+        queryResult.Columns.Add(new QueryResultColumns { Header = "Timestamp" });
+        queryResult.Columns.AddRange(columns.Select(col =>
+            new QueryResultColumns { Header = col.AttributePath }));
+
+        IEnumerable<StreamDataRow> rows = result.Rows;
+        if (c.Skip.HasValue)
+        {
+            rows = rows.Skip(c.Skip.Value);
+        }
+
+        if (c.Take.HasValue)
+        {
+            rows = rows.Take(c.Take.Value);
+        }
+
+        foreach (var row in rows)
+        {
+            var values = new List<object?> { row.Timestamp };
+            values.AddRange(columns.Select(col => ResolveDownsamplingValue(row.Values, col)));
+
+            queryResult.Rows.Add(new QueryResultRow
+            {
+                // The store stamps the query's CkTypeId on every bin row, empty or not; RtId is only
+                // populated when the projection carries a single source entity.
+                RtId = row.RtId,
+                CkTypeId = row.CkTypeId,
+                Values = values
+            });
+        }
+
+        return queryResult;
+    }
+
+    /// <summary>
+    /// Reads one bin's aggregate. The downsampling path keys results only by the friendly output name
+    /// <c>{physicalColumn}_{token}</c> — both for plain columns and for the rollup-chain resolved form,
+    /// whose SQL alias is normalised through the same column-name rule — so no SQL-alias fallback is
+    /// needed here.
+    /// </summary>
+    private static object? ResolveDownsamplingValue(IReadOnlyDictionary<string, object?> values,
+        DownsamplingColumn column)
+    {
+        var physicalColumnName = column.AttributePath.Replace(".", string.Empty).ToLowerInvariant();
+        return values.TryGetValue($"{physicalColumnName}_{column.KeyToken}", out var value) ? value : null;
     }
 
     /// <summary>

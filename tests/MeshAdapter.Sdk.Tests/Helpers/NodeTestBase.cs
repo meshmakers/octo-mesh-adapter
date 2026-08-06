@@ -28,6 +28,24 @@ public abstract class NodeTestBase
         IPipelineScratchSpace? scratchSpace = null)
         where TConfig : class, INodeConfiguration
     {
+        var (dataContext, nodeContext, next, _) = PrepareTestWithLogger(
+            config, testData, executionMode, pipelineDebugger, scratchSpace);
+        return (dataContext, nodeContext, next);
+    }
+
+    /// <summary>
+    /// <see cref="PrepareTest{TConfig}" /> that additionally returns the faked pipeline logger, so a
+    /// test can assert on the warnings / errors a node reports.
+    /// </summary>
+    protected (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next, IPipelineLogger Logger)
+        PrepareTestWithLogger<TConfig>(
+            TConfig config,
+            JsonNode? testData = null,
+            IPipelineExecutionMode? executionMode = null,
+            IPipelineDebugger? pipelineDebugger = null,
+            IPipelineScratchSpace? scratchSpace = null)
+        where TConfig : class, INodeConfiguration
+    {
         var services = new ServiceCollection();
         var logger = A.Fake<IPipelineLogger>();
         var dataContext = A.Fake<IDataContext>();
@@ -51,7 +69,7 @@ public abstract class NodeTestBase
 
         var next = A.Fake<NodeDelegate>();
 
-        return (dataContext, nodeContext, next);
+        return (dataContext, nodeContext, next, logger);
     }
 
     /// <summary>

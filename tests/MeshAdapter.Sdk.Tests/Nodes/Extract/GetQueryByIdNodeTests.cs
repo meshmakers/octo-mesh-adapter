@@ -1,6 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
@@ -35,6 +36,8 @@ public class GetQueryByIdNodeTests : NodeTestBase
     private readonly ISystemContext _systemContext;
     private readonly ITenantContext _tenantContext;
     private readonly IStreamDataRepository _streamDataRepository;
+    private readonly IArchiveRuntimeStore _archiveStore;
+    private readonly IRollupArchiveRuntimeStore _rollupStore;
 
     public GetQueryByIdNodeTests()
     {
@@ -45,6 +48,8 @@ public class GetQueryByIdNodeTests : NodeTestBase
         _systemContext = A.Fake<ISystemContext>();
         _tenantContext = A.Fake<ITenantContext>();
         _streamDataRepository = A.Fake<IStreamDataRepository>();
+        _archiveStore = A.Fake<IArchiveRuntimeStore>();
+        _rollupStore = A.Fake<IRollupArchiveRuntimeStore>();
 
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _etlContext.TenantId).Returns(TestTenantId);
@@ -53,7 +58,16 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
         A.CallTo(() => _systemContext.FindTenantContextAsync(TestTenantId))
             .Returns(Task.FromResult(_tenantContext));
+        A.CallTo(() => _tenantContext.TenantId).Returns(TestTenantId);
         A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
+        A.CallTo(() => _tenantContext.GetArchiveRuntimeStore()).Returns(_archiveStore);
+        A.CallTo(() => _tenantContext.GetRollupArchiveRuntimeStore()).Returns(_rollupStore);
+        // Resolution-aware tests drive the real SeriesResolutionService; the default is an empty
+        // ladder (no base archive, no rollups) so a test only sets up what it exercises.
+        A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._))
+            .Returns(Task.FromResult<ArchiveSnapshot?>(null));
+        A.CallTo(() => _rollupStore.EnumerateAsync())
+            .Returns(AsAsyncEnumerable(Array.Empty<RollupArchiveSnapshot>()));
 
         var ckTypeDto = new CkCompiledTypeDto { TypeId = new CkTypeId("TestType-1") };
         var ckTypeGraph = new CkTypeGraph(TestCkTypeId, ckTypeDto);
@@ -892,22 +906,915 @@ public class GetQueryByIdNodeTests : NodeTestBase
         Assert.Equal(50.0, capturedResult.Rows[1].Values[1]);
     }
 
+    #endregion
+
+    #region Downsampling Stream-Data Query Tests
+
+    private static readonly DateTime DownsamplingFrom = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    private StreamDataDownsamplingQueryOptions? _capturedDownsamplingOptions;
+    private OctoObjectId? _capturedDownsamplingArchiveRtId;
+
+    private void SetupExecuteDownsamplingResult(StreamDataQueryResult result)
+    {
+        A.CallTo(() => _streamDataRepository.ExecuteDownsamplingQueryAsync(
+                A<OctoObjectId>._, A<StreamDataDownsamplingQueryOptions>._))
+            .Invokes((OctoObjectId archiveRtId, StreamDataDownsamplingQueryOptions o) =>
+            {
+                _capturedDownsamplingArchiveRtId = archiveRtId;
+                _capturedDownsamplingOptions = o;
+            })
+            .Returns(Task.FromResult(result));
+    }
+
+    private static RtDownsamplingSdQuery CreateDownsamplingStreamDataQuery(
+        DateTime? from = null, DateTime? to = null, int? limit = null,
+        params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        var query = new RtDownsamplingSdQuery
+        {
+            QueryCkTypeId = "TestModel/TestType",
+            ArchiveRtId = "000000000000000000000042",
+            From = from,
+            To = to,
+            Limit = limit
+        };
+        foreach (var (path, type) in columns)
+        {
+            query.Columns.Add(new RtAggregationQueryColumnRecord { AttributePath = path, AggregationType = type });
+        }
+
+        return query;
+    }
+
+    /// <summary>
+    /// A downsampling bin as the storage layer returns it: the bin start plus one aggregate keyed by
+    /// the friendly output name <c>{physicalColumn}_{funcToken}</c>. Empty bins carry null aggregates.
+    /// </summary>
+    private static StreamDataRow CreateBinRow(DateTime timestamp, OctoObjectId? rtId = null,
+        params (string key, object? value)[] values)
+    {
+        return new StreamDataRow
+        {
+            RtId = rtId,
+            CkTypeId = new RtCkId<CkTypeId>("TestModel/TestType"),
+            Timestamp = timestamp,
+            Values = values.ToDictionary(v => v.key, v => v.value)
+        };
+    }
+
     [Fact]
-    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_Throws()
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_BuildsBinnedTimeSeriesResult()
     {
         var config = CreateConfig();
         var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
 
-        SetupPersistentQuery(new RtDownsamplingSdQuery
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddHours(2), 2,
+            ("Temperature", RtAggregationTypesEnum.Average),
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult
         {
-            QueryCkTypeId = "TestModel/TestType",
-            ArchiveRtId = "000000000000000000000042"
+            Rows =
+            [
+                CreateBinRow(DownsamplingFrom, values: [("temperature_avg", 21.5), ("amountvalue_sum", 100.0)]),
+                CreateBinRow(DownsamplingFrom.AddHours(1),
+                    values: [("temperature_avg", 22.5), ("amountvalue_sum", 110.0)])
+            ],
+            TotalCount = 2
         });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedResult);
+        // Leading Timestamp (the bin start), then one column per aggregation headed by its path.
+        Assert.Equal(["Timestamp", "Temperature", "Amount.Value"],
+            capturedResult!.Columns.Select(col => col.Header));
+        Assert.Equal(2, capturedResult.Rows.Count);
+        Assert.Equal(DownsamplingFrom, capturedResult.Rows[0].Values[0]);
+        Assert.Equal(21.5, capturedResult.Rows[0].Values[1]);
+        Assert.Equal(100.0, capturedResult.Rows[0].Values[2]);
+        Assert.Equal(DownsamplingFrom.AddHours(1), capturedResult.Rows[1].Values[0]);
+        Assert.NotNull(capturedResult.Rows[0].CkTypeId);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_EmptyBinYieldsNullAggregates()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddHours(1), 1,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult
+        {
+            Rows = [CreateBinRow(DownsamplingFrom, values: [("temperature_avg", null)])],
+            TotalCount = 1
+        });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // The empty bin keeps its timestamp; the aggregate is null rather than the row being dropped.
+        Assert.Single(capturedResult!.Rows);
+        Assert.Equal(DownsamplingFrom, capturedResult.Rows[0].Values[0]);
+        Assert.Null(capturedResult.Rows[0].Values[1]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_PassesPersistedRangeAndLimit()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        var options = _capturedDownsamplingOptions;
+        Assert.NotNull(options);
+        Assert.Equal(DownsamplingFrom, options!.From);
+        Assert.Equal(DownsamplingFrom.AddDays(1), options.To);
+        Assert.Equal(24, options.Limit);
+        Assert.Null(options.GroupByColumnPaths);
+        Assert.Equal(AggregationFunction.Average, Assert.Single(options.AggregationColumns).Function);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_AppliesConfigOverrides()
+    {
+        var overrideFrom = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            From = overrideFrom,
+            To = overrideFrom.AddHours(6),
+            Limit = 6
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(overrideFrom, _capturedDownsamplingOptions!.From);
+        Assert.Equal(overrideFrom.AddHours(6), _capturedDownsamplingOptions.To);
+        Assert.Equal(6, _capturedDownsamplingOptions.Limit);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_ResolvesRangeFromPipelineData()
+    {
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            FromPath = "$.range.from",
+            ToPath = "$.range.to",
+            LimitPath = "$.range.points"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPathValue(dataContext, "$.range.from", DownsamplingFrom);
+        SetupPathValue(dataContext, "$.range.to", DownsamplingFrom.AddHours(12));
+        SetupPathValue(dataContext, "$.range.points", 12);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            columns: ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(DownsamplingFrom, _capturedDownsamplingOptions!.From);
+        Assert.Equal(DownsamplingFrom.AddHours(12), _capturedDownsamplingOptions.To);
+        Assert.Equal(12, _capturedDownsamplingOptions.Limit);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_UnspecifiedKindRangeReadsAsUtc()
+    {
+        // A literal deserialized from pipeline JSON without an offset arrives as Unspecified. The
+        // node's contract is UTC, so the window handed to the storage layer must be a UTC instant.
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            From = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Unspecified),
+            To = new DateTime(2026, 6, 2, 0, 0, 0, DateTimeKind.Unspecified),
+            Limit = 24
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            columns: ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc), _capturedDownsamplingOptions!.From);
+        Assert.Equal(DateTimeKind.Utc, _capturedDownsamplingOptions.From!.Value.Kind);
+        Assert.Equal(DateTimeKind.Utc, _capturedDownsamplingOptions.To!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_WithoutTimeRange_Throws()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            to: DownsamplingFrom.AddDays(1), limit: 24,
+            columns: ("Temperature", RtAggregationTypesEnum.Average)));
 
         var node = CreateNode(next);
 
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_FromNotBeforeTo_Throws()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom, 24,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_NonPositiveLimit_Throws(int? limit)
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), limit,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_WithoutColumns_Throws()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_AppliesInMemorySkipAndTake()
+    {
+        var config = CreateConfig(skip: 1, take: 2);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddHours(4), 4,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult
+        {
+            Rows = Enumerable.Range(0, 4)
+                .Select(i => CreateBinRow(DownsamplingFrom.AddHours(i),
+                    values: [("temperature_avg", (double)i)]))
+                .ToArray(),
+            TotalCount = 4
+        });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(2, capturedResult!.Rows.Count);
+        Assert.Equal(DownsamplingFrom.AddHours(1), capturedResult.Rows[0].Values[0]);
+        Assert.Equal(DownsamplingFrom.AddHours(2), capturedResult.Rows[1].Values[0]);
+        // Pagination is never pushed down: the storage layer's downsampling path ignores it.
+        Assert.Null(_capturedDownsamplingOptions!.Offset);
+        Assert.Null(_capturedDownsamplingOptions.PageSize);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithDownsamplingStreamDataQuery_CallsNext()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddHours(1), 1,
+            ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    #endregion
+
+    #region Resolution-Aware Archive Selection Tests
+
+    private static readonly OctoObjectId TestRollupRtId = new("000000000000000000000777");
+
+    /// <summary>
+    /// The rollup store's enumeration is an <see cref="IAsyncEnumerable{T}" />; the test project does
+    /// not reference System.Linq.Async, so it is materialised here.
+    /// </summary>
+    private static async IAsyncEnumerable<T> AsAsyncEnumerable<T>(IEnumerable<T> items)
+    {
+        foreach (var item in items)
+        {
+            yield return item;
+        }
+
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Base rung of the resolution ladder. <paramref name="period" /> is the declared native grain —
+    /// null for a raw archive, whose sampling interval is undeclared.
+    /// </summary>
+    private void SetupBaseArchive(TimeSpan? period)
+    {
+        A.CallTo(() => _archiveStore.GetAsync(TestArchiveRtId))
+            .Returns(Task.FromResult<ArchiveSnapshot?>(new ArchiveSnapshot(
+                TestArchiveRtId,
+                new RtCkId<CkTypeId>("TestModel/TestType"),
+                CkArchiveStatus.Activated,
+                "base",
+                [])
+            {
+                Period = period
+            }));
+    }
+
+    private void SetupRollups(params RollupArchiveSnapshot[] rollups)
+    {
+        A.CallTo(() => _rollupStore.EnumerateAsync()).Returns(AsAsyncEnumerable(rollups));
+        SetupRollupLookup(rollups);
+    }
+
+    /// <summary>
+    /// A rollup rung. The watermark defaults to a date past every window used here, so a test only has
+    /// to state it when it exercises the "rollup has not caught up" branch.
+    /// </summary>
+    private static RollupArchiveSnapshot CreateRollup(OctoObjectId rtId, TimeSpan bucketSize,
+        string sourcePath, CkRollupFunction function, OctoObjectId? sourceArchiveRtId = null,
+        DateTime? lastAggregatedBucketEnd = null, BucketAlignment alignment = BucketAlignment.FixedSize)
+    {
+        return new RollupArchiveSnapshot(
+            rtId,
+            new RtCkId<CkTypeId>("TestModel/TestType"),
+            CkArchiveStatus.Activated,
+            "rollup",
+            sourceArchiveRtId ?? TestArchiveRtId,
+            bucketSize,
+            TimeSpan.FromMinutes(5),
+            lastAggregatedBucketEnd ?? new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            [new CkRollupAggregationSpec(sourcePath, function, null)],
+            FrozenUntil: null)
+        {
+            BucketAlignment = alignment
+        };
+    }
+
+    /// <summary>
+    /// The rollup store must also answer <c>GetAsync</c> for the rung the resolver picks — the node reads
+    /// the chosen rollup's bucket size and watermark to decide whether it can answer the query exactly.
+    /// </summary>
+    private void SetupRollupLookup(params RollupArchiveSnapshot[] rollups)
+    {
+        foreach (var rollup in rollups)
+        {
+            A.CallTo(() => _rollupStore.GetAsync(rollup.RtId))
+                .Returns(Task.FromResult<RollupArchiveSnapshot?>(rollup));
+        }
+    }
+
+    /// <summary>
+    /// Archive selection is inherent to a downsampling query, so the plain configuration already
+    /// exercises it. The optional aggregation override mirrors what a query definition can carry.
+    /// </summary>
+    private static GetQueryByIdNodeConfiguration CreateDownsamplingConfig(
+        AggregationTypesDto? aggregation = null)
+    {
+        return new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            Aggregation = aggregation
+        };
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithoutRollupStore_WarnsAndUsesPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        A.CallTo(() => _tenantContext.GetRollupArchiveRuntimeStore()).Returns(null);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(DownsamplingFrom, _capturedDownsamplingOptions!.From);
+        Assert.Equal(DownsamplingFrom.AddDays(1), _capturedDownsamplingOptions.To);
+        Assert.Equal(24, _capturedDownsamplingOptions.Limit);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("No rollup-archive store"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithUnalignedRangeStart_ReadsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum));
+
+        // 24 h / 24 points ⇒ 1 h bins, a whole multiple of the hourly rollup — but the range starts at
+        // :07:13, so every stored hour would straddle a bin boundary. The rollup is declined.
+        var unalignedFrom = DownsamplingFrom.AddMinutes(7).AddSeconds(13);
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            unalignedFrom, unalignedFrom.AddHours(24), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(unalignedFrom, _capturedDownsamplingOptions!.From);
+        Assert.Equal(unalignedFrom.AddHours(24), _capturedDownsamplingOptions.To);
+        Assert.Equal(24, _capturedDownsamplingOptions.Limit);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("bucket grid"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWhenBaseFits_QueriesBaseArchiveWithRequestedBuckets()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        // 24 h of hourly data = 24 native points, well within the requested 100 → no reduction needed.
+        SetupBaseArchive(TimeSpan.FromHours(1));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 100,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        // The resolver's own point count (24 native points) does not override the requested buckets.
+        Assert.Equal(100, _capturedDownsamplingOptions!.Limit);
+        Assert.Equal(DownsamplingFrom, _capturedDownsamplingOptions.From);
+        Assert.Equal(DownsamplingFrom.AddDays(1), _capturedDownsamplingOptions.To);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithoutSuitableRollup_WarnsAndUsesBaseArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        // 24 h of 15-min data = 96 native points; only 4 were asked for and no rollup can reduce a
+        // Sum series, so the resolver refuses to reduce and reports the truthful point count.
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 4,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        // The refusal is a warning only; the query still asks for exactly the buckets it defines.
+        Assert.Equal(4, _capturedDownsamplingOptions!.Limit);
+        Assert.Equal(DownsamplingFrom, _capturedDownsamplingOptions.From);
+        Assert.Equal(DownsamplingFrom.AddDays(1), _capturedDownsamplingOptions.To);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("NoSuitableRollup"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithOnlyCoarseRollup_WarnsAndFallsBackToBaseArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        // 7 d window, 600 points requested (ideal ≈ 16.8 min) but only a daily rollup exists, and the
+        // 15-min base (672 points) does not fit either → ResolutionLimited. The daily rollup cannot answer
+        // 1008-second bins exactly, so the base archive is read after all.
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromDays(1), "Amount.Value", CkRollupFunction.Sum));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(7), 600,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(600, _capturedDownsamplingOptions!.Limit);
+        Assert.Equal(DownsamplingFrom, _capturedDownsamplingOptions.From);
+        Assert.Equal(DownsamplingFrom.AddDays(7), _capturedDownsamplingOptions.To);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("ResolutionLimited"), A<object[]>._))
+            .MustHaveHappened();
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("whole multiple"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithUnknownBaseGrain_WarnsAndUsesBaseArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        // Raw archive: no declared Period, so the resolver cannot tell whether reduction is needed.
+        SetupBaseArchive(null);
+
+        var unalignedFrom = DownsamplingFrom.AddMinutes(7);
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            unalignedFrom, unalignedFrom.AddDays(1), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(24, _capturedDownsamplingOptions!.Limit);
+        Assert.Equal(unalignedFrom, _capturedDownsamplingOptions.From);
+        Assert.Equal(unalignedFrom.AddDays(1), _capturedDownsamplingOptions.To);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("UnknownBaseGrain"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithEmptyLadder_WarnsAndKeepsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        // The base archive entity cannot be read → no ladder at all.
+        var unalignedFrom = DownsamplingFrom.AddMinutes(7);
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            unalignedFrom, unalignedFrom.AddDays(1), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(24, _capturedDownsamplingOptions!.Limit);
+        Assert.Equal(unalignedFrom, _capturedDownsamplingOptions.From);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("EmptyLadder"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    /// Field report on AB#4725, part one: a 7-day window with 10 buckets gives 16 h 48 min bins, which is
+    /// not a whole multiple of the hourly rollup. One hourly window per bin would straddle a bin boundary
+    /// and drop out (measured: 8 of 168 hours, −4.1 % on the total, −27 % on a single bin), so the rollup
+    /// must be declined and the archive the query names read instead.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithBinWidthNotMultipleOfGrain_ReadsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc);
+        var to = from.AddDays(7);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, to, 10, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(from, _capturedDownsamplingOptions!.From);
+        Assert.Equal(to, _capturedDownsamplingOptions.To);
+        Assert.Equal(10, _capturedDownsamplingOptions.Limit);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("whole multiple"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    /// Field report on AB#4725, part two: the same window with 12 buckets gives 14 h bins — a whole
+    /// multiple of the hourly rollup, with the range start on the hour grid. Here the rollup is read (that
+    /// is the performance win) and the values match the base archive to the last digit.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithBinWidthMultipleOfGrain_ReadsRollup()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc);
+        var to = from.AddDays(7);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, to, 12, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestRollupRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(from, _capturedDownsamplingOptions!.From);
+        Assert.Equal(to, _capturedDownsamplingOptions.To);
+        Assert.Equal(12, _capturedDownsamplingOptions.Limit);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustNotHaveHappened();
+        // The chosen archive is reported so a pipeline author can see where the numbers came from.
+        A.CallTo(() => logger.Info(A<string>._, A<string>._,
+                A<string>.That.Contains(TestRollupRtId.ToString()), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithCalendarAlignedRollup_ReadsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        var to = from.AddDays(28);
+
+        SetupBaseArchive(TimeSpan.FromHours(1));
+        // 28 d / 28 buckets = 1 d bins, arithmetically a multiple of the rung's width — but civil days
+        // shift with DST, so a fixed-width bin cannot be trusted to contain them.
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromDays(1), "Amount.Value",
+            CkRollupFunction.Sum, alignment: BucketAlignment.CalendarDay));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, to, 28, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("CalendarDay-aligned"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWithRollupBehindRangeEnd_ReadsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc);
+        var to = from.AddDays(7);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        // Bin geometry is fine, but the rollup has only aggregated up to halfway through the window —
+        // the newest bins would read low.
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value",
+            CkRollupFunction.Sum, lastAggregatedBucketEnd: from.AddDays(3)));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, to, 12, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("only aggregated up to"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAware_AggregationOverrideAppliesToRungAndResultColumn()
+    {
+        var config = CreateDownsamplingConfig(AggregationTypesDto.Sum);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum));
+
+        // The query persists Average, but the rollup only stores Sum — the override matches the rung
+        // AND makes the query read back the column the rollup materialises.
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Average)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult
+        {
+            Rows = [CreateBinRow(DownsamplingFrom, values: [("amountvalue_sum", 500.0)])],
+            TotalCount = 1
+        });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestRollupRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(AggregationFunction.Sum,
+            Assert.Single(_capturedDownsamplingOptions!.AggregationColumns).Function);
+        // The header keeps the persisted attribute path; only the value lookup follows the override.
+        Assert.Equal(["Timestamp", "Amount.Value"], capturedResult!.Columns.Select(col => col.Header));
+        Assert.Equal(500.0, capturedResult.Rows[0].Values[1]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationOverride_AppliesToEveryColumn()
+    {
+        var config = CreateDownsamplingConfig(AggregationTypesDto.Sum);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        // Two columns with different persisted aggregations — the single override replaces both.
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Temperature", RtAggregationTypesEnum.Average),
+            ("Amount.Value", RtAggregationTypesEnum.Minimum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult
+        {
+            Rows =
+            [
+                CreateBinRow(DownsamplingFrom,
+                    values: [("temperature_sum", 42.0), ("amountvalue_sum", 500.0)])
+            ],
+            TotalCount = 1
+        });
+
+        QueryResult? capturedResult = null;
+        CaptureSetCall(dataContext, "$.queryResult", qr => capturedResult = qr);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.All(_capturedDownsamplingOptions!.AggregationColumns,
+            col => Assert.Equal(AggregationFunction.Sum, col.Function));
+        // Headers keep the persisted attribute paths; only the aggregation follows the override.
+        Assert.Equal(["Timestamp", "Temperature", "Amount.Value"],
+            capturedResult!.Columns.Select(col => col.Header));
+        Assert.Equal(42.0, capturedResult.Rows[0].Values[1]);
+        Assert.Equal(500.0, capturedResult.Rows[0].Values[2]);
+    }
+
+    [Theory]
+    [InlineData(AggregationTypesDto.None)]
+    [InlineData(AggregationTypesDto.TimeWeightedAverage)]
+    [InlineData(AggregationTypesDto.StateDuration)]
+    public async Task ProcessObjectAsync_WithUnsupportedAggregationOverride_Throws(AggregationTypesDto aggregation)
+    {
+        var config = CreateDownsamplingConfig(aggregation);
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWhenRollupLookupThrows_ReadsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc);
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum));
+        // The ladder resolves, but reading the chosen rollup's definition fails. Reading the archive the
+        // query names is still the correct answer, so the node degrades instead of failing the pipeline.
+        A.CallTo(() => _rollupStore.GetAsync(TestRollupRtId))
+            .Throws(new InvalidOperationException("rollup store unavailable"));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, from.AddDays(7), 12, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("rollup store unavailable"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResolutionAwareWhenArchiveStoreThrows_WrapsAsPipelineException()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._))
+            .Throws(new InvalidOperationException("archive store unavailable"));
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            DownsamplingFrom, DownsamplingFrom.AddDays(1), 24,
+            ("Amount.Value", RtAggregationTypesEnum.Sum)));
+
+        var node = CreateNode(next);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
     }
 
     #endregion

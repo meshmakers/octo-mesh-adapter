@@ -1,3 +1,4 @@
+﻿using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -51,7 +52,9 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
 
     /// <summary>
     /// Optional row cap, only applied to stream-data queries. When set it overrides the limit
-    /// persisted on the query entity; otherwise the persisted value is used.
+    /// persisted on the query entity; otherwise the persisted value is used. For a downsampling
+    /// query this is the number of time buckets rather than a row cap, and it doubles as the target
+    /// point count of the archive selection.
     /// </summary>
     [PropertyGroup("StreamData", 2)]
     public int? Limit { get; init; }
@@ -80,4 +83,14 @@ public record GetQueryByIdNodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("StreamData", 5)]
     public string? LimitPath { get; init; }
+
+    /// <summary>
+    /// Optional aggregation override for a downsampling stream-data query. When set it replaces the
+    /// aggregation type persisted on <em>every</em> column of the query — the same set the query
+    /// definition offers (Count, Minimum, Maximum, Average, Sum) — and is also the function the
+    /// archive selection matches a rollup against. Not set means each column keeps its persisted
+    /// aggregation and the first column's aggregation drives the archive selection.
+    /// </summary>
+    [PropertyGroup("StreamData", 6)]
+    public AggregationTypesDto? Aggregation { get; init; }
 }

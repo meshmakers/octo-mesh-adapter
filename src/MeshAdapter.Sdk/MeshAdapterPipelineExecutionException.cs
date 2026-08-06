@@ -437,6 +437,45 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             inner);
     }
 
+    public static Exception DownsamplingColumnsMissing(INodeContext nodeContext, OctoObjectId queryRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Downsampling query '{queryRtId}' has no aggregation columns. " +
+            "A downsampling query must define at least one column (attribute path + aggregation type).");
+    }
+
+    public static Exception DownsamplingTimeRangeInvalid(INodeContext nodeContext, OctoObjectId queryRtId,
+        DateTime? from, DateTime? to)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Downsampling query '{queryRtId}' needs a time range with From < To " +
+            $"(effective From='{from?.ToString("O") ?? "<null>"}', To='{to?.ToString("O") ?? "<null>"}'). " +
+            "Set it on the query entity or override it with From/To (or FromPath/ToPath) on the node.");
+    }
+
+    public static Exception DownsamplingLimitInvalid(INodeContext nodeContext, OctoObjectId queryRtId, int? limit)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Downsampling query '{queryRtId}' needs a positive bucket count " +
+            $"(effective Limit='{limit?.ToString() ?? "<null>"}'). Set Limit on the query entity or override it " +
+            "with Limit (or LimitPath) on the node.");
+    }
+
+    public static Exception UnsupportedAggregationType(INodeContext nodeContext, string aggregationType)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Aggregation '{aggregationType}' cannot be executed as a downsampling " +
+            "aggregation. Supported: Count, Minimum, Maximum, Average, Sum.");
+    }
+
+    public static Exception SeriesResolutionFailed(INodeContext nodeContext, OctoObjectId queryRtId,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Resolution-aware archive selection for query '{queryRtId}' failed: " +
+            $"{inner.Message}", inner);
+    }
+
     public static Exception AggregationResultNull(INodeContext nodeContext, OctoObjectId queryRtId)
     {
         return new MeshAdapterPipelineExecutionException(

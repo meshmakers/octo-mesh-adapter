@@ -142,18 +142,12 @@ the caller does not need to know it in advance.
 context with `FromPath` / `ToPath` / `LimitPath`, for ranges computed upstream (HTTP trigger,
 preceding node) instead of configured on the node. Precedence per value: literal (`From`) →
 path (`FromPath`) → value persisted on the query entity. Timestamps may be ISO-8601 strings or
-date/time values; a path value without a time-zone offset is read as UTC, so the adapter's local time
-zone never shifts the queried window. A path that resolves to nothing falls back to the persisted
-value and logs a warning; a value that is present but not a date/time (or not an integer for
+date/time values; a value without a time-zone offset (`"2026-06-01T00:00:00"`) is read as UTC — for a
+literal `From` / `To` as well as for a path value, on every stream-data query kind — so the adapter's
+local time zone never shifts the queried window. A path that resolves to nothing falls back to the
+persisted value and logs a warning; a value that is present but not a date/time (or not an integer for
 `LimitPath`) fails the node instead of silently widening the range. For a multi-match JSONPath the
 first match is used.
-
-> A **literal** `From` / `To` written into the node configuration without an offset (`"2026-06-01T00:00:00"`)
-> currently gets the same UTC reading only on the downsampling path, which normalises it explicitly
-> before validating and executing the window. On the simple / aggregation / grouped
-> paths such a literal is passed through as `DateTimeKind.Unspecified` and the storage layer reads it
-> as host-local time, shifting the window on a non-UTC host. Both conditions have to coincide — an
-> offset-less literal and a non-UTC host — which is why it has not surfaced; tracked as a separate fix.
 
 **Supported query types:**
 

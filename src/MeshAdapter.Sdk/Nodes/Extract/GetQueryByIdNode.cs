@@ -477,6 +477,9 @@ public class GetQueryByIdNode(
             throw MeshAdapterPipelineExecutionException.DownsamplingColumnsMissing(nodeContext, c.QueryRtId);
         }
 
+        // The overrides are already UTC; the wrap covers the persisted values, which come back from
+        // Mongo as Kind=Local and have to be a real UTC instant for the window validation below and
+        // for the bucket-grid comparison in RollupAnswersExactly.
         var from = ToUtcOrNull(overrides.From ?? query.From);
         var to = ToUtcOrNull(overrides.To ?? query.To);
         var limit = overrides.Limit ?? (query.Limit.HasValue ? (int)query.Limit.Value : null);
@@ -548,7 +551,9 @@ public class GetQueryByIdNode(
     /// Effective time range and row cap for a stream-data query, as configured on the node — either
     /// literally or resolved from the pipeline data via <c>FromPath</c> / <c>ToPath</c> /
     /// <c>LimitPath</c>. A <c>null</c> member means "not overridden": the caller falls back to the
-    /// value persisted on the query entity.
+    /// value persisted on the query entity. <see cref="From" /> and <see cref="To" /> are UTC by
+    /// construction — see <see cref="ResolveStreamDataOverrides" /> — so an executor can hand them to
+    /// the storage layer unchanged.
     /// </summary>
     private readonly record struct StreamDataOverrides(DateTime? From, DateTime? To, int? Limit);
 
@@ -557,13 +562,16 @@ public class GetQueryByIdNode(
     /// over the path-resolved value, which wins over the persisted value (applied by the callers).
     /// The literal is checked first so an existing configuration keeps behaving identically even when
     /// a path is configured alongside it.
+    /// Both boundaries are normalised to UTC here — the literal via <see cref="ToUtcOrNull" />, the
+    /// path value inside <see cref="ResolveDateTimeFromPath" /> — so every stream-data executor
+    /// inherits the node's UTC contract instead of having to remember it.
     /// </summary>
     private static StreamDataOverrides ResolveStreamDataOverrides(IDataContext dataContext,
         INodeContext nodeContext, GetQueryByIdNodeConfiguration c)
     {
         return new StreamDataOverrides(
-            c.From ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.FromPath, nameof(c.FromPath)),
-            c.To ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.ToPath, nameof(c.ToPath)),
+            ToUtcOrNull(c.From) ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.FromPath, nameof(c.FromPath)),
+            ToUtcOrNull(c.To) ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.ToPath, nameof(c.ToPath)),
             c.Limit ?? ResolveIntFromPath(dataContext, nodeContext, c.LimitPath, nameof(c.LimitPath)));
     }
 
@@ -648,11 +656,11 @@ public class GetQueryByIdNode(
     }
 
     /// <summary>
-    /// <see cref="ToUtc" /> for an optional boundary. The downsampling path normalises both boundaries
-    /// up front so the window it validates and hands to the storage layer is a genuine UTC instant — a
-    /// literal configuration value deserialized from pipeline JSON without an offset arrives as
-    /// <see cref="DateTimeKind.Unspecified" />, which the storage layer would otherwise read as
-    /// host-local time.
+    /// <see cref="ToUtc" /> for an optional boundary. Applied to the literal configuration values in
+    /// <see cref="ResolveStreamDataOverrides" /> — deserialized from pipeline JSON without an offset
+    /// they arrive as <see cref="DateTimeKind.Unspecified" />, which the storage layer would otherwise
+    /// read as host-local time — and to the persisted values on the downsampling path, whose window
+    /// has to be a genuine UTC instant before it is validated and grid-checked against a rollup.
     /// </summary>
     private static DateTime? ToUtcOrNull(DateTime? value)
     {

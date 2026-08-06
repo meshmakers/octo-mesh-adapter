@@ -2077,6 +2077,130 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     #endregion
 
+    #region Stream-Data Literal Time Range Normalisation (UTC)
+
+    // A literal From/To written into the node configuration without an offset
+    // ("2026-06-01T00:00:00") is deserialized by STJ as DateTimeKind.Unspecified. The storage layer
+    // normalises with ToUniversalTime() before rendering the timestamp literal, which reads
+    // Unspecified as *local* time — so without the node normalising first, the queried window is
+    // shifted by the host offset. The node's contract is UTC on every stream-data query kind.
+    // Note: Assert.Equal(DateTime, DateTime) ignores Kind, hence the explicit Kind assertions.
+
+    private static readonly DateTime UnspecifiedFrom = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Unspecified);
+    private static readonly DateTime UnspecifiedTo = new(2026, 6, 2, 0, 0, 0, DateTimeKind.Unspecified);
+    private static readonly DateTime ExpectedUtcFrom = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime ExpectedUtcTo = new(2026, 6, 2, 0, 0, 0, DateTimeKind.Utc);
+
+    private static GetQueryByIdNodeConfiguration CreateUnspecifiedRangeConfig()
+    {
+        return new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            From = UnspecifiedFrom,
+            To = UnspecifiedTo
+        };
+    }
+
+    private StreamDataGroupedAggregationQueryOptions? _capturedGroupedAggregationOptions;
+
+    private void SetupExecuteGroupedAggregationResultCapturingOptions(StreamDataQueryResult result)
+    {
+        A.CallTo(() => _streamDataRepository.ExecuteGroupedAggregationQueryAsync(
+                A<OctoObjectId>._, A<StreamDataGroupedAggregationQueryOptions>._))
+            .Invokes((OctoObjectId _, StreamDataGroupedAggregationQueryOptions o) =>
+                _capturedGroupedAggregationOptions = o)
+            .Returns(Task.FromResult(result));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_UnspecifiedKindLiteralReadsAsUtc()
+    {
+        var config = CreateUnspecifiedRangeConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(ExpectedUtcFrom, _capturedStreamOptions!.From);
+        Assert.Equal(ExpectedUtcTo, _capturedStreamOptions.To);
+        Assert.Equal(DateTimeKind.Utc, _capturedStreamOptions.From!.Value.Kind);
+        Assert.Equal(DateTimeKind.Utc, _capturedStreamOptions.To!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAggregationStreamDataQuery_UnspecifiedKindLiteralReadsAsUtc()
+    {
+        var config = CreateUnspecifiedRangeConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateAggregationStreamDataQuery(
+            ("Temperature", RtAggregationTypesEnum.Average)));
+        SetupExecuteAggregationResultCapturingOptions(
+            new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(ExpectedUtcFrom, _capturedAggregationOptions!.From);
+        Assert.Equal(ExpectedUtcTo, _capturedAggregationOptions.To);
+        Assert.Equal(DateTimeKind.Utc, _capturedAggregationOptions.From!.Value.Kind);
+        Assert.Equal(DateTimeKind.Utc, _capturedAggregationOptions.To!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithGroupedAggregationStreamDataQuery_UnspecifiedKindLiteralReadsAsUtc()
+    {
+        var config = CreateUnspecifiedRangeConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupPersistentQuery(CreateGroupedAggregationStreamDataQuery(
+            ["SerialNumber"], ("Temperature", RtAggregationTypesEnum.Sum)));
+        SetupExecuteGroupedAggregationResultCapturingOptions(
+            new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(ExpectedUtcFrom, _capturedGroupedAggregationOptions!.From);
+        Assert.Equal(ExpectedUtcTo, _capturedGroupedAggregationOptions.To);
+        Assert.Equal(DateTimeKind.Utc, _capturedGroupedAggregationOptions.From!.Value.Kind);
+        Assert.Equal(DateTimeKind.Utc, _capturedGroupedAggregationOptions.To!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithLocalKindLiteral_ConvertsToUtcInsteadOfStamping()
+    {
+        // A Local literal carries a real instant, so it must be *converted* — not relabelled. Compared
+        // against ToUniversalTime() rather than a fixed instant so the test holds in any host zone.
+        var localFrom = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Local);
+        var localTo = new DateTime(2026, 6, 2, 0, 0, 0, DateTimeKind.Local);
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = TestQueryRtId,
+            TargetPath = "$.queryResult",
+            From = localFrom,
+            To = localTo
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(localFrom.ToUniversalTime(), _capturedStreamOptions!.From);
+        Assert.Equal(localTo.ToUniversalTime(), _capturedStreamOptions.To);
+        Assert.Equal(DateTimeKind.Utc, _capturedStreamOptions.From!.Value.Kind);
+        Assert.Equal(DateTimeKind.Utc, _capturedStreamOptions.To!.Value.Kind);
+    }
+
+    #endregion
+
     #region Transaction Tests
 
     [Fact]

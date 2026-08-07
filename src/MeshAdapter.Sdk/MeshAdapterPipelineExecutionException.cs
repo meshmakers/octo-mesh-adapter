@@ -416,6 +416,51 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "The query must reference the CkArchive it reads from.");
     }
 
+    public static Exception ArchiveNotFound(INodeContext nodeContext, OctoObjectId archiveRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Archive '{archiveRtId}' was not found in the runtime model. " +
+            "Check the configured ArchiveRtId; a soft-deleted archive is not readable either.");
+    }
+
+    public static Exception StreamDataArchiveQueryFailed(INodeContext nodeContext,
+        OctoObjectId archiveRtId, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Reading archive '{archiveRtId}' failed: {inner.Message}",
+            inner);
+    }
+
+    public static Exception StreamDataTimeRangeInvalid(INodeContext nodeContext, DateTime? from,
+        DateTime? to)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The time range From '{from:O}' / To '{to:O}' is empty. " +
+            "From must be earlier than To.");
+    }
+
+    public static Exception StreamDataLimitInvalid(INodeContext nodeContext, int? limit)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Limit '{limit}' is not a valid row cap. " +
+            "Provide a value greater than zero, or leave it unset to read every matching row.");
+    }
+
+    public static Exception UnknownStreamDataColumn(INodeContext nodeContext, string column,
+        string usage, string knownColumns)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{column}' is not a column of this archive and cannot be " +
+            $"used for {usage}. The storage layer would ignore it without an error, so the query is " +
+            $"refused instead. Available: {knownColumns}.");
+    }
+
+    public static Exception InvalidRtId(INodeContext nodeContext, string value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The value '{value}' is not a valid runtime id.");
+    }
+
     public static Exception InvalidDateTimeAtPath(INodeContext nodeContext, string path, object? value)
     {
         return new MeshAdapterPipelineExecutionException(

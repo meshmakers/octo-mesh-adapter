@@ -29,6 +29,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GetStreamDataNodeConfiguration>();
 
         // Register load nodes
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();

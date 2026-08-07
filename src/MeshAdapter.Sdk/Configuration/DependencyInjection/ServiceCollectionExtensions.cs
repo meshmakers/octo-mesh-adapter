@@ -72,6 +72,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<ToDiscordNode>()
             .RegisterNode<SignalSenderNode>()
             .RegisterNode<GetQueryByIdNode>()
+            .RegisterNode<GetStreamDataNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()

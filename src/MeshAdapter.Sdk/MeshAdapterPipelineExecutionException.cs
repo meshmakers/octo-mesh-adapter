@@ -558,6 +558,55 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: None of the supplied PDFs could be imported, so no merged document was produced.");
     }
 
+    public static Exception PdfTransformSourcesEmpty(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No source PDFs at path '{path}'. Please provide a non-empty array of base64 PDFs.");
+    }
+
+    public static Exception PdfTransformOpsEmpty(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No page operations at path '{path}'. Please provide a non-empty array of " +
+            "{{ sourceIndex, pageIndex, rotate?, crop? }} objects.");
+    }
+
+    public static Exception PdfTransformSourceIndexOutOfRange(INodeContext nodeContext, int opIndex, int sourceIndex,
+        int sourceCount)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Op {opIndex} references source index {sourceIndex}, but only {sourceCount} " +
+            "source PDF(s) were supplied.");
+    }
+
+    public static Exception PdfTransformPageIndexOutOfRange(INodeContext nodeContext, int opIndex, int sourceIndex,
+        int pageIndex, int pageCount)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Op {opIndex} references page {pageIndex} of source {sourceIndex}, which has " +
+            $"{pageCount} page(s).");
+    }
+
+    public static Exception PdfTransformInvalidRotation(INodeContext nodeContext, int opIndex, int rotate)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Op {opIndex} has rotation {rotate}, which is not a multiple of 90 degrees.");
+    }
+
+    public static Exception PdfTransformSourceInvalid(INodeContext nodeContext, int sourceIndex, Exception? exception)
+    {
+        var detail = exception != null ? $": {exception.Message}" : ".";
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Source PDF at index {sourceIndex} could not be imported{detail} " +
+            "Set FailOnInvalidPdf=false to skip unreadable sources instead.", exception ?? new InvalidOperationException("Unreadable source PDF."));
+    }
+
+    public static Exception PdfTransformProducedNothing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No pages could be assembled, so no output document was produced.");
+    }
+
     public static Exception ZipEntriesInvalid(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException(

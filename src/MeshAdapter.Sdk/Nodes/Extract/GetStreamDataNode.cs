@@ -1,0 +1,340 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
+
+/// <summary>
+/// Reads rows from a stream data archive. The ad-hoc counterpart of <c>GetQueryById@1</c>: archive,
+/// columns, time range and filters are configured on the node instead of being persisted as a query
+/// entity. Reads exactly the configured archive — there is no resolution-aware rollup selection, so
+/// the numbers never depend on which archive the node decided to read.
+/// </summary>
+/// <param name="next">Next node delegate in the pipeline</param>
+/// <param name="context">Mesh ETL context</param>
+/// <param name="systemContext">System context used to resolve the tenant-scoped stream-data repository</param>
+[NodeConfiguration(typeof(GetStreamDataNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
+public class GetStreamDataNode(
+    NodeDelegate next,
+    IMeshEtlContext context,
+    ISystemContext systemContext)
+    : IPipelineNode
+{
+    private const string TimestampHeader = "Timestamp";
+    private const string WindowStartHeader = "WindowStart";
+    private const string WindowEndHeader = "WindowEnd";
+    private const string WellKnownNameHeader = "WellKnownName";
+
+    /// <inheritdoc />
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
+    {
+        var c = nodeContext.GetNodeConfiguration<GetStreamDataNodeConfiguration>();
+
+        var (streamDataRepo, snapshot) = await ResolveArchiveAsync(c.ArchiveRtId, nodeContext);
+
+        // Literal configuration wins over the JSONPath variant; both boundaries are normalised to UTC
+        // so the adapter's local zone can never shift the queried window (AB#4734).
+        var from = StreamDataNodeHelpers.ToUtcOrNull(c.From)
+                   ?? StreamDataNodeHelpers.ResolveDateTimeFromPath(dataContext, nodeContext, c.FromPath,
+                       nameof(c.FromPath), "the start of the time range stays open.");
+        var to = StreamDataNodeHelpers.ToUtcOrNull(c.To)
+                 ?? StreamDataNodeHelpers.ResolveDateTimeFromPath(dataContext, nodeContext, c.ToPath,
+                     nameof(c.ToPath), "the end of the time range stays open.");
+        var limit = c.Limit
+                    ?? StreamDataNodeHelpers.ResolveIntFromPath(dataContext, nodeContext, c.LimitPath,
+                        nameof(c.LimitPath), "no row cap is applied.");
+
+        if (from.HasValue && to.HasValue && from >= to)
+        {
+            throw MeshAdapterPipelineExecutionException.StreamDataTimeRangeInvalid(nodeContext, from, to);
+        }
+
+        // The storage layer rejects a non-positive LIMIT; catching it here makes a misconfiguration a
+        // pipeline error naming the property rather than an SQL-level failure.
+        if (limit is <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.StreamDataLimitInvalid(nodeContext, limit);
+        }
+
+        var (columns, columnsFromArchive) = ResolveColumns(c, snapshot);
+
+        var options = StreamDataQueryOptions.Create()
+            .WithCkTypeId(snapshot.TargetCkTypeId)
+            // Windowed archives alias window_end as timestamp on read, but only explicitly requested
+            // columns reach StreamDataRow.Values — so the window has to be asked for by name.
+            .WithColumns(BuildProjectedColumns(columns, snapshot))
+            .WithRtIds(ResolveRtIds(dataContext, nodeContext, c))
+            // Both boundaries are independently optional; a one-sided range leaves the other open.
+            .WithTimeRange(from, to)
+            .WithLimit(limit)
+            .WithSortOrders(BuildSortOrders(c, snapshot, nodeContext))
+            .WithFieldFilters(BuildFieldFilters(dataContext, nodeContext, c, snapshot))
+            // Skip/Take map onto the paginated read (offset / page size); the row cap is Limit.
+            .WithPagination(c.Skip, c.Take);
+
+        StreamDataQueryResult result;
+        try
+        {
+            result = await streamDataRepo.ExecuteQueryAsync(c.ArchiveRtId, options);
+        }
+        catch (Exception ex)
+        {
+            throw MeshAdapterPipelineExecutionException.StreamDataArchiveQueryFailed(nodeContext,
+                c.ArchiveRtId, ex);
+        }
+
+        nodeContext.Debug(
+            $"Read {result.Rows.Count} row(s) of {result.TotalCount} from archive '{c.ArchiveRtId}'.");
+
+        var queryResult = BuildQueryResult(columns, snapshot, result, columnsFromArchive);
+
+        dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+
+        await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Resolves the tenant's stream-data repository and the archive's snapshot. The snapshot supplies
+    /// the CkTypeId every query option requires, plus the storage shape that decides whether the row
+    /// window is available as separate columns.
+    /// </summary>
+    private async Task<(IStreamDataRepository Repository, ArchiveSnapshot Snapshot)> ResolveArchiveAsync(
+        OctoObjectId archiveRtId, INodeContext nodeContext)
+    {
+        var tenantId = context.TenantId;
+        var tenantContext = await systemContext.FindTenantContextAsync(tenantId);
+
+        var repository = tenantContext.GetStreamDataRepository()
+                         ?? throw MeshAdapterPipelineExecutionException.StreamDataNotEnabled(nodeContext,
+                             tenantId);
+
+        var snapshot = await tenantContext.GetArchiveRuntimeStore().GetAsync(archiveRtId)
+                       ?? throw MeshAdapterPipelineExecutionException.ArchiveNotFound(nodeContext,
+                           archiveRtId);
+
+        return (repository, snapshot);
+    }
+
+    /// <summary>
+    /// The attribute paths to project. Configured columns win; leaving them unset reads the whole
+    /// archive — anything else would make the minimal configuration (just an archive id) return
+    /// nothing but the time axis.
+    /// <para>
+    /// Only <em>ingested</em> columns are derived from the archive. A computed column carries an
+    /// empty <c>Path</c> and is addressed by its <c>Name</c> (see
+    /// <c>StreamDataFieldResolver.CreateForArchive</c>), and its physical column name is not
+    /// derivable — a formula change moves it to <c>{base}__v{N}</c>. Projecting those correctly needs
+    /// a name mapping the node does not carry, so they are only read when asked for explicitly.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// The paths, and whether they were derived from the archive rather than configured — the caller
+    /// adds the well-known name only in that case, where the intent is "show me this archive".
+    /// </returns>
+    private static (List<string> Columns, bool FromArchive) ResolveColumns(
+        GetStreamDataNodeConfiguration c, ArchiveSnapshot snapshot)
+    {
+        var configured = c.Columns?.Where(col => !string.IsNullOrWhiteSpace(col)).ToList() ?? [];
+        if (configured.Count != 0)
+        {
+            return (configured, false);
+        }
+
+        var fromArchive = snapshot.Columns
+            .Where(spec => !spec.IsComputed && !string.IsNullOrWhiteSpace(spec.Path))
+            .Select(spec => spec.Path)
+            .ToList();
+
+        return (fromArchive, true);
+    }
+
+    /// <summary>
+    /// The columns actually requested from the storage layer: the projected attribute paths plus, on
+    /// a windowed archive, the row-window columns so they can be surfaced in the result.
+    /// </summary>
+    private static List<string> BuildProjectedColumns(List<string> columns, ArchiveSnapshot snapshot)
+    {
+        if (!snapshot.UsesWindowedStorage)
+        {
+            return columns;
+        }
+
+        var projected = new List<string>(columns.Count + 2)
+        {
+            StreamDataNodeHelpers.WindowStartColumn,
+            StreamDataNodeHelpers.WindowEndColumn
+        };
+        projected.AddRange(columns);
+        return projected;
+    }
+
+    /// <summary>
+    /// Entity scope: the configured runtime ids, else the ones read from the pipeline data. The engine
+    /// turns these into an In-filter on the identity column.
+    /// </summary>
+    private static IReadOnlyList<OctoObjectId>? ResolveRtIds(IDataContext dataContext,
+        INodeContext nodeContext, GetStreamDataNodeConfiguration c)
+    {
+        var values = c.RtIds is { Count: > 0 }
+            ? c.RtIds.ToList()
+            : StreamDataNodeHelpers.ResolveStringListFromPath(dataContext, nodeContext, c.RtIdsPath,
+                nameof(c.RtIdsPath), "the query is not scoped to specific entities.")?.ToList();
+
+        if (values is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var rtIds = new List<OctoObjectId>(values.Count);
+        foreach (var value in values)
+        {
+            if (!OctoObjectId.TryParse(value, out var rtId))
+            {
+                throw MeshAdapterPipelineExecutionException.InvalidRtId(nodeContext, value);
+            }
+
+            rtIds.Add(rtId);
+        }
+
+        return rtIds;
+    }
+
+    /// <summary>
+    /// The configured sort orders, with their column names translated to the physical ones. Without
+    /// that translation a sort on a result header such as <c>WindowStart</c> is dropped by the
+    /// storage layer without a word and the rows come back in storage order.
+    /// </summary>
+    private static IReadOnlyList<SortOrderItem>? BuildSortOrders(GetStreamDataNodeConfiguration c,
+        ArchiveSnapshot snapshot, INodeContext nodeContext)
+    {
+        var sortOrders = c.SortOrders.GetSortOrderItems();
+        if (sortOrders is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        return sortOrders
+            .Select(sort => new SortOrderItem(
+                StreamDataNodeHelpers.ResolveQueryableColumn(sort.AttributePath, snapshot, nodeContext,
+                    "sorting"),
+                sort.SortOrder))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The well-known-name filter AND-combined with the node's configured field filters. The
+    /// well-known name is a standard column on every archive table, so it needs no special handling
+    /// beyond picking Equals for a single value and In for several. Configured filters go through the
+    /// same column translation as the sort orders — an unresolvable filter is dropped by the storage
+    /// layer, which would silently widen the result instead of narrowing it.
+    /// </summary>
+    private static IReadOnlyList<FieldFilter>? BuildFieldFilters(IDataContext dataContext,
+        INodeContext nodeContext, GetStreamDataNodeConfiguration c, ArchiveSnapshot snapshot)
+    {
+        var filters = new List<FieldFilter>();
+
+        var wellKnownNames = c.WellKnownNames is { Count: > 0 }
+            ? c.WellKnownNames.Where(n => !string.IsNullOrWhiteSpace(n)).ToList()
+            : StreamDataNodeHelpers.ResolveStringListFromPath(dataContext, nodeContext,
+                c.WellKnownNamesPath, nameof(c.WellKnownNamesPath),
+                "the query is not restricted by well-known name.")?.ToList();
+
+        if (wellKnownNames is { Count: > 0 })
+        {
+            filters.Add(wellKnownNames.Count == 1
+                ? new FieldFilter(StreamDataNodeHelpers.WellKnownNameColumn, FieldFilterOperator.Equals,
+                    wellKnownNames[0])
+                : new FieldFilter(StreamDataNodeHelpers.WellKnownNameColumn, FieldFilterOperator.In,
+                    wellKnownNames));
+        }
+
+        if (c.FieldFilters is { Count: > 0 })
+        {
+            // Reuses the shared conversion so the ComparisonValuePath logic (including wildcard
+            // expansion) is not duplicated here.
+            var scratch = RtEntityQueryOptions.Create();
+            c.FieldFilters.GetFieldFilter(dataContext, scratch);
+            if (scratch.FieldFilters != null)
+            {
+                filters.AddRange(scratch.FieldFilters.Select(f => new FieldFilter(
+                    StreamDataNodeHelpers.ResolveQueryableColumn(f.AttributePath, snapshot, nodeContext,
+                        "filtering"),
+                    f.Operator, f.ComparisonValue, f.SecondaryValue)));
+            }
+        }
+
+        return filters.Count == 0 ? null : filters;
+    }
+
+    /// <summary>
+    /// Maps the rows into the tabular result shape the pipeline works with, so
+    /// <c>QueryResultToMarkdownTable@1</c> can be chained directly. Leading Timestamp column (the time
+    /// axis — window end on a windowed archive), then the row window on windowed archives, then the
+    /// well-known name when the whole archive is being read, then the projected attribute columns.
+    /// <para>
+    /// <c>includeWellKnownName</c> is set when the columns were derived from the archive rather than
+    /// configured. Reading a whole archive is almost always about several source entities, and the
+    /// well-known name is what tells their rows apart — but when the caller listed the columns
+    /// explicitly, that list is honoured as given (<c>rtWellKnownName</c> can be named there like any
+    /// other column).
+    /// </para>
+    /// </summary>
+    private static QueryResult BuildQueryResult(List<string> columns, ArchiveSnapshot snapshot,
+        StreamDataQueryResult result, bool includeWellKnownName)
+    {
+        var queryResult = new QueryResult();
+
+        queryResult.Columns.Add(new QueryResultColumns { Header = TimestampHeader });
+        if (snapshot.UsesWindowedStorage)
+        {
+            queryResult.Columns.Add(new QueryResultColumns { Header = WindowStartHeader });
+            queryResult.Columns.Add(new QueryResultColumns { Header = WindowEndHeader });
+        }
+
+        if (includeWellKnownName)
+        {
+            queryResult.Columns.Add(new QueryResultColumns { Header = WellKnownNameHeader });
+        }
+
+        queryResult.Columns.AddRange(columns.Select(column => new QueryResultColumns { Header = column }));
+
+        foreach (var row in result.Rows)
+        {
+            var values = new List<object?> { row.Timestamp };
+
+            if (snapshot.UsesWindowedStorage)
+            {
+                values.Add(StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values,
+                    StreamDataNodeHelpers.WindowStartColumn));
+                values.Add(StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values,
+                    StreamDataNodeHelpers.WindowEndColumn));
+            }
+
+            if (includeWellKnownName)
+            {
+                // Read straight off the row like Timestamp — the storage layer always populates it,
+                // so it needs no projection.
+                values.Add(row.RtWellKnownName);
+            }
+
+            values.AddRange(columns.Select(column =>
+                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, column)));
+
+            queryResult.Rows.Add(new QueryResultRow
+            {
+                RtId = row.RtId,
+                CkTypeId = row.CkTypeId,
+                Values = values
+            });
+        }
+
+        return queryResult;
+    }
+}

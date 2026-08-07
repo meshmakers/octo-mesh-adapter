@@ -1,4 +1,3 @@
-﻿using System.Globalization;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
@@ -480,8 +479,8 @@ public class GetQueryByIdNode(
         // The overrides are already UTC; the wrap covers the persisted values, which come back from
         // Mongo as Kind=Local and have to be a real UTC instant for the window validation below and
         // for the bucket-grid comparison in RollupAnswersExactly.
-        var from = ToUtcOrNull(overrides.From ?? query.From);
-        var to = ToUtcOrNull(overrides.To ?? query.To);
+        var from = StreamDataNodeHelpers.ToUtcOrNull(overrides.From ?? query.From);
+        var to = StreamDataNodeHelpers.ToUtcOrNull(overrides.To ?? query.To);
         var limit = overrides.Limit ?? (query.Limit.HasValue ? (int)query.Limit.Value : null);
 
         if (from is null || to is null || from >= to)
@@ -562,109 +561,25 @@ public class GetQueryByIdNode(
     /// over the path-resolved value, which wins over the persisted value (applied by the callers).
     /// The literal is checked first so an existing configuration keeps behaving identically even when
     /// a path is configured alongside it.
-    /// Both boundaries are normalised to UTC here — the literal via <see cref="ToUtcOrNull" />, the
-    /// path value inside <see cref="ResolveDateTimeFromPath" /> — so every stream-data executor
+    /// Both boundaries are normalised to UTC here — the literal via
+    /// <see cref="StreamDataNodeHelpers.ToUtcOrNull" />, the path value inside
+    /// <see cref="StreamDataNodeHelpers.ResolveDateTimeFromPath" /> — so every stream-data executor
     /// inherits the node's UTC contract instead of having to remember it.
     /// </summary>
     private static StreamDataOverrides ResolveStreamDataOverrides(IDataContext dataContext,
         INodeContext nodeContext, GetQueryByIdNodeConfiguration c)
     {
+        const string fallbackHint = "using the value persisted on the query.";
+
         return new StreamDataOverrides(
-            ToUtcOrNull(c.From) ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.FromPath, nameof(c.FromPath)),
-            ToUtcOrNull(c.To) ?? ResolveDateTimeFromPath(dataContext, nodeContext, c.ToPath, nameof(c.ToPath)),
-            c.Limit ?? ResolveIntFromPath(dataContext, nodeContext, c.LimitPath, nameof(c.LimitPath)));
-    }
-
-    /// <summary>
-    /// Reads a time-range boundary from the data context. <see cref="IDataContext.GetValue"/> already
-    /// converts ISO-8601 strings to <see cref="DateTime"/> (and takes the first match for a multi-match
-    /// JSONPath); the string arm below covers looser formats that ISO detection rejects. A path that
-    /// resolves to nothing is not an error — the persisted value is used — but a present value that is
-    /// not a date/time is, because silently widening the queried range would hide the misconfiguration.
-    /// </summary>
-    private static DateTime? ResolveDateTimeFromPath(IDataContext dataContext, INodeContext nodeContext,
-        string? path, string propertyName)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        var value = dataContext.GetValue(path);
-        switch (value)
-        {
-            case null:
-                nodeContext.Warning(
-                    $"{propertyName} '{path}' resolved to no value; using the value persisted on the query.");
-                return null;
-            case DateTime dateTime:
-                return ToUtc(dateTime);
-            case DateTimeOffset dateTimeOffset:
-                return dateTimeOffset.UtcDateTime;
-            case string text when DateTime.TryParse(text, CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed):
-                // AdjustToUniversal already yields a UTC-kind value.
-                return parsed;
-            default:
-                throw MeshAdapterPipelineExecutionException.InvalidDateTimeAtPath(nodeContext, path, value);
-        }
-    }
-
-    private static int? ResolveIntFromPath(IDataContext dataContext, INodeContext nodeContext,
-        string? path, string propertyName)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        var value = dataContext.GetValue(path);
-        switch (value)
-        {
-            case null:
-                nodeContext.Warning(
-                    $"{propertyName} '{path}' resolved to no value; using the value persisted on the query.");
-                return null;
-            // Integers that fit in Int32 box to int, larger ones to long — see JsonScalar.ToClr.
-            case int number:
-                return number;
-            case long number when number is >= int.MinValue and <= int.MaxValue:
-                return (int)number;
-            case double number when number % 1 == 0 && number is >= int.MinValue and <= int.MaxValue:
-                return (int)number;
-            case string text when int.TryParse(text, CultureInfo.InvariantCulture, out var parsed):
-                return parsed;
-            default:
-                throw MeshAdapterPipelineExecutionException.InvalidIntegerAtPath(nodeContext, path, value);
-        }
-    }
-
-    /// <summary>
-    /// Normalises a resolved boundary to UTC. The node's <c>From</c>/<c>To</c> contract is UTC, so a
-    /// value without a zone (JSON such as <c>"2026-07-01T00:00:00"</c>, which STJ surfaces as
-    /// <see cref="DateTimeKind.Unspecified"/>) is read as UTC rather than being shifted by the
-    /// server's local time zone.
-    /// </summary>
-    private static DateTime ToUtc(DateTime value)
-    {
-        return value.Kind switch
-        {
-            DateTimeKind.Utc => value,
-            DateTimeKind.Local => value.ToUniversalTime(),
-            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
-        };
-    }
-
-    /// <summary>
-    /// <see cref="ToUtc" /> for an optional boundary. Applied to the literal configuration values in
-    /// <see cref="ResolveStreamDataOverrides" /> — deserialized from pipeline JSON without an offset
-    /// they arrive as <see cref="DateTimeKind.Unspecified" />, which the storage layer would otherwise
-    /// read as host-local time — and to the persisted values on the downsampling path, whose window
-    /// has to be a genuine UTC instant before it is validated and grid-checked against a rollup.
-    /// </summary>
-    private static DateTime? ToUtcOrNull(DateTime? value)
-    {
-        return value.HasValue ? ToUtc(value.Value) : null;
+            StreamDataNodeHelpers.ToUtcOrNull(c.From)
+            ?? StreamDataNodeHelpers.ResolveDateTimeFromPath(dataContext, nodeContext, c.FromPath,
+                nameof(c.FromPath), fallbackHint),
+            StreamDataNodeHelpers.ToUtcOrNull(c.To)
+            ?? StreamDataNodeHelpers.ResolveDateTimeFromPath(dataContext, nodeContext, c.ToPath,
+                nameof(c.ToPath), fallbackHint),
+            c.Limit ?? StreamDataNodeHelpers.ResolveIntFromPath(dataContext, nodeContext, c.LimitPath,
+                nameof(c.LimitPath), fallbackHint));
     }
 
     /// <summary>
@@ -954,7 +869,7 @@ public class GetQueryByIdNode(
         foreach (var row in result.Rows)
         {
             var values = new List<object?> { row.Timestamp };
-            values.AddRange(columns.Select(column => ResolveStreamColumnValue(row.Values, column)));
+            values.AddRange(columns.Select(column => StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, column)));
 
             queryResult.Rows.Add(new QueryResultRow
             {
@@ -967,27 +882,6 @@ public class GetQueryByIdNode(
         return queryResult;
     }
 
-    /// <summary>
-    /// Resolves a projected column value from a <see cref="StreamDataRow"/>. The stream-data store
-    /// keys <see cref="StreamDataRow.Values"/> by the physical CrateDB column name — the attribute
-    /// path stripped of its dot separators and lower-cased (see the storage layer's
-    /// <c>ColumnNameMapper.PathToColumnName</c>). Standard columns such as <c>window_start</c> or
-    /// <c>was_updated</c> already equal their physical name and match directly; dotted / mixed-case
-    /// attribute paths such as <c>amount.value</c> or <c>obisCode</c> only match after normalisation.
-    /// Tries the exact key first (cheap, covers the standard columns) and falls back to the
-    /// normalised form.
-    /// </summary>
-    private static object? ResolveStreamColumnValue(IReadOnlyDictionary<string, object?> values,
-        string attributePath)
-    {
-        if (values.TryGetValue(attributePath, out var direct))
-        {
-            return direct;
-        }
-
-        var physicalColumnName = attributePath.Replace(".", string.Empty).ToLowerInvariant();
-        return values.TryGetValue(physicalColumnName, out var mapped) ? mapped : null;
-    }
 
     private static QueryResult BuildAggregationStreamDataQueryResult(RtAggregationSdQuery query,
         StreamDataQueryResult result)
@@ -1004,7 +898,7 @@ public class GetQueryByIdNode(
         var values = columns
             .Select(column => row is null
                 ? null
-                : ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType))
+                : StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType))
             .ToList();
 
         queryResult.Rows.Add(new QueryResultRow { Values = values });
@@ -1029,9 +923,9 @@ public class GetQueryByIdNode(
         {
             var values = new List<object?>();
             // Group-key columns are keyed by their physical column name, same as simple projections.
-            values.AddRange(groupingColumns.Select(col => ResolveStreamColumnValue(row.Values, col)));
+            values.AddRange(groupingColumns.Select(col => StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, col)));
             values.AddRange(aggregationColumns.Select(column =>
-                ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType)));
+                StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType)));
 
             queryResult.Rows.Add(new QueryResultRow { Values = values });
         }
@@ -1043,7 +937,7 @@ public class GetQueryByIdNode(
         IEnumerable<RtAggregationQueryColumnRecord>? columns)
     {
         return columns?
-            .Select(col => new AggregationColumn(col.AttributePath, MapStreamAggregation(col.AggregationType).Function))
+            .Select(col => new AggregationColumn(col.AttributePath, StreamDataNodeHelpers.MapStreamAggregation(col.AggregationType).Function))
             .ToList() ?? [];
     }
 
@@ -1069,7 +963,7 @@ public class GetQueryByIdNode(
 
         foreach (var column in persistedColumns)
         {
-            var (function, keyToken) = MapStreamAggregation(aggregationOverride ?? column.AggregationType);
+            var (function, keyToken) = StreamDataNodeHelpers.MapStreamAggregation(aggregationOverride ?? column.AggregationType);
             result.Add(new DownsamplingColumn(column.AttributePath, function, keyToken));
         }
 
@@ -1104,7 +998,7 @@ public class GetQueryByIdNode(
     /// onto the rollup function the resolver matches ladder rungs against. Only the aggregations a query
     /// definition can carry are expressible; anything else is rejected earlier by
     /// <see cref="MapAggregationOverride" /> (override) or by
-    /// <see cref="MapStreamAggregation" /> (persisted column).
+    /// <see cref="StreamDataNodeHelpers.MapStreamAggregation" /> (persisted column).
     /// </summary>
     private static CkRollupFunction MapToRollupFunction(Enum aggregationType)
     {
@@ -1176,47 +1070,5 @@ public class GetQueryByIdNode(
     {
         var physicalColumnName = column.AttributePath.Replace(".", string.Empty).ToLowerInvariant();
         return values.TryGetValue($"{physicalColumnName}_{column.KeyToken}", out var value) ? value : null;
-    }
-
-    /// <summary>
-    /// Resolves an aggregation value from a <see cref="StreamDataRow"/>. The stream-data store keys
-    /// aggregate results by the friendly output name <c>{physicalColumn}_{funcToken}</c> (e.g.
-    /// <c>amountvalue_avg</c>) — the attribute path stripped of dots and lower-cased, suffixed with
-    /// the lower-case function token. Falls back to the SQL-alias form <c>{Func}_{physicalColumn}</c>
-    /// (e.g. <c>Avg_amountvalue</c>) that the store also surfaces.
-    /// </summary>
-    private static object? ResolveStreamAggregationValue(IReadOnlyDictionary<string, object?> values,
-        string attributePath, Enum aggregationType)
-    {
-        var token = MapStreamAggregation(aggregationType).KeyToken;
-        var column = attributePath.Replace(".", string.Empty).ToLowerInvariant();
-
-        var outputName = $"{column}_{token}";
-        if (values.TryGetValue(outputName, out var v))
-        {
-            return v;
-        }
-
-        var sqlAlias = $"{char.ToUpperInvariant(token[0])}{token[1..]}_{column}";
-        return values.TryGetValue(sqlAlias, out var v2) ? v2 : null;
-    }
-
-    /// <summary>
-    /// Maps the persisted aggregation-type enum to the engine <see cref="AggregationFunction"/> (used
-    /// to build the query options) and the lower-case result-key token the storage layer uses when
-    /// naming the aggregate output column.
-    /// </summary>
-    private static (AggregationFunction Function, string KeyToken) MapStreamAggregation(Enum aggregationType)
-    {
-        return aggregationType.ToString() switch
-        {
-            "Count" => (AggregationFunction.Count, "count"),
-            "Sum" => (AggregationFunction.Sum, "sum"),
-            "Average" => (AggregationFunction.Average, "avg"),
-            "Minimum" => (AggregationFunction.Minimum, "min"),
-            "Maximum" => (AggregationFunction.Maximum, "max"),
-            _ => throw new ArgumentOutOfRangeException(nameof(aggregationType), aggregationType,
-                $"Unknown aggregation type: {aggregationType}")
-        };
     }
 }

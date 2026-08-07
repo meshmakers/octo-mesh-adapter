@@ -237,6 +237,79 @@ the query's bucket count. `EmptyLadder` and a tenant without a rollup-archive st
 persisted archive, which is why a plain raw archive without rollups behaves exactly as it would without
 any selection at all.
 
+#### GetStreamDataNode
+
+`GetStreamData@1` reads rows straight out of a stream data archive. It is the ad-hoc counterpart of
+`GetQueryById@1`: archive, columns, time range, filters and sorting are configured on the node, so no
+persisted query entity is needed. Writes a `QueryResult` (`Columns` + `Rows`) to `TargetPath`, which
+`QueryResultToMarkdownTable@1` can consume directly.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ArchiveRtId` | OctoObjectId | RtId of the archive to read. Must be activated. Required |
+| `Columns` | collection\<string\> | Attribute paths to project (e.g. `Temperature`, `Amount.Value`). **Empty reads the whole archive**: every data column it declares, preceded by `WellKnownName`. Formula (computed) columns only when named explicitly |
+| `WellKnownNames` | collection\<string\> | Restrict to source entities with these well-known names — `Equals` for one value, `In` for several |
+| `WellKnownNamesPath` | string | JSONPath alternative to `WellKnownNames`; accepts a scalar, an array or a multi-match path |
+| `RtIds` / `RtIdsPath` | collection\<string\> / string | Restrict to these source entities. Emitted as an `In` filter on the identity column |
+| `FieldFilters` | collection | Additional filters on projected or standard columns, AND-combined |
+| `SortOrders` | collection | Sort order, by the column names as they appear in the result (see „Column names" below) |
+| `Skip` / `Take` | int? | Offset / page size of the read |
+| `From` / `To` | DateTime? | Time range (UTC). Both boundaries are independently optional; a one-sided range leaves the other open |
+| `FromPath` / `ToPath` | string | Read the boundaries from the pipeline data instead |
+| `Limit` | int? | Row cap. Must be greater than zero when set. Independent of `Skip`/`Take` |
+| `LimitPath` | string | Read the row cap from the pipeline data |
+
+**Precedence and UTC.** Per value the literal wins over the JSONPath variant. Timestamps may be
+ISO-8601 strings or date/time values; a value without a time-zone offset (`"2026-07-01T00:00:00"`) is
+read as UTC, not as the adapter host's local time (AB#4734), so the queried window never shifts with
+the server's zone. A path that resolves to nothing leaves the value unset and logs a warning; a value
+that is present but not a date/time (resp. not an integer for `LimitPath`) fails the node rather than
+silently widening the range.
+
+**Result shape.** A leading `Timestamp` column, then the projected columns. On a windowed archive
+(time-range or rollup) `WindowStart` and `WindowEnd` are inserted after `Timestamp` — those archives
+have no `timestamp` column of their own, the storage layer aliases `window_end` as the time axis, and
+the window columns only reach the result when they are projected explicitly. Values are keyed in the
+engine result by their physical CrateDB column name (attribute path with dots stripped and
+lower-cased — `Amount.Value` → `amountvalue`); the node resolves that back so the headers keep the
+configured attribute paths.
+
+**Reading a whole archive.** Leaving `Columns` unset projects every *ingested* column the archive
+declares and adds a `WellKnownName` column ahead of them — reading an entire archive is almost always
+about several source entities, and the name is what tells their rows apart. So the minimal
+configuration, just an `archiveRtId`, already returns usable data:
+
+```
+Timestamp | WindowStart | WindowEnd | WellKnownName | Energy | DataQuality
+```
+
+Formula (computed) columns are left out of that automatic set: they carry an empty attribute path and
+are addressed by name, and after a formula change their physical column moves to `{base}__v{N}`,
+which the node's name resolution does not reconstruct. Name such a column in `Columns` to read it.
+When `Columns` *is* set, the list is honoured exactly as given — no `WellKnownName` is added, and it
+can be requested there like any other column (`rtWellKnownName`).
+
+**Column names in `SortOrders` and `FieldFilters`.** Use the names as they appear in the result:
+`Timestamp`, `WindowStart` / `WindowEnd` (windowed archives only), `WellKnownName`, or any column the
+archive declares. The node translates those onto the physical storage columns — `WindowStart` →
+`window_start`, and `Timestamp` → `window_end` on a windowed archive, which has no `timestamp` column
+of its own.
+
+This translation matters because the storage layer **drops a name it cannot resolve without raising
+anything**: a mistyped sort returns rows in storage order, a mistyped filter returns too many rows.
+The node therefore rejects any name that is neither a result header nor a column of the archive, and
+the error lists the names that would have worked. A sort on `WindowStart` against a *raw* archive is
+refused for the same reason — that archive has no row window.
+
+**Errors** surface through the standard pipeline-exception channel — stream data not enabled for the
+tenant, archive not found, a malformed runtime id, an inverted time range, a non-positive `Limit`, an
+unknown sort/filter column, and any storage-level failure — so there are no silent empty results.
+
+Not in scope for this node: downsampling and resolution-aware rollup selection. Both are covered by
+`GetQueryById@1` with a persisted `RtDownsamplingSdQuery`; `GetStreamData@1` always reads exactly the
+archive it was configured with, so the numbers never depend on an archive choice made behind the
+caller's back. See AB#4722 / AB#4726.
+
 One consequence worth knowing: the node exposes no time-zone option, so the resolver resolves in UTC and a
 calendar-aligned rollup stored in another zone is already excluded from the ladder. Since the exactness
 check rejects calendar-aligned rollups regardless of their zone, that resolver detail cannot influence the

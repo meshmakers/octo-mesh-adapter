@@ -62,6 +62,16 @@ internal class FromMicrosoftGraphNode(ILogger<FromMicrosoftGraphNode> logger, IH
             {
                 logger.LogWarning("Graph polling task did not complete within timeout");
             }
+            catch (OperationCanceledException)
+            {
+                // Expected: the polling task observed the cancellation we just requested.
+            }
+            catch (Exception ex)
+            {
+                // Teardown must never rethrow — a faulted polling task must not fail the
+                // trigger unregistration / config reconcile (AB#4761).
+                logger.LogWarning(ex, "Graph polling task faulted during stop");
+            }
         }
 
         _cancellationTokenSource?.Dispose();
@@ -150,7 +160,17 @@ internal class FromMicrosoftGraphNode(ILogger<FromMicrosoftGraphNode> logger, IH
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error while polling Microsoft Graph for Teams messages");
-                await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
+                // Guard the backoff delay: a cancel during StopAsync makes Task.Delay throw
+                // TaskCanceledException that would escape this catch uncaught and fault the polling
+                // task, breaking trigger unregistration (AB#4761). Treat cancel as a clean exit.
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
     }

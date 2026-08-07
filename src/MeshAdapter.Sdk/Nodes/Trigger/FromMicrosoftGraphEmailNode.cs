@@ -69,6 +69,16 @@ internal class FromMicrosoftGraphEmailNode(
             {
                 logger.LogWarning("Graph email polling task did not complete within timeout");
             }
+            catch (OperationCanceledException)
+            {
+                // Expected: the polling task observed the cancellation we just requested.
+            }
+            catch (Exception ex)
+            {
+                // Teardown must never rethrow — a faulted polling task must not fail the
+                // trigger unregistration / config reconcile (AB#4761).
+                logger.LogWarning(ex, "Graph email polling task faulted during stop");
+            }
         }
 
         _cancellationTokenSource?.Dispose();
@@ -177,7 +187,19 @@ internal class FromMicrosoftGraphEmailNode(
                 sourceFolderId = null;
                 targetFolderId = null;
                 logger.LogError(ex, "Error while polling Microsoft Graph mailbox '{Mailbox}'", nodeConfig.Mailbox);
-                await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
+                // Guard the backoff delay: a cancel during StopAsync makes Task.Delay throw
+                // TaskCanceledException, which — being raised inside this catch — would escape
+                // uncaught (the sibling catch (OperationCanceledException) does not cover it) and
+                // fault the polling task, so the later StopAsync().WaitAsync() rethrows and the
+                // trigger unregistration fails (AB#4761). Treat cancel as a clean loop exit.
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
     }

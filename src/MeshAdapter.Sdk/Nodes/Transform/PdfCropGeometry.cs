@@ -17,6 +17,12 @@ public sealed record PdfPageOp
 
     /// <summary>Optional crop rectangle; null or zero-size means no crop.</summary>
     public PdfCropRect? Crop { get; init; }
+
+    /// <summary>
+    /// Discards an existing crop box first, restoring the full page. A
+    /// <see cref="Crop"/> in the same op is then relative to the full page.
+    /// </summary>
+    public bool Uncrop { get; init; }
 }
 
 /// <summary>

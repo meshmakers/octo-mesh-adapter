@@ -83,6 +83,13 @@ public class TransformPdfNode(NodeDelegate next) : IPipelineNode
                 // Display orientation the crop was drawn in = existing rotation + requested rotation.
                 var totalRotation = NormalizeRotation(newPage.Rotate + rotation);
 
+                if (op.Uncrop)
+                {
+                    // Restore the full page; a crop in the same op is then relative
+                    // to the full page (GetEffectiveVisibleBox returns the media box).
+                    newPage.CropBox = newPage.MediaBox;
+                }
+
                 if (op.Crop is { } crop && crop.Width > 0 && crop.Height > 0)
                 {
                     // Viewers (and the editor's pdf.js preview) only ever show the

@@ -227,6 +227,58 @@ public class TransformPdfNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_Uncrop_RestoresFullPage()
+    {
+        var config = new TransformPdfNodeConfiguration { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var existing = new PdfRectangle(new XPoint(100, 100), new XPoint(500, 700));
+        A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
+            .Returns(new List<string?> { MakeCroppedPdfBase64(existing) });
+        A.CallTo(() => dataContext.GetArray<PdfPageOp>("$.ops")).Returns(new List<PdfPageOp?>
+        {
+            new() { SourceIndex = 0, PageIndex = 0, Uncrop = true },
+        });
+
+        var node = new TransformPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        using var doc = OpenOutput(CapturedString(dataContext, config.TargetPath)!);
+        var page = doc.Pages[0];
+        Assert.Equal(page.MediaBox.X1, page.CropBox.X1, 1);
+        Assert.Equal(page.MediaBox.Y1, page.CropBox.Y1, 1);
+        Assert.Equal(page.MediaBox.X2, page.CropBox.X2, 1);
+        Assert.Equal(page.MediaBox.Y2, page.CropBox.Y2, 1);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_UncropWithNewCrop_IsRelativeToFullPage()
+    {
+        var config = new TransformPdfNodeConfiguration { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var existing = new PdfRectangle(new XPoint(100, 100), new XPoint(500, 700));
+        A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
+            .Returns(new List<string?> { MakeCroppedPdfBase64(existing) });
+        A.CallTo(() => dataContext.GetArray<PdfPageOp>("$.ops")).Returns(new List<PdfPageOp?>
+        {
+            new()
+            {
+                SourceIndex = 0, PageIndex = 0, Uncrop = true,
+                Crop = new PdfCropRect { X = 0.5, Y = 0, Width = 0.5, Height = 1 }
+            },
+        });
+
+        var node = new TransformPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        using var doc = OpenOutput(CapturedString(dataContext, config.TargetPath)!);
+        var page = doc.Pages[0];
+        var mediaWidth = Math.Abs(page.MediaBox.Width);
+        // Right half of the FULL page, not of the discarded old crop box.
+        Assert.Equal(page.MediaBox.X1 + mediaWidth / 2, page.CropBox.X1, 1);
+        Assert.Equal(page.MediaBox.X2, page.CropBox.X2, 1);
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_InvalidRotation_Throws()
     {
         var config = new TransformPdfNodeConfiguration { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };

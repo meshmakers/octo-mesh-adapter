@@ -153,6 +153,79 @@ public class TransformPdfNodeTests : NodeTestBase
         Assert.Equal(media.Y2, crop.Y2, 1);
     }
 
+    /// <summary>PDF whose single page already carries a CropBox (a previous edit round).</summary>
+    private static string MakeCroppedPdfBase64(PdfRectangle cropBox, int rotate = 0)
+    {
+        using var doc = new PdfDocument();
+        var page = doc.AddPage();
+        page.Rotate = rotate;
+        page.CropBox = cropBox;
+        using var ms = new MemoryStream();
+        doc.Save(ms);
+        return Convert.ToBase64String(ms.ToArray());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_CropOnAlreadyCroppedPage_NestsInsideExistingCropBox()
+    {
+        var config = new TransformPdfNodeConfiguration { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        // Viewers only show the existing CropBox area, so a new crop of the
+        // "right half" must select the right half of THAT box, not of the MediaBox.
+        var existing = new PdfRectangle(new XPoint(100, 100), new XPoint(500, 700));
+        A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
+            .Returns(new List<string?> { MakeCroppedPdfBase64(existing) });
+        A.CallTo(() => dataContext.GetArray<PdfPageOp>("$.ops")).Returns(new List<PdfPageOp?>
+        {
+            new()
+            {
+                SourceIndex = 0, PageIndex = 0,
+                Crop = new PdfCropRect { X = 0.5, Y = 0, Width = 0.5, Height = 1 }
+            },
+        });
+
+        var node = new TransformPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        using var doc = OpenOutput(CapturedString(dataContext, config.TargetPath)!);
+        var crop = doc.Pages[0].CropBox;
+        Assert.Equal(300, crop.X1, 1); // 100 + 0.5 * 400
+        Assert.Equal(500, crop.X2, 1);
+        Assert.Equal(100, crop.Y1, 1);
+        Assert.Equal(700, crop.Y2, 1);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_CropOnRotatedCroppedPage_UsesExistingCropBoxAsReference()
+    {
+        var config = new TransformPdfNodeConfiguration { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        // The field case: page displayed at 270° with a CropBox from a previous
+        // round. Selecting the full visible area must reproduce the existing box.
+        var existing = new PdfRectangle(new XPoint(65, 505), new XPoint(519, 769));
+        A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
+            .Returns(new List<string?> { MakeCroppedPdfBase64(existing, rotate: 270) });
+        A.CallTo(() => dataContext.GetArray<PdfPageOp>("$.ops")).Returns(new List<PdfPageOp?>
+        {
+            new()
+            {
+                SourceIndex = 0, PageIndex = 0,
+                Crop = new PdfCropRect { X = 0, Y = 0, Width = 1, Height = 1 }
+            },
+        });
+
+        var node = new TransformPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        using var doc = OpenOutput(CapturedString(dataContext, config.TargetPath)!);
+        var crop = doc.Pages[0].CropBox;
+        Assert.Equal(65, crop.X1, 1);
+        Assert.Equal(505, crop.Y1, 1);
+        Assert.Equal(519, crop.X2, 1);
+        Assert.Equal(769, crop.Y2, 1);
+        Assert.Equal(270, doc.Pages[0].Rotate);
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_InvalidRotation_Throws()
     {

@@ -85,7 +85,13 @@ public class TransformPdfNode(NodeDelegate next) : IPipelineNode
 
                 if (op.Crop is { } crop && crop.Width > 0 && crop.Height > 0)
                 {
-                    newPage.CropBox = PdfCropGeometry.DisplayRectToCropBox(newPage.MediaBox, totalRotation, crop);
+                    // Viewers (and the editor's pdf.js preview) only ever show the
+                    // CropBox area, so the user's rectangle is relative to the page's
+                    // EFFECTIVE visible box — an existing CropBox (e.g. from a previous
+                    // edit round or a scanner), not the MediaBox. Mapping against the
+                    // MediaBox would shift the crop whenever the two differ.
+                    var referenceBox = GetEffectiveVisibleBox(newPage);
+                    newPage.CropBox = PdfCropGeometry.DisplayRectToCropBox(referenceBox, totalRotation, crop);
                 }
 
                 newPage.Rotate = totalRotation;
@@ -209,5 +215,15 @@ public class TransformPdfNode(NodeDelegate next) : IPipelineNode
     {
         var r = ((degrees % 360) + 360) % 360;
         return r % 90 == 0 ? r : -1;
+    }
+
+    /// <summary>
+    /// The box a viewer actually displays: the page's CropBox when present (PdfSharp
+    /// returns an all-zero rectangle when the entry is missing), else the MediaBox.
+    /// </summary>
+    private static PdfRectangle GetEffectiveVisibleBox(PdfPage page)
+    {
+        var crop = page.CropBox;
+        return Math.Abs(crop.Width) > 0 && Math.Abs(crop.Height) > 0 ? crop : page.MediaBox;
     }
 }

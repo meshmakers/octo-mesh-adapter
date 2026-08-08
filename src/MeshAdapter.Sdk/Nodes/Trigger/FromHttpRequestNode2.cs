@@ -1,27 +1,30 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects.ApiErrors;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Microsoft.Extensions.Logging;
 using HttpRequestOptions = Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests.HttpRequestOptions;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
-[NodeConfiguration(typeof(FromHttpRequestNodeConfiguration))]
+[NodeConfiguration(typeof(FromHttpRequestNodeConfiguration2))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpRequestService httpRequestService)
+internal class FromHttpRequestNode2(
+    ILogger<FromHttpRequestNode2> logger,
+    IHttpRequestService httpRequestService,
+    IAdapterEventService eventService)
     : ITriggerPipelineNode
 {
     private HttpRouteHandle? _routeHandle;
 
-    public Task StartAsync(ITriggerContext context)
+    public async Task StartAsync(ITriggerContext context)
     {
-        var c = context.NodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration>();
+        var c = context.NodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration2>();
 
         var requestOptions = new HttpRequestOptions(c.Path, c.Method, async input =>
         {
@@ -49,10 +52,16 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
                 // Ensure we return an error response
                 throw;
             }
-        }, allowAnonymous: true, requiredRoles: [], receivesCredentialHeaders: false);
+        }, c.AllowAnonymous, c.RequiredRoles, receivesCredentialHeaders: false);
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 
-        return Task.CompletedTask;
+        // An unauthenticated route is a standing exposure, not a per-request occurrence, so the
+        // fact that one exists is audited once per deployment - where an operator can find it.
+        if (c.AllowAnonymous)
+        {
+            await eventService.StoreInformationEventAsync(context.TenantId,
+                $"Route {c.Method.ToString().ToUpper()} {c.Path} registered without authentication.");
+        }
     }
 
     public Task StopAsync(ITriggerContext context)

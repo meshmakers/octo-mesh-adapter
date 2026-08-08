@@ -17,6 +17,7 @@ public static class ApplicationBuilderExtensions
     public static IApplicationBuilder UseOctoMeshAdapter(this IApplicationBuilder app)
     {
         app.UseCors();
+        app.UseAuthentication();
         app.UseMiddleware<DynamicRouteMiddleware>();
 
         return app;

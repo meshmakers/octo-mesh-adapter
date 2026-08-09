@@ -120,6 +120,53 @@ public class ImportFromCamt053NodeTests
         Assert.Empty(ImportFromCamt053Node.ParseCamt053(xml));
     }
 
+    // Balanced statement: PRCD 100 CRDT + one 40 DBIT booking = CLBD 60 CRDT.
+    private const string BalancedXml = """
+        <Document xmlns="ISO:camt.053.001.02:APC:STUZZA:payments:003">
+          <BkToCstmrStmt><Stmt>
+            <LglSeqNb>202600001</LglSeqNb>
+            <Acct><Id><IBAN>AT111111111111111111</IBAN></Id><Ccy>EUR</Ccy></Acct>
+            <Bal><Tp><CdOrPrtry><Cd>PRCD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">100.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-07-01</Dt></Dt></Bal>
+            <Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">60.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-07-31</Dt></Dt></Bal>
+            <Ntry><Amt Ccy="EUR">40</Amt><CdtDbtInd>DBIT</CdtDbtInd><Sts>BOOK</Sts><BookgDt><Dt>2026-07-06</Dt></BookgDt><AcctSvcrRef>ASR-1</AcctSvcrRef>
+              <BkTxCd><Domn><Fmly><SubFmlyCd>ESCT</SubFmlyCd></Fmly></Domn></BkTxCd></Ntry>
+          </Stmt></BkToCstmrStmt></Document>
+        """;
+
+    // Same statement but CLBD is 55 instead of 60 — the chain does not close.
+    private const string UnbalancedXml = """
+        <Document xmlns="ISO:camt.053.001.02:APC:STUZZA:payments:003">
+          <BkToCstmrStmt><Stmt>
+            <LglSeqNb>202600002</LglSeqNb>
+            <Acct><Id><IBAN>AT111111111111111111</IBAN></Id><Ccy>EUR</Ccy></Acct>
+            <Bal><Tp><CdOrPrtry><Cd>PRCD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">100.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-07-01</Dt></Dt></Bal>
+            <Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">55.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-07-31</Dt></Dt></Bal>
+            <Ntry><Amt Ccy="EUR">40</Amt><CdtDbtInd>DBIT</CdtDbtInd><Sts>BOOK</Sts><BookgDt><Dt>2026-07-06</Dt></BookgDt><AcctSvcrRef>ASR-2</AcctSvcrRef>
+              <BkTxCd><Domn><Fmly><SubFmlyCd>ESCT</SubFmlyCd></Fmly></Domn></BkTxCd></Ntry>
+          </Stmt></BkToCstmrStmt></Document>
+        """;
+
+    [Fact]
+    public void ParseCamt053_BalancedStatement_PassesBalanceChain()
+    {
+        var entries = ImportFromCamt053Node.ParseCamt053(BalancedXml); // enforce=true by default
+        Assert.Single(entries);
+    }
+
+    [Fact]
+    public void ParseCamt053_UnbalancedStatement_ThrowsHardStop()
+    {
+        var ex = Assert.Throws<FormatException>(() => ImportFromCamt053Node.ParseCamt053(UnbalancedXml));
+        Assert.Contains("balance-chain mismatch", ex.Message);
+    }
+
+    [Fact]
+    public void ParseCamt053_UnbalancedStatement_EnforceOff_DoesNotThrow()
+    {
+        var entries = ImportFromCamt053Node.ParseCamt053(UnbalancedXml, enforceBalanceChain: false);
+        Assert.Single(entries);
+    }
+
     /// <summary>
     /// Verifies the parser against Klaus's frozen corpus using the hand-counted totals from the
     /// Begleitunterlage. Gated on CAMT_CORPUS_DIR (the local Austausch_Meshmakers_Bankabgleich path);

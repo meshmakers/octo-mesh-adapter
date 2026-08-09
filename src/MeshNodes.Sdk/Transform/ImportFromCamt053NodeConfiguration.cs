@@ -23,4 +23,14 @@ public record ImportFromCamt053NodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("Options", 0)]
     public string Encoding { get; set; } = "utf-8";
+
+    /// <summary>
+    /// When true (default), each statement's balance chain is verified: opening balance (PRCD) plus the
+    /// signed sum of its bookings must equal the closing balance (CLBD). On mismatch the whole import is
+    /// aborted (hard stop) so an incomplete statement is never partially imported — the completeness
+    /// guarantee the tax advisor relies on. Set false to import without the check (statements missing
+    /// PRCD/CLBD are skipped either way).
+    /// </summary>
+    [PropertyGroup("Options", 1)]
+    public bool EnforceBalanceChain { get; set; } = true;
 }

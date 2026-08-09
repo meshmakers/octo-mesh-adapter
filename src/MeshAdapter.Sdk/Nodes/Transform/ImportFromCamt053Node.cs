@@ -48,7 +48,7 @@ public class ImportFromCamt053Node(NodeDelegate next) : IPipelineNode
         List<Dictionary<string, object?>> entries;
         try
         {
-            entries = ParseCamt053(content);
+            entries = ParseCamt053(content, config.EnforceBalanceChain);
         }
         catch (Exception ex)
         {
@@ -67,8 +67,10 @@ public class ImportFromCamt053Node(NodeDelegate next) : IPipelineNode
     /// <summary>
     /// Parses a camt.053.001.02 XML document into a list of normalized booking objects, one per Ntry.
     /// Namespace-agnostic (matches by local element name). Pure and side-effect free — unit-testable.
+    /// When <paramref name="enforceBalanceChain"/> is true, each statement's PRCD + Σ bookings = CLBD is
+    /// verified and a <see cref="FormatException"/> is thrown on mismatch (completeness hard stop).
     /// </summary>
-    internal static List<Dictionary<string, object?>> ParseCamt053(string xml)
+    internal static List<Dictionary<string, object?>> ParseCamt053(string xml, bool enforceBalanceChain = true)
     {
         var doc = XDocument.Parse(xml);
         var root = doc.Root ?? throw new FormatException("Empty XML document");
@@ -83,6 +85,7 @@ public class ImportFromCamt053Node(NodeDelegate next) : IPipelineNode
             var lglSeqNb = Value(Element(stmt, "LglSeqNb"));
 
             var position = 0;
+            var stmtSum = 0d;
             foreach (var ntry in Elements(stmt, "Ntry"))
             {
                 position++;
@@ -98,6 +101,8 @@ public class ImportFromCamt053Node(NodeDelegate next) : IPipelineNode
                 {
                     amount = isCredit ? parsed : -parsed;
                 }
+
+                stmtSum += amount;
 
                 var acctSvcrRef = Value(Element(ntry, "AcctSvcrRef"));
 
@@ -179,9 +184,53 @@ public class ImportFromCamt053Node(NodeDelegate next) : IPipelineNode
                     ["position"] = position
                 });
             }
+
+            // Completeness hard stop (Begleitunterlage §4.2): opening balance (PRCD) plus the signed
+            // sum of this statement's bookings must equal the closing balance (CLBD). A mismatch means
+            // the statement is incomplete — abort the whole import rather than persist partial data.
+            if (enforceBalanceChain)
+            {
+                var prcd = ReadBalance(stmt, "PRCD");
+                var clbd = ReadBalance(stmt, "CLBD");
+                if (prcd.HasValue && clbd.HasValue)
+                {
+                    var computed = prcd.Value + stmtSum;
+                    if (Math.Abs(computed - clbd.Value) > 0.005d)
+                    {
+                        throw new FormatException(
+                            $"camt.053 balance-chain mismatch on statement '{lglSeqNb}' (IBAN {accountIban}): " +
+                            $"opening {prcd.Value:0.#####} + bookings {stmtSum:0.#####} = {computed:0.#####}, " +
+                            $"but closing balance is {clbd.Value:0.#####} (diff {computed - clbd.Value:0.#####}). " +
+                            "Statement is incomplete — import aborted.");
+                    }
+                }
+            }
         }
 
         return result;
+    }
+
+    /// <summary>Reads a signed statement balance by code (e.g. PRCD/CLBD); sign from CdtDbtInd. Null if absent/unparseable.</summary>
+    private static double? ReadBalance(XElement stmt, string code)
+    {
+        foreach (var bal in Elements(stmt, "Bal"))
+        {
+            var c = Value(Element(Element(Element(bal, "Tp"), "CdOrPrtry"), "Cd"));
+            if (!string.Equals(c, code, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!double.TryParse(Value(Element(bal, "Amt")), NumberStyles.Any, CultureInfo.InvariantCulture, out var v))
+            {
+                return null;
+            }
+
+            var ind = Value(Element(bal, "CdtDbtInd"));
+            return string.Equals(ind, "CRDT", StringComparison.OrdinalIgnoreCase) ? v : -v;
+        }
+
+        return null;
     }
 
     /// <summary>Concatenates unstructured and structured remittance info into one purpose string.</summary>

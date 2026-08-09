@@ -43,6 +43,41 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_VerbatimEntry_KeepsNameAndStaysOutOfManifest()
+    {
+        var config = new CreateZipArchiveNodeConfiguration
+        {
+            Path = "$.entries", TargetPath = "$.zip",
+            AppendSequenceNumber = true, ManifestFileName = "belege.csv",
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var entries = new JsonArray(
+            new JsonObject
+            {
+                ["fileName"] = "AP/RE-2025-001.pdf", ["contentBase64"] = B64("doc"),
+                ["manifest"] = new JsonObject { ["Belegnummer"] = "RE-2025-001" },
+            },
+            new JsonObject
+            {
+                ["fileName"] = "lieferanten.csv", ["contentBase64"] = B64("vendors"),
+                ["verbatim"] = true,
+            });
+        A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
+
+        var node = NewNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var contents = ReadZip(CapturedString(dataContext, config.TargetPath)!);
+        // Content entry got its running number; the verbatim entry kept its exact name.
+        Assert.Contains("AP/RE-2025-001_001.pdf", contents.Keys);
+        Assert.Contains("lieferanten.csv", contents.Keys);
+        Assert.Equal("vendors", contents["lieferanten.csv"]);
+        // The manifest lists only the content entry — no row for the verbatim file.
+        Assert.Contains("RE-2025-001", contents["belege.csv"]);
+        Assert.DoesNotContain("lieferanten", contents["belege.csv"]);
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_BundlesEntries_IncludingFolders()
     {
         var config = new CreateZipArchiveNodeConfiguration

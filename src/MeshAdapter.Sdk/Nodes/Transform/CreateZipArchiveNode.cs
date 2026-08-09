@@ -322,7 +322,10 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
                 }
             }
 
-            if (config.AppendSequenceNumber)
+            // A verbatim entry (e.g. an additional index file such as lieferanten.csv)
+            // keeps its exact name and stays out of the manifest — sequence numbers and
+            // manifest rows are for the content documents.
+            if (config.AppendSequenceNumber && !IsVerbatim(entry))
             {
                 fileName = InsertSequenceNumber(fileName, i + 1);
             }
@@ -363,7 +366,12 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
         AppendCsvRow(sb, new[] { config.ManifestFileNameColumn }.Concat(columns), delimiter);
         for (var i = 0; i < entries.Count; i++)
         {
-            var manifest = entries[i] is JsonObject entry ? Prop(entry, "manifest") as JsonObject : null;
+            if (entries[i] is not JsonObject entry || IsVerbatim(entry))
+            {
+                continue;
+            }
+
+            var manifest = Prop(entry, "manifest") as JsonObject;
             var values = new List<string> { resolvedNames[i] };
             values.AddRange(columns.Select(c => manifest is null ? string.Empty : AsString(Prop(manifest, c))));
             AppendCsvRow(sb, values, delimiter);
@@ -374,6 +382,16 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
         // UTF-8 BOM so Excel and BMD detect the encoding.
         await using var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(true));
         await writer.WriteAsync(sb.ToString());
+    }
+
+    /// <summary>
+    /// True when the entry opted out of sequence numbering and the manifest via
+    /// <c>"verbatim": true</c> — used for additional index files shipped next to the
+    /// content documents (e.g. a vendor list beside the manifest CSV).
+    /// </summary>
+    private static bool IsVerbatim(JsonObject entry)
+    {
+        return Prop(entry, "verbatim") is JsonValue v && v.TryGetValue<bool>(out var b) && b;
     }
 
     private static void AppendCsvRow(System.Text.StringBuilder sb, IEnumerable<string> values, string delimiter)

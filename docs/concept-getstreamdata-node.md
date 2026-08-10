@@ -1,8 +1,13 @@
 # Concept: `GetStreamData@1` / `AggregateStreamData@1` — Extract-Nodes für Stream Data Archives
 
-> Status: **AB#4726 (§5) und AB#4728 (§6) implementiert. §7 offen.**
+> Status: **vollständig implementiert** — AB#4726 (§5), AB#4728 (§6) und AB#4752 (§7).
 > Azure DevOps: **AB#4722** (Issue) mit den Tasks **AB#4726** (Basisfunktionalität, erledigt),
-> **AB#4728** (Gap-Detection, erledigt) und **AB#4752** (Spalten-Aggregation, §7).
+> **AB#4728** (Gap-Detection, erledigt) und **AB#4752** (Spalten-Aggregation, erledigt).
+>
+> **Geteilt zwischen beiden Nodes** (`Nodes/`): `StreamDataNodeHelpers` (UTC, JSONPath-Grenzen,
+> Spaltennamen-Übersetzung, RtId- und Filter-Auflösung, Wertauflösung), `StreamDataGapAnalyzer`
+> (reine Coverage-Analyse) und `StreamDataGapScanner` (Scan-Query samt Row-Cap, Intervall-Fallback
+> und Überlappungs-Warnung). Letzterer wurde für §7 aus `GetStreamDataNode` herausgezogen.
 > **AB#4727 (Downsampling) ist bewusst nicht Teil dieses Features** — siehe §2.
 > Epic: AB#3364 „Stream Data v2: deep system integration on an archive-based foundation".
 >
@@ -730,15 +735,26 @@ Eigener DTO statt direkter Nutzung von `AggregationColumn`: Config-Typen leben i
 `Runtime.Contracts`. `AggregationTypesDto` (`octo-sdk/src/Communication.Contracts/DataTransferObjects/`)
 wird bereits von `GetQueryByIdNodeConfiguration` genutzt.
 
-Unterstützte Funktionen (aus `AggregationFunction`): `Count`, `Minimum`, `Maximum`, `Average`, `Sum`,
-`TimeWeightedAverage`, `StateDuration`. `AggregationTypesDto.None` wird abgelehnt.
+**Unterstützte Funktionen: `Count`, `Minimum`, `Maximum`, `Average`, `Sum`** — genau die fünf, die
+`StreamDataNodeHelpers.MapStreamAggregation` kennt. `None` wird abgelehnt, ebenso
+`TimeWeightedAverage` und `StateDuration`: sie brauchen Metadaten pro Spalte, die dieser Node nicht
+tragen kann (`StateDuration` einen Vergleichswert, `TimeWeightedAverage` auf einem Raw-Archiv den
+LOCF-Sonderpfad `ExecuteRawTimeWeightedAggregationAsync`), und ihre Ergebnisschlüssel folgen anderen
+Regeln (`_twavg` statt `_avg`, bei Rollups zwei Spalten). `GetQueryById@1` weist sie in seinem
+`Aggregation`-Override aus demselben Grund ab; wer sie braucht, nutzt dort eine persistierte Query
+mit Aggregation pro Spalte. Die Ablehnung nennt diesen Weg.
 
 ### 7.3 Ablauf
 
 1. Repository + `ArchiveSnapshot` auflösen (§4).
 2. `From`/`To` auflösen und nach UTC normalisieren.
 3. Filter bauen (§4).
-4. **Wenn `RequireGapFree`:** Gap-Scan nach §6.3/§6.4 **vor** der Aggregation. Ist eine Serie
+4. **Wenn `RequireGapFree`:** Gap-Scan **vor** der Aggregation. Nachgetragen nach der Umsetzung von
+   §6: die Scan-Query steckt dort in `GetStreamDataNode.DetectGapsAsync` und muss zuerst in einen
+   geteilten Helfer (`StreamDataGapScanner` in `Nodes/`) gezogen werden — geteilt wird nicht nur der
+   Analyzer, sondern auch die Query samt Row-Cap-Prüfung, Intervall-Auflösung und
+   Überlappungs-Warnung. Sonst driften die beiden Nodes bei jeder Änderung auseinander.
+   Ist eine Serie
    unvollständig → Pipeline-Exception, die die betroffenen Serien mit `wellKnownName`, fehlenden
    Intervallen und dem ersten Lückenbereich benennt. Keine teilweisen Ergebnisse: entweder alle
    Serien sind lückenlos oder der Node bricht ab.

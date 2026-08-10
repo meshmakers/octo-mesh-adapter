@@ -1,4 +1,6 @@
 using System.Globalization;
+using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Runtime.Engine.CrateDb;
@@ -256,6 +258,82 @@ internal static class StreamDataNodeHelpers
         {
             target.Add(text);
         }
+    }
+
+    /// <summary>
+    /// Entity scope: the configured runtime ids, else the ones read from the pipeline data. The engine
+    /// turns these into an In-filter on the identity column. Shared by the stream-data nodes so the
+    /// path handling and the id parsing exist once.
+    /// </summary>
+    internal static IReadOnlyList<OctoObjectId>? ResolveRtIds(ICollection<string>? configured,
+        string? path, IDataContext dataContext, INodeContext nodeContext, string propertyName)
+    {
+        var values = configured is { Count: > 0 }
+            ? configured.ToList()
+            : ResolveStringListFromPath(dataContext, nodeContext, path, propertyName,
+                "the query is not scoped to specific entities.")?.ToList();
+
+        if (values is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var rtIds = new List<OctoObjectId>(values.Count);
+        foreach (var value in values)
+        {
+            if (!OctoObjectId.TryParse(value, out var rtId))
+            {
+                throw MeshAdapterPipelineExecutionException.InvalidRtId(nodeContext, value);
+            }
+
+            rtIds.Add(rtId);
+        }
+
+        return rtIds;
+    }
+
+    /// <summary>
+    /// The well-known-name filter AND-combined with the configured field filters. The well-known name
+    /// is a standard column on every archive table, so it needs no special handling beyond picking
+    /// Equals for a single value and In for several. The configured filters go through
+    /// <see cref="ResolveQueryableColumn" />, because a filter the storage layer cannot resolve is
+    /// dropped without a word — which widens the result instead of narrowing it.
+    /// </summary>
+    internal static IReadOnlyList<FieldFilter>? BuildFieldFilters(
+        ICollection<string>? wellKnownNames, string? wellKnownNamesPath,
+        ICollection<FieldFilterWithPathDto>? fieldFilters, ArchiveSnapshot snapshot,
+        IDataContext dataContext, INodeContext nodeContext, string wellKnownNamesPathPropertyName)
+    {
+        var filters = new List<FieldFilter>();
+
+        var names = wellKnownNames is { Count: > 0 }
+            ? wellKnownNames.Where(n => !string.IsNullOrWhiteSpace(n)).ToList()
+            : ResolveStringListFromPath(dataContext, nodeContext, wellKnownNamesPath,
+                wellKnownNamesPathPropertyName,
+                "the query is not restricted by well-known name.")?.ToList();
+
+        if (names is { Count: > 0 })
+        {
+            filters.Add(names.Count == 1
+                ? new FieldFilter(WellKnownNameColumn, FieldFilterOperator.Equals, names[0])
+                : new FieldFilter(WellKnownNameColumn, FieldFilterOperator.In, names));
+        }
+
+        if (fieldFilters is { Count: > 0 })
+        {
+            // Reuses the shared conversion so the ComparisonValuePath logic (including wildcard
+            // expansion) is not duplicated here.
+            var scratch = RtEntityQueryOptions.Create();
+            fieldFilters.GetFieldFilter(dataContext, scratch);
+            if (scratch.FieldFilters != null)
+            {
+                filters.AddRange(scratch.FieldFilters.Select(f => new FieldFilter(
+                    ResolveQueryableColumn(f.AttributePath, snapshot, nodeContext, "filtering"),
+                    f.Operator, f.ComparisonValue, f.SecondaryValue)));
+            }
+        }
+
+        return filters.Count == 0 ? null : filters;
     }
 
     /// <summary>

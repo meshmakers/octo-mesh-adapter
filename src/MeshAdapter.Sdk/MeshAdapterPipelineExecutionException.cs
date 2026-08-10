@@ -479,6 +479,32 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "— otherwise the node would produce no output at all.");
     }
 
+    public static Exception AggregationColumnsMissing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No aggregations configured. Provide at least one entry with " +
+            "an attribute path and a function (Count, Minimum, Maximum, Average or Sum).");
+    }
+
+    public static Exception UnsupportedAggregationFunction(INodeContext nodeContext, string function,
+        string attributePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Aggregation '{function}' on '{attributePath}' is not " +
+            "supported here. Available: Count, Minimum, Maximum, Average, Sum. A time-weighted " +
+            "average and a state duration need per-column metadata this node cannot carry — use " +
+            "GetQueryById@1 with a persisted query that defines the aggregation per column.");
+    }
+
+    public static Exception AggregationGapGuardFailed(INodeContext nodeContext,
+        OctoObjectId archiveRtId, string incompleteSeries)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: RequireGapFree is set, but archive '{archiveRtId}' does not " +
+            $"cover the requested range for every entity — {incompleteSeries}. Aggregating anyway " +
+            "would return a figure that looks valid but is too low, so the node stops instead.");
+    }
+
     public static Exception GapScanRowLimitInvalid(INodeContext nodeContext, int? maxRows)
     {
         return new MeshAdapterPipelineExecutionException(

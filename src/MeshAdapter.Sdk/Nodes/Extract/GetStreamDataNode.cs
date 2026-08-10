@@ -32,13 +32,6 @@ public class GetStreamDataNode(
     private const string WindowEndHeader = "WindowEnd";
     private const string WellKnownNameHeader = "WellKnownName";
 
-    /// <summary>
-    /// Row cap for the coverage scan when none is configured. A year of quarter-hourly data is about
-    /// 35 000 rows per entity, so this leaves room for a handful of entities over a long range while
-    /// still bounding memory.
-    /// </summary>
-    private const int DefaultMaxGapScanRows = 200_000;
-
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -107,8 +100,11 @@ public class GetStreamDataNode(
 
         // Resolved once and shared: both read JSONPath and warn on a path that resolves to nothing,
         // so doing it per query would repeat the work and log the same warning twice.
-        var rtIds = ResolveRtIds(dataContext, nodeContext, c);
-        var fieldFilters = BuildFieldFilters(dataContext, nodeContext, c, snapshot);
+        var rtIds = StreamDataNodeHelpers.ResolveRtIds(c.RtIds, c.RtIdsPath, dataContext, nodeContext,
+            nameof(c.RtIdsPath));
+        var fieldFilters = StreamDataNodeHelpers.BuildFieldFilters(c.WellKnownNames,
+            c.WellKnownNamesPath, c.FieldFilters, snapshot, dataContext, nodeContext,
+            nameof(c.WellKnownNamesPath));
 
         if (!c.GapsOnly)
         {
@@ -142,88 +138,16 @@ public class GetStreamDataNode(
 
         if (detectGaps)
         {
-            var report = await DetectGapsAsync(streamDataRepo, snapshot, c, nodeContext,
-                from!.Value, to!.Value, rtIds, fieldFilters);
+            var report = await StreamDataGapScanner.ScanAsync(streamDataRepo, snapshot, c.ArchiveRtId,
+                new StreamDataGapScanner.Request(from!.Value, to!.Value, c.ExpectedInterval,
+                    c.MaxGapScanRows, rtIds, fieldFilters),
+                nodeContext);
 
             dataContext.Set(c.GapsTargetPath!, report, c.DocumentMode, c.TargetValueKind,
                 c.TargetValueWriteMode);
         }
 
         await next(dataContext, nodeContext);
-    }
-
-    /// <summary>
-    /// Runs the coverage scan and builds the report. Deliberately a query of its own: the data
-    /// query's Limit / Skip / Take would hide rows and make the scan invent gaps that are not there.
-    /// </summary>
-    private static async Task<StreamDataGapReport> DetectGapsAsync(IStreamDataRepository streamDataRepo,
-        ArchiveSnapshot snapshot, GetStreamDataNodeConfiguration c, INodeContext nodeContext,
-        DateTime from, DateTime to, IReadOnlyList<OctoObjectId>? rtIds,
-        IReadOnlyList<FieldFilter>? fieldFilters)
-    {
-        // Validated before this point, so a configured value is always positive here.
-        var maxRows = c.MaxGapScanRows ?? DefaultMaxGapScanRows;
-
-        // One over the cap, so a truncated scan is detectable rather than silently wrong — clamped
-        // because int.MaxValue (the natural way to ask for "no cap") would wrap into a negative
-        // limit and reach the storage layer as an invalid query.
-        var scanLimit = maxRows == int.MaxValue ? int.MaxValue : maxRows + 1;
-
-        var options = StreamDataQueryOptions.Create()
-            .WithCkTypeId(snapshot.TargetCkTypeId)
-            // Only the window start: window_end arrives as the row's Timestamp and the well-known
-            // name sits on the row itself, so neither needs projecting.
-            .WithColumns([StreamDataNodeHelpers.WindowStartColumn])
-            .WithRtIds(rtIds)
-            .WithTimeRange(from, to)
-            .WithFieldFilters(fieldFilters)
-            .WithLimit(scanLimit);
-
-        var result = await ExecuteAsync(streamDataRepo, c.ArchiveRtId, options, nodeContext);
-
-        if (result.Rows.Count > maxRows)
-        {
-            throw MeshAdapterPipelineExecutionException.GapScanRowLimitExceeded(nodeContext, maxRows);
-        }
-
-        // ExpectedInterval is already validated as positive, so only a missing or non-positive
-        // archive period can land here.
-        var interval = c.ExpectedInterval ?? snapshot.Period;
-        if (interval is not { Ticks: > 0 })
-        {
-            nodeContext.Warning(
-                "No interval known for the gap report — ExpectedInterval is unset and the archive " +
-                "declares no usable period. Gaps are reported as time ranges; the interval counts " +
-                "stay empty.");
-        }
-
-        // An entity that delivered nothing at all returns no rows and would be invisible. Where the
-        // caller named the entities, the expected set is known and each missing one is reported as a
-        // full-window gap instead.
-        var expected = rtIds?.Select(id => ((OctoObjectId?)id, (string?)null));
-        if (expected is null)
-        {
-            nodeContext.Debug(
-                "Gap report covers only entities with at least one row in the range; an entity that " +
-                "delivered nothing cannot be detected unless RtIds names it.");
-        }
-
-        var series = StreamDataGapAnalyzer.BuildSeries(result.Rows, expected);
-        var report = StreamDataGapAnalyzer.Analyse(series, from, to, interval);
-
-        if (report.Series.Any(s => s.HasOverlaps))
-        {
-            // Legal per the storage concept, but a sum over overlapping windows double-counts.
-            nodeContext.Warning(
-                $"Archive '{c.ArchiveRtId}' has overlapping windows in the analysed range for " +
-                $"{report.Series.Count(s => s.HasOverlaps)} of {report.SeriesCount} series. " +
-                "Aggregating over them counts the overlap more than once.");
-        }
-
-        nodeContext.Debug(
-            $"Gap report: {report.SeriesWithGapsCount} of {report.SeriesCount} series incomplete.");
-
-        return report;
     }
 
     private static async Task<StreamDataQueryResult> ExecuteAsync(IStreamDataRepository streamDataRepo,
@@ -316,37 +240,6 @@ public class GetStreamDataNode(
     }
 
     /// <summary>
-    /// Entity scope: the configured runtime ids, else the ones read from the pipeline data. The engine
-    /// turns these into an In-filter on the identity column.
-    /// </summary>
-    private static IReadOnlyList<OctoObjectId>? ResolveRtIds(IDataContext dataContext,
-        INodeContext nodeContext, GetStreamDataNodeConfiguration c)
-    {
-        var values = c.RtIds is { Count: > 0 }
-            ? c.RtIds.ToList()
-            : StreamDataNodeHelpers.ResolveStringListFromPath(dataContext, nodeContext, c.RtIdsPath,
-                nameof(c.RtIdsPath), "the query is not scoped to specific entities.")?.ToList();
-
-        if (values is not { Count: > 0 })
-        {
-            return null;
-        }
-
-        var rtIds = new List<OctoObjectId>(values.Count);
-        foreach (var value in values)
-        {
-            if (!OctoObjectId.TryParse(value, out var rtId))
-            {
-                throw MeshAdapterPipelineExecutionException.InvalidRtId(nodeContext, value);
-            }
-
-            rtIds.Add(rtId);
-        }
-
-        return rtIds;
-    }
-
-    /// <summary>
     /// The configured sort orders, with their column names translated to the physical ones. Without
     /// that translation a sort on a result header such as <c>WindowStart</c> is dropped by the
     /// storage layer without a word and the rows come back in storage order.
@@ -366,51 +259,6 @@ public class GetStreamDataNode(
                     "sorting"),
                 sort.SortOrder))
             .ToList();
-    }
-
-    /// <summary>
-    /// The well-known-name filter AND-combined with the node's configured field filters. The
-    /// well-known name is a standard column on every archive table, so it needs no special handling
-    /// beyond picking Equals for a single value and In for several. Configured filters go through the
-    /// same column translation as the sort orders — an unresolvable filter is dropped by the storage
-    /// layer, which would silently widen the result instead of narrowing it.
-    /// </summary>
-    private static IReadOnlyList<FieldFilter>? BuildFieldFilters(IDataContext dataContext,
-        INodeContext nodeContext, GetStreamDataNodeConfiguration c, ArchiveSnapshot snapshot)
-    {
-        var filters = new List<FieldFilter>();
-
-        var wellKnownNames = c.WellKnownNames is { Count: > 0 }
-            ? c.WellKnownNames.Where(n => !string.IsNullOrWhiteSpace(n)).ToList()
-            : StreamDataNodeHelpers.ResolveStringListFromPath(dataContext, nodeContext,
-                c.WellKnownNamesPath, nameof(c.WellKnownNamesPath),
-                "the query is not restricted by well-known name.")?.ToList();
-
-        if (wellKnownNames is { Count: > 0 })
-        {
-            filters.Add(wellKnownNames.Count == 1
-                ? new FieldFilter(StreamDataNodeHelpers.WellKnownNameColumn, FieldFilterOperator.Equals,
-                    wellKnownNames[0])
-                : new FieldFilter(StreamDataNodeHelpers.WellKnownNameColumn, FieldFilterOperator.In,
-                    wellKnownNames));
-        }
-
-        if (c.FieldFilters is { Count: > 0 })
-        {
-            // Reuses the shared conversion so the ComparisonValuePath logic (including wildcard
-            // expansion) is not duplicated here.
-            var scratch = RtEntityQueryOptions.Create();
-            c.FieldFilters.GetFieldFilter(dataContext, scratch);
-            if (scratch.FieldFilters != null)
-            {
-                filters.AddRange(scratch.FieldFilters.Select(f => new FieldFilter(
-                    StreamDataNodeHelpers.ResolveQueryableColumn(f.AttributePath, snapshot, nodeContext,
-                        "filtering"),
-                    f.Operator, f.ComparisonValue, f.SecondaryValue)));
-            }
-        }
-
-        return filters.Count == 0 ? null : filters;
     }
 
     /// <summary>

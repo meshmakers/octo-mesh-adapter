@@ -361,6 +361,73 @@ calendar-aligned rollup stored in another zone is already excluded from the ladd
 check rejects calendar-aligned rollups regardless of their zone, that resolver detail cannot influence the
 result at all — the only rungs ever read are fixed-size ones.
 
+#### AggregateStreamDataNode
+
+`AggregateStreamData@1` condenses archive columns into key figures over a time range — the sum of a
+month's energy, the maximum data quality in that month. Sibling of `GetStreamData@1`, which returns
+the rows themselves. Writes a `QueryResult` to `TargetPath`.
+
+```yaml
+- type: AggregateStreamData@1
+  archiveRtId: <archiveRtId>
+  aggregations:
+    - attributePath: Energy
+      function: SUM
+    - attributePath: DataQuality
+      function: MAXIMUM
+  groupBy: [ rtId ]
+  from: 2026-07-01T00:00:00
+  to:   2026-08-01T00:00:00
+  requireGapFree: true
+  targetPath: $.monthly
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ArchiveRtId` | OctoObjectId | RtId of the archive to read. Must be activated. Required |
+| `Aggregations` | collection | The key figures: `attributePath` + `function`. At least one. Required |
+| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row |
+| `WellKnownNames` / `WellKnownNamesPath` | collection\<string\> / string | Restrict to these source entities by name |
+| `RtIds` / `RtIdsPath` | collection\<string\> / string | Restrict to these source entities by runtime id |
+| `FieldFilters` | collection | Additional filters, AND-combined |
+| `From` / `To` (+ `…Path`) | DateTime? / string | Time range (UTC), both boundaries independently optional |
+| `RequireGapFree` | bool | Only aggregate when the range is fully covered |
+| `ExpectedInterval` | TimeSpan? | Interval the completeness check counts in. Defaults to the archive's period |
+| `MaxGapScanRows` | int? | Row cap for the completeness check (default 200000) |
+
+**Functions: `COUNT`, `MINIMUM`, `MAXIMUM`, `AVERAGE`, `SUM`.** `TIME_WEIGHTED_AVERAGE` and
+`STATE_DURATION` are refused: they need metadata this node cannot carry — a comparison value, or a
+raw archive's LOCF path — and their result keys follow different rules. Use `GetQueryById@1` with a
+persisted query that defines the aggregation per column; the error message says so.
+
+**Result shape.** Group-by columns first, then one column per key figure. Without `groupBy` there is
+exactly one row, even when storage returned nothing — the values are then null rather than the row
+being absent, so a downstream consumer always finds the shape it expects. Aggregating the same path
+more than once appends the function to the header (`Energy (Minimum)`), because the result keys are
+unique per function but a bare path header would not be.
+
+**`RequireGapFree`** runs the coverage check from `GetStreamData@1`'s gap detection *before* the
+aggregation, sharing its scan, row cap and interval fallback. If any entity is short, the node fails
+and names the affected series with how much is missing and where the first hole starts. There are no
+partial results: an incomplete month must not return a figure that looks valid but is too low. The
+guard needs both boundaries and a windowed archive.
+
+Three things it does not do, deliberately:
+
+- **Overlapping windows do not fail the guard.** They are legal per the storage concept, and
+  `requireGapFree` promises gap-freedom, not disjointness. They are warned about, because a `SUM`
+  counts the overlap twice — react to `hasOverlaps` from `GetStreamData@1`'s report if you must.
+- **`AVERAGE` is arithmetic, not time-weighted.** Identical for equal-length windows (the
+  quarter-hour case); for variable lengths a time-weighted average is the correct mean, which means
+  `GetQueryById@1`.
+- **No sorting, paging or row cap.** They have no meaning for an aggregation and are absent from the
+  configuration rather than present and ignored.
+
+Column names in `GroupBy`, `FieldFilters` and the `attributePath` values follow the same result
+vocabulary and translation as `GetStreamData@1`, with the same refusal for unknown names. On an
+aggregation the stakes are higher: a dropped filter inflates the figure, and a dropped group-by
+column collapses every group into one row. See AB#4722 / AB#4752.
+
 #### BackfillFromRtEntityNode
 
 Supplements entities with additional data from MongoDB.

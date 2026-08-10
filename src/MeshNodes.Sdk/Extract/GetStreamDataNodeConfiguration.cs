@@ -129,4 +129,37 @@ public record GetStreamDataNodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("TimeRange", 5, "jsonpath")]
     public string? LimitPath { get; init; }
+
+    /// <summary>
+    /// Where to write the coverage report. Setting it turns on gap detection: the node checks
+    /// whether every source entity delivered data for the whole time range and reports the
+    /// uncovered ranges per entity. Requires a time range with both boundaries and an archive that
+    /// stores row windows (time-range or rollup); raw archives have no windows to check.
+    /// </summary>
+    [PropertyGroup("Gaps", 0, "jsonpath")]
+    public string? GapsTargetPath { get; init; }
+
+    /// <summary>
+    /// The interval the gap counts are expressed in, e.g. "00:15:00" for quarter-hourly data. Must
+    /// be greater than zero when set. Defaults to the period declared on the archive; without
+    /// either, gaps are still reported as time ranges but the interval counts stay empty.
+    /// </summary>
+    [PropertyGroup("Gaps", 1)]
+    public TimeSpan? ExpectedInterval { get; init; }
+
+    /// <summary>
+    /// Report the gaps only and skip reading the data itself. Useful as a cheap completeness check
+    /// ahead of an expensive step. Requires <see cref="GapsTargetPath" />.
+    /// </summary>
+    [PropertyGroup("Gaps", 2)]
+    public bool GapsOnly { get; init; }
+
+    /// <summary>
+    /// Safety cap on the rows the gap scan reads (default 200000). Exceeding it fails the node
+    /// rather than returning a report built from a truncated scan. For scale: a year of
+    /// quarter-hourly data is about 35000 rows per entity. Must be greater than zero when set — use
+    /// the largest possible integer to scan without a practical cap, not zero.
+    /// </summary>
+    [PropertyGroup("Gaps", 3)]
+    public int? MaxGapScanRows { get; init; }
 }

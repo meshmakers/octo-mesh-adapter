@@ -32,6 +32,13 @@ public class GetStreamDataNode(
     private const string WindowEndHeader = "WindowEnd";
     private const string WellKnownNameHeader = "WellKnownName";
 
+    /// <summary>
+    /// Row cap for the coverage scan when none is configured. A year of quarter-hourly data is about
+    /// 35 000 rows per entity, so this leaves room for a handful of entities over a long range while
+    /// still bounding memory.
+    /// </summary>
+    private const int DefaultMaxGapScanRows = 200_000;
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -63,41 +70,174 @@ public class GetStreamDataNode(
             throw MeshAdapterPipelineExecutionException.StreamDataLimitInvalid(nodeContext, limit);
         }
 
-        var (columns, columnsFromArchive) = ResolveColumns(c, snapshot);
+        var detectGaps = !string.IsNullOrWhiteSpace(c.GapsTargetPath);
+        if (c.GapsOnly && !detectGaps)
+        {
+            throw MeshAdapterPipelineExecutionException.GapsOnlyWithoutTarget(nodeContext);
+        }
+
+        if (detectGaps)
+        {
+            if (from is null || to is null)
+            {
+                throw MeshAdapterPipelineExecutionException.GapDetectionTimeRangeRequired(nodeContext);
+            }
+
+            if (!snapshot.UsesWindowedStorage)
+            {
+                throw MeshAdapterPipelineExecutionException.GapDetectionRequiresWindowedArchive(
+                    nodeContext, c.ArchiveRtId);
+            }
+
+            // Both are rejected rather than quietly substituted: falling back to the default cap
+            // would hide that the configured value means nothing, and treating a zero interval as
+            // "none configured" would log a warning that sends the author looking in the wrong place.
+            if (c.MaxGapScanRows is <= 0)
+            {
+                throw MeshAdapterPipelineExecutionException.GapScanRowLimitInvalid(nodeContext,
+                    c.MaxGapScanRows);
+            }
+
+            if (c.ExpectedInterval is { Ticks: <= 0 })
+            {
+                throw MeshAdapterPipelineExecutionException.ExpectedIntervalInvalid(nodeContext,
+                    c.ExpectedInterval.Value);
+            }
+        }
+
+        // Resolved once and shared: both read JSONPath and warn on a path that resolves to nothing,
+        // so doing it per query would repeat the work and log the same warning twice.
+        var rtIds = ResolveRtIds(dataContext, nodeContext, c);
+        var fieldFilters = BuildFieldFilters(dataContext, nodeContext, c, snapshot);
+
+        if (!c.GapsOnly)
+        {
+            var (columns, columnsFromArchive) = ResolveColumns(c, snapshot);
+
+            var options = StreamDataQueryOptions.Create()
+                .WithCkTypeId(snapshot.TargetCkTypeId)
+                // Windowed archives alias window_end as timestamp on read, but only explicitly
+                // requested columns reach StreamDataRow.Values — so the window has to be asked for
+                // by name.
+                .WithColumns(BuildProjectedColumns(columns, snapshot))
+                .WithRtIds(rtIds)
+                // Both boundaries are independently optional; a one-sided range leaves the other open.
+                .WithTimeRange(from, to)
+                .WithLimit(limit)
+                .WithSortOrders(BuildSortOrders(c, snapshot, nodeContext))
+                .WithFieldFilters(fieldFilters)
+                // Skip/Take map onto the paginated read (offset / page size); the row cap is Limit.
+                .WithPagination(c.Skip, c.Take);
+
+            var result = await ExecuteAsync(streamDataRepo, c.ArchiveRtId, options, nodeContext);
+
+            nodeContext.Debug(
+                $"Read {result.Rows.Count} row(s) of {result.TotalCount} from archive '{c.ArchiveRtId}'.");
+
+            var queryResult = BuildQueryResult(columns, snapshot, result, columnsFromArchive);
+
+            dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
+        }
+
+        if (detectGaps)
+        {
+            var report = await DetectGapsAsync(streamDataRepo, snapshot, c, nodeContext,
+                from!.Value, to!.Value, rtIds, fieldFilters);
+
+            dataContext.Set(c.GapsTargetPath!, report, c.DocumentMode, c.TargetValueKind,
+                c.TargetValueWriteMode);
+        }
+
+        await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Runs the coverage scan and builds the report. Deliberately a query of its own: the data
+    /// query's Limit / Skip / Take would hide rows and make the scan invent gaps that are not there.
+    /// </summary>
+    private static async Task<StreamDataGapReport> DetectGapsAsync(IStreamDataRepository streamDataRepo,
+        ArchiveSnapshot snapshot, GetStreamDataNodeConfiguration c, INodeContext nodeContext,
+        DateTime from, DateTime to, IReadOnlyList<OctoObjectId>? rtIds,
+        IReadOnlyList<FieldFilter>? fieldFilters)
+    {
+        // Validated before this point, so a configured value is always positive here.
+        var maxRows = c.MaxGapScanRows ?? DefaultMaxGapScanRows;
+
+        // One over the cap, so a truncated scan is detectable rather than silently wrong — clamped
+        // because int.MaxValue (the natural way to ask for "no cap") would wrap into a negative
+        // limit and reach the storage layer as an invalid query.
+        var scanLimit = maxRows == int.MaxValue ? int.MaxValue : maxRows + 1;
 
         var options = StreamDataQueryOptions.Create()
             .WithCkTypeId(snapshot.TargetCkTypeId)
-            // Windowed archives alias window_end as timestamp on read, but only explicitly requested
-            // columns reach StreamDataRow.Values — so the window has to be asked for by name.
-            .WithColumns(BuildProjectedColumns(columns, snapshot))
-            .WithRtIds(ResolveRtIds(dataContext, nodeContext, c))
-            // Both boundaries are independently optional; a one-sided range leaves the other open.
+            // Only the window start: window_end arrives as the row's Timestamp and the well-known
+            // name sits on the row itself, so neither needs projecting.
+            .WithColumns([StreamDataNodeHelpers.WindowStartColumn])
+            .WithRtIds(rtIds)
             .WithTimeRange(from, to)
-            .WithLimit(limit)
-            .WithSortOrders(BuildSortOrders(c, snapshot, nodeContext))
-            .WithFieldFilters(BuildFieldFilters(dataContext, nodeContext, c, snapshot))
-            // Skip/Take map onto the paginated read (offset / page size); the row cap is Limit.
-            .WithPagination(c.Skip, c.Take);
+            .WithFieldFilters(fieldFilters)
+            .WithLimit(scanLimit);
 
-        StreamDataQueryResult result;
+        var result = await ExecuteAsync(streamDataRepo, c.ArchiveRtId, options, nodeContext);
+
+        if (result.Rows.Count > maxRows)
+        {
+            throw MeshAdapterPipelineExecutionException.GapScanRowLimitExceeded(nodeContext, maxRows);
+        }
+
+        // ExpectedInterval is already validated as positive, so only a missing or non-positive
+        // archive period can land here.
+        var interval = c.ExpectedInterval ?? snapshot.Period;
+        if (interval is not { Ticks: > 0 })
+        {
+            nodeContext.Warning(
+                "No interval known for the gap report — ExpectedInterval is unset and the archive " +
+                "declares no usable period. Gaps are reported as time ranges; the interval counts " +
+                "stay empty.");
+        }
+
+        // An entity that delivered nothing at all returns no rows and would be invisible. Where the
+        // caller named the entities, the expected set is known and each missing one is reported as a
+        // full-window gap instead.
+        var expected = rtIds?.Select(id => ((OctoObjectId?)id, (string?)null));
+        if (expected is null)
+        {
+            nodeContext.Debug(
+                "Gap report covers only entities with at least one row in the range; an entity that " +
+                "delivered nothing cannot be detected unless RtIds names it.");
+        }
+
+        var series = StreamDataGapAnalyzer.BuildSeries(result.Rows, expected);
+        var report = StreamDataGapAnalyzer.Analyse(series, from, to, interval);
+
+        if (report.Series.Any(s => s.HasOverlaps))
+        {
+            // Legal per the storage concept, but a sum over overlapping windows double-counts.
+            nodeContext.Warning(
+                $"Archive '{c.ArchiveRtId}' has overlapping windows in the analysed range for " +
+                $"{report.Series.Count(s => s.HasOverlaps)} of {report.SeriesCount} series. " +
+                "Aggregating over them counts the overlap more than once.");
+        }
+
+        nodeContext.Debug(
+            $"Gap report: {report.SeriesWithGapsCount} of {report.SeriesCount} series incomplete.");
+
+        return report;
+    }
+
+    private static async Task<StreamDataQueryResult> ExecuteAsync(IStreamDataRepository streamDataRepo,
+        OctoObjectId archiveRtId, StreamDataQueryOptions options, INodeContext nodeContext)
+    {
         try
         {
-            result = await streamDataRepo.ExecuteQueryAsync(c.ArchiveRtId, options);
+            return await streamDataRepo.ExecuteQueryAsync(archiveRtId, options);
         }
         catch (Exception ex)
         {
             throw MeshAdapterPipelineExecutionException.StreamDataArchiveQueryFailed(nodeContext,
-                c.ArchiveRtId, ex);
+                archiveRtId, ex);
         }
-
-        nodeContext.Debug(
-            $"Read {result.Rows.Count} row(s) of {result.TotalCount} from archive '{c.ArchiveRtId}'.");
-
-        var queryResult = BuildQueryResult(columns, snapshot, result, columnsFromArchive);
-
-        dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-
-        await next(dataContext, nodeContext);
     }
 
     /// <summary>

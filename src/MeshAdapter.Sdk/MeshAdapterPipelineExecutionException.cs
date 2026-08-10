@@ -455,6 +455,53 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"refused instead. Available: {knownColumns}.");
     }
 
+    public static Exception GapDetectionRequiresWindowedArchive(INodeContext nodeContext,
+        OctoObjectId archiveRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Gap detection needs an archive that stores a row window, " +
+            $"but '{archiveRtId}' is a raw archive holding single timestamps. There is no interval " +
+            "coverage to check — remove GapsTargetPath, or point the node at a time-range or " +
+            "rollup archive.");
+    }
+
+    public static Exception GapDetectionTimeRangeRequired(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Gap detection needs both From and To — coverage can only be " +
+            "judged against a closed time range. Set them literally or via FromPath / ToPath.");
+    }
+
+    public static Exception GapsOnlyWithoutTarget(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: GapsOnly skips the data query, so GapsTargetPath must be set " +
+            "— otherwise the node would produce no output at all.");
+    }
+
+    public static Exception GapScanRowLimitInvalid(INodeContext nodeContext, int? maxRows)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: MaxGapScanRows '{maxRows}' is not a usable cap. Provide a " +
+            "value greater than zero, or leave it unset for the default. To scan without a practical " +
+            "cap, set it to the largest possible integer rather than zero.");
+    }
+
+    public static Exception ExpectedIntervalInvalid(INodeContext nodeContext, TimeSpan interval)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ExpectedInterval '{interval}' must be greater than zero — " +
+            "the gap counts divide by it. Leave it unset to use the period declared on the archive.");
+    }
+
+    public static Exception GapScanRowLimitExceeded(INodeContext nodeContext, int maxRows)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The gap scan hit its row cap of {maxRows}. A report built " +
+            "from a truncated scan would invent gaps, so the node fails instead. Narrow the time " +
+            "range or the set of entities, or raise MaxGapScanRows.");
+    }
+
     public static Exception InvalidRtId(INodeContext nodeContext, string value)
     {
         return new MeshAdapterPipelineExecutionException(

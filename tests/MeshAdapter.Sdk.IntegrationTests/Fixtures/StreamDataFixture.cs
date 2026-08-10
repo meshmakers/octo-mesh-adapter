@@ -46,6 +46,38 @@ public class StreamDataFixture : SystemFixture
 
     public int TestDataPointCount { get; } = 5;
 
+    /// <summary>
+    /// Runtime id of an activated <c>TimeRangeArchive</c> (period 15 min) seeded with deliberate
+    /// gaps, for the coverage analysis. Two source entities over
+    /// <see cref="TimeRangeStart" />..<see cref="TimeRangeEnd" /> (eight quarter-hour windows):
+    /// <see cref="CompleteMeterRtId" /> delivers all eight, <see cref="GappyMeterRtId" /> is missing
+    /// the two windows from 00:30 and the last one at 01:45 — one gap in the middle, one at the edge.
+    /// </summary>
+    public OctoObjectId TimeRangeArchiveRtId { get; private set; }
+
+    public string TimeRangeArchiveRtIdString => TimeRangeArchiveRtId.ToString();
+
+    /// <summary>Start of the seeded time-range window.</summary>
+    public DateTime TimeRangeStart { get; } = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>End of the seeded time-range window — eight 15-minute slots after the start.</summary>
+    public DateTime TimeRangeEnd => TimeRangeStart.AddHours(2);
+
+    public TimeSpan TimeRangePeriod { get; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>The meter that delivered every window.</summary>
+    public OctoObjectId CompleteMeterRtId { get; } = OctoObjectId.GenerateNewId();
+
+    /// <summary>The meter with the two seeded gaps.</summary>
+    public OctoObjectId GappyMeterRtId { get; } = OctoObjectId.GenerateNewId();
+
+    public string CompleteMeterWellKnownName => "TR-METER-COMPLETE";
+
+    public string GappyMeterWellKnownName => "TR-METER-GAPPY";
+
+    /// <summary>Slot indices (0-based, 15 min each) deliberately left out for the gappy meter.</summary>
+    public static IReadOnlyList<int> MissingSlots { get; } = [2, 3, 7];
+
     public StreamDataFixture()
     {
         // Register the dedicated test CK model before the provider is built (base ctor already
@@ -104,6 +136,85 @@ public class StreamDataFixture : SystemFixture
 
         ArchiveRtId = await CreateAndActivateArchiveAsync();
         await InsertTestDataPoints();
+
+        TimeRangeArchiveRtId = await CreateAndActivateTimeRangeArchiveAsync();
+        await InsertTimeRangeTestDataAsync();
+    }
+
+    private async Task<OctoObjectId> CreateAndActivateTimeRangeArchiveAsync()
+    {
+        var systemContext = GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+
+        var archive = new RtTimeRangeArchive
+        {
+            RtWellKnownName = "SensorReadingTimeRangeArchive",
+            TargetCkTypeId = TestCkTypeId,
+            Status = RtCkArchiveStatusEnum.Created,
+            // Advisory only — the engine does not enforce that incoming windows match it, but the
+            // gap analysis falls back to it when the node configures no interval.
+            Period = TimeRangePeriod,
+            Columns = new AttributeRecordValueList<RtCkArchiveColumnRecord>
+            {
+                new() { Path = "Temperature", Indexed = true, Required = false }
+            }
+        };
+
+        using (var session = await tenantRepository.GetSessionAsync())
+        {
+            session.StartTransaction();
+            await tenantRepository.InsertOneRtEntityAsync(session, archive);
+            await session.CommitTransactionAsync();
+        }
+
+        var tenantContext = await systemContext.FindTenantContextAsync(systemContext.TenantId);
+        var lifecycle = tenantContext.GetArchiveLifecycleService()
+            ?? throw new InvalidOperationException("ArchiveLifecycleService not registered.");
+        await lifecycle.ActivateAsync(archive.RtId);
+        return archive.RtId;
+    }
+
+    /// <summary>
+    /// Eight consecutive quarter-hour windows for two meters. The gappy meter skips
+    /// <see cref="MissingSlots" />, producing one gap in the middle (00:30..01:00) and one at the
+    /// trailing edge (01:45..02:00) — enough to exercise both shapes the analysis distinguishes.
+    /// </summary>
+    private async Task InsertTimeRangeTestDataAsync()
+    {
+        var systemContext = GetSystemContext();
+        var tenantContext = await systemContext.FindTenantContextAsync(systemContext.TenantId);
+        var repo = tenantContext.GetStreamDataRepository()
+            ?? throw new InvalidOperationException("StreamDataRepository not available.");
+
+        var ckTypeId = new RtCkId<CkTypeId>(TestCkTypeId);
+        var points = new List<TimeRangeStreamDataPoint>();
+
+        for (var slot = 0; slot < 8; slot++)
+        {
+            var start = TimeRangeStart.Add(TimeRangePeriod * slot);
+            var end = start.Add(TimeRangePeriod);
+
+            points.Add(NewPoint(CompleteMeterRtId, CompleteMeterWellKnownName, start, end, slot));
+
+            if (!MissingSlots.Contains(slot))
+            {
+                points.Add(NewPoint(GappyMeterRtId, GappyMeterWellKnownName, start, end, slot));
+            }
+        }
+
+        await repo.InsertTimeRangeAsync(TimeRangeArchiveRtId, points);
+        await RefreshTableAsync(TimeRangeArchiveRtIdString);
+
+        TimeRangeStreamDataPoint NewPoint(OctoObjectId rtId, string wellKnownName, DateTime from,
+            DateTime to, int slot) => new()
+        {
+            From = from,
+            To = to,
+            RtId = rtId,
+            CkTypeId = ckTypeId,
+            RtWellKnownName = wellKnownName,
+            Attributes = new Dictionary<string, object?> { ["Temperature"] = 20.0 + slot }
+        };
     }
 
     private async Task<OctoObjectId> CreateAndActivateArchiveAsync()
@@ -177,9 +288,11 @@ public class StreamDataFixture : SystemFixture
     /// CrateDB applies inserts to the read path asynchronously (~1s). Force a refresh so the
     /// immediately-following query has read-after-write consistency.
     /// </summary>
-    private async Task RefreshArchiveTableAsync()
+    private Task RefreshArchiveTableAsync() => RefreshTableAsync(ArchiveRtIdString);
+
+    private async Task RefreshTableAsync(string archiveRtId)
     {
-        var qualifiedTable = $"\"{StreamDataTenantId}\".\"archive_{ArchiveRtIdString}\"";
+        var qualifiedTable = $"\"{StreamDataTenantId}\".\"archive_{archiveRtId}\"";
         await using var conn = new NpgsqlConnection(CrateDbConnectionString);
         await conn.OpenAsync();
         await using var cmd = new NpgsqlCommand($"REFRESH TABLE {qualifiedTable}", conn);

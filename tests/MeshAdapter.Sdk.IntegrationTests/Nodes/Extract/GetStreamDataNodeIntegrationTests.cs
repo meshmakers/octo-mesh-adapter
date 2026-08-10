@@ -315,6 +315,105 @@ public class GetStreamDataNodeIntegrationTests(StreamDataFixture fixture)
         await act.Should().ThrowAsync<MeshAdapterPipelineExecutionException>();
     }
 
+    // ------------------------------------------------------------- gap detection
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapDetection_FindsExactlyTheSeededGaps()
+    {
+        fixture.EnsureInitialized();
+
+        var report = await ExecuteGapsAsync(TimeRangeConfig() with { GapsOnly = true });
+
+        report.Should().NotBeNull();
+        report!.SeriesCount.Should().Be(2);
+        report.SeriesWithGapsCount.Should().Be(1);
+        report.IsComplete.Should().BeFalse();
+
+        var complete = report.Series.Single(s => s.WellKnownName == fixture.CompleteMeterWellKnownName);
+        complete.IsComplete.Should().BeTrue();
+        complete.Gaps.Should().BeEmpty();
+        complete.PresentIntervals.Should().Be(8);
+
+        // Slots 2+3 are one contiguous gap, slot 7 a second one at the trailing edge.
+        var gappy = report.Series.Single(s => s.WellKnownName == fixture.GappyMeterWellKnownName);
+        gappy.IsComplete.Should().BeFalse();
+        gappy.MissingIntervals.Should().Be(3);
+        gappy.PresentIntervals.Should().Be(5);
+        gappy.Gaps.Should().HaveCount(2);
+
+        gappy.Gaps[0].From.Should().Be(fixture.TimeRangeStart.AddMinutes(30));
+        gappy.Gaps[0].To.Should().Be(fixture.TimeRangeStart.AddMinutes(60));
+        gappy.Gaps[0].MissingIntervals.Should().Be(2);
+
+        gappy.Gaps[1].From.Should().Be(fixture.TimeRangeStart.AddMinutes(105));
+        gappy.Gaps[1].To.Should().Be(fixture.TimeRangeEnd);
+        gappy.Gaps[1].MissingIntervals.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapDetection_UsesThePeriodDeclaredOnTheArchive()
+    {
+        fixture.EnsureInitialized();
+
+        // No ExpectedInterval configured — the archive's own period has to supply the counts.
+        var report = await ExecuteGapsAsync(TimeRangeConfig() with { GapsOnly = true });
+
+        report!.Interval.Should().Be("PT15M");
+        report.Series.Should().AllSatisfy(s => s.ExpectedIntervals.Should().Be(8));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapDetection_HonoursTheWellKnownNameFilter()
+    {
+        fixture.EnsureInitialized();
+
+        var report = await ExecuteGapsAsync(TimeRangeConfig() with
+        {
+            GapsOnly = true,
+            WellKnownNames = [fixture.GappyMeterWellKnownName]
+        });
+
+        // The same filter narrows the coverage scan, not just the data query.
+        report!.SeriesCount.Should().Be(1);
+        report.Series[0].WellKnownName.Should().Be(fixture.GappyMeterWellKnownName);
+        report.Series[0].Gaps.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapDetection_AlongsideTheData_WritesBoth()
+    {
+        fixture.EnsureInitialized();
+
+        var config = TimeRangeConfig() with { Columns = ["Temperature"] };
+        var captured = await ExecuteBothAsync(config);
+
+        captured.Data.Should().NotBeNull();
+        captured.Data!.Columns.Select(c => c.Header)
+            .Should().Equal("Timestamp", "WindowStart", "WindowEnd", "Temperature");
+        // 8 complete + 5 gappy windows.
+        captured.Data.Rows.Should().HaveCount(13);
+
+        captured.Gaps.Should().NotBeNull();
+        captured.Gaps!.SeriesWithGapsCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapDetection_OnRawArchive_Throws()
+    {
+        fixture.EnsureInitialized();
+
+        var act = async () => await ExecuteGapsAsync(NewConfig() with
+        {
+            From = fixture.TestDataStartTime,
+            To = fixture.TestDataStartTime.AddHours(2),
+            GapsTargetPath = "$.gaps",
+            GapsOnly = true
+        });
+
+        (await act.Should().ThrowAsync<MeshAdapterPipelineExecutionException>())
+            .WithMessage("*raw archive*");
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private GetStreamDataNodeConfiguration NewConfig() => new()
@@ -328,6 +427,51 @@ public class GetStreamDataNodeIntegrationTests(StreamDataFixture fixture)
 
     private static SortOrderDto Descending(string attributeName)
         => new() { AttributeName = attributeName, SortOrder = SortOrdersDto.Descending };
+
+    private GetStreamDataNodeConfiguration TimeRangeConfig() => new()
+    {
+        ArchiveRtId = fixture.TimeRangeArchiveRtId,
+        TargetPath = "$.streamData",
+        GapsTargetPath = "$.gaps",
+        From = fixture.TimeRangeStart,
+        To = fixture.TimeRangeEnd
+    };
+
+    private async Task<StreamDataGapReport?> ExecuteGapsAsync(GetStreamDataNodeConfiguration config)
+        => (await ExecuteBothAsync(config)).Gaps;
+
+    private async Task<(QueryResult? Data, StreamDataGapReport? Gaps)> ExecuteBothAsync(
+        GetStreamDataNodeConfiguration config)
+    {
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var meshEtlContext = CreateMeshEtlContext(tenantRepository);
+
+        QueryResult? data = null;
+        StreamDataGapReport? gaps = null;
+        var dataContext = A.Fake<IDataContext>();
+        A.CallTo(dataContext)
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
+            .Invokes(call =>
+            {
+                switch (call.Arguments[1])
+                {
+                    case QueryResult qr: data = qr; break;
+                    case StreamDataGapReport report: gaps = report; break;
+                }
+            });
+
+        var logger = A.Fake<IPipelineLogger>();
+        var rootContext = NodeContext.CreateRootNodeContext(fixture.Provider!, logger, dataContext);
+        var nodeContext = rootContext.RegisterChildNode("GetStreamData", 0, config, dataContext);
+
+        Task Next(IDataContext dc, INodeContext nc) => Task.CompletedTask;
+        var node = new GetStreamDataNode(Next, meshEtlContext, systemContext);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        return (data, gaps);
+    }
 
     private async Task<QueryResult?> ExecuteAsync(GetStreamDataNodeConfiguration config)
     {

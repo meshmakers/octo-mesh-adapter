@@ -88,6 +88,21 @@ public class GetStreamDataNode(
                 throw MeshAdapterPipelineExecutionException.GapDetectionRequiresWindowedArchive(
                     nodeContext, c.ArchiveRtId);
             }
+
+            // Both are rejected rather than quietly substituted: falling back to the default cap
+            // would hide that the configured value means nothing, and treating a zero interval as
+            // "none configured" would log a warning that sends the author looking in the wrong place.
+            if (c.MaxGapScanRows is <= 0)
+            {
+                throw MeshAdapterPipelineExecutionException.GapScanRowLimitInvalid(nodeContext,
+                    c.MaxGapScanRows);
+            }
+
+            if (c.ExpectedInterval is { Ticks: <= 0 })
+            {
+                throw MeshAdapterPipelineExecutionException.ExpectedIntervalInvalid(nodeContext,
+                    c.ExpectedInterval.Value);
+            }
         }
 
         // Resolved once and shared: both read JSONPath and warn on a path that resolves to nothing,
@@ -146,7 +161,13 @@ public class GetStreamDataNode(
         DateTime from, DateTime to, IReadOnlyList<OctoObjectId>? rtIds,
         IReadOnlyList<FieldFilter>? fieldFilters)
     {
-        var maxRows = c.MaxGapScanRows is > 0 ? c.MaxGapScanRows.Value : DefaultMaxGapScanRows;
+        // Validated before this point, so a configured value is always positive here.
+        var maxRows = c.MaxGapScanRows ?? DefaultMaxGapScanRows;
+
+        // One over the cap, so a truncated scan is detectable rather than silently wrong — clamped
+        // because int.MaxValue (the natural way to ask for "no cap") would wrap into a negative
+        // limit and reach the storage layer as an invalid query.
+        var scanLimit = maxRows == int.MaxValue ? int.MaxValue : maxRows + 1;
 
         var options = StreamDataQueryOptions.Create()
             .WithCkTypeId(snapshot.TargetCkTypeId)
@@ -156,8 +177,7 @@ public class GetStreamDataNode(
             .WithRtIds(rtIds)
             .WithTimeRange(from, to)
             .WithFieldFilters(fieldFilters)
-            // One over the cap, so a truncated scan is detectable rather than silently wrong.
-            .WithLimit(maxRows + 1);
+            .WithLimit(scanLimit);
 
         var result = await ExecuteAsync(streamDataRepo, c.ArchiveRtId, options, nodeContext);
 
@@ -166,12 +186,15 @@ public class GetStreamDataNode(
             throw MeshAdapterPipelineExecutionException.GapScanRowLimitExceeded(nodeContext, maxRows);
         }
 
+        // ExpectedInterval is already validated as positive, so only a missing or non-positive
+        // archive period can land here.
         var interval = c.ExpectedInterval ?? snapshot.Period;
         if (interval is not { Ticks: > 0 })
         {
             nodeContext.Warning(
-                "No interval known for the gap report — neither ExpectedInterval nor a period on the " +
-                "archive. Gaps are reported as time ranges; the interval counts stay empty.");
+                "No interval known for the gap report — ExpectedInterval is unset and the archive " +
+                "declares no usable period. Gaps are reported as time ranges; the interval counts " +
+                "stay empty.");
         }
 
         // An entity that delivered nothing at all returns no rows and would be invisible. Where the

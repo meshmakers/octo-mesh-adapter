@@ -259,9 +259,9 @@ persisted query entity is needed. Writes a `QueryResult` (`Columns` + `Rows`) to
 | `Limit` | int? | Row cap. Must be greater than zero when set. Independent of `Skip`/`Take` |
 | `LimitPath` | string | Read the row cap from the pipeline data |
 | `GapsTargetPath` | string | Where to write the coverage report. Setting it turns gap detection on |
-| `ExpectedInterval` | TimeSpan? | Interval the gap counts use. Defaults to the archive's declared period |
+| `ExpectedInterval` | TimeSpan? | Interval the gap counts use, greater than zero. Defaults to the archive's declared period |
 | `GapsOnly` | bool | Report gaps only, skip reading the data |
-| `MaxGapScanRows` | int? | Row cap for the coverage scan (default 200000) |
+| `MaxGapScanRows` | int? | Row cap for the coverage scan (default 200000), greater than zero |
 
 **Precedence and UTC.** Per value the literal wins over the JSONPath variant. Timestamps may be
 ISO-8601 strings or date/time values; a value without a time-zone offset (`"2026-07-01T00:00:00"`) is
@@ -340,6 +340,9 @@ Three things worth knowing:
 - **It runs its own query**, deliberately separate from the data query, whose `Limit`/`Skip`/`Take`
   would hide rows and make the scan report gaps that are not there. `MaxGapScanRows` (default
   200 000) bounds it; exceeding the cap fails the node instead of reporting from a truncated scan.
+  A non-positive cap or `ExpectedInterval` is rejected rather than quietly replaced by the default —
+  a configured value that means nothing is a mistake worth naming. To scan without a practical cap,
+  use the largest possible integer, not zero.
 - **An entity that delivered nothing at all is invisible** to a coverage scan — it simply has no
   rows. Where `RtIds` names the expected entities, each one without rows is reported as a
   full-range gap instead; otherwise the limitation stands and the node logs it.

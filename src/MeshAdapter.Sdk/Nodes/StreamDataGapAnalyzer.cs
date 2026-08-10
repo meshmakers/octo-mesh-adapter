@@ -100,7 +100,9 @@ internal static class StreamDataGapAnalyzer
         {
             From = from,
             To = to,
-            Interval = interval.HasValue ? StreamDataGapDuration.ToIso8601(interval.Value) : null,
+            // Same guard as the per-series counts, so "Interval is set" and "the counts are set"
+            // always agree — a zero interval would otherwise surface as "PT0S" next to empty counts.
+            Interval = interval is { Ticks: > 0 } ? StreamDataGapDuration.ToIso8601(interval.Value) : null,
             SeriesCount = results.Count,
             SeriesWithGapsCount = results.Count(r => r.Gaps.Count != 0),
             IsComplete = results.All(r => r.IsComplete),

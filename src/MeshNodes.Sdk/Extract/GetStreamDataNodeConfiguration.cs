@@ -140,9 +140,9 @@ public record GetStreamDataNodeConfiguration : TargetPathNodeConfiguration
     public string? GapsTargetPath { get; init; }
 
     /// <summary>
-    /// The interval the gap counts are expressed in, e.g. "00:15:00" for quarter-hourly data.
-    /// Defaults to the period declared on the archive. Without either, gaps are still reported as
-    /// time ranges but the interval counts stay empty.
+    /// The interval the gap counts are expressed in, e.g. "00:15:00" for quarter-hourly data. Must
+    /// be greater than zero when set. Defaults to the period declared on the archive; without
+    /// either, gaps are still reported as time ranges but the interval counts stay empty.
     /// </summary>
     [PropertyGroup("Gaps", 1)]
     public TimeSpan? ExpectedInterval { get; init; }
@@ -157,7 +157,8 @@ public record GetStreamDataNodeConfiguration : TargetPathNodeConfiguration
     /// <summary>
     /// Safety cap on the rows the gap scan reads (default 200000). Exceeding it fails the node
     /// rather than returning a report built from a truncated scan. For scale: a year of
-    /// quarter-hourly data is about 35000 rows per entity.
+    /// quarter-hourly data is about 35000 rows per entity. Must be greater than zero when set — use
+    /// the largest possible integer to scan without a practical cap, not zero.
     /// </summary>
     [PropertyGroup("Gaps", 3)]
     public int? MaxGapScanRows { get; init; }

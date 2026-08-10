@@ -209,6 +209,20 @@ public class StreamDataGapAnalyzerTests
     }
 
     [Fact]
+    public void Analyse_ZeroInterval_OmitsIntervalAndCountsAlike()
+    {
+        // "Interval is set" and "the counts are set" must always agree — a zero interval must not
+        // surface as "PT0S" next to empty counts.
+        var report = StreamDataGapAnalyzer.Analyse([SeriesOf((0, 15))], From, To, TimeSpan.Zero);
+
+        Assert.Null(report.Interval);
+        Assert.Null(report.Series[0].ExpectedIntervals);
+        Assert.Null(report.Series[0].Gaps[0].MissingIntervals);
+        // The ranges themselves are still reported.
+        Assert.NotEmpty(report.Series[0].Gaps);
+    }
+
+    [Fact]
     public void Analyse_ReportsIntervalAsIso8601()
     {
         var report = StreamDataGapAnalyzer.Analyse([SeriesOf((0, 60))], From, To, Quarter);

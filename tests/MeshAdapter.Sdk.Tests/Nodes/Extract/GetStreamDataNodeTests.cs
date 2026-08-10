@@ -1006,6 +1006,76 @@ public class GetStreamDataNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_MaxGapScanRowsAtIntMaxValue_DoesNotOverflowTheLimit()
+    {
+        // int.MaxValue is the natural way to ask for "no cap"; maxRows + 1 would wrap negative and
+        // reach the storage layer as an invalid limit.
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        SetupQueryResult(WindowRow(0, 60));
+
+        var config = GapConfig() with { GapsOnly = true, MaxGapScanRows = int.MaxValue };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(int.MaxValue, _capturedOptions!.Limit);
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task ProcessObjectAsync_NonPositiveMaxGapScanRows_Throws(int maxRows)
+    {
+        // Silently falling back to the default would hide that the configured value means nothing.
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var config = GapConfig() with { GapsOnly = true, MaxGapScanRows = maxRows };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("MaxGapScanRows", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ZeroExpectedInterval_Throws()
+    {
+        // Treating it as "none configured" would warn about an unset property the author did set.
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var config = GapConfig() with { GapsOnly = true, ExpectedInterval = TimeSpan.Zero };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("ExpectedInterval", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ArchivePeriodOfZero_ReportsRangesWithoutCounts()
+    {
+        // The remaining path to "no interval": nothing configured and the archive declares none.
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy"))
+            with { Period = TimeSpan.Zero });
+        SetupQueryResult(WindowRow(0, 15));
+
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger(GapConfig() with { GapsOnly = true });
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // Interval and counts agree: both absent, never "PT0S" next to empty counts.
+        Assert.Null(gaps.Value!.Interval);
+        Assert.Null(gaps.Value.Series[0].ExpectedIntervals);
+        Assert.NotEmpty(gaps.Value.Series[0].Gaps);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("No interval known"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_GapsOnRawArchive_Throws()
     {
         // A raw archive stores single timestamps — there is no interval coverage to judge.

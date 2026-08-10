@@ -479,6 +479,21 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "— otherwise the node would produce no output at all.");
     }
 
+    public static Exception GapScanRowLimitInvalid(INodeContext nodeContext, int? maxRows)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: MaxGapScanRows '{maxRows}' is not a usable cap. Provide a " +
+            "value greater than zero, or leave it unset for the default. To scan without a practical " +
+            "cap, set it to the largest possible integer rather than zero.");
+    }
+
+    public static Exception ExpectedIntervalInvalid(INodeContext nodeContext, TimeSpan interval)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ExpectedInterval '{interval}' must be greater than zero — " +
+            "the gap counts divide by it. Leave it unset to use the period declared on the archive.");
+    }
+
     public static Exception GapScanRowLimitExceeded(INodeContext nodeContext, int maxRows)
     {
         return new MeshAdapterPipelineExecutionException(

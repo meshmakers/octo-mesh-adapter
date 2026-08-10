@@ -784,6 +784,285 @@ public class GetStreamDataNodeTests : NodeTestBase
         Assert.Contains("WellKnownName", captured.Value!.Columns.Select(x => x.Header));
     }
 
+    // ------------------------------------------------------------- gap detection
+
+    private static readonly DateTime GapFrom = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime GapTo = new(2026, 7, 1, 13, 0, 0, DateTimeKind.Utc);
+
+    private GetStreamDataNodeConfiguration GapConfig() => Config() with
+    {
+        From = GapFrom,
+        To = GapTo,
+        GapsTargetPath = "$.gaps"
+    };
+
+    private static StreamDataRow WindowRow(int startMin, int endMin, string wellKnownName = "METER-A")
+        => new()
+        {
+            RtId = new OctoObjectId("000000000000000000000001"),
+            RtWellKnownName = wellKnownName,
+            Timestamp = GapFrom.AddMinutes(endMin),
+            Values = new Dictionary<string, object?>
+            {
+                ["window_start"] = GapFrom.AddMinutes(startMin)
+            }
+        };
+
+    private sealed class GapBox
+    {
+        public StreamDataGapReport? Value { get; set; }
+    }
+
+    private static GapBox CaptureGaps(IDataContext dataContext)
+    {
+        var box = new GapBox();
+        A.CallTo(dataContext)
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
+            .Invokes(call =>
+            {
+                if (call.Arguments[1] is StreamDataGapReport report) box.Value = report;
+            });
+        return box;
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapsTargetPath_WritesReportAndRunsSecondQuery()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        SetupQueryResult(WindowRow(0, 15), WindowRow(15, 30), WindowRow(45, 60));
+
+        var (dataContext, nodeContext, next) = PrepareTest(GapConfig());
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // Data query plus a dedicated coverage scan — the data query's paging would hide rows.
+        A.CallTo(() => _streamDataRepository.ExecuteQueryAsync(
+            A<OctoObjectId>._, A<StreamDataQueryOptions>._)).MustHaveHappenedTwiceExactly();
+
+        Assert.NotNull(gaps.Value);
+        var series = Assert.Single(gaps.Value!.Series);
+        var gap = Assert.Single(series.Gaps);
+        Assert.Equal(GapFrom.AddMinutes(30), gap.From);
+        Assert.Equal(GapFrom.AddMinutes(45), gap.To);
+        A.CallTo(() => dataContext.Set("$.gaps", A<StreamDataGapReport?>._,
+            A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapScan_RequestsOnlyTheWindowStart()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var (dataContext, nodeContext, next) = PrepareTest(GapConfig() with { GapsOnly = true });
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // window_end arrives as the row timestamp and the name sits on the row — neither is projected.
+        Assert.Equal(["window_start"], _capturedOptions!.Columns);
+        Assert.Null(_capturedOptions.Offset);
+        Assert.Null(_capturedOptions.PageSize);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapsOnly_SkipsTheDataQuery()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        SetupQueryResult(WindowRow(0, 60));
+
+        var (dataContext, nodeContext, next) = PrepareTest(GapConfig() with { GapsOnly = true });
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => _streamDataRepository.ExecuteQueryAsync(
+            A<OctoObjectId>._, A<StreamDataQueryOptions>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataContext.Set("$.result", A<QueryResult?>._,
+            A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapsOnly_DoesNotValidateSortColumns()
+    {
+        // The sort belongs to a query that never runs; failing on it would only confuse.
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var config = GapConfig() with
+        {
+            GapsOnly = true,
+            SortOrders = [new SortOrderDto { AttributeName = "Nonsense", SortOrder = SortOrdersDto.Ascending }]
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapScan_UsesArchivePeriodAsInterval()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy"))
+            with { Period = TimeSpan.FromMinutes(15) });
+        SetupQueryResult(WindowRow(0, 15));
+
+        var (dataContext, nodeContext, next) = PrepareTest(GapConfig() with { GapsOnly = true });
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("PT15M", gaps.Value!.Interval);
+        Assert.Equal(4, gaps.Value.Series[0].ExpectedIntervals);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ExpectedInterval_WinsOverArchivePeriod()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy"))
+            with { Period = TimeSpan.FromMinutes(15) });
+        SetupQueryResult(WindowRow(0, 15));
+
+        var config = GapConfig() with { GapsOnly = true, ExpectedInterval = TimeSpan.FromMinutes(30) };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("PT30M", gaps.Value!.Interval);
+        Assert.Equal(2, gaps.Value.Series[0].ExpectedIntervals);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NoIntervalAnywhere_WarnsAndOmitsCounts()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        SetupQueryResult(WindowRow(0, 15));
+
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger(GapConfig() with { GapsOnly = true });
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Null(gaps.Value!.Interval);
+        Assert.Null(gaps.Value.Series[0].ExpectedIntervals);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("No interval known"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_OverlappingWindows_AreWarnedAboutNotFailed()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        SetupQueryResult(WindowRow(0, 60), WindowRow(0, 30));
+
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger(GapConfig() with { GapsOnly = true });
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.True(gaps.Value!.Series[0].HasOverlaps);
+        Assert.True(gaps.Value.IsComplete);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("overlapping windows"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConfiguredRtIdWithoutRows_BecomesAFullGap()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        // Nothing at all came back for the requested entity.
+        SetupQueryResult();
+
+        var config = GapConfig() with { GapsOnly = true, RtIds = ["000000000000000000000009"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var gaps = CaptureGaps(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        var series = Assert.Single(gaps.Value!.Series);
+        Assert.Equal(new OctoObjectId("000000000000000000000009"), series.RtId);
+        var gap = Assert.Single(series.Gaps);
+        Assert.Equal(GapFrom, gap.From);
+        Assert.Equal(GapTo, gap.To);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapScanRowCapExceeded_Throws()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+        // Cap of 1 means the scan asks for 2; returning 2 proves it was truncated.
+        SetupQueryResult(WindowRow(0, 15), WindowRow(15, 30));
+
+        var config = GapConfig() with { GapsOnly = true, MaxGapScanRows = 1 };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("row cap", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapsOnRawArchive_Throws()
+    {
+        // A raw archive stores single timestamps — there is no interval coverage to judge.
+        SetupArchive(CreateSnapshot(columns: Ingested("Temperature")));
+
+        var (dataContext, nodeContext, next) = PrepareTest(GapConfig());
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("raw archive", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task ProcessObjectAsync_GapsWithoutBothBoundaries_Throws(bool withFrom, bool withTo)
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var config = Config() with
+        {
+            GapsTargetPath = "$.gaps",
+            From = withFrom ? GapFrom : null,
+            To = withTo ? GapTo : null
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GapsOnlyWithoutTargetPath_Throws()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var config = Config() with { GapsOnly = true, From = GapFrom, To = GapTo };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithoutGapsTargetPath_RunsOnlyTheDataQuery()
+    {
+        SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy")));
+
+        var (dataContext, nodeContext, next) = PrepareTest(Config());
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => _streamDataRepository.ExecuteQueryAsync(
+            A<OctoObjectId>._, A<StreamDataQueryOptions>._)).MustHaveHappenedOnceExactly();
+    }
+
     private static void SetupMatches(IDataContext dataContext, string path, JsonArray array)
     {
         var match = A.Fake<IDataContext>();

@@ -1,8 +1,8 @@
 # Concept: `GetStreamData@1` / `AggregateStreamData@1` — Extract-Nodes für Stream Data Archives
 
-> Status: **AB#4726 (§5) implementiert. §6 und §7 offen.**
+> Status: **AB#4726 (§5) und AB#4728 (§6) implementiert. §7 offen.**
 > Azure DevOps: **AB#4722** (Issue) mit den Tasks **AB#4726** (Basisfunktionalität, erledigt),
-> **AB#4728** (Gap-Detection) und **AB#4752** (Spalten-Aggregation, §7).
+> **AB#4728** (Gap-Detection, erledigt) und **AB#4752** (Spalten-Aggregation, §7).
 > **AB#4727 (Downsampling) ist bewusst nicht Teil dieses Features** — siehe §2.
 > Epic: AB#3364 „Stream Data v2: deep system integration on an archive-based foundation".
 >
@@ -70,7 +70,7 @@ eine verdichtete Näherung. Dazu passend zwei Ergänzungen:
 * **Die Ergebnisform ist eine andere:** eine Kennzahlenzeile (bzw. eine je Gruppe) statt n Rohdatenzeilen.
 * **Kein Modus-Enum.** Ein Node mit drei sich ausschließenden Betriebsarten wäre schwer zu
   dokumentieren und zu validieren.
-* **Die Lückenlogik wird trotzdem nicht dupliziert.** `StreamDataGapAnalyzer` (§6.3) ist per Design
+* **Die Lückenlogik wird trotzdem nicht dupliziert.** `StreamDataGapAnalyzer` (§6.4) ist per Design
   eine reine, DB-freie Funktion in `Nodes/`; beide Nodes rufen sie auf. Geteilt werden
   außerdem `StreamDataNodeHelpers` (§5.2) und die Archiv-/Filter-Auflösung aus §4. Dupliziert werden
   nur einige Config-Deklarationen.
@@ -493,7 +493,25 @@ Additiv auf §5. Liefert außerdem den `StreamDataGapAnalyzer`, den §7 für `re
 [PropertyGroup("Gaps", 3)] public int? MaxGapScanRows { get; init; }
 ```
 
-### 6.2 Eigene Abfrage
+### 6.2 Einbettung in den bestehenden Node
+
+Nachgetragen nach der Umsetzung von §5 — der Node ist seither gewachsen, und der Gap-Zweig muss sich
+an vier Stellen einfügen statt danebenzustehen:
+
+* **`RtIds` und Feldfilter einmal auflösen.** `ResolveRtIds` und `BuildFieldFilters` werten JSONPath
+  aus und warnen bei einem Pfad, der ins Leere zeigt. Ein zweiter Aufruf für den Gap-Scan würde
+  dieselbe Warnung ein zweites Mal loggen und die Pfade erneut auswerten. Beide Werte werden vor den
+  Queries **einmal** ermittelt und an beide weitergereicht.
+* **Bei `GapsOnly` nichts für die Datenabfrage vorbereiten.** `ResolveColumns`, `BuildProjectedColumns`
+  und vor allem `BuildSortOrders` entfallen — letzteres wirft bei einer unbekannten Sortierspalte
+  (§4), und dieser Fehler wäre für eine Abfrage, die gar nicht ausgeführt wird, nur verwirrend.
+* **`WellKnownName` nicht projizieren.** Er steht wie `Timestamp` direkt auf `StreamDataRow`; der
+  Gap-Scan fordert nur `window_start` an.
+* **Zeitbereichs-Validierung erweitern.** Der Node erlaubt offene Grenzen; sobald die Lückenanalyse
+  aktiv ist, sind `From` und `To` Pflicht (§6.7) — geprüft wird das zusätzlich zur bestehenden
+  `From >= To`-Prüfung.
+
+### 6.3 Eigene Abfrage
 
 Die Lückenanalyse braucht eine **eigene** Query — `Limit`/`Skip`/`Take` der Datenabfrage würden das
 Ergebnis verfälschen:
@@ -515,7 +533,7 @@ Sortiert wird in-memory — es wird ohnehin alles materialisiert.
 Node mit klarer Meldung ab („Zeitraum oder Entitätsmenge einschränken"), statt still ein falsches
 Ergebnis zu liefern. Zur Einordnung: ein Jahr 15-Minuten-Werte = 35 040 Zeilen pro Entität.
 
-### 6.3 Algorithmus
+### 6.4 Algorithmus
 
 `src/MeshAdapter.Sdk/Nodes/StreamDataGapAnalyzer.cs` — eine reine, DB-freie Funktion und
 damit der wertvollste Testpunkt des ganzen Features. Wird von `GetStreamData@1` (Report) und
@@ -547,7 +565,7 @@ Intervall werden die Lücken trotzdem als Zeitbereiche gemeldet, die `*Intervals
 `null` und es wird einmal gewarnt. `missingIntervals` je Lücke = `ceil(duration / interval)`;
 `duration` ist immer exakt.
 
-### 6.4 Bekannte Grenze — bewusst und zu dokumentieren
+### 6.5 Bekannte Grenze — bewusst und zu dokumentieren
 
 Ein Coverage-Scan sieht nur Entitäten mit **mindestens einer Zeile** im Fenster. Eine Entität, die im
 gesamten Zeitraum gar nichts geliefert hat, taucht nicht auf.
@@ -557,7 +575,7 @@ Entität ohne Zeilen wird eine Serie mit einer einzigen Lücke über `[from, to)
 `isComplete: false` erzeugt. Ohne diese Angabe wird die Einschränkung im Node-Doc-Kommentar und im
 Developer-Guide festgehalten und einmal als Info geloggt.
 
-### 6.5 Ergebnisform
+### 6.6 Ergebnisform
 
 `src/MeshAdapter.Sdk/Nodes/StreamDataGapReport.cs` — interne Records; `OctoObjectId` mit
 `[JsonConverter(typeof(OctoObjectIdConverter))]` wie `QueryResultRow` in `Nodes/Query.cs`.
@@ -596,7 +614,7 @@ series:
 Zeitspannen werden als ISO-8601-String (`XmlConvert.ToString(TimeSpan)`) **und** als
 `*Seconds`-`double` ausgegeben — der String ist lesbar, die Zahl in nachgelagerten Nodes rechenbar.
 
-### 6.6 Validierung
+### 6.7 Validierung
 
 `GapsTargetPath` gesetzt ⇒ `From` und `To` Pflicht, und das Archiv muss `UsesWindowedStorage` sein
 (TimeRange oder Rollup; Raw-Archive haben keine Fenster). `GapsOnly` ohne `GapsTargetPath` ⇒ Fehler.
@@ -604,7 +622,7 @@ Zeitspannen werden als ISO-8601-String (`XmlConvert.ToString(TimeSpan)`) **und**
 Neue Factories: `GapDetectionRequiresWindowedArchive`, `GapDetectionTimeRangeRequired`,
 `GapScanRowLimitExceeded`.
 
-### 6.7 Tests
+### 6.8 Tests
 
 **`tests/MeshAdapter.Sdk.Tests/Nodes/StreamDataGapAnalyzerTests.cs`** — komplett ohne DB:
 lückenlos; Lücke in der Mitte / am Anfang / am Ende; mehrere Lücken; überlappende Fenster
@@ -720,7 +738,7 @@ Unterstützte Funktionen (aus `AggregationFunction`): `Count`, `Minimum`, `Maxim
 1. Repository + `ArchiveSnapshot` auflösen (§4).
 2. `From`/`To` auflösen und nach UTC normalisieren.
 3. Filter bauen (§4).
-4. **Wenn `RequireGapFree`:** Gap-Scan nach §6.2/§6.3 **vor** der Aggregation. Ist eine Serie
+4. **Wenn `RequireGapFree`:** Gap-Scan nach §6.3/§6.4 **vor** der Aggregation. Ist eine Serie
    unvollständig → Pipeline-Exception, die die betroffenen Serien mit `wellKnownName`, fehlenden
    Intervallen und dem ersten Lückenbereich benennt. Keine teilweisen Ergebnisse: entweder alle
    Serien sind lückenlos oder der Node bricht ab.
@@ -815,7 +833,7 @@ Exception; Validierungsfehler (`Aggregations` leer, `None`, `StateDuration` ohne
 
 **Integration** —
 `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/AggregateStreamDataNodeIntegrationTests.cs`
-gegen das TimeRange-Archiv aus §6.7: Summe über den lückenlosen Zeitraum entspricht der
+gegen das TimeRange-Archiv aus §6.8: Summe über den lückenlosen Zeitraum entspricht der
 Handsumme der eingefügten Werte; `MAXIMUM` liefert den erwarteten Höchstwert; `groupBy: [rtId]`
 liefert eine Zeile je Zähler; `requireGapFree: true` schlägt für die Serie mit den künstlichen
 Lücken fehl und geht für die lückenlose Serie durch.

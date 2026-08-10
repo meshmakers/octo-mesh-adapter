@@ -258,6 +258,10 @@ persisted query entity is needed. Writes a `QueryResult` (`Columns` + `Rows`) to
 | `FromPath` / `ToPath` | string | Read the boundaries from the pipeline data instead |
 | `Limit` | int? | Row cap. Must be greater than zero when set. Independent of `Skip`/`Take` |
 | `LimitPath` | string | Read the row cap from the pipeline data |
+| `GapsTargetPath` | string | Where to write the coverage report. Setting it turns gap detection on |
+| `ExpectedInterval` | TimeSpan? | Interval the gap counts use. Defaults to the archive's declared period |
+| `GapsOnly` | bool | Report gaps only, skip reading the data |
+| `MaxGapScanRows` | int? | Row cap for the coverage scan (default 200000) |
 
 **Precedence and UTC.** Per value the literal wins over the JSONPath variant. Timestamps may be
 ISO-8601 strings or date/time values; a value without a time-zone offset (`"2026-07-01T00:00:00"`) is
@@ -304,6 +308,45 @@ refused for the same reason — that archive has no row window.
 **Errors** surface through the standard pipeline-exception channel — stream data not enabled for the
 tenant, archive not found, a malformed runtime id, an inverted time range, a non-positive `Limit`, an
 unknown sort/filter column, and any storage-level failure — so there are no silent empty results.
+
+**Gap detection** (AB#4728). Setting `GapsTargetPath` makes the node additionally check whether the
+queried range is actually covered, and write a report there:
+
+```yaml
+- type: GetStreamData@1
+  archiveRtId: <archiveRtId>
+  from: 2026-07-01T00:00:00
+  to:   2026-07-02T00:00:00
+  targetPath:     $.data
+  gapsTargetPath: $.gaps
+```
+
+Reported **per source entity** — a missing quarter-hour on one meter must not be hidden by another
+meter delivering. Each series carries its gaps as time ranges with duration and missing-interval
+count, plus `isComplete`; the report as a whole carries `seriesCount`, `seriesWithGapsCount` and its
+own `isComplete`, so a following `If@1` can branch on one field.
+
+How it works: every stored `[window_start, window_end)` in the range is clamped to it, overlapping
+and adjacent windows are merged, and whatever the merge does not cover is a gap. That needs **no**
+declared period — a `TimeRangeArchive`'s `Period` is advisory and may be null — and it copes with
+windows of differing length. A known interval (`ExpectedInterval`, else the archive's `Period`) only
+adds the counts; without one the gaps are still reported as ranges and the node warns once.
+
+Three things worth knowing:
+
+- **Requires a windowed archive** (time-range or rollup) and both time boundaries. A raw archive
+  stores single timestamps and has no interval coverage to judge — the node refuses rather than
+  inventing an answer.
+- **It runs its own query**, deliberately separate from the data query, whose `Limit`/`Skip`/`Take`
+  would hide rows and make the scan report gaps that are not there. `MaxGapScanRows` (default
+  200 000) bounds it; exceeding the cap fails the node instead of reporting from a truncated scan.
+- **An entity that delivered nothing at all is invisible** to a coverage scan — it simply has no
+  rows. Where `RtIds` names the expected entities, each one without rows is reported as a
+  full-range gap instead; otherwise the limitation stands and the node logs it.
+
+Overlapping windows are not gaps and do not fail anything — the storage concept allows them — but
+they are flagged per series as `hasOverlaps` and warned about once, because a sum over them counts
+the overlap twice.
 
 Not in scope for this node: downsampling and resolution-aware rollup selection. Both are covered by
 `GetQueryById@1` with a persisted `RtDownsamplingSdQuery`; `GetStreamData@1` always reads exactly the

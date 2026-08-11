@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
@@ -27,6 +27,28 @@ public class GetQueryByIdNodeTests : NodeTestBase
 {
     private static readonly OctoObjectId TestQueryRtId = new("000000000000000000000099");
     private static readonly CkId<CkTypeId> TestCkTypeId = new("TestModel", new CkTypeId("TestType-1"));
+
+    /// <summary>
+    /// Snapshot of the archive the stream-data queries read. Its columns are what the field resolver
+    /// registers, so a persisted query column only maps to a storage key if it appears here.
+    /// </summary>
+    private static readonly ArchiveSnapshot TestArchiveSnapshot = new(
+        TestArchiveRtId,
+        new RtCkId<CkTypeId>("TestModel/TestType-1"),
+        CkArchiveStatus.Activated,
+        "test-archive",
+        [
+            new CkArchiveColumnSpec("Temperature", false, false),
+            new CkArchiveColumnSpec("Amount.Value", false, false),
+            new CkArchiveColumnSpec("Amount.Unit", false, false),
+            new CkArchiveColumnSpec("SerialNumber", false, false),
+            new CkArchiveColumnSpec("obisCode", false, false)
+        ])
+    {
+        // Windowed, so the resolver also knows window_start / was_updated — the physical-column test
+        // projects them alongside the attribute paths.
+        IsTimeRange = true
+    };
     private const string TestTenantId = "test-tenant";
 
     private readonly IMeshEtlContext _etlContext;
@@ -66,6 +88,11 @@ public class GetQueryByIdNodeTests : NodeTestBase
         // ladder (no base archive, no rollups) so a test only sets up what it exercises.
         A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._))
             .Returns(Task.FromResult<ArchiveSnapshot?>(null));
+        // The stream-data path needs the queried archive's snapshot to build the field resolver that
+        // maps each persisted column onto its storage key (AB#4764). Registered for the query archive
+        // only, so the ladder default above still holds for every other id.
+        A.CallTo(() => _archiveStore.GetAsync(TestArchiveRtId))
+            .Returns(Task.FromResult<ArchiveSnapshot?>(TestArchiveSnapshot));
         A.CallTo(() => _rollupStore.EnumerateAsync())
             .Returns(AsAsyncEnumerable(Array.Empty<RollupArchiveSnapshot>()));
 
@@ -628,6 +655,33 @@ public class GetQueryByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_SnapshotUnavailable_WarnsAboutTheReducedResolution()
+    {
+        // Without a snapshot only the standard columns resolve, which brings back the AB#4764 symptom
+        // for anything computed. Degrading is deliberate here (the downsampling path relies on it), so
+        // the safeguard is that it cannot happen quietly — and this store returns null without throwing,
+        // the path that used to produce no log line at all.
+        A.CallTo(() => _archiveStore.GetAsync(TestArchiveRtId))
+            .Returns(Task.FromResult<ArchiveSnapshot?>(null));
+
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // Warned, and the query still ran — the fallback is a degradation, not a failure.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("computed column may come back empty"), A<object[]>._))
+            .MustHaveHappened();
         VerifyNextCalled(next, dataContext, nodeContext);
     }
 
@@ -1526,6 +1580,11 @@ public class GetQueryByIdNodeTests : NodeTestBase
     [Fact]
     public async Task ProcessObjectAsync_ResolutionAwareWithEmptyLadder_WarnsAndKeepsPersistedArchive()
     {
+        // An empty ladder means the archive itself does not resolve, so the shared default that
+        // supplies its snapshot has to be taken back for this test.
+        A.CallTo(() => _archiveStore.GetAsync(TestArchiveRtId))
+            .Returns(Task.FromResult<ArchiveSnapshot?>(null));
+
         var config = CreateDownsamplingConfig();
         var (dataContext, nodeContext, next, logger) =
             PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);

@@ -279,31 +279,36 @@ public class StreamDataNodeHelpersTests
     // ---------------------------------------------- ResolveStreamColumnValue
 
     [Fact]
-    public void ResolveStreamColumnValue_StandardColumn_MatchesDirectly()
+    public void ResolveStreamColumnValue_ReadsByStorageKey()
     {
-        var values = new Dictionary<string, object?> { ["window_start"] = "x" };
+        // No derivation happens here any more — the caller supplies the key the query layer used,
+        // which is what makes a versioned computed column readable at all (AB#4764).
+        var values = new Dictionary<string, object?>
+        {
+            ["amountvalue"] = 42.0,
+            ["mycomputed__v2"] = 7.5
+        };
 
-        Assert.Equal("x", StreamDataNodeHelpers.ResolveStreamColumnValue(values, "window_start"));
-    }
-
-    [Theory]
-    [InlineData("Amount.Value", "amountvalue")]
-    [InlineData("obisCode", "obiscode")]
-    [InlineData("sensor.reading.value", "sensorreadingvalue")]
-    public void ResolveStreamColumnValue_DottedOrMixedCasePath_ResolvesViaPhysicalName(
-        string attributePath, string physicalColumn)
-    {
-        var values = new Dictionary<string, object?> { [physicalColumn] = 42.0 };
-
-        Assert.Equal(42.0, StreamDataNodeHelpers.ResolveStreamColumnValue(values, attributePath));
+        Assert.Equal(42.0, StreamDataNodeHelpers.ResolveStreamColumnValue(values, "amountvalue"));
+        Assert.Equal(7.5, StreamDataNodeHelpers.ResolveStreamColumnValue(values, "mycomputed__v2"));
     }
 
     [Fact]
-    public void ResolveStreamColumnValue_MissingColumn_ReturnsNull()
+    public void ResolveStreamColumnValue_MissingKey_ReturnsNull()
     {
         var values = new Dictionary<string, object?> { ["temperature"] = 20.0 };
 
-        Assert.Null(StreamDataNodeHelpers.ResolveStreamColumnValue(values, "Humidity"));
+        Assert.Null(StreamDataNodeHelpers.ResolveStreamColumnValue(values, "humidity"));
+    }
+
+    [Fact]
+    public void ResolveStreamColumnValue_DoesNotNormaliseTheKey()
+    {
+        // Passing an attribute path where a storage key is expected must miss rather than silently
+        // work — otherwise the derivation would be back, just implicitly.
+        var values = new Dictionary<string, object?> { ["amountvalue"] = 42.0 };
+
+        Assert.Null(StreamDataNodeHelpers.ResolveStreamColumnValue(values, "Amount.Value"));
     }
 
     // ----------------------------------------- ResolveStreamAggregationValue
@@ -314,7 +319,7 @@ public class StreamDataNodeHelpersTests
         var values = new Dictionary<string, object?> { ["amountvalue_avg"] = 21.5 };
 
         var result = StreamDataNodeHelpers.ResolveStreamAggregationValue(
-            values, "Amount.Value", AggregationTypesDto.Average);
+            values, "amountvalue", AggregationTypesDto.Average);
 
         Assert.Equal(21.5, result);
     }
@@ -326,7 +331,7 @@ public class StreamDataNodeHelpersTests
         var values = new Dictionary<string, object?> { ["Avg_amountvalue"] = 21.5 };
 
         var result = StreamDataNodeHelpers.ResolveStreamAggregationValue(
-            values, "Amount.Value", AggregationTypesDto.Average);
+            values, "amountvalue", AggregationTypesDto.Average);
 
         Assert.Equal(21.5, result);
     }
@@ -341,7 +346,7 @@ public class StreamDataNodeHelpersTests
         };
 
         Assert.Equal(1.0, StreamDataNodeHelpers.ResolveStreamAggregationValue(
-            values, "Amount.Value", AggregationTypesDto.Average));
+            values, "amountvalue", AggregationTypesDto.Average));
     }
 
     [Fact]
@@ -350,7 +355,7 @@ public class StreamDataNodeHelpersTests
         var values = new Dictionary<string, object?> { ["amountvalue_sum"] = 1.0 };
 
         Assert.Null(StreamDataNodeHelpers.ResolveStreamAggregationValue(
-            values, "Amount.Value", AggregationTypesDto.Average));
+            values, "amountvalue", AggregationTypesDto.Average));
     }
 
     // ------------------------------------------------- MapStreamAggregation

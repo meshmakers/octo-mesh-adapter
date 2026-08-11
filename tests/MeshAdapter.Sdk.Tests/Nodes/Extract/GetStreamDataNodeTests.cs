@@ -54,19 +54,36 @@ public class GetStreamDataNodeTests : NodeTestBase
     private GetStreamDataNode CreateNode(NodeDelegate next)
         => new(next, _etlContext, _systemContext);
 
+    /// <summary>
+    /// The columns most tests project. The field resolver validates names against the snapshot, so an
+    /// archive without columns would reject every projection.
+    /// </summary>
+    private static readonly CkArchiveColumnSpec[] DefaultColumns =
+        [Ingested("Temperature"), Ingested("Amount.Value"), Ingested("Energy")];
+
     private static ArchiveSnapshot CreateSnapshot(
         bool isTimeRange = false, params CkArchiveColumnSpec[] columns)
-        => new(TestArchiveRtId, TestCkTypeId, CkArchiveStatus.Activated, "test-archive", columns)
+        => new(TestArchiveRtId, TestCkTypeId, CkArchiveStatus.Activated, "test-archive",
+            columns.Length > 0 ? columns : DefaultColumns)
         {
             IsTimeRange = isTimeRange
         };
+
+    /// <summary>An archive that declares no data columns at all — only the standard ones exist.</summary>
+    private static ArchiveSnapshot EmptySnapshot()
+        => new(TestArchiveRtId, TestCkTypeId, CkArchiveStatus.Activated, "test-archive", []);
 
     private static CkArchiveColumnSpec Ingested(string path)
         => new(path, Indexed: false, Required: false);
 
     /// <summary>A formula column: empty Path, addressed by Name.</summary>
-    private static CkArchiveColumnSpec Computed(string name)
-        => new(string.Empty, Indexed: false, Required: false) { Name = name, Formula = "a + b" };
+    private static CkArchiveColumnSpec Computed(string name, int version = 0)
+        => new(string.Empty, Indexed: false, Required: false)
+        {
+            Name = name,
+            Formula = "a + b",
+            ComputedVersion = version
+        };
 
     private void SetupArchive(ArchiveSnapshot? snapshot)
     {
@@ -718,10 +735,10 @@ public class GetStreamDataNodeTests : NodeTestBase
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_NoColumns_SkipsComputedColumns()
+    public async Task ProcessObjectAsync_NoColumns_IncludesComputedColumns()
     {
-        // A computed column has an empty Path and a physical name that is not derivable after a
-        // formula change — reading it needs an explicit request.
+        // Computed columns used to be skipped because their storage key could not be derived; the
+        // field resolver supplies it now, so reading the whole archive includes them (AB#4764).
         SetupArchive(CreateSnapshot(false, Ingested("Temperature"), Computed("Derived")));
 
         var (dataContext, nodeContext, next) = PrepareTest(Config());
@@ -729,15 +746,162 @@ public class GetStreamDataNodeTests : NodeTestBase
 
         await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        Assert.Equal(["Temperature"], _capturedOptions!.Columns);
-        Assert.DoesNotContain("Derived", captured.Value!.Columns.Select(x => x.Header));
+        Assert.Equal(["Temperature", "Derived"], _capturedOptions!.Columns);
+        Assert.Contains("Derived", captured.Value!.Columns.Select(x => x.Header));
+        // A computed column carries no Path, so an empty name must never reach the query.
         Assert.DoesNotContain(string.Empty, _capturedOptions.Columns);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VersionedComputedColumn_ReadsItsValue()
+    {
+        // The bug itself (AB#4764): after a formula change the physical column is {base}__v{N}, which
+        // no derivation from the name reproduces. Deriving it yielded null for every row.
+        SetupArchive(CreateSnapshot(false, Computed("Derived", version: 2)));
+        SetupQueryResult(new StreamDataRow
+        {
+            Timestamp = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+            Values = new Dictionary<string, object?> { ["derived__v2"] = 99.5 }
+        });
+
+        var config = Config() with { Columns = ["Derived"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // The query asks by logical name, the value is read by the versioned storage key.
+        Assert.Equal(["Derived"], _capturedOptions!.Columns);
+        Assert.Equal(["Timestamp", "Derived"], captured.Value!.Columns.Select(x => x.Header));
+        Assert.Equal(99.5, Assert.Single(captured.Value.Rows).Values[1]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ComputedColumnMidBackfill_IsNotProjected()
+    {
+        // The read path hides a column whose backfill has not committed; the resolver does not
+        // register it, so it cannot leak into the automatic set either.
+        var pending = new CkArchiveColumnSpec(string.Empty, false, false)
+        {
+            Name = "Pending",
+            Formula = "a + b",
+            ComputedState = ComputedColumnState.Backfilling
+        };
+        SetupArchive(CreateSnapshot(false, Ingested("Temperature"), pending));
+
+        var (dataContext, nodeContext, next) = PrepareTest(Config());
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(["Temperature"], _capturedOptions!.Columns);
+    }
+
+    [Theory]
+    [InlineData("WindowStart")]
+    [InlineData("window_start")]
+    public async Task ProcessObjectAsync_ConfiguredRowWindow_IsNotEmittedTwice(string configuredName)
+    {
+        // The row window is emitted for every row of a windowed archive anyway, so naming it in the
+        // column list used to append a second, identical WindowStart column. Both spellings have to be
+        // caught: the result header and the physical name, which is why the test is on the resolved
+        // name rather than the string the caller wrote.
+        SetupArchive(CreateSnapshot(isTimeRange: true));
+        SetupQueryResult(new StreamDataRow
+        {
+            Timestamp = new DateTime(2026, 7, 1, 0, 15, 0, DateTimeKind.Utc),
+            Values = new Dictionary<string, object?>
+            {
+                ["window_start"] = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+                ["window_end"] = new DateTime(2026, 7, 1, 0, 15, 0, DateTimeKind.Utc),
+                ["energy"] = 7.5
+            }
+        });
+
+        var config = Config() with { Columns = [configuredName, "Energy"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(["Timestamp", "WindowStart", "WindowEnd", "Energy"],
+            captured.Value!.Columns.Select(x => x.Header));
+        // Requested once, not twice — the node projects it on its own behalf.
+        Assert.Single(_capturedOptions!.Columns, col => col == "window_start");
+        Assert.Equal(7.5, Assert.Single(captured.Value.Rows).Values[3]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConfiguredTimestampOnRawArchive_IsNotEmittedTwice()
+    {
+        // Same redundancy on the other archive shape: there the time axis is the timestamp column.
+        SetupArchive(CreateSnapshot(false, Ingested("Temperature")));
+        SetupQueryResult(new StreamDataRow
+        {
+            Timestamp = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+            Values = new Dictionary<string, object?> { ["temperature"] = 21.5 }
+        });
+
+        var config = Config() with { Columns = ["Timestamp", "Temperature"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(["Timestamp", "Temperature"], captured.Value!.Columns.Select(x => x.Header));
+        Assert.Equal(21.5, Assert.Single(captured.Value.Rows).Values[1]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ColumnsOnlyNamingTheTimeAxis_StaysAnExplicitList()
+    {
+        // Reducing to nothing must not be read as "read the whole archive" — that is a different
+        // request, and it would pull in every column plus the well-known name.
+        SetupArchive(CreateSnapshot(isTimeRange: true));
+        SetupQueryResult(new StreamDataRow
+        {
+            Timestamp = new DateTime(2026, 7, 1, 0, 15, 0, DateTimeKind.Utc),
+            Values = new Dictionary<string, object?>
+            {
+                ["window_start"] = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc)
+            }
+        });
+
+        var config = Config() with { Columns = ["Timestamp"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // No WellKnownName, no archive columns.
+        Assert.Equal(["Timestamp", "WindowStart", "WindowEnd"],
+            captured.Value!.Columns.Select(x => x.Header));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_UnknownColumn_DoesNotOfferOneMidBackfill()
+    {
+        // The list of known columns is the only guidance the caller gets at this point, so it must not
+        // name a column the read path hides: taking it up would land them on this same error again.
+        var pending = new CkArchiveColumnSpec(string.Empty, false, false)
+        {
+            Name = "Pending",
+            Formula = "a + b",
+            ComputedState = ComputedColumnState.Backfilling
+        };
+        SetupArchive(CreateSnapshot(false, Ingested("Temperature"), pending));
+
+        var (dataContext, nodeContext, next) = PrepareTest(Config() with { Columns = ["Temparatur"] });
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("Temperature", ex.Message);
+        Assert.DoesNotContain("Pending", ex.Message);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_ArchiveWithoutColumns_StillReturnsTimeAxisAndName()
     {
-        SetupArchive(CreateSnapshot());
+        SetupArchive(EmptySnapshot());
         SetupQueryResult(new StreamDataRow
         {
             Timestamp = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),

@@ -8,6 +8,7 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Runtime.Engine.CrateDb;
 using Meshmakers.Octo.Runtime.Engine.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -359,6 +360,48 @@ public class GetQueryByIdNode(
 
         var archiveRtId = new OctoObjectId(query.ArchiveRtId);
 
+        // The field resolver turns each persisted column name into the key the row values carry.
+        // Deriving that key from the attribute path instead used to leave computed columns null
+        // (AB#4764) — after a formula change theirs is versioned and cannot be derived.
+        //
+        // A missing snapshot is not treated as an error here, unlike on the ad-hoc nodes: this node's
+        // downsampling path deliberately degrades when the archive cannot be resolved (it warns and
+        // reads the persisted archive anyway), and turning that into a hard failure would change
+        // behaviour well beyond the naming fix. Without a snapshot the resolver knows only the
+        // standard columns, which is exactly what the old derivation achieved for them.
+        // A failure to read it is swallowed for the same reason: the archive store is also what the
+        // downsampling path consults, and it reports its own trouble with a message that names the
+        // resolution. Pre-empting that with a different error would only obscure it.
+        //
+        // Degrading quietly, though, would recreate the very symptom this fix removes: with only the
+        // standard columns resolvable, a projected computed column reads empty again. So both ways of
+        // ending up without a snapshot — the store throwing and the store simply returning none —
+        // warn once, at a level an operator sees, and say what it costs rather than only what happened.
+        ArchiveSnapshot? snapshot = null;
+        string? snapshotFailure = null;
+        try
+        {
+            snapshot = await tenantContext.GetArchiveRuntimeStore().GetAsync(archiveRtId);
+            if (snapshot == null)
+            {
+                snapshotFailure = "the archive runtime store returned no snapshot";
+            }
+        }
+        catch (Exception ex)
+        {
+            snapshotFailure = ex.Message;
+        }
+
+        if (snapshotFailure != null)
+        {
+            nodeContext.Warning(
+                $"Could not read the snapshot of archive '{archiveRtId}' for column-name resolution: " +
+                $"{snapshotFailure}. Only the standard columns can be resolved, so a projected " +
+                "computed column may come back empty. The query itself still runs.");
+        }
+
+        var resolver = StreamDataNodeHelpers.CreateFieldResolver(snapshot);
+
         // Resolved once for every stream-data query kind: literal config value, else the value read
         // from the data context via *Path, else (in the executors) the value persisted on the query.
         var overrides = ResolveStreamDataOverrides(dataContext, nodeContext, c);
@@ -367,13 +410,13 @@ public class GetQueryByIdNode(
         {
             RtSimpleSdQuery simple =>
                 await ExecuteSimpleStreamDataQueryAsync(simple, archiveRtId, streamDataRepo, dataContext, c,
-                    overrides, nodeContext),
+                    overrides, nodeContext, resolver),
             RtAggregationSdQuery aggregation =>
                 await ExecuteAggregationStreamDataQueryAsync(aggregation, archiveRtId, streamDataRepo, dataContext,
-                    c, overrides, nodeContext),
+                    c, overrides, nodeContext, resolver),
             RtGroupingAggregationSdQuery grouped =>
                 await ExecuteGroupedAggregationStreamDataQueryAsync(grouped, archiveRtId, streamDataRepo,
-                    dataContext, c, overrides, nodeContext),
+                    dataContext, c, overrides, nodeContext, resolver),
             RtDownsamplingSdQuery downsampling =>
                 await ExecuteDownsamplingStreamDataQueryAsync(downsampling, archiveRtId, streamDataRepo,
                     tenantContext, dataContext, c, overrides, nodeContext),
@@ -387,7 +430,8 @@ public class GetQueryByIdNode(
 
     private async Task<QueryResult> ExecuteSimpleStreamDataQueryAsync(RtSimpleSdQuery query,
         OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo, IDataContext dataContext,
-        GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides, INodeContext nodeContext)
+        GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides, INodeContext nodeContext,
+        StreamDataFieldResolver resolver)
     {
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
         var sortOrders = query.Sorting?
@@ -410,12 +454,13 @@ public class GetQueryByIdNode(
         var result = await ExecuteAsync(() => streamDataRepo.ExecuteQueryAsync(archiveRtId, options),
             nodeContext, c);
 
-        return BuildSimpleStreamDataQueryResult(query, result);
+        return BuildSimpleStreamDataQueryResult(query, result, resolver);
     }
 
     private async Task<QueryResult> ExecuteAggregationStreamDataQueryAsync(RtAggregationSdQuery query,
         OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo, IDataContext dataContext,
-        GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides, INodeContext nodeContext)
+        GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides, INodeContext nodeContext,
+        StreamDataFieldResolver resolver)
     {
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
 
@@ -429,13 +474,13 @@ public class GetQueryByIdNode(
         var result = await ExecuteAsync(
             () => streamDataRepo.ExecuteAggregationQueryAsync(archiveRtId, options), nodeContext, c);
 
-        return BuildAggregationStreamDataQueryResult(query, result);
+        return BuildAggregationStreamDataQueryResult(query, result, resolver);
     }
 
     private async Task<QueryResult> ExecuteGroupedAggregationStreamDataQueryAsync(
         RtGroupingAggregationSdQuery query, OctoObjectId archiveRtId, IStreamDataRepository streamDataRepo,
         IDataContext dataContext, GetQueryByIdNodeConfiguration c, StreamDataOverrides overrides,
-        INodeContext nodeContext)
+        INodeContext nodeContext, StreamDataFieldResolver resolver)
     {
         var groupingColumns = query.GroupingColumns?.ToList() ?? [];
         var rtIds = query.RtIds?.Select(id => new OctoObjectId(id)).ToList();
@@ -451,7 +496,7 @@ public class GetQueryByIdNode(
         var result = await ExecuteAsync(
             () => streamDataRepo.ExecuteGroupedAggregationQueryAsync(archiveRtId, options), nodeContext, c);
 
-        return BuildGroupedAggregationStreamDataQueryResult(query, groupingColumns, result);
+        return BuildGroupedAggregationStreamDataQueryResult(query, groupingColumns, result, resolver);
     }
 
     /// <summary>
@@ -853,8 +898,19 @@ public class GetQueryByIdNode(
         return filters.Count == 0 ? null : filters;
     }
 
+    /// <summary>
+    /// The key a persisted column's value arrives under. Asked of the field resolver rather than
+    /// derived from the attribute path — a computed column's physical column is versioned after a
+    /// formula change and no derivation reproduces it (AB#4764). A name the resolver does not know
+    /// falls back to itself, so the lookup simply misses instead of throwing: a persisted query may
+    /// legitimately outlive a column that was removed from the archive, and the runtime paths of this
+    /// node have always tolerated that by returning null.
+    /// </summary>
+    private static string StorageKey(StreamDataFieldResolver resolver, string attributePath)
+        => resolver.Resolve(attributePath)?.CrateDbName ?? attributePath;
+
     private static QueryResult BuildSimpleStreamDataQueryResult(RtSimpleSdQuery query,
-        StreamDataQueryResult result)
+        StreamDataQueryResult result, StreamDataFieldResolver resolver)
     {
         var columns = query.Columns?.ToList() ?? [];
 
@@ -869,7 +925,8 @@ public class GetQueryByIdNode(
         foreach (var row in result.Rows)
         {
             var values = new List<object?> { row.Timestamp };
-            values.AddRange(columns.Select(column => StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, column)));
+            values.AddRange(columns.Select(column =>
+                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, StorageKey(resolver, column))));
 
             queryResult.Rows.Add(new QueryResultRow
             {
@@ -884,7 +941,7 @@ public class GetQueryByIdNode(
 
 
     private static QueryResult BuildAggregationStreamDataQueryResult(RtAggregationSdQuery query,
-        StreamDataQueryResult result)
+        StreamDataQueryResult result, StreamDataFieldResolver resolver)
     {
         var columns = query.Columns.ToList();
 
@@ -898,7 +955,8 @@ public class GetQueryByIdNode(
         var values = columns
             .Select(column => row is null
                 ? null
-                : StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType))
+                : StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values,
+                    StorageKey(resolver, column.AttributePath), column.AggregationType))
             .ToList();
 
         queryResult.Rows.Add(new QueryResultRow { Values = values });
@@ -907,7 +965,8 @@ public class GetQueryByIdNode(
     }
 
     private static QueryResult BuildGroupedAggregationStreamDataQueryResult(
-        RtGroupingAggregationSdQuery query, List<string> groupingColumns, StreamDataQueryResult result)
+        RtGroupingAggregationSdQuery query, List<string> groupingColumns, StreamDataQueryResult result,
+        StreamDataFieldResolver resolver)
     {
         var aggregationColumns = query.Columns.ToList();
 
@@ -923,9 +982,11 @@ public class GetQueryByIdNode(
         {
             var values = new List<object?>();
             // Group-key columns are keyed by their physical column name, same as simple projections.
-            values.AddRange(groupingColumns.Select(col => StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, col)));
+            values.AddRange(groupingColumns.Select(col =>
+                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, StorageKey(resolver, col))));
             values.AddRange(aggregationColumns.Select(column =>
-                StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, column.AttributePath, column.AggregationType)));
+                StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values,
+                    StorageKey(resolver, column.AttributePath), column.AggregationType)));
 
             queryResult.Rows.Add(new QueryResultRow { Values = values });
         }

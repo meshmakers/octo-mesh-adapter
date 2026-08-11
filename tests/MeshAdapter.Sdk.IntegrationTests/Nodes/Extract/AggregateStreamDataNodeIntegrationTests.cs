@@ -146,6 +146,27 @@ public class AggregateStreamDataNodeIntegrationTests(StreamDataFixture fixture)
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_AggregatesAVersionedComputedColumn()
+    {
+        fixture.EnsureInitialized();
+
+        // AB#4764 on the aggregating node: a derived storage key produced no key figure at all, which
+        // is worse than an empty column — a sum that silently comes back empty.
+        var result = await ExecuteAsync(NewConfig(Agg(fixture.ComputedColumnName,
+            AggregationTypesDto.Sum)) with
+        {
+            WellKnownNames = [fixture.CompleteMeterWellKnownName]
+        });
+
+        var row = result!.Rows.Should().ContainSingle().Subject;
+        row.Values[0].Should().NotBeNull("the computed column must resolve to its versioned column");
+
+        // The active formula is temperature * 3 over the eight seeded temperatures.
+        Convert.ToDouble(row.Values[0])
+            .Should().Be(ExpectedCompleteSum * StreamDataFixture.ComputedColumnFactor);
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_UnsupportedFunction_Throws()
     {
         fixture.EnsureInitialized();

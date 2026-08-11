@@ -353,7 +353,7 @@ public record GetStreamDataNodeConfiguration : TargetPathNodeConfiguration
 {
     [PropertyGroup("Archive", 0)] public required OctoObjectId ArchiveRtId { get; init; }
 
-    // Leer ⇒ alle ingested Archivspalten + WellKnownName (§5.4)
+    // Leer ⇒ alle auflösbaren Archivspalten + WellKnownName (§5.4)
     [PropertyGroup("Query", 0)] public ICollection<string>? Columns { get; init; }
     [PropertyGroup("Query", 1)] public ICollection<string>? WellKnownNames { get; init; }
     [PropertyGroup("Query", 2, "jsonpath")] public string? WellKnownNamesPath { get; init; }
@@ -436,17 +436,35 @@ Werte werden über `ResolveStreamColumnValue` gelesen: `StreamDataRow.Values` is
 (`Amount.Value` → `amountvalue`).
 
 **Leeres `Columns` liest das ganze Archiv** (nachgezogen nach dem ersten Praxiseinsatz): alle
-*ingested* Spalten aus `snapshot.Columns`, davor eine `WellKnownName`-Spalte direkt aus
+Datenspalten aus `snapshot.Columns`, davor eine `WellKnownName`-Spalte direkt aus
 `StreamDataRow.RtWellKnownName`. Ohne das liefert die Minimalkonfiguration — nur ein `archiveRtId` —
 lediglich die Zeitachse, was als Stolperfalle gemeldet wurde. Ist `Columns` gesetzt, gilt die Liste
 unverändert; `rtWellKnownName` lässt sich dort wie jede andere Spalte anfordern.
 
-**Computed Columns bleiben aus dem Automatik-Satz heraus.** Sie haben einen leeren `Path`, werden
-über ihren `Name` adressiert (`StreamDataFieldResolver.CreateForArchive` warnt ausdrücklich vor
-`snapshot.Columns.Select(c => c.Path)`), und nach einer Formeländerung liegt die physische Spalte
-unter `{base}__v{N}` — `ComputedColumnNaming` ist im CrateDB-Provider `internal`. Damit findet die
-Wertauflösung des Nodes sie auch bei expliziter Angabe nicht; **derselbe latente Fehler steckt in
-`GetQueryById@1`** und ist ein eigenes Work Item wert.
+**Spaltennamen kommen vom Engine-Resolver, nicht aus einer Ableitung** (AB#4764, nachgezogen). Der
+ursprüngliche Entwurf leitete den Storage-Key aus dem Attributpfad ab (Punkte weg, kleinschreiben) und
+nahm Computed Columns deshalb aus dem Automatik-Satz heraus: nach einer Formeländerung liegt ihre
+physische Spalte unter `{base}__v{N}`, und `ComputedColumnNaming` ist im CrateDB-Provider `internal`.
+Die Ableitung lieferte für solche Spalten stillschweigend `null` — auch bei expliziter Angabe, und in
+`GetQueryById@1` gleichermaßen.
+
+Stattdessen fragt `StreamDataNodeHelpers.ResolveQueryableColumn` den
+`StreamDataFieldResolver` (`CreateForArchive`, laut eigener Doku der kanonische Weg — die GraphQL-
+Oberfläche nutzt ihn und hatte den Fehler nie) und liefert `(QueryName, StorageKey)`: der erste Name
+geht an die Abfrage, der zweite liest den Wert aus `StreamDataRow.Values`. Damit
+
+* funktionieren Computed Columns, auch versionierte, und sind im Automatik-Satz enthalten — eine
+  Spalte mitten im Backfill nicht, weil der Resolver sie nicht registriert;
+* entfällt die eigene Normalisierung samt Default-Feld-Liste — eine Wahrheit statt drei;
+* beantwortet „existiert diese Spalte" derselbe Code, den die Abfrage nutzen würde.
+
+Bei `GetQueryById@1` ist der Snapshot dabei **optional**: fehlt er oder wirft der Store, wird nur
+gewarnt und der Resolver kennt allein die Standardspalten. Ein harter Fehler hätte den dokumentierten
+Downsampling-Fallback (`EmptyLadder` → persistiertes Archiv lesen) unerreichbar gemacht.
+
+> Nicht verwechseln: Eine **Formel** bindet an die physischen Namen (kleingeschrieben, punktfrei) —
+> `Amount.Value` heißt darin `amountvalue`. Das betrifft das Schreiben der Formel, nicht das Lesen der
+> Spalte durch diese Nodes.
 
 ### 5.5 Neue Exception-Factories
 

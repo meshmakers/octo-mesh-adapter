@@ -289,8 +289,9 @@ public class GetStreamDataNode(
 
     /// <summary>
     /// The configured sort orders, with their column names translated to the physical ones. Without
-    /// that translation a sort on a result header such as <c>WindowStart</c> is dropped by the
-    /// storage layer without a word and the rows come back in storage order.
+    /// that translation a sort on a result header such as <c>WindowStart</c> never reaches the column
+    /// it names — the storage layer knows <c>window_start</c> and rejects the rest (AB#4765; before
+    /// that it dropped the name without a word and the rows came back in storage order).
     /// </summary>
     private static IReadOnlyList<SortOrderItem>? BuildSortOrders(GetStreamDataNodeConfiguration c,
         ArchiveSnapshot snapshot, StreamDataFieldResolver resolver, INodeContext nodeContext)

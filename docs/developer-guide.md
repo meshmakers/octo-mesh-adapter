@@ -312,11 +312,17 @@ Names are resolved through the storage layer's own field resolver, which is also
 column readable: after a formula change its physical column is versioned (`{base}__v{N}`) and cannot
 be derived from the name (AB#4764).
 
-This translation matters because the storage layer **drops a name it cannot resolve without raising
-anything**: a mistyped sort returns rows in storage order, a mistyped filter returns too many rows.
-The node therefore rejects any name that is neither a result header nor a column of the archive, and
-the error lists the names that would have worked. A sort on `WindowStart` against a *raw* archive is
-refused for the same reason — that archive has no row window.
+The translation is what makes the node's own vocabulary work at all: the storage layer knows
+`window_start`, not `WindowStart`, and its lookup is case-insensitive but not separator-insensitive.
+Without it a sort on the header the node itself emits would not reach the column it names.
+
+The node additionally rejects any name that is neither a result header nor a column of the archive,
+and the error lists the names that would have worked. A sort on `WindowStart` against a *raw* archive
+is refused for the same reason — that archive has no row window. This check began as a guard against
+the storage layer **dropping an unresolvable name without raising anything** (a mistyped sort returned
+rows in storage order, a mistyped filter returned too many rows); since AB#4765 the storage layer
+validates and rejects on its own, so the node's check is now the earlier and better-worded of two —
+it can name the pipeline, the node and the valid names as the caller writes them.
 
 **Errors** surface through the standard pipeline-exception channel — stream data not enabled for the
 tenant, archive not found, a malformed runtime id, an inverted time range, a non-positive `Limit`, an

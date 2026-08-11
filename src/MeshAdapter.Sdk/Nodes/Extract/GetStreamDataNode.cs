@@ -4,6 +4,7 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Runtime.Engine.CrateDb;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -38,6 +39,7 @@ public class GetStreamDataNode(
         var c = nodeContext.GetNodeConfiguration<GetStreamDataNodeConfiguration>();
 
         var (streamDataRepo, snapshot) = await ResolveArchiveAsync(c.ArchiveRtId, nodeContext);
+        var resolver = StreamDataNodeHelpers.CreateFieldResolver(snapshot);
 
         // Literal configuration wins over the JSONPath variant; both boundaries are normalised to UTC
         // so the adapter's local zone can never shift the queried window (AB#4734).
@@ -103,12 +105,12 @@ public class GetStreamDataNode(
         var rtIds = StreamDataNodeHelpers.ResolveRtIds(c.RtIds, c.RtIdsPath, dataContext, nodeContext,
             nameof(c.RtIdsPath));
         var fieldFilters = StreamDataNodeHelpers.BuildFieldFilters(c.WellKnownNames,
-            c.WellKnownNamesPath, c.FieldFilters, snapshot, dataContext, nodeContext,
+            c.WellKnownNamesPath, c.FieldFilters, snapshot, resolver, dataContext, nodeContext,
             nameof(c.WellKnownNamesPath));
 
         if (!c.GapsOnly)
         {
-            var (columns, columnsFromArchive) = ResolveColumns(c, snapshot);
+            var (columns, columnsFromArchive) = ResolveColumns(c, snapshot, resolver, nodeContext);
 
             var options = StreamDataQueryOptions.Create()
                 .WithCkTypeId(snapshot.TargetCkTypeId)
@@ -120,7 +122,7 @@ public class GetStreamDataNode(
                 // Both boundaries are independently optional; a one-sided range leaves the other open.
                 .WithTimeRange(from, to)
                 .WithLimit(limit)
-                .WithSortOrders(BuildSortOrders(c, snapshot, nodeContext))
+                .WithSortOrders(BuildSortOrders(c, snapshot, resolver, nodeContext))
                 .WithFieldFilters(fieldFilters)
                 // Skip/Take map onto the paginated read (offset / page size); the row cap is Limit.
                 .WithPagination(c.Skip, c.Take);
@@ -187,56 +189,74 @@ public class GetStreamDataNode(
     }
 
     /// <summary>
-    /// The attribute paths to project. Configured columns win; leaving them unset reads the whole
-    /// archive — anything else would make the minimal configuration (just an archive id) return
-    /// nothing but the time axis.
+    /// One projected column: the header the result keeps, the name handed to the query, and the key
+    /// the row values carry it under.
+    /// </summary>
+    private readonly record struct ProjectedColumn(string Header, string QueryName, string StorageKey);
+
+    /// <summary>
+    /// The columns to project. Configured columns win; leaving them unset reads the whole archive —
+    /// anything else would make the minimal configuration (just an archive id) return nothing but the
+    /// time axis.
     /// <para>
-    /// Only <em>ingested</em> columns are derived from the archive. A computed column carries an
-    /// empty <c>Path</c> and is addressed by its <c>Name</c> (see
-    /// <c>StreamDataFieldResolver.CreateForArchive</c>), and its physical column name is not
-    /// derivable — a formula change moves it to <c>{base}__v{N}</c>. Projecting those correctly needs
-    /// a name mapping the node does not carry, so they are only read when asked for explicitly.
+    /// Computed columns are included now that the field resolver supplies their storage key
+    /// (AB#4764); before that their versioned physical name could not be reproduced and they were
+    /// skipped. A column mid-backfill is still absent, because the resolver does not register it —
+    /// the read path hides it until the backfill commits.
     /// </para>
     /// </summary>
     /// <returns>
-    /// The paths, and whether they were derived from the archive rather than configured — the caller
+    /// The columns, and whether they were derived from the archive rather than configured — the caller
     /// adds the well-known name only in that case, where the intent is "show me this archive".
     /// </returns>
-    private static (List<string> Columns, bool FromArchive) ResolveColumns(
-        GetStreamDataNodeConfiguration c, ArchiveSnapshot snapshot)
+    private static (List<ProjectedColumn> Columns, bool FromArchive) ResolveColumns(
+        GetStreamDataNodeConfiguration c, ArchiveSnapshot snapshot, StreamDataFieldResolver resolver,
+        INodeContext nodeContext)
     {
         var configured = c.Columns?.Where(col => !string.IsNullOrWhiteSpace(col)).ToList() ?? [];
         if (configured.Count != 0)
         {
-            return (configured, false);
+            var columns = configured
+                .Select(col =>
+                {
+                    var resolved = StreamDataNodeHelpers.ResolveQueryableColumn(col, snapshot, resolver,
+                        nodeContext, "projection");
+                    // The header keeps what the caller asked for, so it recognises its own request.
+                    return new ProjectedColumn(col, resolved.QueryName, resolved.StorageKey);
+                })
+                .ToList();
+
+            return (columns, false);
         }
 
-        var fromArchive = snapshot.Columns
-            .Where(spec => !spec.IsComputed && !string.IsNullOrWhiteSpace(spec.Path))
-            .Select(spec => spec.Path)
+        var fromArchive = StreamDataNodeHelpers.ResolveArchiveColumns(snapshot, resolver)
+            .Select(col => new ProjectedColumn(col.QueryName, col.QueryName, col.StorageKey))
             .ToList();
 
         return (fromArchive, true);
     }
 
     /// <summary>
-    /// The columns actually requested from the storage layer: the projected attribute paths plus, on
-    /// a windowed archive, the row-window columns so they can be surfaced in the result.
+    /// The columns actually requested from the storage layer: the projected names plus, on a windowed
+    /// archive, the row-window columns so they can be surfaced in the result.
     /// </summary>
-    private static List<string> BuildProjectedColumns(List<string> columns, ArchiveSnapshot snapshot)
+    private static List<string> BuildProjectedColumns(List<ProjectedColumn> columns,
+        ArchiveSnapshot snapshot)
     {
+        var names = columns.Select(col => col.QueryName);
+
         if (!snapshot.UsesWindowedStorage)
         {
-            return columns;
+            return names.ToList();
         }
 
-        var projected = new List<string>(columns.Count + 2)
-        {
-            StreamDataNodeHelpers.WindowStartColumn,
-            StreamDataNodeHelpers.WindowEndColumn
-        };
-        projected.AddRange(columns);
-        return projected;
+        return new List<string>
+            {
+                StreamDataNodeHelpers.WindowStartColumn,
+                StreamDataNodeHelpers.WindowEndColumn
+            }
+            .Concat(names)
+            .ToList();
     }
 
     /// <summary>
@@ -245,7 +265,7 @@ public class GetStreamDataNode(
     /// storage layer without a word and the rows come back in storage order.
     /// </summary>
     private static IReadOnlyList<SortOrderItem>? BuildSortOrders(GetStreamDataNodeConfiguration c,
-        ArchiveSnapshot snapshot, INodeContext nodeContext)
+        ArchiveSnapshot snapshot, StreamDataFieldResolver resolver, INodeContext nodeContext)
     {
         var sortOrders = c.SortOrders.GetSortOrderItems();
         if (sortOrders is not { Count: > 0 })
@@ -255,8 +275,8 @@ public class GetStreamDataNode(
 
         return sortOrders
             .Select(sort => new SortOrderItem(
-                StreamDataNodeHelpers.ResolveQueryableColumn(sort.AttributePath, snapshot, nodeContext,
-                    "sorting"),
+                StreamDataNodeHelpers.ResolveQueryableColumn(sort.AttributePath, snapshot, resolver,
+                    nodeContext, "sorting").QueryName,
                 sort.SortOrder))
             .ToList();
     }
@@ -274,7 +294,7 @@ public class GetStreamDataNode(
     /// other column).
     /// </para>
     /// </summary>
-    private static QueryResult BuildQueryResult(List<string> columns, ArchiveSnapshot snapshot,
+    private static QueryResult BuildQueryResult(List<ProjectedColumn> columns, ArchiveSnapshot snapshot,
         StreamDataQueryResult result, bool includeWellKnownName)
     {
         var queryResult = new QueryResult();
@@ -291,7 +311,8 @@ public class GetStreamDataNode(
             queryResult.Columns.Add(new QueryResultColumns { Header = WellKnownNameHeader });
         }
 
-        queryResult.Columns.AddRange(columns.Select(column => new QueryResultColumns { Header = column }));
+        queryResult.Columns.AddRange(columns.Select(col =>
+            new QueryResultColumns { Header = col.Header }));
 
         foreach (var row in result.Rows)
         {
@@ -312,8 +333,8 @@ public class GetStreamDataNode(
                 values.Add(row.RtWellKnownName);
             }
 
-            values.AddRange(columns.Select(column =>
-                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, column)));
+            values.AddRange(columns.Select(col =>
+                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, col.StorageKey)));
 
             queryResult.Rows.Add(new QueryResultRow
             {

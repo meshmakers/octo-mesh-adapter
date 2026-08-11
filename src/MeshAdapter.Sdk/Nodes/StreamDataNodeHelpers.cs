@@ -11,9 +11,15 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Helpers shared by the nodes that read from a stream-data archive (<c>GetQueryById@1</c>,
-/// <c>GetStreamData@1</c>): UTC normalisation of configured time-range boundaries, reading those
-/// boundaries from the pipeline data via JSONPath, and resolving projected / aggregated values out
-/// of a <c>StreamDataRow</c>'s physically-named value dictionary.
+/// <c>GetStreamData@1</c>, <c>AggregateStreamData@1</c>): UTC normalisation of configured time-range
+/// boundaries, reading those boundaries from the pipeline data via JSONPath, column-name resolution,
+/// and reading projected / aggregated values back out of a <c>StreamDataRow</c>.
+/// <para>
+/// Column names go through the storage layer's own field resolver rather than a derivation of the
+/// attribute path. That is what makes computed columns work — theirs is versioned after a formula
+/// change and cannot be derived (AB#4764) — and it means "does this column exist" is answered by the
+/// same code the query would use.
+/// </para>
 /// </summary>
 internal static class StreamDataNodeHelpers
 {
@@ -55,43 +61,100 @@ internal static class StreamDataNodeHelpers
     /// unordered rows, a mistyped filter quietly returns too many.
     /// </para>
     /// </summary>
-    internal static string ResolveQueryableColumn(string name, ArchiveSnapshot snapshot,
-        INodeContext nodeContext, string usage)
+    internal static ResolvedColumn ResolveQueryableColumn(string name, ArchiveSnapshot snapshot,
+        StreamDataFieldResolver resolver, INodeContext nodeContext, string usage)
+    {
+        var queryName = TranslateResultHeader(name, snapshot);
+
+        // The storage layer's own resolver decides both whether the name exists and what key the row
+        // values carry. Asking it rather than deriving the key is what makes computed columns work:
+        // after a formula change their physical column is versioned ({base}__v{N}) and no derivation
+        // from the attribute path can reproduce it (AB#4764). It also keeps the node honest about
+        // which names are resolvable at all — the same judgement the query would apply.
+        var resolved = resolver.Resolve(queryName);
+        if (resolved == null)
+        {
+            throw MeshAdapterPipelineExecutionException.UnknownStreamDataColumn(
+                nodeContext, name, usage, BuildKnownColumnList(snapshot));
+        }
+
+        return new ResolvedColumn(queryName, resolved.CrateDbName);
+    }
+
+    /// <summary>
+    /// Translates the result-header vocabulary a node hands out into the physical names the storage
+    /// resolver knows. Its lookup is case-insensitive but not separator-insensitive, so
+    /// <c>WindowStart</c> would miss <c>window_start</c>; and a windowed archive has no
+    /// <c>timestamp</c> column at all, its time axis being <c>window_end</c>. Anything else is passed
+    /// through for the resolver to judge.
+    /// </summary>
+    private static string TranslateResultHeader(string name, ArchiveSnapshot snapshot)
     {
         var windowed = snapshot.UsesWindowedStorage;
 
-        // The node's own result vocabulary. Timestamp is the logical time axis: window_end on a
-        // windowed archive, the timestamp column on a raw one.
         if (Matches(name, "Timestamp"))
         {
             return windowed ? WindowEndColumn : TimestampColumn;
         }
 
-        // Only a windowed archive has a row window. On a raw archive these names fall through to the
-        // validation below and are rejected — resolving them anyway would hand the storage layer a
-        // column that does not exist, and it would drop it silently again.
+        // Only a windowed archive has a row window. On a raw archive these names are passed through
+        // and the resolver rejects them, which is what should happen — that shape has no window.
         if (windowed && Matches(name, "WindowStart")) return WindowStartColumn;
         if (windowed && Matches(name, "WindowEnd")) return WindowEndColumn;
 
         if (Matches(name, "WellKnownName")) return WellKnownNameColumn;
 
-        // Names the storage layer resolves as-is: the standard columns of this storage shape, and
-        // the archive's own columns (ingested by path, computed by name).
-        var defaults = Constants.GetDefaultStreamDataFields(windowed);
-        if (defaults.Any(f => Matches(name, f)))
+        return name;
+    }
+
+    /// <summary>
+    /// A column as both sides need it: the name to hand to the query, and the key
+    /// <c>StreamDataRow.Values</c> carries the value under. The two differ for every dotted or
+    /// mixed-case attribute path, and for a computed column they differ unpredictably.
+    /// </summary>
+    internal readonly record struct ResolvedColumn(string QueryName, string StorageKey);
+
+    /// <summary>
+    /// Builds the field resolver for an archive. One per node execution — it walks the archive's
+    /// columns, so resolving each name against a fresh instance would be wasteful.
+    /// <para>
+    /// A null snapshot yields a resolver that knows only the standard columns. Callers that require
+    /// the archive to exist reject a missing snapshot before getting here; the persisted-query node
+    /// tolerates it because its downsampling path degrades rather than failing.
+    /// </para>
+    /// </summary>
+    internal static StreamDataFieldResolver CreateFieldResolver(ArchiveSnapshot? snapshot)
+        => snapshot != null
+            ? StreamDataFieldResolver.CreateForArchive(snapshot)
+            : new StreamDataFieldResolver();
+
+    /// <summary>
+    /// The archive's own data columns, as the resolver sees them: every column whose name it accepts.
+    /// Computed columns mid-backfill are absent because the resolver does not register them — the read
+    /// path deliberately hides them until their backfill commits.
+    /// </summary>
+    internal static List<ResolvedColumn> ResolveArchiveColumns(ArchiveSnapshot snapshot,
+        StreamDataFieldResolver resolver)
+    {
+        var result = new List<ResolvedColumn>();
+
+        foreach (var spec in snapshot.Columns)
         {
-            return name;
+            // Ingested columns are addressed by path, computed ones by name.
+            var name = !string.IsNullOrWhiteSpace(spec.Path) ? spec.Path : spec.Name;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var resolved = resolver.Resolve(name);
+            if (resolved != null)
+            {
+                result.Add(new ResolvedColumn(name, resolved.CrateDbName));
+            }
         }
 
-        if (snapshot.Columns.Any(spec =>
-                (!string.IsNullOrWhiteSpace(spec.Path) && Matches(name, spec.Path))
-                || (!string.IsNullOrWhiteSpace(spec.Name) && Matches(name, spec.Name!))))
-        {
-            return name;
-        }
-
-        throw MeshAdapterPipelineExecutionException.UnknownStreamDataColumn(
-            nodeContext, name, usage, BuildKnownColumnList(snapshot, defaults));
+        return result;
     }
 
     private static bool Matches(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
@@ -100,7 +163,7 @@ internal static class StreamDataNodeHelpers
     /// The names a caller may use, for the error message: the node's result headers first (what a
     /// reader of the output would reach for), then the archive's own columns.
     /// </summary>
-    private static string BuildKnownColumnList(ArchiveSnapshot snapshot, IReadOnlyList<string> defaults)
+    private static string BuildKnownColumnList(ArchiveSnapshot snapshot)
     {
         var names = new List<string> { "Timestamp" };
         if (snapshot.UsesWindowedStorage)
@@ -114,7 +177,7 @@ internal static class StreamDataNodeHelpers
             .Select(spec => !string.IsNullOrWhiteSpace(spec.Path) ? spec.Path : spec.Name)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Select(n => n!));
-        names.AddRange(defaults);
+        names.AddRange(Constants.GetDefaultStreamDataFields(snapshot.UsesWindowedStorage));
 
         return string.Join(", ", names.Distinct(StringComparer.OrdinalIgnoreCase));
     }
@@ -302,7 +365,8 @@ internal static class StreamDataNodeHelpers
     internal static IReadOnlyList<FieldFilter>? BuildFieldFilters(
         ICollection<string>? wellKnownNames, string? wellKnownNamesPath,
         ICollection<FieldFilterWithPathDto>? fieldFilters, ArchiveSnapshot snapshot,
-        IDataContext dataContext, INodeContext nodeContext, string wellKnownNamesPathPropertyName)
+        StreamDataFieldResolver resolver, IDataContext dataContext, INodeContext nodeContext,
+        string wellKnownNamesPathPropertyName)
     {
         var filters = new List<FieldFilter>();
 
@@ -328,7 +392,8 @@ internal static class StreamDataNodeHelpers
             if (scratch.FieldFilters != null)
             {
                 filters.AddRange(scratch.FieldFilters.Select(f => new FieldFilter(
-                    ResolveQueryableColumn(f.AttributePath, snapshot, nodeContext, "filtering"),
+                    ResolveQueryableColumn(f.AttributePath, snapshot, resolver, nodeContext,
+                        "filtering").QueryName,
                     f.Operator, f.ComparisonValue, f.SecondaryValue)));
             }
         }
@@ -337,46 +402,39 @@ internal static class StreamDataNodeHelpers
     }
 
     /// <summary>
-    /// Resolves a projected column value from a <c>StreamDataRow</c>. The stream-data store keys the
-    /// row's values by the physical CrateDB column name — the attribute path stripped of its dot
-    /// separators and lower-cased (see the storage layer's <c>ColumnNameMapper.PathToColumnName</c>).
-    /// Standard columns such as <c>window_start</c> or <c>was_updated</c> already equal their physical
-    /// name and match directly; dotted / mixed-case attribute paths such as <c>amount.value</c> or
-    /// <c>obisCode</c> only match after normalisation. Tries the exact key first (cheap, covers the
-    /// standard columns) and falls back to the normalised form.
+    /// Reads a projected value out of a <c>StreamDataRow</c> by its storage key — the key the query
+    /// layer put it under, as reported by the field resolver. No derivation happens here on purpose:
+    /// deriving the key from the attribute path is exactly what broke computed columns (AB#4764).
     /// </summary>
     internal static object? ResolveStreamColumnValue(IReadOnlyDictionary<string, object?> values,
-        string attributePath)
+        string storageKey)
     {
-        if (values.TryGetValue(attributePath, out var direct))
-        {
-            return direct;
-        }
-
-        var physicalColumnName = ToPhysicalColumnName(attributePath);
-        return values.TryGetValue(physicalColumnName, out var mapped) ? mapped : null;
+        return values.TryGetValue(storageKey, out var value) ? value : null;
     }
 
     /// <summary>
-    /// Resolves an aggregation value from a <c>StreamDataRow</c>. The stream-data store keys aggregate
-    /// results by the friendly output name <c>{physicalColumn}_{funcToken}</c> (e.g.
-    /// <c>amountvalue_avg</c>) — the attribute path stripped of dots and lower-cased, suffixed with the
-    /// lower-case function token. Falls back to the SQL-alias form <c>{Func}_{physicalColumn}</c>
-    /// (e.g. <c>Avg_amountvalue</c>) that the store also surfaces.
+    /// Reads an aggregate out of a <c>StreamDataRow</c>. The store keys aggregates by
+    /// <c>{storageKey}_{funcToken}</c> (e.g. <c>amountvalue_avg</c>) — the column's storage key
+    /// suffixed with the lower-case function token, so several aggregations on one column stay
+    /// distinct. Falls back to the SQL-alias form <c>{Func}_{storageKey}</c> (e.g.
+    /// <c>Avg_amountvalue</c>) that the store also surfaces.
+    /// <para>
+    /// The storage key comes from the field resolver, not from the attribute path — a computed column
+    /// after a formula change lives in a versioned column no derivation can reproduce (AB#4764).
+    /// </para>
     /// </summary>
     internal static object? ResolveStreamAggregationValue(IReadOnlyDictionary<string, object?> values,
-        string attributePath, Enum aggregationType)
+        string storageKey, Enum aggregationType)
     {
         var token = MapStreamAggregation(aggregationType).KeyToken;
-        var column = ToPhysicalColumnName(attributePath);
 
-        var outputName = $"{column}_{token}";
+        var outputName = $"{storageKey}_{token}";
         if (values.TryGetValue(outputName, out var v))
         {
             return v;
         }
 
-        var sqlAlias = $"{char.ToUpperInvariant(token[0])}{token[1..]}_{column}";
+        var sqlAlias = $"{char.ToUpperInvariant(token[0])}{token[1..]}_{storageKey}";
         return values.TryGetValue(sqlAlias, out var v2) ? v2 : null;
     }
 
@@ -399,11 +457,4 @@ internal static class StreamDataNodeHelpers
         };
     }
 
-    /// <summary>
-    /// Attribute path to physical CrateDB column name: dots stripped, lower-cased.
-    /// </summary>
-    private static string ToPhysicalColumnName(string attributePath)
-    {
-        return attributePath.Replace(".", string.Empty).ToLowerInvariant();
-    }
 }

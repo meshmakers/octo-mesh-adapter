@@ -54,19 +54,36 @@ public class GetStreamDataNodeTests : NodeTestBase
     private GetStreamDataNode CreateNode(NodeDelegate next)
         => new(next, _etlContext, _systemContext);
 
+    /// <summary>
+    /// The columns most tests project. The field resolver validates names against the snapshot, so an
+    /// archive without columns would reject every projection.
+    /// </summary>
+    private static readonly CkArchiveColumnSpec[] DefaultColumns =
+        [Ingested("Temperature"), Ingested("Amount.Value"), Ingested("Energy")];
+
     private static ArchiveSnapshot CreateSnapshot(
         bool isTimeRange = false, params CkArchiveColumnSpec[] columns)
-        => new(TestArchiveRtId, TestCkTypeId, CkArchiveStatus.Activated, "test-archive", columns)
+        => new(TestArchiveRtId, TestCkTypeId, CkArchiveStatus.Activated, "test-archive",
+            columns.Length > 0 ? columns : DefaultColumns)
         {
             IsTimeRange = isTimeRange
         };
+
+    /// <summary>An archive that declares no data columns at all — only the standard ones exist.</summary>
+    private static ArchiveSnapshot EmptySnapshot()
+        => new(TestArchiveRtId, TestCkTypeId, CkArchiveStatus.Activated, "test-archive", []);
 
     private static CkArchiveColumnSpec Ingested(string path)
         => new(path, Indexed: false, Required: false);
 
     /// <summary>A formula column: empty Path, addressed by Name.</summary>
-    private static CkArchiveColumnSpec Computed(string name)
-        => new(string.Empty, Indexed: false, Required: false) { Name = name, Formula = "a + b" };
+    private static CkArchiveColumnSpec Computed(string name, int version = 0)
+        => new(string.Empty, Indexed: false, Required: false)
+        {
+            Name = name,
+            Formula = "a + b",
+            ComputedVersion = version
+        };
 
     private void SetupArchive(ArchiveSnapshot? snapshot)
     {
@@ -718,10 +735,10 @@ public class GetStreamDataNodeTests : NodeTestBase
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_NoColumns_SkipsComputedColumns()
+    public async Task ProcessObjectAsync_NoColumns_IncludesComputedColumns()
     {
-        // A computed column has an empty Path and a physical name that is not derivable after a
-        // formula change — reading it needs an explicit request.
+        // Computed columns used to be skipped because their storage key could not be derived; the
+        // field resolver supplies it now, so reading the whole archive includes them (AB#4764).
         SetupArchive(CreateSnapshot(false, Ingested("Temperature"), Computed("Derived")));
 
         var (dataContext, nodeContext, next) = PrepareTest(Config());
@@ -729,15 +746,60 @@ public class GetStreamDataNodeTests : NodeTestBase
 
         await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        Assert.Equal(["Temperature"], _capturedOptions!.Columns);
-        Assert.DoesNotContain("Derived", captured.Value!.Columns.Select(x => x.Header));
+        Assert.Equal(["Temperature", "Derived"], _capturedOptions!.Columns);
+        Assert.Contains("Derived", captured.Value!.Columns.Select(x => x.Header));
+        // A computed column carries no Path, so an empty name must never reach the query.
         Assert.DoesNotContain(string.Empty, _capturedOptions.Columns);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VersionedComputedColumn_ReadsItsValue()
+    {
+        // The bug itself (AB#4764): after a formula change the physical column is {base}__v{N}, which
+        // no derivation from the name reproduces. Deriving it yielded null for every row.
+        SetupArchive(CreateSnapshot(false, Computed("Derived", version: 2)));
+        SetupQueryResult(new StreamDataRow
+        {
+            Timestamp = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+            Values = new Dictionary<string, object?> { ["derived__v2"] = 99.5 }
+        });
+
+        var config = Config() with { Columns = ["Derived"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // The query asks by logical name, the value is read by the versioned storage key.
+        Assert.Equal(["Derived"], _capturedOptions!.Columns);
+        Assert.Equal(["Timestamp", "Derived"], captured.Value!.Columns.Select(x => x.Header));
+        Assert.Equal(99.5, Assert.Single(captured.Value.Rows).Values[1]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ComputedColumnMidBackfill_IsNotProjected()
+    {
+        // The read path hides a column whose backfill has not committed; the resolver does not
+        // register it, so it cannot leak into the automatic set either.
+        var pending = new CkArchiveColumnSpec(string.Empty, false, false)
+        {
+            Name = "Pending",
+            Formula = "a + b",
+            ComputedState = ComputedColumnState.Backfilling
+        };
+        SetupArchive(CreateSnapshot(false, Ingested("Temperature"), pending));
+
+        var (dataContext, nodeContext, next) = PrepareTest(Config());
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(["Temperature"], _capturedOptions!.Columns);
     }
 
     [Fact]
     public async Task ProcessObjectAsync_ArchiveWithoutColumns_StillReturnsTimeAxisAndName()
     {
-        SetupArchive(CreateSnapshot());
+        SetupArchive(EmptySnapshot());
         SetupQueryResult(new StreamDataRow
         {
             Timestamp = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),

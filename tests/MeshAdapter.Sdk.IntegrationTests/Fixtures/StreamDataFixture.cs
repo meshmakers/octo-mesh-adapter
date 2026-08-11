@@ -2,6 +2,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Models.StreamData.Generated.System.StreamData.v1;
+using Meshmakers.Octo.Runtime.Contracts.Formulas;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Services;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
@@ -78,6 +79,15 @@ public class StreamDataFixture : SystemFixture
     /// <summary>Slot indices (0-based, 15 min each) deliberately left out for the gappy meter.</summary>
     public static IReadOnlyList<int> MissingSlots { get; } = [2, 3, 7];
 
+    /// <summary>
+    /// Logical name of the computed column on the time-range archive. It has been through a formula
+    /// change, so its physical column is <c>power__v1</c> — the AB#4764 shape.
+    /// </summary>
+    public string ComputedColumnName => "power";
+
+    /// <summary>Factor of the computed column's <em>active</em> formula (<c>temperature * 3</c>).</summary>
+    public static int ComputedColumnFactor => 3;
+
     public StreamDataFixture()
     {
         // Register the dedicated test CK model before the provider is built (base ctor already
@@ -139,6 +149,34 @@ public class StreamDataFixture : SystemFixture
 
         TimeRangeArchiveRtId = await CreateAndActivateTimeRangeArchiveAsync();
         await InsertTimeRangeTestDataAsync();
+        await AddVersionedComputedColumnAsync();
+    }
+
+    /// <summary>
+    /// Adds a computed column to the time-range archive and then changes its formula, so it ends up in
+    /// a <b>versioned</b> physical column (<c>power__v1</c>) rather than the base one. That is the
+    /// shape AB#4764 is about: no derivation from the column's name reproduces the versioned name, so
+    /// a node that derives the storage key reads null for every row.
+    /// </summary>
+    private async Task AddVersionedComputedColumnAsync()
+    {
+        var systemContext = GetSystemContext();
+        var tenantContext = await systemContext.FindTenantContextAsync(systemContext.TenantId);
+        var lifecycle = tenantContext.GetArchiveLifecycleService()
+            ?? throw new InvalidOperationException("ArchiveLifecycleService not registered.");
+
+        // Formulas bind to the PHYSICAL column name: lower-cased and dot-stripped by
+        // ColumnNameMapper. The archive's column path is "Temperature", so the identifier is
+        // "temperature" — camelCase or a dotted path would fail validation.
+        await lifecycle.AddComputedColumnAsync(TimeRangeArchiveRtId, ComputedColumnName,
+            "temperature * 2", FormulaResultType.Double, indexed: false);
+
+        // The formula change backfills into power__v1 and swaps the version pointer atomically. It
+        // must differ from the first formula — an unchanged formula is a no-op.
+        await lifecycle.UpdateComputedColumnFormulaAsync(TimeRangeArchiveRtId, ComputedColumnName,
+            $"temperature * {ComputedColumnFactor}");
+
+        await RefreshTableAsync(TimeRangeArchiveRtIdString);
     }
 
     private async Task<OctoObjectId> CreateAndActivateTimeRangeArchiveAsync()

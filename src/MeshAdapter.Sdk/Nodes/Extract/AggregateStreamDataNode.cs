@@ -4,6 +4,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Runtime.Engine.CrateDb;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -37,6 +38,7 @@ public class AggregateStreamDataNode(
         var c = nodeContext.GetNodeConfiguration<AggregateStreamDataNodeConfiguration>();
 
         var (streamDataRepo, snapshot) = await ResolveArchiveAsync(c.ArchiveRtId, nodeContext);
+        var resolver = StreamDataNodeHelpers.CreateFieldResolver(snapshot);
 
         // Literal configuration wins over the JSONPath variant; both boundaries are normalised to UTC
         // so the adapter's local zone can never shift the aggregated window (AB#4734).
@@ -52,8 +54,8 @@ public class AggregateStreamDataNode(
             throw MeshAdapterPipelineExecutionException.StreamDataTimeRangeInvalid(nodeContext, from, to);
         }
 
-        var aggregations = ResolveAggregations(c, snapshot, nodeContext);
-        var groupBy = ResolveGroupBy(c, snapshot, nodeContext);
+        var aggregations = ResolveAggregations(c, snapshot, resolver, nodeContext);
+        var groupBy = ResolveGroupBy(c, snapshot, resolver, nodeContext);
 
         if (c.RequireGapFree)
         {
@@ -63,7 +65,7 @@ public class AggregateStreamDataNode(
         var rtIds = StreamDataNodeHelpers.ResolveRtIds(c.RtIds, c.RtIdsPath, dataContext, nodeContext,
             nameof(c.RtIdsPath));
         var fieldFilters = StreamDataNodeHelpers.BuildFieldFilters(c.WellKnownNames,
-            c.WellKnownNamesPath, c.FieldFilters, snapshot, dataContext, nodeContext,
+            c.WellKnownNamesPath, c.FieldFilters, snapshot, resolver, dataContext, nodeContext,
             nameof(c.WellKnownNamesPath));
 
         if (c.RequireGapFree)
@@ -97,7 +99,7 @@ public class AggregateStreamDataNode(
     /// physical column to aggregate, and the enum the value lookup needs.
     /// </summary>
     private readonly record struct Aggregation(
-        string Header, string Column, AggregationTypesDto Function);
+        string Header, string QueryName, string StorageKey, AggregationTypesDto Function);
 
     /// <summary>
     /// Resolves the tenant's stream-data repository and the archive's snapshot. The snapshot supplies
@@ -128,7 +130,7 @@ public class AggregateStreamDataNode(
     /// function but a bare path header would not be.
     /// </summary>
     private static List<Aggregation> ResolveAggregations(AggregateStreamDataNodeConfiguration c,
-        ArchiveSnapshot snapshot, INodeContext nodeContext)
+        ArchiveSnapshot snapshot, StreamDataFieldResolver resolver, INodeContext nodeContext)
     {
         var configured = c.Aggregations?
             .Where(a => a is not null && !string.IsNullOrWhiteSpace(a.AttributePath))
@@ -154,9 +156,10 @@ public class AggregateStreamDataNode(
                 ? $"{aggregation.AttributePath} ({aggregation.Function})"
                 : aggregation.AttributePath;
 
-            result.Add(new Aggregation(header,
-                StreamDataNodeHelpers.ResolveQueryableColumn(aggregation.AttributePath, snapshot,
-                    nodeContext, "aggregating"),
+            var resolved = StreamDataNodeHelpers.ResolveQueryableColumn(aggregation.AttributePath,
+                snapshot, resolver, nodeContext, "aggregating");
+
+            result.Add(new Aggregation(header, resolved.QueryName, resolved.StorageKey,
                 aggregation.Function));
         }
 
@@ -191,13 +194,14 @@ public class AggregateStreamDataNode(
     /// one fails instead of being dropped — a dropped group-by column would collapse every group into
     /// one row and quietly change what the figures mean.
     /// </summary>
-    private static List<string> ResolveGroupBy(AggregateStreamDataNodeConfiguration c,
-        ArchiveSnapshot snapshot, INodeContext nodeContext)
+    private static List<StreamDataNodeHelpers.ResolvedColumn> ResolveGroupBy(
+        AggregateStreamDataNodeConfiguration c, ArchiveSnapshot snapshot,
+        StreamDataFieldResolver resolver, INodeContext nodeContext)
     {
         return c.GroupBy?
             .Where(col => !string.IsNullOrWhiteSpace(col))
-            .Select(col => StreamDataNodeHelpers.ResolveQueryableColumn(col, snapshot, nodeContext,
-                "grouping"))
+            .Select(col => StreamDataNodeHelpers.ResolveQueryableColumn(col, snapshot, resolver,
+                nodeContext, "grouping"))
             .ToList() ?? [];
     }
 
@@ -236,12 +240,12 @@ public class AggregateStreamDataNode(
     /// </summary>
     private static async Task<StreamDataQueryResult> ExecuteAggregationAsync(
         IStreamDataRepository streamDataRepo, ArchiveSnapshot snapshot,
-        AggregateStreamDataNodeConfiguration c, List<Aggregation> aggregations, List<string> groupBy,
-        IReadOnlyList<OctoObjectId>? rtIds, IReadOnlyList<FieldFilter>? fieldFilters, DateTime? from,
+        AggregateStreamDataNodeConfiguration c, List<Aggregation> aggregations,
+        List<StreamDataNodeHelpers.ResolvedColumn> groupBy, IReadOnlyList<OctoObjectId>? rtIds, IReadOnlyList<FieldFilter>? fieldFilters, DateTime? from,
         DateTime? to, INodeContext nodeContext)
     {
         var columns = aggregations
-            .Select(a => new AggregationColumn(a.Column,
+            .Select(a => new AggregationColumn(a.QueryName,
                 StreamDataNodeHelpers.MapStreamAggregation(a.Function).Function))
             .ToList();
 
@@ -251,7 +255,7 @@ public class AggregateStreamDataNode(
             {
                 var grouped = StreamDataGroupedAggregationQueryOptions.Create()
                     .WithCkTypeId(snapshot.TargetCkTypeId)
-                    .WithGroupByColumns(groupBy)
+                    .WithGroupByColumns(groupBy.Select(g => g.QueryName).ToList())
                     .WithAggregationColumns(columns)
                     .WithRtIds(rtIds)
                     .WithTimeRange(from, to)
@@ -281,12 +285,13 @@ public class AggregateStreamDataNode(
     /// persisted-query path: group-by columns first, then one column per key figure. Without grouping
     /// there is exactly one row.
     /// </summary>
-    private static QueryResult BuildQueryResult(List<Aggregation> aggregations, List<string> groupBy,
-        StreamDataQueryResult result)
+    private static QueryResult BuildQueryResult(List<Aggregation> aggregations,
+        List<StreamDataNodeHelpers.ResolvedColumn> groupBy, StreamDataQueryResult result)
     {
         var queryResult = new QueryResult();
 
-        queryResult.Columns.AddRange(groupBy.Select(col => new QueryResultColumns { Header = col }));
+        queryResult.Columns.AddRange(groupBy.Select(col =>
+            new QueryResultColumns { Header = col.QueryName }));
         queryResult.Columns.AddRange(aggregations.Select(a =>
             new QueryResultColumns { Header = a.Header }));
 
@@ -309,7 +314,7 @@ public class AggregateStreamDataNode(
         {
             var values = new List<object?>();
             values.AddRange(groupBy.Select(col =>
-                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, col)));
+                StreamDataNodeHelpers.ResolveStreamColumnValue(row.Values, col.StorageKey)));
             values.AddRange(aggregations.Select(a => ResolveValue(row, a)));
 
             queryResult.Rows.Add(new QueryResultRow
@@ -324,7 +329,7 @@ public class AggregateStreamDataNode(
     }
 
     private static object? ResolveValue(StreamDataRow row, Aggregation aggregation)
-        => StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, aggregation.Column,
+        => StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, aggregation.StorageKey,
             aggregation.Function);
 
     /// <summary>

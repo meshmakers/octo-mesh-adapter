@@ -247,7 +247,7 @@ persisted query entity is needed. Writes a `QueryResult` (`Columns` + `Rows`) to
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `ArchiveRtId` | OctoObjectId | RtId of the archive to read. Must be activated. Required |
-| `Columns` | collection\<string\> | Attribute paths to project (e.g. `Temperature`, `Amount.Value`). **Empty reads the whole archive**: every data column it declares, preceded by `WellKnownName`. Formula (computed) columns only when named explicitly |
+| `Columns` | collection\<string\> | Attribute paths to project (e.g. `Temperature`, `Amount.Value`), or a formula column's name. **Empty reads the whole archive**: every data column it declares, preceded by `WellKnownName` |
 | `WellKnownNames` | collection\<string\> | Restrict to source entities with these well-known names — `Equals` for one value, `In` for several |
 | `WellKnownNamesPath` | string | JSONPath alternative to `WellKnownNames`; accepts a scalar, an array or a multi-match path |
 | `RtIds` / `RtIdsPath` | collection\<string\> / string | Restrict to these source entities. Emitted as an `In` filter on the identity column |
@@ -274,12 +274,11 @@ silently widening the range.
 (time-range or rollup) `WindowStart` and `WindowEnd` are inserted after `Timestamp` — those archives
 have no `timestamp` column of their own, the storage layer aliases `window_end` as the time axis, and
 the window columns only reach the result when they are projected explicitly. Values are keyed in the
-engine result by their physical CrateDB column name (attribute path with dots stripped and
-lower-cased — `Amount.Value` → `amountvalue`); the node resolves that back so the headers keep the
-configured attribute paths.
+engine result by their physical CrateDB column name; the node asks the storage layer's field resolver
+for that key and maps it back, so the headers keep the attribute paths you configured.
 
-**Reading a whole archive.** Leaving `Columns` unset projects every *ingested* column the archive
-declares and adds a `WellKnownName` column ahead of them — reading an entire archive is almost always
+**Reading a whole archive.** Leaving `Columns` unset projects every data column the archive declares
+and adds a `WellKnownName` column ahead of them — reading an entire archive is almost always
 about several source entities, and the name is what tells their rows apart. So the minimal
 configuration, just an `archiveRtId`, already returns usable data:
 
@@ -287,17 +286,25 @@ configuration, just an `archiveRtId`, already returns usable data:
 Timestamp | WindowStart | WindowEnd | WellKnownName | Energy | DataQuality
 ```
 
-Formula (computed) columns are left out of that automatic set: they carry an empty attribute path and
-are addressed by name, and after a formula change their physical column moves to `{base}__v{N}`,
-which the node's name resolution does not reconstruct. Name such a column in `Columns` to read it.
-When `Columns` *is* set, the list is honoured exactly as given — no `WellKnownName` is added, and it
-can be requested there like any other column (`rtWellKnownName`).
+Formula (computed) columns are included and are addressed by their **name**, not by an attribute path
+— they have none. A column whose backfill has not committed yet is absent, because the storage layer
+hides it until then; it appears once its backfill completes. When `Columns` *is* set, the list is
+honoured exactly as given — no `WellKnownName` is added, and it can be requested there like any other
+column (`rtWellKnownName`).
+
+> Note on formulas: a formula binds to the **physical** column names — lower-cased and dot-stripped —
+> so a column at path `Amount.Value` is referenced as `amountvalue`, not `Amount.Value`. That concerns
+> writing the formula in the Studio, not reading the column through this node.
 
 **Column names in `SortOrders` and `FieldFilters`.** Use the names as they appear in the result:
 `Timestamp`, `WindowStart` / `WindowEnd` (windowed archives only), `WellKnownName`, or any column the
 archive declares. The node translates those onto the physical storage columns — `WindowStart` →
 `window_start`, and `Timestamp` → `window_end` on a windowed archive, which has no `timestamp` column
 of its own.
+
+Names are resolved through the storage layer's own field resolver, which is also what makes a formula
+column readable: after a formula change its physical column is versioned (`{base}__v{N}`) and cannot
+be derived from the name (AB#4764).
 
 This translation matters because the storage layer **drops a name it cannot resolve without raising
 anything**: a mistyped sort returns rows in storage order, a mistyped filter returns too many rows.

@@ -5,6 +5,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -313,6 +314,73 @@ public class GetStreamDataNodeIntegrationTests(StreamDataFixture fixture)
         var act = async () => await ExecuteAsync(config);
 
         await act.Should().ThrowAsync<MeshAdapterPipelineExecutionException>();
+    }
+
+    // ------------------------------------------------- computed columns (AB#4764)
+
+    [Fact]
+    public async Task Fixture_ComputedColumn_IsActuallyVersioned()
+    {
+        fixture.EnsureInitialized();
+
+        // Guards the regression test below: if the fixture's formula change ever stopped producing a
+        // versioned column, the test would still pass while no longer exercising AB#4764 at all.
+        var systemContext = fixture.GetSystemContext();
+        var tenantContext = await systemContext.FindTenantContextAsync(systemContext.TenantId);
+        var snapshot = await tenantContext.GetArchiveRuntimeStore().GetAsync(fixture.TimeRangeArchiveRtId);
+
+        var computed = snapshot!.Columns.Should()
+            .ContainSingle(spec => spec.IsComputed).Subject;
+
+        computed.Name.Should().Be(fixture.ComputedColumnName);
+        computed.ComputedVersion.Should().BeGreaterThan(0,
+            "the formula change must have moved the column into a versioned physical column");
+        computed.ComputedState.Should().Be(ComputedColumnState.Active);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VersionedComputedColumn_ReturnsItsValues()
+    {
+        fixture.EnsureInitialized();
+
+        // The regression test for AB#4764. The fixture's computed column has been through a formula
+        // change, so it lives in power__v1 — a storage key no derivation from its name reproduces.
+        // Before the fix every value here came back null, with no error at all.
+        var result = await ExecuteAsync(TimeRangeConfig() with
+        {
+            Columns = ["Temperature", fixture.ComputedColumnName],
+            WellKnownNames = [fixture.CompleteMeterWellKnownName],
+            SortOrders = [Ascending("WindowStart")],
+            GapsTargetPath = null
+        });
+
+        result!.Columns.Select(c => c.Header).Should().Equal(
+            "Timestamp", "WindowStart", "WindowEnd", "Temperature", fixture.ComputedColumnName);
+
+        result.Rows.Should().HaveCount(8);
+        result.Rows.Should().AllSatisfy(row =>
+            row.Values[4].Should().NotBeNull("the computed column must resolve to its versioned column"));
+
+        // The active formula is temperature * 3, so each row's value follows its own temperature.
+        foreach (var row in result.Rows)
+        {
+            var temperature = Convert.ToDouble(row.Values[3]);
+            Convert.ToDouble(row.Values[4])
+                .Should().Be(temperature * StreamDataFixture.ComputedColumnFactor);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NoColumns_IncludesTheComputedColumn()
+    {
+        fixture.EnsureInitialized();
+
+        // Reading a whole archive used to skip computed columns because their key was not derivable.
+        var result = await ExecuteAsync(TimeRangeConfig() with { GapsTargetPath = null });
+
+        result!.Columns.Select(c => c.Header).Should().Contain(fixture.ComputedColumnName);
+        result.Rows.Should().AllSatisfy(row =>
+            row.Values.Should().AllSatisfy(value => value.Should().NotBeNull()));
     }
 
     // ------------------------------------------------------------- gap detection

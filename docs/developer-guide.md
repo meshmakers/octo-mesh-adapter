@@ -858,6 +858,8 @@ Return Result / Store in Time-Series / Send Notifications
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `ReportingServiceUrl` | string | `https://localhost:5007` | Report service endpoint |
+| `AuthorityUrl` | string | `https://localhost:5003` | Identity service issuing the access tokens accepted by secured trigger nodes |
+| `AuditAnonymousInvocations` | bool | `false` | Stores an event per invocation of an anonymous trigger route. Opt in per environment; the decision always reaches the adapter log at debug level regardless |
 | `StreamDataHost` | string | `127.0.0.1` | CrateDB hostname |
 | `StreamDataUser` | string | `crate` | CrateDB user |
 | `StreamDataPassword` | string | (empty) | CrateDB password |
@@ -894,10 +896,86 @@ All components are registered via `ServiceCollectionExtensions.cs`:
 
 1. Extract path and method from HTTP context
 2. Lookup registered route in internal dictionary
-3. Parse request body based on Content-Type
-4. Build input JObject with path, method, body, query, files, formData, contentType
-5. Execute pipeline with input
-6. Return JToken response as JSON
+3. Authorize the caller unless the route was registered as anonymous
+4. Parse request body based on Content-Type
+5. Build the input `JsonObject` with path, method, body, query, files, formData, contentType
+6. Execute pipeline with input
+7. Return the resulting `JsonNode` as JSON
+
+### Route Authorization
+
+Routes are registered with an `AllowAnonymous` flag and a list of `RequiredRoles`. Anonymous
+routes are served as before; all others are authorized in three steps and every decision is
+both logged and written to the tenant's event log (see **Route audit** below):
+
+1. A bearer token validated against `AuthorityUrl` (signature, issuer, audience, lifetime) —
+   `401 Unauthorized` when missing or invalid.
+2. The token's tenant must be the tenant this adapter serves — `403 Forbidden` otherwise. Only
+   user tokens are compared: a client-credentials token carries neither a subject nor a tenant
+   claim, so machine callers are authorized by role alone. `allowed_tenants` is deliberately
+   ignored, it drives tenant selection rather than authorization (same rule as
+   `TenantAuthorizationMiddleware` in octo-common-services). A user token without a tenant claim
+   is rejected rather than waved through.
+3. When roles are configured the caller must hold at least one — `403 Forbidden` otherwise.
+   Without roles a valid token of the right tenant is enough.
+
+| Node | Anonymous | Sees credential headers | Reason |
+|------|-----------|-------------------------|--------|
+| `FromHttpRequest@1` | yes | no | Deprecated, kept unchanged for existing pipelines |
+| `FromHttpRequest@2` | configurable, default no | no | `AllowAnonymous` on the node |
+| `FromTeamsBot@1` | yes | yes | Validates its own Bot Framework token, so it needs the raw header |
+
+### Route audit
+
+Each decision on a secured route is written to the tenant's event log as a
+`System.Notification/Event` tagged with the `MeshAdapter` source, so an operator sees it in Studio
+under **Repository → Events** filtered by *Adapter*. Denials are warnings, an authorized call is an
+information entry, and every message names the decision, the route, the caller's subject and — where
+known — the tenant and roles. The credential itself is never part of a message.
+
+`IAdapterEventService` (`src/MeshAdapter.Sdk/Services/AdapterEventService.cs`) opens a scope per
+event to reach the scoped `IEventRepository`, mirroring the communication controller's own event
+service, and swallows any failure into a warning: an unavailable event log must never turn a trigger
+invocation into a `500`. Only the repository is taken from the notification package —
+`AddOctoNotification()` would additionally install a blueprint bootstrap, notification and markdown
+services and replace the runtime engine's audit sink.
+
+Anonymous routes are audited on two different granularities, because the two facts have very
+different value and cost. The **existence** of an unauthenticated route is a standing exposure, so
+it is recorded once per deployment as an information event (`Route POST /x registered without
+authentication`) — unconditionally, since that is what an operator needs to find open doors.
+Individual **invocations** carry no caller identity and serve public webhooks, so they are traced
+at debug level and stored as an event only when `AuditAnonymousInvocations` is set. Both of those
+sinks are quiet by default and each has its own switch: the log line is emitted unconditionally but
+suppressed by the adapter's default minimum level, so it becomes visible once
+`OCTO_ADAPTER__MINIMUMLOGLEVEL` is lowered to `Debug`, while the event needs the setting above.
+What remains visible with neither switch touched is the registration event and the pipeline
+execution row, the latter being the only per-invocation record that has retention.
+
+The setting is off by default in every build and environment, and is opted into per environment —
+`OCTO_ADAPTER__AUDITANONYMOUSINVOCATIONS=true` for a container, or
+`--Adapter:AuditAnonymousInvocations=true` for an adapter started from a build directory, which is
+how `Start-Octo` in octo-tools already passes `--Adapter:TenantId`. A build-conditional default was
+deliberately rejected: it cannot be asserted from a test run (tests compile as `Debug`, so the
+`Release` branch is unreachable) and it would have missed both development setups anyway, since
+octo-tools defaults to running `Release` output and getting-started runs released images.
+
+The cost this guards against was measured on a real half-year-old tenant: the event log ran at 39
+entries/day totalling 704 KB on disk, and nothing prunes it — so a webhook taking one request per
+minute would add roughly 37× the whole existing log every day.
+
+The `Authorization`, `Proxy-Authorization` and `Cookie` headers are withheld from `input["headers"]`
+on every route, unless the trigger node opted in via `ReceivesCredentialHeaders`. The data root is
+echoed back in the response, can be persisted by nodes such as `SetPipelineExecutionResult@1`
+(default `Path: $`) and is rendered in the Studio debug panel when debugging is enabled - so
+forwarding the credential would put a replayable token in all three places.
+
+Whether the adapter authorized the caller (`AllowAnonymous`) and whether the pipeline needs to see
+the credential (`ReceivesCredentialHeaders`) are **separate questions**, and conflating them was a
+defect: platform apps attach the operator's token per host rather than per route, so an anonymous
+route routinely receives a token it never asked for. `FromTeamsBot@1` is the only trigger that opts
+in, because Bot Framework issues its own tokens which the platform gate cannot validate, leaving the
+node to check the header itself.
 
 ### Response Formats
 

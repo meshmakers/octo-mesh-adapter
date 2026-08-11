@@ -5,6 +5,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// <summary>
 /// Configuration for node FromHttpRequest
 /// </summary>
+[NodeDeprecated("Use FromHttpRequest@2 instead.")]
 [NodeName("FromHttpRequest", 1)]
 public record FromHttpRequestNodeConfiguration: TriggerNodeConfiguration
 {

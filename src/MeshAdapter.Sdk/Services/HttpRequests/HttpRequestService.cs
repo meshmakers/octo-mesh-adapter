@@ -1,17 +1,39 @@
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using IdentityModel;
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 
-internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHttpRequestService
+internal class HttpRequestService(
+    IOptions<AdapterOptions> adapterOptions,
+    IOptions<MeshAdapterConfiguration> meshAdapterConfiguration,
+    IAdapterEventService eventService,
+    ILogger<HttpRequestService> logger) : IHttpRequestService
 {
     private readonly Dictionary<Tuple<string, string>, HttpRequestOptions> _routes = new();
+
+    /// <summary>
+    /// Withheld from the pipeline data unless the trigger opted in via
+    /// <see cref="HttpRequestOptions.ReceivesCredentialHeaders" />, because the data root is echoed
+    /// back in the response, persistable by SetPipelineExecutionResult and forwardable by any node.
+    /// </summary>
+    private static readonly HashSet<string> CredentialHeaders =
+        new(StringComparer.OrdinalIgnoreCase) { "Authorization", "Proxy-Authorization", "Cookie" };
+
+    /// <summary>
+    /// Claim naming the tenant a user token was issued for. Unprefixed because the JWT options
+    /// keep inbound claim types as issued.
+    /// </summary>
+    private const string TenantIdClaim = "tenant_id";
 
     public HttpRouteHandle CreateRoute(HttpRequestOptions options)
     {
@@ -44,6 +66,11 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
             return false;
         }
 
+        if (!await IsCallerAuthorizedAsync(context, route))
+        {
+            return true;
+        }
+
         JsonObject input = new()
         {
             ["path"] = path.ToLower(),
@@ -58,6 +85,11 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
             var headers = new JsonObject();
             foreach (var (headerKey, headerValue) in context.Request.Headers)
             {
+                if (!route.ReceivesCredentialHeaders && CredentialHeaders.Contains(headerKey))
+                {
+                    continue;
+                }
+
                 headers[headerKey] = headerValue.ToString();
             }
             input["headers"] = headers;
@@ -193,6 +225,85 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
         return true;
     }
     
+    /// <summary>
+    /// Authorizes the caller of a route and records the decision in the tenant's event log.
+    /// An anonymous invocation carries no caller identity and serves public webhooks, so it is
+    /// always traced to the adapter log at debug level but only stored as an event when
+    /// <see cref="MeshAdapterConfiguration.AuditAnonymousInvocations"/> is set.
+    /// </summary>
+    private async Task<bool> IsCallerAuthorizedAsync(HttpContext context, HttpRequestOptions route)
+    {
+        var tenantOfAdapter = adapterOptions.Value.TenantId;
+
+        if (route.AllowAnonymous)
+        {
+            logger.LogDebug("Allowed anonymous {Method} {Route}", route.Method, route.Route);
+            if (meshAdapterConfiguration.Value.AuditAnonymousInvocations)
+            {
+                await eventService.StoreDebugEventAsync(tenantOfAdapter,
+                    $"Allowed anonymous {route.Method.ToString().ToUpper()} {route.Route}.");
+            }
+
+            return true;
+        }
+
+        if (context.User.Identity?.IsAuthenticated != true)
+        {
+            logger.LogWarning("Denied {Method} {Route}: no valid access token", route.Method, route.Route);
+            await eventService.StoreWarningEventAsync(tenantOfAdapter,
+                $"Denied {route.Method.ToString().ToUpper()} {route.Route}: no valid access token.");
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return false;
+        }
+
+        var subject = context.User.FindFirstValue(JwtClaimTypes.Subject);
+        var tenantId = context.User.FindFirstValue(TenantIdClaim);
+
+        // An adapter serves exactly one tenant, so a token minted for another tenant of the same
+        // installation must not reach its routes. Only user tokens are compared: a client
+        // credentials token carries neither a subject nor a tenant, and allowed_tenants is
+        // deliberately ignored - it drives tenant selection, not authorization. Same rule as
+        // TenantAuthorizationMiddleware in octo-common-services.
+        if (subject != null &&
+            !string.Equals(tenantId, tenantOfAdapter, StringComparison.OrdinalIgnoreCase))
+        {
+            // A missing claim is a different story than a foreign tenant, and the audit trail is
+            // read by an operator - naming tenant '' would leave them guessing which one it was.
+            var reason = string.IsNullOrEmpty(tenantId)
+                ? "the user token carries no tenant claim"
+                : $"the token of tenant '{tenantId}' does not serve this tenant";
+
+            logger.LogWarning("Denied {Method} {Route} for subject {Subject} of tenant {Tenant}: {Reason}",
+                route.Method, route.Route, subject, tenantOfAdapter, reason);
+            await eventService.StoreWarningEventAsync(tenantOfAdapter,
+                $"Denied {route.Method.ToString().ToUpper()} {route.Route} for subject {subject}: {reason}.");
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return false;
+        }
+
+        // A blank entry cannot match a role and would make IsInRole throw, so it is
+        // skipped rather than answered with a 500 - a malformed list denies access.
+        if (route.RequiredRoles.Length > 0 &&
+            !route.RequiredRoles.Any(role => !string.IsNullOrWhiteSpace(role) && context.User.IsInRole(role)))
+        {
+            logger.LogWarning("Denied {Method} {Route} for subject {Subject}: none of the roles {RequiredRoles}",
+                route.Method, route.Route, subject, route.RequiredRoles);
+            await eventService.StoreWarningEventAsync(tenantOfAdapter,
+                $"Denied {route.Method.ToString().ToUpper()} {route.Route} for subject {subject}: " +
+                $"none of the required roles {string.Join(", ", route.RequiredRoles)}.");
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return false;
+        }
+
+        var roles = context.User.FindAll(JwtClaimTypes.Role).Select(c => c.Value).ToArray();
+        logger.LogInformation("Allowed {Method} {Route} for subject {Subject} of tenant {Tenant} with roles {Roles}",
+            route.Method, route.Route, subject, tenantId, roles);
+        await eventService.StoreInformationEventAsync(tenantOfAdapter,
+            $"Allowed {route.Method.ToString().ToUpper()} {route.Route} for subject {subject} " +
+            $"of tenant '{tenantId}' with roles {string.Join(", ", roles)}.");
+        return true;
+    }
+
     private string GetUri(string uri)
     {
         return $"/{adapterOptions.Value.TenantId?.ToLower()}{uri.ToLower()}";

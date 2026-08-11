@@ -372,16 +372,32 @@ public class GetQueryByIdNode(
         // A failure to read it is swallowed for the same reason: the archive store is also what the
         // downsampling path consults, and it reports its own trouble with a message that names the
         // resolution. Pre-empting that with a different error would only obscure it.
+        //
+        // Degrading quietly, though, would recreate the very symptom this fix removes: with only the
+        // standard columns resolvable, a projected computed column reads empty again. So both ways of
+        // ending up without a snapshot — the store throwing and the store simply returning none —
+        // warn once, at a level an operator sees, and say what it costs rather than only what happened.
         ArchiveSnapshot? snapshot = null;
+        string? snapshotFailure = null;
         try
         {
             snapshot = await tenantContext.GetArchiveRuntimeStore().GetAsync(archiveRtId);
+            if (snapshot == null)
+            {
+                snapshotFailure = "the archive runtime store returned no snapshot";
+            }
         }
         catch (Exception ex)
         {
-            nodeContext.Debug(
+            snapshotFailure = ex.Message;
+        }
+
+        if (snapshotFailure != null)
+        {
+            nodeContext.Warning(
                 $"Could not read the snapshot of archive '{archiveRtId}' for column-name resolution: " +
-                $"{ex.Message}. Falling back to the standard columns.");
+                $"{snapshotFailure}. Only the standard columns can be resolved, so a projected " +
+                "computed column may come back empty. The query itself still runs.");
         }
 
         var resolver = StreamDataNodeHelpers.CreateFieldResolver(snapshot);

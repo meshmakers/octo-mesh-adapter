@@ -75,7 +75,7 @@ internal static class StreamDataNodeHelpers
         if (resolved == null)
         {
             throw MeshAdapterPipelineExecutionException.UnknownStreamDataColumn(
-                nodeContext, name, usage, BuildKnownColumnList(snapshot));
+                nodeContext, name, usage, BuildKnownColumnList(snapshot, resolver));
         }
 
         return new ResolvedColumn(queryName, resolved.CrateDbName);
@@ -162,8 +162,15 @@ internal static class StreamDataNodeHelpers
     /// <summary>
     /// The names a caller may use, for the error message: the node's result headers first (what a
     /// reader of the output would reach for), then the archive's own columns.
+    /// <para>
+    /// The archive's columns come through the resolver rather than straight off the snapshot, so the
+    /// list only offers names that would actually resolve. A computed column mid-backfill is declared
+    /// on the archive but hidden from the read path, and naming it in a "known columns" list would
+    /// send the caller straight into a second failure with the very same message.
+    /// </para>
     /// </summary>
-    private static string BuildKnownColumnList(ArchiveSnapshot snapshot)
+    private static string BuildKnownColumnList(ArchiveSnapshot snapshot,
+        StreamDataFieldResolver resolver)
     {
         var names = new List<string> { "Timestamp" };
         if (snapshot.UsesWindowedStorage)
@@ -173,10 +180,7 @@ internal static class StreamDataNodeHelpers
         }
 
         names.Add("WellKnownName");
-        names.AddRange(snapshot.Columns
-            .Select(spec => !string.IsNullOrWhiteSpace(spec.Path) ? spec.Path : spec.Name)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .Select(n => n!));
+        names.AddRange(ResolveArchiveColumns(snapshot, resolver).Select(col => col.QueryName));
         names.AddRange(Constants.GetDefaultStreamDataFields(snapshot.UsesWindowedStorage));
 
         return string.Join(", ", names.Distinct(StringComparer.OrdinalIgnoreCase));

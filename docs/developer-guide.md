@@ -292,6 +292,12 @@ hides it until then; it appears once its backfill completes. When `Columns` *is*
 honoured exactly as given — no `WellKnownName` is added, and it can be requested there like any other
 column (`rtWellKnownName`).
 
+The one exception is the time axis and, on a windowed archive, the row window: `Timestamp`,
+`WindowStart` and `WindowEnd` are emitted for every row regardless, so naming one of them in `Columns`
+would only append a second, identical column. Such an entry is dropped instead — the column still
+appears, just once. Both spellings are recognised, the result header and the physical name
+(`window_start`), because the check runs on the resolved column.
+
 > Note on formulas: a formula binds to the **physical** column names — lower-cased and dot-stripped —
 > so a column at path `Amount.Value` is referenced as `amountvalue`, not `Amount.Value`. That concerns
 > writing the formula in the Studio, not reading the column through this node.

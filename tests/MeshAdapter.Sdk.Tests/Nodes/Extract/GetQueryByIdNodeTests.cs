@@ -659,6 +659,33 @@ public class GetQueryByIdNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_SnapshotUnavailable_WarnsAboutTheReducedResolution()
+    {
+        // Without a snapshot only the standard columns resolve, which brings back the AB#4764 symptom
+        // for anything computed. Degrading is deliberate here (the downsampling path relies on it), so
+        // the safeguard is that it cannot happen quietly — and this store returns null without throwing,
+        // the path that used to produce no log line at all.
+        A.CallTo(() => _archiveStore.GetAsync(TestArchiveRtId))
+            .Returns(Task.FromResult<ArchiveSnapshot?>(null));
+
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        SetupSimpleStreamDataQuery(CreateSimpleStreamDataQuery(["temperature"]));
+        SetupExecuteQueryResult(CreateStreamDataResult());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // Warned, and the query still ran — the fallback is a degradation, not a failure.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("computed column may come back empty"), A<object[]>._))
+            .MustHaveHappened();
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_WithSimpleStreamDataQuery_BuildsTimeSeriesResult()
     {
         var config = CreateConfig();

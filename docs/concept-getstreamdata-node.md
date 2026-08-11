@@ -353,7 +353,7 @@ public record GetStreamDataNodeConfiguration : TargetPathNodeConfiguration
 {
     [PropertyGroup("Archive", 0)] public required OctoObjectId ArchiveRtId { get; init; }
 
-    // Leer ⇒ alle ingested Archivspalten + WellKnownName (§5.4)
+    // Leer ⇒ alle auflösbaren Archivspalten + WellKnownName (§5.4)
     [PropertyGroup("Query", 0)] public ICollection<string>? Columns { get; init; }
     [PropertyGroup("Query", 1)] public ICollection<string>? WellKnownNames { get; init; }
     [PropertyGroup("Query", 2, "jsonpath")] public string? WellKnownNamesPath { get; init; }

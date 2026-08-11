@@ -216,6 +216,8 @@ public class GetStreamDataNode(
         var configured = c.Columns?.Where(col => !string.IsNullOrWhiteSpace(col)).ToList() ?? [];
         if (configured.Count != 0)
         {
+            var reserved = ReservedQueryNames(snapshot);
+
             var columns = configured
                 .Select(col =>
                 {
@@ -224,8 +226,16 @@ public class GetStreamDataNode(
                     // The header keeps what the caller asked for, so it recognises its own request.
                     return new ProjectedColumn(col, resolved.QueryName, resolved.StorageKey);
                 })
+                // Naming the time axis or the row window adds nothing — they are emitted for every row
+                // anyway — but it would append a second, identical column to the result. Dropping the
+                // redundant entry costs the caller nothing: the column still appears, just once. The
+                // test is the resolved name, so the physical spelling (window_start) is caught as well
+                // as the result header (WindowStart).
+                .Where(col => !reserved.Contains(col.QueryName))
                 .ToList();
 
+            // An explicit list that reduces to nothing stays explicit — it must not fall through to
+            // "read the whole archive", which is a different request entirely.
             return (columns, false);
         }
 
@@ -235,6 +245,24 @@ public class GetStreamDataNode(
 
         return (fromArchive, true);
     }
+
+    /// <summary>
+    /// The columns <see cref="BuildQueryResult" /> emits for every row without being asked for them:
+    /// the time axis, and on a windowed archive the row window as well. A configured column that
+    /// resolves to one of these is redundant rather than wrong, so it is dropped instead of doubling
+    /// the column in the result.
+    /// </summary>
+    private static HashSet<string> ReservedQueryNames(ArchiveSnapshot snapshot)
+        => snapshot.UsesWindowedStorage
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                StreamDataNodeHelpers.WindowStartColumn,
+                StreamDataNodeHelpers.WindowEndColumn
+            }
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                StreamDataNodeHelpers.TimestampColumn
+            };
 
     /// <summary>
     /// The columns actually requested from the storage layer: the projected names plus, on a windowed

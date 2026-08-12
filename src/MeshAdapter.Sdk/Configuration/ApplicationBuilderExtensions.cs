@@ -53,7 +53,7 @@ public static class ApplicationBuilderExtensions
         services.GetRequiredService<ILoggerFactory>()
             .CreateLogger(typeof(ApplicationBuilderExtensions))
             .LogError(
-                "Adapter:AuthorityUrl (OCTO_ADAPTER__AUTHORITYURL) is '{AuthorityUrl}', which is not an absolute https URL of an identity service. JWT bearer authentication is therefore disabled and every caller of a secured FromHttpRequest@2 route is rejected with HTTP 401 until the authority is configured",
+                "Adapter:AuthorityUrl (OCTO_ADAPTER__AUTHORITYURL) is '{AuthorityUrl}', which does not address an identity service this adapter can use: outside development it has to be an absolute https URL and must not point at loopback, which is where the compiled-in default resolves when nobody supplied one. JWT bearer authentication is therefore disabled and every caller of a secured FromHttpRequest@2 route is rejected with HTTP 401 until the authority is configured",
                 authorityUrl);
 
         return false;

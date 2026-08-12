@@ -48,6 +48,22 @@ public class BearerChallengeTests
         Assert.Equal("Bearer", BearerChallenge.ForInvalidToken(null));
     }
 
+    /// <remarks>
+    /// The adapter answers this when no identity service is configured: the scheme is left unwired,
+    /// so a presented token reaches the gate unevaluated and without a failure to describe. It must
+    /// not fall back to the bare challenge - a client reading no code treats the denial as "reason
+    /// unknown" and refreshes, which is precisely the wasted grant per user action this all exists
+    /// to stop, against an adapter that cannot validate any token at all.
+    /// </remarks>
+    [Fact]
+    public void ForInvalidToken_CredentialsNobodyEvaluated_IsNamedRatherThanLeftBare()
+    {
+        var challenge = BearerChallenge.ForInvalidToken(null, credentialsPresented: true);
+
+        Assert.Contains("error_code=\"token_not_evaluated\"", challenge);
+        Assert.NotEqual(BearerChallenge.NoCredentials, challenge);
+    }
+
     [Fact]
     public void ForInvalidToken_CarriesBothTheProseAndTheStableCode()
     {

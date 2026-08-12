@@ -252,14 +252,17 @@ internal class HttpRequestService(
 
         if (context.User.Identity?.IsAuthenticated != true)
         {
+            var credentialsPresented = context.Request.Headers.Authorization.Count > 0;
             var failure = await GetAuthenticationFailureAsync(context);
-            var code = BearerChallenge.CodeFor(failure) ?? "no_credentials";
+            var code = BearerChallenge.CodeFor(failure)
+                       ?? (credentialsPresented ? BearerChallenge.NotEvaluated : "no_credentials");
 
             logger.LogWarning("Denied {Method} {Route}: no valid access token ({Reason})",
                 route.Method, route.Route, code);
             await eventService.StoreWarningEventAsync(tenantOfAdapter,
                 $"Denied {route.Method.ToString().ToUpper()} {route.Route}: no valid access token ({code}).");
-            Deny(context, StatusCodes.Status401Unauthorized, BearerChallenge.ForInvalidToken(failure));
+            Deny(context, StatusCodes.Status401Unauthorized,
+                BearerChallenge.ForInvalidToken(failure, credentialsPresented));
             return false;
         }
 
@@ -322,15 +325,28 @@ internal class HttpRequestService(
     /// that never registered the scheme still denies the request, and a bare challenge is the
     /// honest response when nothing inspected the credentials.
     /// </summary>
-    private static async Task<Exception?> GetAuthenticationFailureAsync(HttpContext context)
+    private async Task<Exception?> GetAuthenticationFailureAsync(HttpContext context)
     {
         if (context.RequestServices?.GetService<IAuthenticationService>() == null)
         {
             return null;
         }
 
-        var result = await context.AuthenticateAsync(JwtBearerDefaults.AuthenticationScheme);
-        return result.Failure;
+        try
+        {
+            var result = await context.AuthenticateAsync(JwtBearerDefaults.AuthenticationScheme);
+            return result.Failure;
+        }
+        catch (Exception ex)
+        {
+            // Asking here re-enters machinery the request may have deliberately skipped: when no
+            // identity service is configured the authentication middleware is not wired at all,
+            // yet the scheme stays registered and resolvable. Diagnosing a denial must never be
+            // able to turn it into a 500 - that failure mode is the reason this whole change
+            // exists. Without a reason the caller gets the not-evaluated code instead.
+            logger.LogDebug(ex, "Could not read the authentication failure; denying without a reason");
+            return null;
+        }
     }
 
     /// <summary>

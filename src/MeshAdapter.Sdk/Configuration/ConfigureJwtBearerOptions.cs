@@ -17,8 +17,40 @@ internal class ConfigureJwtBearerOptions(
         Configure(Options.DefaultName, options);
     }
 
+    /// <summary>
+    ///     Tells whether <paramref name="authorityUrl" /> can back the JWT bearer handler. An unusable
+    ///     value must never reach <see cref="JwtBearerOptions.Authority" />: the handler's post-configure
+    ///     step derives the metadata address from it and throws when that address is not HTTPS, and it
+    ///     runs inside the authentication middleware - so a single misconfigured value answers every
+    ///     request with HTTP 500, health probes included. An empty value produces exactly that, because
+    ///     <c>EnsureEndsWith</c> below turns it into "/".
+    /// </summary>
+    internal static bool IsAuthorityUsable(string? authorityUrl, IHostEnvironment environment)
+    {
+        if (!Uri.TryCreate(authorityUrl, UriKind.Absolute, out var authority))
+        {
+            return false;
+        }
+
+        if (environment.IsDevelopment())
+        {
+            return authority.Scheme == Uri.UriSchemeHttps || authority.Scheme == Uri.UriSchemeHttp;
+        }
+
+        // A loopback authority is the compiled-in default, which outside development means nobody
+        // supplied one. Accepting it would leave authentication registered and this guard silent,
+        // and the first request carrying a token would fail fetching discovery from the pod itself
+        // - a 500 where a denial belongs.
+        return authority.Scheme == Uri.UriSchemeHttps && !authority.IsLoopback;
+    }
+
     public void Configure(string? name, JwtBearerOptions options)
     {
+        if (!IsAuthorityUsable(meshAdapterConfiguration.Value.AuthorityUrl, environment))
+        {
+            return;
+        }
+
         var authorityUrl = meshAdapterConfiguration.Value.AuthorityUrl.EnsureEndsWith("/");
         options.Authority = authorityUrl;
         options.Audience = CommonConstants.OctoApi;

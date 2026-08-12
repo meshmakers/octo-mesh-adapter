@@ -141,7 +141,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IContextCreatorService, MeshContextCreatorService>();
         services.AddScoped<IWellKnownNameLoader, WellKnownNameLoader>();
 
-        // We want to ensure that all mesh adapters are using the same security configuration
+        // We want to ensure that all mesh adapters are using the same security configuration.
+        // Whether the scheme is actually usable cannot be decided here - MeshAdapterConfiguration
+        // is bound later - so the decision lives in ConfigureJwtBearerOptions, which leaves
+        // JwtBearerOptions.Authority unset when no identity service is configured, and in
+        // UseOctoMeshAdapter, which then skips the authentication middleware.
         services.AddCors();
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
         services.AddSingleton<IConfigureOptions<JwtBearerOptions>, ConfigureJwtBearerOptions>();

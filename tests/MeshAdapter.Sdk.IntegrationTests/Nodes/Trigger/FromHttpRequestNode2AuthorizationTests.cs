@@ -88,6 +88,9 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         var response = await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 });
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        // RFC 6750 §3.1: a request that carried no credentials gets a bare challenge - there is
+        // no token to describe, and an error code here would be describing nothing.
+        Challenge(response).Should().Be("Bearer");
         PipelineExecutions().Should().Be(0);
     }
 
@@ -100,6 +103,9 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         var response = await Post(client, token);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        // The one code a client may act on: a refreshed token carries a later expiry.
+        Challenge(response).Should().Contain("error=\"invalid_token\"")
+            .And.Contain("error_code=\"token_expired\"");
         PipelineExecutions().Should().Be(0);
     }
 
@@ -114,7 +120,49 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         var response = await Post(client, token);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        Challenge(response).Should().Contain("error_code=\"signature_invalid\"");
         PipelineExecutions().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RequestWithATokenFromAnotherAuthority_NamesTheIssuer()
+    {
+        using var client = await CreateClientAsync();
+        var token = CreateToken(TenantId, roles: "TenantAdmin", issuer: "https://identity.other.local/");
+
+        var response = await Post(client, token);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        // The misconfigured-AUTHORITYURL case: a refresh yields a token with the same issuer,
+        // so a client that keeps refreshing here spends a grant per user action forever.
+        Challenge(response).Should().Contain("error_code=\"issuer_invalid\"");
+        PipelineExecutions().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RequestWithATokenForAnotherAudience_NamesTheAudience()
+    {
+        using var client = await CreateClientAsync();
+        var token = CreateToken(TenantId, roles: "TenantAdmin", audience: "someOtherApi");
+
+        var response = await Post(client, token);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        Challenge(response).Should().Contain("error_code=\"audience_invalid\"");
+        PipelineExecutions().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ADeniedRequest_ExposesTheChallengeToBrowserClients()
+    {
+        using var client = await CreateClientAsync();
+
+        var response = await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 });
+
+        // Without this the challenge travels the wire but no script may read it, which would
+        // leave every browser caller exactly as blind as before the change.
+        response.Headers.GetValues("Access-Control-Expose-Headers")
+            .Should().ContainSingle().Which.Should().Contain("WWW-Authenticate");
     }
 
     [Fact]
@@ -126,6 +174,10 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         var response = await Post(client, token);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // Naming the roles saves the caller from guessing which of the two 403 causes it hit.
+        Challenge(response).Should().Contain("error=\"insufficient_scope\"")
+            .And.Contain("error_code=\"role_missing\"")
+            .And.Contain("required_roles=\"TenantAdmin\"");
         PipelineExecutions().Should().Be(0);
     }
 
@@ -138,6 +190,7 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         var response = await Post(client, token);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        Challenge(response).Should().Contain("error_code=\"tenant_mismatch\"");
         PipelineExecutions().Should().Be(0);
     }
 
@@ -266,8 +319,14 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         return _host.GetTestClient();
     }
 
+    /// <summary>The challenge as one string, the way a client reads it off the response.</summary>
+    private static string Challenge(HttpResponseMessage response)
+    {
+        return response.Headers.WwwAuthenticate.ToString();
+    }
+
     private string CreateToken(string tenantId, DateTime? expires = null, string? roles = null,
-        SecurityKey? signingKey = null)
+        SecurityKey? signingKey = null, string? issuer = null, string? audience = null)
     {
         // An expired token has to have been issued before it expired, so the issue time is
         // derived from the expiry rather than from now.
@@ -276,8 +335,8 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
 
         var descriptor = new SecurityTokenDescriptor
         {
-            Issuer = $"{Authority}/",
-            Audience = CommonConstants.OctoApi,
+            Issuer = issuer ?? $"{Authority}/",
+            Audience = audience ?? CommonConstants.OctoApi,
             IssuedAt = issuedAt,
             NotBefore = issuedAt,
             Expires = expiry,

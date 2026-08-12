@@ -49,16 +49,27 @@ internal static class StreamDataNodeHelpers
     internal const string TimestampColumn = "timestamp";
 
     /// <summary>
-    /// Translates a column name a caller may sort or filter by into the physical column the storage
-    /// layer resolves, and rejects anything that would silently do nothing.
+    /// Translates a column name a caller may project, sort, filter or group by into the physical
+    /// column the storage layer resolves, and supplies the key its value comes back under.
     /// <para>
-    /// Two reasons this is needed. First, the result headers a node hands out (<c>Timestamp</c>,
-    /// <c>WindowStart</c>, <c>WindowEnd</c>, <c>WellKnownName</c>) are not the physical names — the
-    /// storage layer's resolver only knows <c>window_start</c> and friends, and its lookup is
-    /// case-insensitive but not separator-insensitive, so <c>WindowStart</c> misses. Second, an
-    /// unresolvable name is dropped without a trace by the storage layer (<c>AddSortOrders</c> and
-    /// <c>BuildFieldFilterDtos</c> both <c>continue</c> past it) — a mistyped sort quietly returns
-    /// unordered rows, a mistyped filter quietly returns too many.
+    /// The translation is the load-bearing part. The result headers a node hands out
+    /// (<c>Timestamp</c>, <c>WindowStart</c>, <c>WindowEnd</c>, <c>WellKnownName</c>) are not the
+    /// physical names — the storage layer's resolver only knows <c>window_start</c> and friends, and
+    /// its lookup is case-insensitive but not separator-insensitive, so <c>WindowStart</c> misses.
+    /// A node that stopped translating would break its own documented vocabulary.
+    /// </para>
+    /// <para>
+    /// The second reason is the storage key: a computed column's physical column is versioned after a
+    /// formula change and cannot be derived from its name, so the resolver has to be asked for it
+    /// (AB#4764).
+    /// </para>
+    /// <para>
+    /// Rejecting an unresolvable name is the third, and it is now defence in depth: the storage layer
+    /// used to drop such a name without raising anything — a mistyped sort quietly returned unordered
+    /// rows, a mistyped filter quietly returned too many — and since AB#4765 it validates and rejects
+    /// on its own. The node still checks first, because the null has to be handled either way and
+    /// because only the node can name the pipeline, the node and the valid names in the vocabulary the
+    /// caller actually writes.
     /// </para>
     /// </summary>
     internal static ResolvedColumn ResolveQueryableColumn(string name, ArchiveSnapshot snapshot,
@@ -363,8 +374,9 @@ internal static class StreamDataNodeHelpers
     /// The well-known-name filter AND-combined with the configured field filters. The well-known name
     /// is a standard column on every archive table, so it needs no special handling beyond picking
     /// Equals for a single value and In for several. The configured filters go through
-    /// <see cref="ResolveQueryableColumn" />, because a filter the storage layer cannot resolve is
-    /// dropped without a word — which widens the result instead of narrowing it.
+    /// <see cref="ResolveQueryableColumn" /> so their names reach the columns they mean, and so an
+    /// unresolvable one fails here with pipeline context rather than further down (AB#4765; before that
+    /// the storage layer dropped it without a word, which widened the result instead of narrowing it).
     /// </summary>
     internal static IReadOnlyList<FieldFilter>? BuildFieldFilters(
         ICollection<string>? wellKnownNames, string? wellKnownNamesPath,

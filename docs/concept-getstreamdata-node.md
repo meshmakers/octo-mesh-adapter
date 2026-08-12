@@ -286,10 +286,17 @@ und `WellKnownName` aus, der `StreamDataFieldResolver` kennt aber nur die physis
 (`window_start`). Sein Lookup ist case-insensitiv, aber **nicht** trennzeichen-insensitiv — `WindowStart`
 trifft nicht.
 
-Verschärfend: Die Storage-Schicht **verwirft einen nicht auflösbaren Namen kommentarlos** —
-`AddSortOrders` und `BuildFieldFilterDtos` überspringen ihn beide mit `continue`. Eine vertippte
-Sortierung liefert damit still Storage-Reihenfolge, ein vertippter Filter still **zu viele** Zeilen.
+Verschärfend war damals: Die Storage-Schicht **verwarf einen nicht auflösbaren Namen kommentarlos** —
+`AddSortOrders` und `BuildFieldFilterDtos` übersprangen ihn beide mit `continue`. Eine vertippte
+Sortierung lieferte damit still Storage-Reihenfolge, ein vertippter Filter still **zu viele** Zeilen.
 Der Filterfall ist der gefährlichere: das Ergebnis wird breiter statt schmaler, ohne jeden Hinweis.
+
+Dieses Verwerfen ist inzwischen behoben — **AB#4765** validiert in der Engine
+(`StreamDataQueryColumnValidator`) und weist die Query zurück, für alle Konsumenten. Die Übersetzung
+im Node bleibt davon unberührt und wird dadurch sogar wichtiger: Was vorher still verworfen wurde,
+ist jetzt ein harter Fehler — ein Node, der `WindowStart` nicht mehr übersetzt, würde sein eigenes
+dokumentiertes Vokabular brechen. Die Ablehnung im Node ist seither doppelter Boden mit der besseren
+Meldung, weil nur sie Pipeline, Node und die Namen im Vokabular des Aufrufers nennen kann.
 
 Beide Nodes übersetzen deshalb vor dem Aufruf (`StreamDataNodeHelpers.ResolveQueryableColumn`) und
 lehnen ab, was sie nicht zuordnen können:
@@ -727,10 +734,18 @@ Bewusst **nicht** enthalten: `Columns`, `SortOrders`, `Skip`, `Take`, `Limit` �
 ohne Bedeutung (siehe §2.1).
 
 **Spaltennamen übersetzen (§4).** `FieldFilters`, `GroupBy` und die `attributePath`-Werte in
-`Aggregations` laufen durch `StreamDataNodeHelpers.ResolveQueryableColumn`. Ohne das verwirft die
-Storage-Schicht einen nicht auflösbaren Namen stillschweigend — bei einem Filter heißt das ein zu
-breites Ergebnis, bei einer Aggregation also eine **zu hohe Summe**, ohne jeden Hinweis. Genau der
-Fehler, der bei `GetStreamData@1` im Feld auftrat.
+`Aggregations` laufen durch `StreamDataNodeHelpers.ResolveQueryableColumn` — nötig, weil die
+Storage-Schicht nur die physischen Namen kennt, und weil eine Formel-Spalte ihren Storage-Key erst
+über den Resolver hergibt (AB#4764). Vor **AB#4765** verwarf die Storage-Schicht einen nicht
+auflösbaren Namen zusätzlich stillschweigend — bei einem Filter ein zu breites Ergebnis, bei einer
+Aggregation also eine **zu hohe Summe**, ohne jeden Hinweis; genau der Fehler, der bei
+`GetStreamData@1` im Feld auftrat. Inzwischen weist die Engine solche Namen selbst zurück, die
+Ablehnung im Node ist damit doppelter Boden mit Node-Kontext.
+
+Ein Unterschied bleibt bewusst: Einen Filter **ohne Vergleichswert** übergeht die Engine, ohne seinen
+Namen aufzulösen — sie würde ihn ohnehin ignorieren, und im Query-Editor sind halbfertige Filterzeilen
+geduldet. Der Node prüft den Namen jedes konfigurierten Filters trotzdem, denn in einer Pipeline ist
+ein Filter ohne Wert ein Fehler und kein unfertiges Formular.
 
 **Neuer DTO** `src/MeshNodes.Sdk/PipelineDataTransferObjects/AggregationColumnDto.cs`:
 

@@ -13,16 +13,19 @@ public class ConfigureJwtBearerOptionsTests
 {
     private const string AuthorityUrl = "https://identity.example.com";
 
-    private static JwtBearerOptions Configure(string? environmentName = null)
+    private static IHostEnvironment Environment(string? environmentName = null)
     {
-        environmentName ??= Environments.Production;
-
         var environment = A.Fake<IHostEnvironment>();
-        A.CallTo(() => environment.EnvironmentName).Returns(environmentName);
+        A.CallTo(() => environment.EnvironmentName).Returns(environmentName ?? Environments.Production);
 
-        var configuration = Options.Create(new MeshAdapterConfiguration { AuthorityUrl = AuthorityUrl });
+        return environment;
+    }
+
+    private static JwtBearerOptions Configure(string? environmentName = null, string? authorityUrl = AuthorityUrl)
+    {
+        var configuration = Options.Create(new MeshAdapterConfiguration { AuthorityUrl = authorityUrl! });
         var options = new JwtBearerOptions();
-        new ConfigureJwtBearerOptions(configuration, environment).Configure(options);
+        new ConfigureJwtBearerOptions(configuration, Environment(environmentName)).Configure(options);
 
         return options;
     }
@@ -95,5 +98,81 @@ public class ConfigureJwtBearerOptionsTests
     {
         Assert.True(Configure().RequireHttpsMetadata);
         Assert.False(Configure(Environments.Development).RequireHttpsMetadata);
+    }
+
+    /// <remarks>
+    /// A chart that renders the env var without a value overrides the built-in default with an empty
+    /// string, which used to reach <c>Authority</c> as "/" and made the JWT handler throw on the first
+    /// request through the authentication middleware - answering every request, health probes
+    /// included, with HTTP 500 until the deployment rolled back.
+    /// </remarks>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("/")]
+    [InlineData("identity.example.com")]
+    public void IsAuthorityUsable_RejectsAnythingThatIsNotAnAbsoluteUrl(string? authorityUrl)
+    {
+        Assert.False(ConfigureJwtBearerOptions.IsAuthorityUsable(authorityUrl, Environment()));
+        Assert.False(ConfigureJwtBearerOptions.IsAuthorityUsable(authorityUrl,
+            Environment(Environments.Development)));
+    }
+
+    [Fact]
+    public void IsAuthorityUsable_RejectsHttpOutsideDevelopment()
+    {
+        Assert.False(ConfigureJwtBearerOptions.IsAuthorityUsable("http://identity.example.com", Environment()));
+    }
+
+    /// <remarks>
+    /// The compiled-in default. Once the chart stops rendering an empty environment variable, an
+    /// unsupplied authority arrives here as this value rather than as blank - and it is a valid
+    /// absolute https URL, so a naive check would accept it, leave authentication registered and
+    /// this guard silent. The first request carrying a token would then fail fetching discovery
+    /// from the pod itself and answer 500 where a denial belongs.
+    /// </remarks>
+    [Theory]
+    [InlineData("https://localhost:5003")]
+    [InlineData("https://127.0.0.1:5003")]
+    [InlineData("https://[::1]:5003")]
+    public void IsAuthorityUsable_RejectsALoopbackAuthorityOutsideDevelopment(string authorityUrl)
+    {
+        Assert.False(ConfigureJwtBearerOptions.IsAuthorityUsable(authorityUrl, Environment()));
+        // The same value is exactly how local development is meant to run.
+        Assert.True(ConfigureJwtBearerOptions.IsAuthorityUsable(authorityUrl,
+            Environment(Environments.Development)));
+    }
+
+    /// <remarks>
+    /// <c>RequireHttpsMetadata</c> is switched off in Development, so an identity service reached over
+    /// plain HTTP is a legitimate local setup and must not be gated away.
+    /// </remarks>
+    [Fact]
+    public void IsAuthorityUsable_AcceptsHttpInDevelopment()
+    {
+        Assert.True(ConfigureJwtBearerOptions.IsAuthorityUsable("http://localhost:5003",
+            Environment(Environments.Development)));
+    }
+
+    [Fact]
+    public void IsAuthorityUsable_AcceptsHttps()
+    {
+        Assert.True(ConfigureJwtBearerOptions.IsAuthorityUsable(AuthorityUrl, Environment()));
+    }
+
+    /// <remarks>
+    /// Leaving <c>Authority</c> unset is what keeps the handler's post-configure step from building a
+    /// metadata address it would reject; the scheme stays registered but validates nothing, so a
+    /// secured route sees an anonymous principal and denies it.
+    /// </remarks>
+    [Fact]
+    public void Configure_LeavesTheHandlerUnconfiguredWithoutAUsableAuthority()
+    {
+        var options = Configure(authorityUrl: string.Empty);
+
+        Assert.Null(options.Authority);
+        Assert.Null(options.TokenValidationParameters.ValidIssuer);
+        Assert.Null(options.Audience);
     }
 }

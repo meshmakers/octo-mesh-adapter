@@ -6,7 +6,10 @@ using IdentityModel;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
@@ -249,10 +252,17 @@ internal class HttpRequestService(
 
         if (context.User.Identity?.IsAuthenticated != true)
         {
-            logger.LogWarning("Denied {Method} {Route}: no valid access token", route.Method, route.Route);
+            var credentialsPresented = context.Request.Headers.Authorization.Count > 0;
+            var failure = await GetAuthenticationFailureAsync(context);
+            var code = BearerChallenge.CodeFor(failure)
+                       ?? (credentialsPresented ? BearerChallenge.NotEvaluated : "no_credentials");
+
+            logger.LogWarning("Denied {Method} {Route}: no valid access token ({Reason})",
+                route.Method, route.Route, code);
             await eventService.StoreWarningEventAsync(tenantOfAdapter,
-                $"Denied {route.Method.ToString().ToUpper()} {route.Route}: no valid access token.");
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                $"Denied {route.Method.ToString().ToUpper()} {route.Route}: no valid access token ({code}).");
+            Deny(context, StatusCodes.Status401Unauthorized,
+                BearerChallenge.ForInvalidToken(failure, credentialsPresented));
             return false;
         }
 
@@ -277,7 +287,8 @@ internal class HttpRequestService(
                 route.Method, route.Route, subject, tenantOfAdapter, reason);
             await eventService.StoreWarningEventAsync(tenantOfAdapter,
                 $"Denied {route.Method.ToString().ToUpper()} {route.Route} for subject {subject}: {reason}.");
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            Deny(context, StatusCodes.Status403Forbidden,
+                BearerChallenge.ForInsufficientScope(BearerChallenge.TenantMismatch, []));
             return false;
         }
 
@@ -291,7 +302,8 @@ internal class HttpRequestService(
             await eventService.StoreWarningEventAsync(tenantOfAdapter,
                 $"Denied {route.Method.ToString().ToUpper()} {route.Route} for subject {subject}: " +
                 $"none of the required roles {string.Join(", ", route.RequiredRoles)}.");
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            Deny(context, StatusCodes.Status403Forbidden,
+                BearerChallenge.ForInsufficientScope(BearerChallenge.RoleMissing, route.RequiredRoles));
             return false;
         }
 
@@ -302,6 +314,58 @@ internal class HttpRequestService(
             $"Allowed {route.Method.ToString().ToUpper()} {route.Route} for subject {subject} " +
             $"of tenant '{tenantId}' with roles {string.Join(", ", roles)}.");
         return true;
+    }
+
+    /// <summary>
+    /// Reads why token validation failed. The principal carries the outcome but not the reason,
+    /// which lives on the <see cref="AuthenticateResult" />; the handler caches it, so asking
+    /// here does not validate the token a second time.
+    ///
+    /// Absent authentication services are answered with null rather than an exception: a host
+    /// that never registered the scheme still denies the request, and a bare challenge is the
+    /// honest response when nothing inspected the credentials.
+    /// </summary>
+    private async Task<Exception?> GetAuthenticationFailureAsync(HttpContext context)
+    {
+        if (context.RequestServices?.GetService<IAuthenticationService>() == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var result = await context.AuthenticateAsync(JwtBearerDefaults.AuthenticationScheme);
+            return result.Failure;
+        }
+        catch (Exception ex)
+        {
+            // Asking here re-enters machinery the request may have deliberately skipped: when no
+            // identity service is configured the authentication middleware is not wired at all,
+            // yet the scheme stays registered and resolvable. Diagnosing a denial must never be
+            // able to turn it into a 500 - that failure mode is the reason this whole change
+            // exists. Without a reason the caller gets the not-evaluated code instead.
+            logger.LogDebug(ex, "Could not read the authentication failure; denying without a reason");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Answers a denied request with the status and the challenge that names the reason.
+    /// </summary>
+    private static void Deny(HttpContext context, int statusCode, string challenge)
+    {
+        context.Response.StatusCode = statusCode;
+        context.Response.Headers.WWWAuthenticate = challenge;
+
+        // WWW-Authenticate is not a CORS-safelisted response header. Without this the challenge
+        // reaches the browser but no script may read it, which would leave every Angular caller
+        // exactly as blind as before while the wire looks correct.
+        var exposed = context.Response.Headers.AccessControlExposeHeaders;
+        if (!exposed.Any(value => value != null &&
+                                  value.Contains("WWW-Authenticate", StringComparison.OrdinalIgnoreCase)))
+        {
+            context.Response.Headers.Append("Access-Control-Expose-Headers", "WWW-Authenticate");
+        }
     }
 
     private string GetUri(string uri)

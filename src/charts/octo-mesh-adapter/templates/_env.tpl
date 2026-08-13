@@ -61,6 +61,8 @@
   value: {{ .Values.adapterRtId | quote }}
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL
   value: {{ .Values.reportingServiceUri | quote }}
+{{- if .Values.authUri }}
 - name: OCTO_ADAPTER__AUTHORITYURL
   value: {{ .Values.authUri | quote }}
+{{- end }}
 {{- end }}

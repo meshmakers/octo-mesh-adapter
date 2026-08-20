@@ -713,6 +713,63 @@ Uploads files to an SFTP server. Supports both binary files from MongoDB storage
 - Binary file upload from MongoDB large binary storage
 - String content upload as file (e.g., CSV data)
 - File name sanitization to prevent path traversal
+- Optional host key pinning via `HostKeyFingerprint` in the server configuration
+
+##### SFTP server configuration entry
+
+All three SFTP nodes resolve their connection from the same global configuration entry:
+
+```json
+{
+  "Host": "sftp.example.com",
+  "Port": 22,
+  "Username": "user",
+  "Password": "...",
+  "PrivateKey": "-----BEGIN OPENSSH PRIVATE KEY-----...",
+  "PrivateKeyPassphrase": "...",
+  "MaxConcurrentConnections": 3,
+  "HostKeyFingerprint": "kSuxKMWLxOLE3nn3TxmXvJvI7NrHkGDhAo9SPHt9YQg"
+}
+```
+
+`Password` or `PrivateKey` must be set. `MaxConcurrentConnections` bounds how many sessions this process opens against that server at the same time. `HostKeyFingerprint` is the SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix; when it is set, a server presenting a different key is refused. When it is absent, any host key is accepted, which is how every release before this option behaved.
+
+#### SftpListNode
+
+Lists a remote directory over SFTP and emits one element per matching file. Metadata only; the content is read with `SftpDownloadNode`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference for SFTP server |
+| `RemoteDirectory` | string | Directory to list |
+| `FilePattern` | string | Glob: `*` any run of characters, `?` exactly one, anchored, case insensitive, everything else literal |
+| `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0) |
+| `TargetPath` | string | Where the array is written |
+
+Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nested `source` object with `serverConfiguration`, `remoteDirectory` and `filePattern`.
+
+**Features**:
+- Directory entries excluded, result ordered by name (ordinal)
+- Empty result still writes an empty array, so a downstream `ForEach@1` does not abort with `PathMustBeArray`
+- `lastWriteTimeUtc` uses the round-trip format, so a consumer can build a stable file identity from it
+- `source` stamp lets a consumer scope its bookkeeping without repeating the connection values
+
+#### SftpDownloadNode
+
+Downloads exactly one file and writes its decoded content to the target path. Read counterpart of `SftpUploadNode`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference for SFTP server |
+| `RemotePath` | string | Static remote path (set this or `RemotePathPath`) |
+| `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
+| `Encoding` | string | Encoding the remote file is written in, default `utf-8`; unknown names are rejected when the configuration is bound |
+| `OnEncodingError` | enum | `Replace` (default): undecodable bytes become the replacement character and a warning is logged. `Fail`: the node aborts |
+| `TargetPath` | string | Where the decoded content is written |
+
+**Features**:
+- One session per file, meant to run inside a `ForEach@1` over an `SftpList@1` result
+- No dry-run branch: reading has no side effects and the downstream chain must see the content
 
 ---
 
@@ -859,7 +916,7 @@ Create EtlContext (via MeshContextCreatorService)
 IEtlDataOrchestrator.ExecutePipelineAsync()
         ↓
 Execute Node Pipeline:
-  ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, etc.)
+  ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, SftpList, SftpDownload, etc.)
   ├─ Transform Nodes (DataMapping, CreateUpdateInfo, MakeHttpRequest, etc.)
   └─ Load Nodes (ApplyChanges, SaveStreamDataInArchive, EMailSender, SftpUpload)
         ↓

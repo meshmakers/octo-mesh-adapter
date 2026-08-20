@@ -40,8 +40,17 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         {
             // The session never came into existence, so nothing will dispose it: close the
             // client and hand the slot back here, or the limit leaks one slot per failure.
-            client?.Dispose();
-            semaphore.Release();
+            // The release sits in a finally because a slot lost here is lost for the lifetime
+            // of the process, while a client that fails to dispose costs one socket.
+            try
+            {
+                client?.Dispose();
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+
             throw;
         }
     }
@@ -129,12 +138,20 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         {
             try
             {
-                if (client.IsConnected)
+                // Disconnect and Dispose are nested so a failing disconnect - a connection
+                // dropped underneath us, for instance - still disposes the client. A plain
+                // using block gave that guarantee before this seam existed.
+                try
                 {
-                    client.Disconnect();
+                    if (client.IsConnected)
+                    {
+                        client.Disconnect();
+                    }
                 }
-
-                client.Dispose();
+                finally
+                {
+                    client.Dispose();
+                }
             }
             finally
             {

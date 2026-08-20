@@ -21,6 +21,29 @@ public class SshNetSftpSessionFactoryTests
         };
     }
 
+    [Fact]
+    public async Task ConnectAsync_ClientCreationFails_ReleasesTheSlotForTheNextCaller()
+    {
+        var factory = new SshNetSftpSessionFactory();
+        var settings = new SftpServerSettings
+        {
+            Host = "sftp.example.com",
+            Username = "user",
+            // Not a key: PrivateKeyFile throws while the slot is already held.
+            PrivateKey = "not-a-private-key",
+            MaxConcurrentConnections = 1
+        };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1"));
+
+        // With a leaked slot the second attempt would wait forever instead of failing.
+        var second = factory.ConnectAsync(settings, "sftp-server-1");
+        var finished = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
+
+        Assert.Same(second, finished);
+        await Assert.ThrowsAnyAsync<Exception>(() => second);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]

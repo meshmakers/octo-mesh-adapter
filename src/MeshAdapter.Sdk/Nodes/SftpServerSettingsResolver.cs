@@ -33,6 +33,15 @@ public static class SftpServerSettingsResolver
             throw MeshAdapterPipelineExecutionException.SftpAuthNotConfigured(nodeContext);
         }
 
+        // Checked here rather than only when the session is opened: a node resolves its
+        // settings before it does any work, while opening the session is the last step - the
+        // upload node has already read a binary out of storage by then.
+        if (settings.MaxConcurrentConnections <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidMaxConcurrentConnections(
+                serverConfigurationName, settings.MaxConcurrentConnections);
+        }
+
         return settings;
     }
 }

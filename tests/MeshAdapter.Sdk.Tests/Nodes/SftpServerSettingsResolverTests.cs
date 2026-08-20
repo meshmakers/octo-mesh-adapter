@@ -55,6 +55,28 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         Assert.Contains("authentication", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Resolve_NonPositiveMaxConcurrentConnections_Throws(int value)
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns(new SftpServerSettings
+            {
+                Host = "sftp.example.com",
+                Username = "user",
+                Password = "secret",
+                MaxConcurrentConnections = value
+            });
+
+        // Caught while resolving, so a misconfigured entry fails before the node does any
+        // work - the upload node otherwise downloads a binary from storage first.
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+        Assert.Contains("MaxConcurrentConnections", ex.Message);
+    }
+
     [Fact]
     public void Resolve_PasswordConfigured_ReturnsSettingsWithDefaults()
     {

@@ -47,8 +47,13 @@ public class SftpListNode(
         {
             entries = session.List(c.RemoteDirectory)
                 .Where(e => !e.IsDirectory)
+                .Where(e => IsPlainName(e, nodeContext))
                 .Where(e => SftpFileNameGlob.Matches(e.Name, c.FilePattern))
-                .Where(e => (now - e.LastWriteTimeUtc).TotalSeconds >= c.MinFileAgeSeconds)
+                // Only guard when asked to. The server's clock and this pod's clock are
+                // independent, so an unconditional comparison would drop a file whose mtime
+                // runs slightly ahead - invisibly, until the skew had passed.
+                .Where(e => c.MinFileAgeSeconds <= 0 ||
+                            (now - e.LastWriteTimeUtc).TotalSeconds >= c.MinFileAgeSeconds)
                 .OrderBy(e => e.Name, StringComparer.Ordinal)
                 .ToList();
         }
@@ -86,5 +91,23 @@ public class SftpListNode(
             c.FilePattern);
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// A listing entry names one member of the directory that was listed. A name carrying a
+    /// path separator comes from a misbehaving or hostile server and would steer whatever
+    /// reads the emitted path somewhere else entirely, so it is reported and dropped rather
+    /// than passed on.
+    /// </summary>
+    private static bool IsPlainName(SftpEntry entry, INodeContext nodeContext)
+    {
+        if (!entry.Name.Contains('/') && !entry.Name.Contains('\\'))
+        {
+            return true;
+        }
+
+        nodeContext.Warning("SftpList: skipping listing entry '{0}', a file name cannot contain a path separator",
+            entry.Name);
+        return false;
     }
 }

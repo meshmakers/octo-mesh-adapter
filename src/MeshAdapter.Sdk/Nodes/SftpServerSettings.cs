@@ -47,4 +47,16 @@ public sealed record SftpServerSettings
     /// how every release before this option behaved.
     /// </summary>
     public string? HostKeyFingerprint { get; init; }
+
+    /// <summary>
+    /// Redacted on purpose. A record prints every property, so a single interpolation into a
+    /// log line or an exception message would ship the password, the private key and its
+    /// passphrase to wherever logs are collected.
+    /// </summary>
+    public override string ToString()
+    {
+        return $"SftpServerSettings {{ Host = {Host}, Port = {Port}, Username = {Username}, "
+               + $"Credentials = <redacted>, MaxConcurrentConnections = {MaxConcurrentConnections}, "
+               + $"HostKeyFingerprint = {HostKeyFingerprint ?? "<none>"} }}";
+    }
 }

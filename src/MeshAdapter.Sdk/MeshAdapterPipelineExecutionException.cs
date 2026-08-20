@@ -219,6 +219,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: File pattern is not configured. Set 'filePattern', for example \"AR*TXT\".");
     }
 
+    public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has a blank HostKeyFingerprint. Remove the property to connect without host key verification, or set the SHA-256 fingerprint of the expected key.");
+    }
+
     public static Exception SftpHostKeyMismatch(string host, string expectedFingerprint, string presentedFingerprint)
     {
         return new MeshAdapterPipelineExecutionException(

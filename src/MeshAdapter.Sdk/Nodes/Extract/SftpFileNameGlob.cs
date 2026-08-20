@@ -9,9 +9,20 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 /// </summary>
 internal static class SftpFileNameGlob
 {
+    // NonBacktracking: every '*' becomes an independent '.*', and a backtracking engine needs
+    // O(n^k) steps for k wildcards on a near miss - sixty characters against nine wildcards
+    // runs for minutes. The file name comes from the remote server, so the worst case is not
+    // the operator's to pick. The non-backtracking engine is linear by construction.
+    // CultureInvariant: case folding would otherwise follow the pod's culture, and under tr-TR
+    // 'I' does not fold to 'i', so a pattern like AI* would quietly stop matching ai_*.
+    // \A and \z instead of ^ and $: '$' also matches before a trailing newline, and a POSIX
+    // file name may contain one - such a file would pass as though the newline were not there.
+    private const RegexOptions MatchOptions =
+        RegexOptions.NonBacktracking | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+
     internal static bool Matches(string fileName, string pattern)
     {
-        var regex = "^" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
-        return Regex.IsMatch(fileName, regex, RegexOptions.IgnoreCase);
+        var regex = @"\A" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + @"\z";
+        return Regex.IsMatch(fileName, regex, MatchOptions);
     }
 }

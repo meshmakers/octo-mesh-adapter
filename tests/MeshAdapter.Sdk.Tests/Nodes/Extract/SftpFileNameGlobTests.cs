@@ -20,4 +20,27 @@ public class SftpFileNameGlobTests
     {
         Assert.Equal(expected, SftpFileNameGlob.Matches(fileName, pattern));
     }
+
+    [Fact]
+    public void Matches_TrailingNewlineInName_DoesNotSlipThroughTheAnchor()
+    {
+        // '$' also matches before a final newline, and a POSIX file name may contain one.
+        // Such a file would be picked up as if it were the name without it.
+        Assert.False(SftpFileNameGlob.Matches("report.txt\n", "*.txt"));
+    }
+
+    [Fact]
+    public async Task Matches_ManyWildcardsAgainstANearMiss_DoesNotHang()
+    {
+        // Each '*' becomes an independent '.*'; a backtracking engine then needs O(n^k) on a
+        // near miss. The file name comes from the remote server, so a hostile peer picks it.
+        var pattern = "*a*a*a*a*a*a*a*a*b";
+        var fileName = new string('a', 60) + "c";
+
+        var match = Task.Run(() => SftpFileNameGlob.Matches(fileName, pattern));
+        var finished = await Task.WhenAny(match, Task.Delay(TimeSpan.FromSeconds(5)));
+
+        Assert.Same(match, finished);
+        Assert.False(await match);
+    }
 }

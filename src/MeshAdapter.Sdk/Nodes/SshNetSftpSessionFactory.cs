@@ -30,13 +30,14 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         await semaphore.WaitAsync(cancellationToken);
 
         SftpClient? client = null;
+        var hostKey = new HostKeyOutcome();
         try
         {
-            client = CreateClient(settings);
+            client = CreateClient(settings, hostKey);
             client.Connect();
             return new SshNetSftpSession(client, semaphore);
         }
-        catch
+        catch (Exception exception)
         {
             // The session never came into existence, so nothing will dispose it: close the
             // client and hand the slot back here, or the limit leaks one slot per failure.
@@ -51,11 +52,33 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                 semaphore.Release();
             }
 
+            // SSH.NET refuses the connection itself once the handler reports CanTrust = false,
+            // and surfaces it as a generic connection failure. Translating it here keeps the
+            // library's own teardown - it sends SSH_MSG_DISCONNECT and unsubscribes its key
+            // exchange handlers - while still telling the operator which key was presented.
+            if (exception is SshConnectionException && hostKey.Refused)
+            {
+                throw MeshAdapterPipelineExecutionException.SftpHostKeyMismatch(
+                    settings.Host, settings.HostKeyFingerprint!, hostKey.Presented ?? "<unknown>");
+            }
+
             throw;
         }
     }
 
-    private static SftpClient CreateClient(SftpServerSettings settings)
+    /// <summary>
+    /// What the host key handler saw. The handler runs on SSH.NET's message listener thread
+    /// while <c>Connect</c> blocks, so the outcome is carried out rather than thrown out:
+    /// throwing from the handler skips the library's own refusal path and its teardown.
+    /// </summary>
+    private sealed class HostKeyOutcome
+    {
+        public string? Presented { get; set; }
+
+        public bool Refused { get; set; }
+    }
+
+    private static SftpClient CreateClient(SftpServerSettings settings, HostKeyOutcome hostKey)
     {
         SftpClient client;
 
@@ -76,17 +99,12 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
 
         client.HostKeyReceived += (_, e) =>
         {
-            if (SftpHostKeyVerifier.IsTrusted(settings.HostKeyFingerprint, e.FingerPrintSHA256))
-            {
-                return;
-            }
-
-            // Refusing here aborts Connect(). The message names both fingerprints so an
-            // operator can tell a deliberately rotated key from the wrong server without
-            // having to reproduce the connection by hand.
-            e.CanTrust = false;
-            throw MeshAdapterPipelineExecutionException.SftpHostKeyMismatch(
-                settings.Host, settings.HostKeyFingerprint!, e.FingerPrintSHA256);
+            // Report the verdict rather than throwing: SSH.NET reads CanTrust back from the
+            // handler and refuses the key exchange itself, which is the path its teardown is
+            // written for. The presented fingerprint is carried out so the caller can name it.
+            hostKey.Presented = e.FingerPrintSHA256;
+            e.CanTrust = SftpHostKeyVerifier.IsTrusted(settings.HostKeyFingerprint, e.FingerPrintSHA256);
+            hostKey.Refused = !e.CanTrust;
         };
 
         return client;

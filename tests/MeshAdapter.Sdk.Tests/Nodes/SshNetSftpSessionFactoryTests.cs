@@ -22,6 +22,21 @@ public class SshNetSftpSessionFactoryTests
     }
 
     [Fact]
+    public void SftpHostKeyMismatch_NamesBothFingerprints()
+    {
+        const string expected = "kSuxKMWLxOLE3nn3TxmXvJvI7NrHkGDhAo9SPHt9YQg";
+        const string presented = "2Fx1PLbtSbXBRCGCXFYRVJHhWkmB4CvKjTuIhFR2hAo";
+
+        var ex = MeshAdapterPipelineExecutionException.SftpHostKeyMismatch("sftp.example.com", expected, presented);
+
+        // An operator has to be able to tell a deliberately rotated key from the wrong server
+        // without reproducing the connection by hand.
+        Assert.Contains("sftp.example.com", ex.Message);
+        Assert.Contains(expected, ex.Message);
+        Assert.Contains(presented, ex.Message);
+    }
+
+    [Fact]
     public async Task ConnectAsync_ClientCreationFails_ReleasesTheSlotForTheNextCaller()
     {
         var factory = new SshNetSftpSessionFactory();

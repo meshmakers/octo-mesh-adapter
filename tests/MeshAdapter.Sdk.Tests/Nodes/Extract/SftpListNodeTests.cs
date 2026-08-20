@@ -104,6 +104,38 @@ public class SftpListNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_FutureTimestampWithoutAgeGuard_IsStillListed()
+    {
+        // The server's clock and the pod's clock are independent. With the guard off, a file
+        // whose mtime runs slightly ahead must not disappear until the skew has passed.
+        A.CallTo(() => _session.List(RemoteDir)).Returns(new List<SftpEntry>
+        {
+            File("AR00001.TXT", DateTime.UtcNow.AddMinutes(5))
+        });
+
+        var emitted = await RunAsync(Config(minAgeSeconds: 0));
+
+        Assert.Single(emitted!);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NameWithPathSeparator_IsSkipped()
+    {
+        // A listing entry names one directory member. A name carrying a separator comes from
+        // a misbehaving or hostile server and would steer the following download elsewhere.
+        A.CallTo(() => _session.List(RemoteDir)).Returns(new List<SftpEntry>
+        {
+            new("AR/../escape.TXT", "/AR/../escape.TXT", false, 10, DateTime.UtcNow.AddHours(-1)),
+            File("AR00001.TXT")
+        });
+
+        var emitted = await RunAsync(Config());
+
+        Assert.Single(emitted!);
+        Assert.Equal("AR00001.TXT", emitted![0]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_NoMatches_StillWritesAnEmptyArray()
     {
         A.CallTo(() => _session.List(RemoteDir)).Returns(new List<SftpEntry>());

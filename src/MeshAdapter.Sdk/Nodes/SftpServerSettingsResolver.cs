@@ -33,6 +33,15 @@ public static class SftpServerSettingsResolver
             throw MeshAdapterPipelineExecutionException.SftpAuthNotConfigured(nodeContext);
         }
 
+        // Leaving the field out disables pinning deliberately, which is the compatibility
+        // path. A present but blank value is a typo or an unset template variable, and
+        // accepting it silently leaves an operator believing the server is pinned.
+        if (settings.HostKeyFingerprint is not null && string.IsNullOrWhiteSpace(settings.HostKeyFingerprint))
+        {
+            throw MeshAdapterPipelineExecutionException.BlankHostKeyFingerprint(
+                nodeContext, serverConfigurationName);
+        }
+
         // Checked here rather than only when the session is opened: a node resolves its
         // settings before it does any work, while opening the session is the last step - the
         // upload node has already read a binary out of storage by then.

@@ -77,6 +77,49 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         Assert.Contains("MaxConcurrentConnections", ex.Message);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Resolve_PresentButBlankHostKeyFingerprint_Throws(string fingerprint)
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns(new SftpServerSettings
+            {
+                Host = "sftp.example.com",
+                Username = "user",
+                Password = "secret",
+                HostKeyFingerprint = fingerprint
+            });
+
+        // Leaving the field out disables pinning on purpose. A blank value is a typo, and
+        // silently accepting it leaves an operator believing the server is pinned.
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+        Assert.Contains("HostKeyFingerprint", ex.Message);
+    }
+
+    [Fact]
+    public void Settings_ToString_DoesNotRevealSecrets()
+    {
+        var settings = new SftpServerSettings
+        {
+            Host = "sftp.example.com",
+            Username = "user",
+            Password = "super-secret",
+            PrivateKey = "-----BEGIN OPENSSH PRIVATE KEY-----",
+            PrivateKeyPassphrase = "phrase"
+        };
+
+        var text = settings.ToString();
+
+        // One interpolation into a log line would otherwise ship the credentials to Loki.
+        Assert.DoesNotContain("super-secret", text);
+        Assert.DoesNotContain("BEGIN OPENSSH", text);
+        Assert.DoesNotContain("phrase", text);
+        Assert.Contains("sftp.example.com", text);
+    }
+
     [Fact]
     public void Resolve_PasswordConfigured_ReturnsSettingsWithDefaults()
     {

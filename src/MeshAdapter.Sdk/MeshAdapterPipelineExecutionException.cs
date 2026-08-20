@@ -101,12 +101,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Origin RtIds are not set. Please set originRtId or originRtIdPath.");
     }
-    
+
     public static Exception OriginRtIdNotFound(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: originRtId and originRtIdPath is not set.");
     }
-    
+
     public static Exception OriginRtIdValueNull(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of origin RtId is null.");
@@ -116,7 +116,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: CkTypeId is not set. Please set ckTypeId or ckTypeIdPath.");
     }
-    
+
     public static Exception CkTypeIdValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: No CkTypeId found at path '{path}'.");
@@ -223,6 +223,25 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"SFTP server configuration '{serverConfigurationName}': no free connection slot after {waitSeconds}s. Either transfers are stalling or MaxConcurrentConnections is too low for the pipeline.");
+    }
+
+    public static Exception NegativeSftpTimeout(INodeContext nodeContext, string serverConfigurationName,
+        string propertyName, int value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has {propertyName} = {value}. Use zero to keep the default or a positive number of seconds.");
+    }
+
+    public static Exception CannotListViaSftp(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot list directory via SFTP: {exception.Message}", exception);
+    }
+
+    public static Exception CannotDownloadViaSftp(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot download file via SFTP: {exception.Message}", exception);
     }
 
     public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)

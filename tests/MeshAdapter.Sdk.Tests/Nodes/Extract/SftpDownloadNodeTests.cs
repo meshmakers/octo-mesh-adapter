@@ -114,6 +114,25 @@ public class SftpDownloadNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_DownloadFails_ReportsWithNodeContext()
+    {
+        var config = new SftpDownloadNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            RemotePath = "/missing.TXT",
+            TargetPath = TargetPath
+        };
+        A.CallTo(() => _session.Download("/missing.TXT")).Throws(new InvalidOperationException("no such file"));
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpDownloadNodeConfiguration>(config);
+        var node = new SftpDownloadNode(next, _etlContext, _sessionFactory);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("no such file", ex.Message);
+    }
+
+    [Fact]
     public void Encoding_UnknownName_IsRejectedWhenBound()
     {
         var config = new SftpDownloadNodeConfiguration

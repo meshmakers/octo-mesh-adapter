@@ -177,8 +177,9 @@ public class SftpListNodeTests : NodeTestBase
         var firstStamp = first![0]!["lastWriteTimeUtc"]!.GetValue<string>();
         var secondStamp = second![0]!["lastWriteTimeUtc"]!.GetValue<string>();
 
-        // A consumer builds a file identity from this string. Were it unstable, the identity
-        // would change on every listing and no file would ever count as already processed.
+        // Comparing the two runs proves nothing on its own - the same format call on the same
+        // value cannot differ. What matters is that nothing is lost on the way: sub-second
+        // precision survives, so two files written milliseconds apart keep distinct identities.
         Assert.Equal(firstStamp, secondStamp);
         Assert.Equal(lastWrite,
             DateTime.Parse(firstStamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
@@ -208,9 +209,32 @@ public class SftpListNodeTests : NodeTestBase
     {
         A.CallTo(() => _session.List(RemoteDir)).Returns(new List<SftpEntry> { File("AR00001.TXT") });
 
-        await RunAsync(Config());
+        var config = Config();
+        var (dataContext, nodeContext, next) = PrepareTest<SftpListNodeConfiguration>(config);
 
-        A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly();
+        await new SftpListNode(next, _etlContext, _sessionFactory).ProcessObjectAsync(dataContext, nodeContext);
+
+        // The order is the point: the downstream chain runs inside this same call, and holding
+        // the listing session across it would keep a second session open against a server that
+        // may cap concurrent logins.
+        A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ListingFails_ReportsWithNodeContext()
+    {
+        A.CallTo(() => _session.List(RemoteDir)).Throws(new InvalidOperationException("connection reset"));
+
+        var config = Config();
+        var (dataContext, nodeContext, next) = PrepareTest<SftpListNodeConfiguration>(config);
+        var node = new SftpListNode(next, _etlContext, _sessionFactory);
+
+        // The sibling upload node names itself when the server fails; a bare SSH.NET message
+        // leaves whoever reads the run guessing which node it came from.
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("connection reset", ex.Message);
     }
 
     [Fact]

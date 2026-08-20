@@ -120,6 +120,31 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         Assert.Contains("sftp.example.com", text);
     }
 
+    [Theory]
+    [InlineData(-1, 0, 0)]
+    [InlineData(0, -1, 0)]
+    [InlineData(0, 0, -1)]
+    public void Resolve_NegativeTimeout_Throws(int connect, int operation, int wait)
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns(new SftpServerSettings
+            {
+                Host = "sftp.example.com",
+                Username = "user",
+                Password = "secret",
+                ConnectTimeoutSeconds = connect,
+                OperationTimeoutSeconds = operation,
+                WaitForSlotTimeoutSeconds = wait
+            });
+
+        // Zero means "leave it as it is". A negative value is a mistake, and silently reading
+        // it as zero would leave an operator believing a limit is in place.
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+        Assert.Contains("Seconds", ex.Message);
+    }
+
     [Fact]
     public void Resolve_PasswordConfigured_ReturnsSettingsWithDefaults()
     {

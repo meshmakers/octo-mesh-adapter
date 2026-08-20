@@ -48,8 +48,9 @@ public class SftpListNode(
         var now = DateTime.UtcNow;
 
         List<SftpEntry> entries;
-        using (var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext))
+        try
         {
+            using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext);
             entries = session.List(c.RemoteDirectory)
                 .Where(e => !e.IsDirectory)
                 .Where(e => IsPlainName(e, nodeContext))
@@ -61,6 +62,16 @@ public class SftpListNode(
                             (now - e.LastWriteTimeUtc).TotalSeconds >= c.MinFileAgeSeconds)
                 .OrderBy(e => e.Name, StringComparer.Ordinal)
                 .ToList();
+        }
+        catch (MeshAdapterPipelineExecutionException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            // Name the node, the way the sibling upload node does. A bare SSH.NET message
+            // leaves whoever reads the run guessing which step it came from.
+            throw MeshAdapterPipelineExecutionException.CannotListViaSftp(nodeContext, e);
         }
 
         var files = new JsonArray();

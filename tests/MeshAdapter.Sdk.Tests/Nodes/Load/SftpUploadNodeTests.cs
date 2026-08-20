@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
@@ -476,9 +475,11 @@ public class SftpUploadNodeTests : NodeTestBase
 
         await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _sftpSession.EnsureDirectory(TestRemoteDir)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _sftpSession.Upload(A<Stream>._, TestRemoteDir + "/" + TestFileName))
-            .MustHaveHappenedOnceExactly();
+        // Creating the directory after writing into it would be useless, so the order is part
+        // of the contract rather than an accident of the implementation.
+        A.CallTo(() => _sftpSession.EnsureDirectory(TestRemoteDir)).MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => _sftpSession.Upload(A<Stream>._, TestRemoteDir + "/" + TestFileName))
+                .MustHaveHappenedOnceExactly());
         Assert.NotNull(uploaded);
         // In ISO-8859-1 the umlaut is a single byte; in UTF-8 it would be two.
         Assert.Equal(6, uploaded!.Length);
@@ -504,7 +505,8 @@ public class SftpUploadNodeTests : NodeTestBase
         }
         """;
 
-        // SftpServerConfiguration is private; deserialize dynamically using STJ.
+        // Deserialize into whatever type the caller asks for, so this helper keeps working
+        // whichever settings type the node resolves.
         A.CallTo(_globalConfiguration)
             .Where(call => call.Method.Name == "GetValue" && call.Method.IsGenericMethod)
             .WithNonVoidReturnType()

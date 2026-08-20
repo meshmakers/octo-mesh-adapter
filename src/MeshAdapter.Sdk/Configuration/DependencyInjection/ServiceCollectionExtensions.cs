@@ -117,7 +117,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
 
-        // Shared by every SFTP node; the singleton also holds the per-server concurrency limit.
+        // Shared by every SFTP node. Stateless: the per-server concurrency counters live on
+        // the ETL context, so a redeployed pipeline picks up a changed limit.
         services.AddSingleton<ISftpSessionFactory, SshNetSftpSessionFactory>();
 
         // Register CommunicationServicesClient for DeployDataFlow node

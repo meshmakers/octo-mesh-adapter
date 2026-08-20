@@ -51,6 +51,21 @@ internal static class SftpServerSettingsResolver
                 serverConfigurationName, settings.MaxConcurrentConnections);
         }
 
+        // Zero means "leave it as it is", so a negative value is a mistake rather than a
+        // synonym for it. Reading it as zero would leave an operator believing a limit applies.
+        RejectNegative(settings.ConnectTimeoutSeconds, nameof(settings.ConnectTimeoutSeconds));
+        RejectNegative(settings.OperationTimeoutSeconds, nameof(settings.OperationTimeoutSeconds));
+        RejectNegative(settings.WaitForSlotTimeoutSeconds, nameof(settings.WaitForSlotTimeoutSeconds));
+
         return settings;
+
+        void RejectNegative(int value, string propertyName)
+        {
+            if (value < 0)
+            {
+                throw MeshAdapterPipelineExecutionException.NegativeSftpTimeout(
+                    nodeContext, serverConfigurationName, propertyName, value);
+            }
+        }
     }
 }

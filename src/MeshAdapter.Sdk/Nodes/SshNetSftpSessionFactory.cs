@@ -74,10 +74,10 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             // and surfaces it as a generic connection failure. Translating it here keeps the
             // library's own teardown - it sends SSH_MSG_DISCONNECT and unsubscribes its key
             // exchange handlers - while still telling the operator which key was presented.
-            if (exception is SshConnectionException && hostKey.Refused)
+            var translated = TranslateConnectFailure(exception, settings, hostKey);
+            if (!ReferenceEquals(translated, exception))
             {
-                throw MeshAdapterPipelineExecutionException.SftpHostKeyMismatch(
-                    settings.Host, settings.HostKeyFingerprint!, hostKey.Presented ?? "<unknown>");
+                throw translated;
             }
 
             throw;
@@ -89,11 +89,41 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
     /// while <c>Connect</c> blocks, so the outcome is carried out rather than thrown out:
     /// throwing from the handler skips the library's own refusal path and its teardown.
     /// </summary>
-    private sealed class HostKeyOutcome
+    internal sealed class HostKeyOutcome
     {
         public string? Presented { get; set; }
 
         public bool Refused { get; set; }
+    }
+
+    /// <summary>
+    /// Decides whether a presented host key may be trusted and records what was seen. Reporting
+    /// the verdict is what makes SSH.NET refuse the key exchange on its own terms; throwing from
+    /// the handler would skip its refusal path and its teardown.
+    /// </summary>
+    internal static bool EvaluateHostKey(SftpServerSettings settings, string presentedFingerprint,
+        HostKeyOutcome outcome)
+    {
+        outcome.Presented = presentedFingerprint;
+        var trusted = SftpHostKeyVerifier.IsTrusted(settings.HostKeyFingerprint, presentedFingerprint);
+        outcome.Refused = !trusted;
+        return trusted;
+    }
+
+    /// <summary>
+    /// Turns the generic connection failure that follows a refused host key into an error that
+    /// names both fingerprints. Any other failure is returned untouched.
+    /// </summary>
+    internal static Exception TranslateConnectFailure(Exception exception, SftpServerSettings settings,
+        HostKeyOutcome hostKey)
+    {
+        if (exception is SshConnectionException && hostKey.Refused)
+        {
+            return MeshAdapterPipelineExecutionException.SftpHostKeyMismatch(
+                settings.Host, settings.HostKeyFingerprint!, hostKey.Presented ?? "<unknown>");
+        }
+
+        return exception;
     }
 
     private static SemaphoreSlim GetOrCreateSemaphore(IMeshEtlContext etlContext, string serverConfigurationName,
@@ -147,15 +177,7 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             client.OperationTimeout = TimeSpan.FromSeconds(settings.OperationTimeoutSeconds);
         }
 
-        client.HostKeyReceived += (_, e) =>
-        {
-            // Report the verdict rather than throwing: SSH.NET reads CanTrust back from the
-            // handler and refuses the key exchange itself, which is the path its teardown is
-            // written for. The presented fingerprint is carried out so the caller can name it.
-            hostKey.Presented = e.FingerPrintSHA256;
-            e.CanTrust = SftpHostKeyVerifier.IsTrusted(settings.HostKeyFingerprint, e.FingerPrintSHA256);
-            hostKey.Refused = !e.CanTrust;
-        };
+        client.HostKeyReceived += (_, e) => e.CanTrust = EvaluateHostKey(settings, e.FingerPrintSHA256, hostKey);
 
         return client;
     }
@@ -203,8 +225,20 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             }
         }
 
+        private bool _disposed;
+
         public void Dispose()
         {
+            // Releasing twice would hand out a slot that was never taken and raise the limit
+            // for good. Every caller in this assembly disposes once, but the interface is
+            // public and the failure would be silent.
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+
             try
             {
                 // Disconnect and Dispose are nested so a failing disconnect - a connection

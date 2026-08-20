@@ -36,13 +36,16 @@ public sealed record SftpServerSettings
     public string? PrivateKeyPassphrase { get; init; }
 
     /// <summary>
-    /// Upper bound of sessions this process opens against the server at the same time
+    /// Upper bound of sessions one pipeline registration opens against the server at the same
+    /// time. Two pipelines that use the same server configuration are counted separately, so
+    /// the load a server actually sees is this value times the number of pipelines addressing
+    /// it - the same arithmetic <c>MaxConcurrentEmails</c> has always had.
     /// </summary>
     public int MaxConcurrentConnections { get; init; } = 3;
 
     /// <summary>
     /// Seconds to wait for the connection to be established. Zero keeps SSH.NET's own default
-    /// of 30 seconds.
+    /// of 30 seconds; a negative value is rejected when the settings are resolved.
     /// </summary>
     public int ConnectTimeoutSeconds { get; init; }
 

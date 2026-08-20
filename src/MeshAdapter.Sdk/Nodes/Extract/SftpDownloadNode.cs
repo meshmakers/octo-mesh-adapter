@@ -41,15 +41,26 @@ public class SftpDownloadNode(
 
         if (string.IsNullOrWhiteSpace(remotePath))
         {
-            throw PipelineExecutionException.ValueNotSet(nodeContext, c.RemotePathPath ?? nameof(c.RemotePath));
+            throw PipelineExecutionException.ValueNotSet(nodeContext, c.RemotePathPath!);
         }
 
         var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext);
 
         byte[] content;
-        using (var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext))
+        try
         {
+            using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext);
             content = session.Download(remotePath);
+        }
+        catch (MeshAdapterPipelineExecutionException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            // Name the node, the way the sibling upload node does. A bare SSH.NET message
+            // leaves whoever reads the run guessing which step it came from.
+            throw MeshAdapterPipelineExecutionException.CannotDownloadViaSftp(nodeContext, e);
         }
 
         var text = SftpContentDecoder.Decode(content, c.Encoding, c.OnEncodingError, nodeContext);

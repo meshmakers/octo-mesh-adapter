@@ -65,7 +65,7 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
             "Gesamtbetrag 10.880,00 EUR, Steuerschuldnerschaft des Leistungsempfaengers");
 
         var config = new PdfOcrExtractionNodeConfiguration
-        { Path = "$.pdf", TargetPath = "$.text", Language = "de", IncludeConfidence = true };
+            { Path = "$.pdf", TargetPath = "$.text", Language = "de", IncludeConfidence = true };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(pdf);
 
@@ -101,7 +101,7 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
                 .ToArray());
 
         var config = new PdfOcrExtractionNodeConfiguration
-        { Path = "$.pdf", TargetPath = "$.text", Language = "de", IncludeConfidence = true };
+            { Path = "$.pdf", TargetPath = "$.text", Language = "de", IncludeConfidence = true };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(wrapped);
 

@@ -126,7 +126,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
 
         await next(dataContext, nodeContext);
     }
-
+    
     private static string ConcatOriginAndTarget(AssociationUpdateInfo updateInfo)
     {
         return string.Format($"{updateInfo.Origin}{updateInfo.Target}");

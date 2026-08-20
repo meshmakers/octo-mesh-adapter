@@ -26,7 +26,7 @@ public record PlaceholderRule
     /// The source value
     /// </summary>
     public required string Placeholder { get; set; }
-
+    
     /// <summary>
     /// The source path value
     /// </summary>

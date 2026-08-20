@@ -9,17 +9,17 @@ public enum HttpMethod
     /// GET
     /// </summary>
     Get,
-
+    
     /// <summary>
     /// POST
     /// </summary>
     Post,
-
+    
     /// <summary>
     /// PUT
     /// </summary>
     Put,
-
+    
     /// <summary>
     /// DELETE
     /// </summary>

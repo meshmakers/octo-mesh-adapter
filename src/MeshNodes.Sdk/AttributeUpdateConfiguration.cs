@@ -24,7 +24,7 @@ public class AttributeUpdateConfiguration
     /// Value path
     /// </summary>
     public string? ValuePath { get; set; }
-
+    
     /// <summary>
     /// Optionally constant value
     /// </summary>

@@ -107,7 +107,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
-        var to = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
+        var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
         var entity = CreateEntityWithWindow(from, to);
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
 
@@ -162,7 +162,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
-        var to = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
+        var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
         var entity = CreateEntityWithWindow(from, to, fromKey: "windowStart", toKey: "windowEnd");
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
 
@@ -233,7 +233,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
-        var to = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
+        var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
         var entity = CreateEntityWithWindow(from, to);
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
 
@@ -253,7 +253,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc);
-        var to = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
+        var to   = new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc);
         var entity = CreateEntityWithWindow(from, to);
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
 

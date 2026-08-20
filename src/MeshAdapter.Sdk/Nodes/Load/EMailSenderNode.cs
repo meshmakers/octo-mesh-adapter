@@ -65,7 +65,7 @@ public class EMailSenderNode(
                 etlContext.GlobalConfiguration.GetValue<EMailSenderConfiguration>(c.ServerConfiguration);
 
             // Get or create semaphore dictionary in context
-            if (!etlContext.Properties.TryGetValue(EmailSemaphoresKey, out var semaphoresObj) ||
+            if (!etlContext.Properties.TryGetValue(EmailSemaphoresKey, out var semaphoresObj) || 
                 semaphoresObj is not Dictionary<string, SemaphoreSlim> semaphores)
             {
                 semaphores = new Dictionary<string, SemaphoreSlim>();
@@ -139,17 +139,17 @@ public class EMailSenderNode(
 
             if (attachment != null)
             {
-                if (c.AttachmentFileName == null || c.AttachmentContentType == null)
+                if(c.AttachmentFileName == null || c.AttachmentContentType == null)
                 {
                     throw PipelineExecutionException.ValueNotSet(
                         nodeContext, nameof(c.AttachmentFileName));
                 }
-
+                
                 var attachmentData = attachment.Stream;
                 var attachmentItem = new Attachment(attachmentData, c.AttachmentFileName, c.AttachmentContentType);
                 mailMessage.Attachments.Add(attachmentItem);
             }
-
+            
             AddReciepients(dataContext, recipients, mailMessage, c);
 
             await SendMailWithRetryAsync(eMailSenderConfiguration, mailMessage, emailSemaphore, nodeContext);
@@ -192,10 +192,10 @@ public class EMailSenderNode(
 
             TimeSpan retryDelay;
             using (var client = new SmtpClient(configuration.Host, configuration.Port)
-            {
-                Credentials = new NetworkCredential(configuration.Username, configuration.Password),
-                EnableSsl = configuration.IsSslEnabled
-            })
+                   {
+                       Credentials = new NetworkCredential(configuration.Username, configuration.Password),
+                       EnableSsl = configuration.IsSslEnabled
+                   })
             {
                 await emailSemaphore.WaitAsync();
                 try
@@ -240,7 +240,7 @@ public class EMailSenderNode(
 
     private async Task<IDownloadStreamHandler?> GetAttachment(
         EMailSenderNodeConfiguration eMailSenderNodeConfiguration,
-        IDataContext dataContext,
+        IDataContext dataContext, 
         INodeContext nodeContext)
     {
         if (eMailSenderNodeConfiguration.AttachmentRtId == null &&
@@ -248,10 +248,10 @@ public class EMailSenderNode(
         {
             return null;
         }
-
+        
         var attachmentRtId = eMailSenderNodeConfiguration.AttachmentRtId ??
                              dataContext.Get<string>(eMailSenderNodeConfiguration.AttachmentRtIdPath!);
-
+        
         if (string.IsNullOrWhiteSpace(attachmentRtId))
         {
             nodeContext.Error("No attachment RT ID found");
@@ -278,7 +278,7 @@ public class EMailSenderNode(
             return null;
         }
     }
-
+    
     private static void AddReciepients(IDataContext dataContext, IEnumerable<string?> recipients, MailMessage mailMessage,
         EMailSenderNodeConfiguration c)
     {
@@ -289,13 +289,13 @@ public class EMailSenderNode(
                 mailMessage.To.Add(new MailAddress(recipient));
             }
         }
-
+            
         var ccAddresses = c.CcAddresses != null && c.CcAddresses.Count > 0
             ? c.CcAddresses
             : !string.IsNullOrWhiteSpace(c.CcPath)
                 ? dataContext.GetArray<string>(c.CcPath)
                 : null;
-
+            
         if (ccAddresses != null)
         {
             foreach (var cc in ccAddresses)
@@ -306,13 +306,13 @@ public class EMailSenderNode(
                 }
             }
         }
-
+            
         var bccAddresses = c.BccAddresses != null && c.BccAddresses.Count > 0
             ? c.BccAddresses
             : !string.IsNullOrWhiteSpace(c.BccPath)
                 ? dataContext.GetArray<string>(c.BccPath)
                 : null;
-
+            
         if (bccAddresses != null)
         {
             foreach (var bcc in bccAddresses)

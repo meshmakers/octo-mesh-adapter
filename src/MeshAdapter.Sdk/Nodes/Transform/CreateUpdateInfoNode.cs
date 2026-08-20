@@ -58,7 +58,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             return;
         }
 
-        if ((c.AttributeUpdates == null || c.AttributeUpdates.Count == 0) && updateKind != UpdateKind.Delete)
+        if ((c.AttributeUpdates == null || c.AttributeUpdates.Count == 0) && updateKind != UpdateKind.Delete) 
         {
             nodeContext.Error("AttributeUpdates is not set");
             return;
@@ -187,58 +187,58 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             switch (match.GetKind("$"))
             {
                 case DataKind.Object:
+                {
+                    // Objects may carry a CkRecordId → RtRecord; the structural conversion in
+                    // GetAttributeValue needs the JsonObject, so read it via Get<JsonNode>.
+                    var jObject = (JsonObject?)match.Get<JsonNode>("$");
+                    if (jObject is not null &&
+                        SetAttributeValueSingle(nodeContext, attributeName, jObject, rtTypeWithAttributes))
                     {
-                        // Objects may carry a CkRecordId → RtRecord; the structural conversion in
-                        // GetAttributeValue needs the JsonObject, so read it via Get<JsonNode>.
-                        var jObject = (JsonObject?)match.Get<JsonNode>("$");
-                        if (jObject is not null &&
-                            SetAttributeValueSingle(nodeContext, attributeName, jObject, rtTypeWithAttributes))
-                        {
-                            hasUpdate = true;
-                        }
-
-                        break;
+                        hasUpdate = true;
                     }
+
+                    break;
+                }
                 case DataKind.Array:
+                {
+                    // Convert JsonArray items: primitives stay as primitives, objects get converted
+                    // via GetAttributeValue (which handles CkRecordId → RtRecord conversion).
+                    var jArray = (JsonArray?)match.Get<JsonNode>("$");
+                    if (jArray is null) break;
+                    var list = jArray.Select(item => item switch
                     {
-                        // Convert JsonArray items: primitives stay as primitives, objects get converted
-                        // via GetAttributeValue (which handles CkRecordId → RtRecord conversion).
-                        var jArray = (JsonArray?)match.Get<JsonNode>("$");
-                        if (jArray is null) break;
-                        var list = jArray.Select(item => item switch
-                        {
-                            JsonValue v => JsonScalar.ToClr(v),
-                            _ => GetAttributeValue(nodeContext, item)
-                        }).ToList();
-                        if (SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
-                        {
-                            hasUpdate = true;
-                        }
-
-                        break;
+                        JsonValue v => JsonScalar.ToClr(v),
+                        _ => GetAttributeValue(nodeContext, item)
+                    }).ToList();
+                    if (SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
+                    {
+                        hasUpdate = true;
                     }
+
+                    break;
+                }
                 case DataKind.Null:
+                {
+                    if (SetAttributeValueSingle(nodeContext, attributeName, null, rtTypeWithAttributes))
                     {
-                        if (SetAttributeValueSingle(nodeContext, attributeName, null, rtTypeWithAttributes))
-                        {
-                            hasUpdate = true;
-                        }
-
-                        break;
+                        hasUpdate = true;
                     }
+
+                    break;
+                }
                 default:
+                {
+                    // Scalars (bool / long / double / DateTime / string) box via the shared
+                    // JsonScalar rules exposed through GetValue — same parity as the former
+                    // ExtractPrimitive ladder.
+                    var raw = match.GetValue("$");
+                    if (SetAttributeValueSingle(nodeContext, attributeName, raw, rtTypeWithAttributes))
                     {
-                        // Scalars (bool / long / double / DateTime / string) box via the shared
-                        // JsonScalar rules exposed through GetValue — same parity as the former
-                        // ExtractPrimitive ladder.
-                        var raw = match.GetValue("$");
-                        if (SetAttributeValueSingle(nodeContext, attributeName, raw, rtTypeWithAttributes))
-                        {
-                            hasUpdate = true;
-                        }
-
-                        break;
+                        hasUpdate = true;
                     }
+
+                    break;
+                }
             }
         }
 

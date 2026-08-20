@@ -48,9 +48,7 @@ public class FromHttpRequestNode2Tests
         A.CallTo(() => _nodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration2>())
             .Returns(new FromHttpRequestNodeConfiguration2
             {
-                Path = "/webhook",
-                Method = HttpMethod.Post,
-                AllowAnonymous = allowAnonymous,
+                Path = "/webhook", Method = HttpMethod.Post, AllowAnonymous = allowAnonymous,
                 RequiredRoles = requiredRoles
             });
 

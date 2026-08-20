@@ -238,13 +238,13 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
     /// interleaves the computed Type property with the positional parameters.
     /// </summary>
     internal sealed record SpikeAnomalyResult(
-        [property: JsonPropertyName("confidence")][property: JsonPropertyOrder(1)] double Confidence,
-        [property: JsonPropertyName("level")][property: JsonPropertyOrder(2)] double Level,
-        [property: JsonPropertyName("score")][property: JsonPropertyOrder(3)] double Score,
-        [property: JsonPropertyName("pValue")][property: JsonPropertyOrder(4)] double PValue,
-        [property: JsonPropertyName("timestamp")][property: JsonPropertyOrder(5)] DateTime Timestamp,
-        [property: JsonPropertyName("seriesKey")][property: JsonPropertyOrder(6)] string SeriesKey,
-        [property: JsonPropertyName("currentValue")][property: JsonPropertyOrder(7)] float CurrentValue,
+        [property: JsonPropertyName("confidence")] [property: JsonPropertyOrder(1)] double Confidence,
+        [property: JsonPropertyName("level")] [property: JsonPropertyOrder(2)] double Level,
+        [property: JsonPropertyName("score")] [property: JsonPropertyOrder(3)] double Score,
+        [property: JsonPropertyName("pValue")] [property: JsonPropertyOrder(4)] double PValue,
+        [property: JsonPropertyName("timestamp")] [property: JsonPropertyOrder(5)] DateTime Timestamp,
+        [property: JsonPropertyName("seriesKey")] [property: JsonPropertyOrder(6)] string SeriesKey,
+        [property: JsonPropertyName("currentValue")] [property: JsonPropertyOrder(7)] float CurrentValue,
         [property: JsonPropertyName("context")] [property: JsonPropertyOrder(8)]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         object? Context)
@@ -259,14 +259,14 @@ public class MachineLearningAnomalyNode(NodeDelegate next, IMeshEtlContext meshE
     /// inserted between pValue and timestamp, matching the former JsonObject key order.
     /// </summary>
     internal sealed record ChangePointAnomalyResult(
-        [property: JsonPropertyName("confidence")][property: JsonPropertyOrder(1)] double Confidence,
-        [property: JsonPropertyName("level")][property: JsonPropertyOrder(2)] double Level,
-        [property: JsonPropertyName("score")][property: JsonPropertyOrder(3)] double Score,
-        [property: JsonPropertyName("pValue")][property: JsonPropertyOrder(4)] double PValue,
-        [property: JsonPropertyName("martingaleValue")][property: JsonPropertyOrder(5)] double MartingaleValue,
-        [property: JsonPropertyName("timestamp")][property: JsonPropertyOrder(6)] DateTime Timestamp,
-        [property: JsonPropertyName("seriesKey")][property: JsonPropertyOrder(7)] string SeriesKey,
-        [property: JsonPropertyName("currentValue")][property: JsonPropertyOrder(8)] float CurrentValue,
+        [property: JsonPropertyName("confidence")] [property: JsonPropertyOrder(1)] double Confidence,
+        [property: JsonPropertyName("level")] [property: JsonPropertyOrder(2)] double Level,
+        [property: JsonPropertyName("score")] [property: JsonPropertyOrder(3)] double Score,
+        [property: JsonPropertyName("pValue")] [property: JsonPropertyOrder(4)] double PValue,
+        [property: JsonPropertyName("martingaleValue")] [property: JsonPropertyOrder(5)] double MartingaleValue,
+        [property: JsonPropertyName("timestamp")] [property: JsonPropertyOrder(6)] DateTime Timestamp,
+        [property: JsonPropertyName("seriesKey")] [property: JsonPropertyOrder(7)] string SeriesKey,
+        [property: JsonPropertyName("currentValue")] [property: JsonPropertyOrder(8)] float CurrentValue,
         [property: JsonPropertyName("context")] [property: JsonPropertyOrder(9)]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         object? Context)

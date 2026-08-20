@@ -36,32 +36,32 @@ public record StatisticalDetectorConfiguration
     /// JSONPath to the double value to monitor
     /// </summary>
     public required string Path { get; set; }
-
+    
     /// <summary>
     /// Optional path to context data to include with anomaly results
     /// </summary>
     public string? ContextPath { get; set; }
-
+    
     /// <summary>
     /// Detection method to use
     /// </summary>
     public AnomalyDetectionMethod Method { get; set; } = AnomalyDetectionMethod.ZScore;
-
+    
     /// <summary>
     /// Threshold for anomaly detection (interpretation depends on method)
     /// </summary>
     public double Threshold { get; set; } = 3.0;
-
+    
     /// <summary>
     /// Minimum samples required before detection starts
     /// </summary>
     public int MinSamples { get; set; } = 10;
-
+    
     /// <summary>
     /// Maximum samples to keep in memory (0 = unlimited)
     /// </summary>
     public int MaxSamples { get; set; } = 1000;
-
+    
     /// <summary>
     /// Window size for moving average method
     /// </summary>
@@ -77,17 +77,17 @@ public enum AnomalyDetectionMethod
     /// Z-Score based detection (threshold = number of standard deviations)
     /// </summary>
     ZScore,
-
+    
     /// <summary>
     /// Interquartile Range based detection (threshold = IQR multiplier)
     /// </summary>
     Iqr,
-
+    
     /// <summary>
     /// Percent change from last value (threshold = percent)
     /// </summary>
     PercentChange,
-
+    
     /// <summary>
     /// Moving average deviation (threshold = percent deviation)
     /// </summary>

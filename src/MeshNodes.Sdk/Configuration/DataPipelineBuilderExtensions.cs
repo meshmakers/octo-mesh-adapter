@@ -30,6 +30,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetStreamDataNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpListNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AggregateStreamDataNodeConfiguration>();
 
         // Register load nodes

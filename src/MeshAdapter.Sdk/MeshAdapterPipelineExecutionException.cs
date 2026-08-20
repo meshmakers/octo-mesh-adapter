@@ -201,6 +201,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
     }
 
+    public static Exception FilePatternNotConfigured(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: File pattern is not configured. Set 'filePattern', for example \"AR*TXT\".");
+    }
+
     public static Exception SftpHostKeyMismatch(string host, string expectedFingerprint, string presentedFingerprint)
     {
         return new MeshAdapterPipelineExecutionException(

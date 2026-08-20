@@ -118,7 +118,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         dataContext.Set(c.TargetPath,
             new FileSystemItemResult
-                { CkTypeId = RtCkTypeIdFileSystemItem, RtId = rtFileSystemItem.RtId, FileName = fileName },
+            { CkTypeId = RtCkTypeIdFileSystemItem, RtId = rtFileSystemItem.RtId, FileName = fileName },
             c.DocumentMode, c.TargetValueKind,
             c.TargetValueWriteMode);
 

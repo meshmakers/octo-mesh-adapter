@@ -7,16 +7,19 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// SSH.NET implementation of <see cref="ISftpSessionFactory" />. One semaphore per server
-/// configuration name bounds how many sessions this process opens against that server at the
-/// same time.
+/// configuration name bounds how many sessions are open against that server at a time. The
+/// counters live on the ETL context rather than on this instance, which is the scope
+/// <c>EMailSender@1</c> and the pre-seam upload node both use: a redeployed pipeline gets a
+/// fresh registration and therefore picks up a changed limit.
 /// </summary>
-public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
+internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
 {
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _semaphores = new();
+    private const string SemaphoresKey = "SftpSessionFactory.Semaphores";
+    private static readonly Lock SemaphoresLock = new();
 
     /// <inheritdoc />
     public async Task<ISftpSession> ConnectAsync(SftpServerSettings settings, string serverConfigurationName,
-        CancellationToken cancellationToken = default)
+        IMeshEtlContext etlContext, CancellationToken cancellationToken = default)
     {
         if (settings.MaxConcurrentConnections <= 0)
         {
@@ -24,18 +27,32 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                 serverConfigurationName, settings.MaxConcurrentConnections);
         }
 
-        var semaphore = _semaphores.GetOrAdd(serverConfigurationName,
-            _ => new SemaphoreSlim(settings.MaxConcurrentConnections, settings.MaxConcurrentConnections));
+        var semaphore = GetOrCreateSemaphore(etlContext, serverConfigurationName, settings);
 
-        await semaphore.WaitAsync(cancellationToken);
+        // A wait that never ends turns one stalled transfer into a silent stop for every SFTP
+        // node against that server. Zero keeps the previous unbounded behaviour.
+        if (settings.WaitForSlotTimeoutSeconds > 0)
+        {
+            if (!await semaphore.WaitAsync(TimeSpan.FromSeconds(settings.WaitForSlotTimeoutSeconds),
+                    cancellationToken))
+            {
+                throw MeshAdapterPipelineExecutionException.SftpSlotWaitTimedOut(
+                    serverConfigurationName, settings.WaitForSlotTimeoutSeconds);
+            }
+        }
+        else
+        {
+            await semaphore.WaitAsync(cancellationToken);
+        }
 
         SftpClient? client = null;
+        PrivateKeyFile? privateKeyFile = null;
         var hostKey = new HostKeyOutcome();
         try
         {
-            client = CreateClient(settings, hostKey);
+            client = CreateClient(settings, hostKey, out privateKeyFile);
             client.Connect();
-            return new SshNetSftpSession(client, semaphore);
+            return new SshNetSftpSession(client, semaphore, privateKeyFile);
         }
         catch (Exception exception)
         {
@@ -46,6 +63,7 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             try
             {
                 client?.Dispose();
+                privateKeyFile?.Dispose();
             }
             finally
             {
@@ -78,14 +96,36 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         public bool Refused { get; set; }
     }
 
-    private static SftpClient CreateClient(SftpServerSettings settings, HostKeyOutcome hostKey)
+    private static SemaphoreSlim GetOrCreateSemaphore(IMeshEtlContext etlContext, string serverConfigurationName,
+        SftpServerSettings settings)
+    {
+        lock (SemaphoresLock)
+        {
+            if (!etlContext.Properties.TryGetValue(SemaphoresKey, out var store) ||
+                store is not ConcurrentDictionary<string, SemaphoreSlim> semaphores)
+            {
+                semaphores = new ConcurrentDictionary<string, SemaphoreSlim>();
+                etlContext.Properties[SemaphoresKey] = semaphores;
+            }
+
+            return semaphores.GetOrAdd(serverConfigurationName,
+                _ => new SemaphoreSlim(settings.MaxConcurrentConnections, settings.MaxConcurrentConnections));
+        }
+    }
+
+    private static SftpClient CreateClient(SftpServerSettings settings, HostKeyOutcome hostKey,
+        out PrivateKeyFile? privateKeyFile)
     {
         SftpClient client;
+        privateKeyFile = null;
 
         if (!string.IsNullOrWhiteSpace(settings.PrivateKey))
         {
-            var keyStream = new MemoryStream(Encoding.UTF8.GetBytes(settings.PrivateKey));
-            var privateKeyFile = string.IsNullOrWhiteSpace(settings.PrivateKeyPassphrase)
+            // The key file owns the parsed key material and is disposable, so it is handed to
+            // the session and released with it. One session per file means an unreleased key
+            // object and a plaintext copy of the key per file otherwise.
+            using var keyStream = new MemoryStream(Encoding.UTF8.GetBytes(settings.PrivateKey));
+            privateKeyFile = string.IsNullOrWhiteSpace(settings.PrivateKeyPassphrase)
                 ? new PrivateKeyFile(keyStream)
                 : new PrivateKeyFile(keyStream, settings.PrivateKeyPassphrase);
 
@@ -95,6 +135,16 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         {
             client = new SftpClient(settings.Host, settings.Port, settings.Username,
                 settings.Password ?? string.Empty);
+        }
+
+        if (settings.ConnectTimeoutSeconds > 0)
+        {
+            client.ConnectionInfo.Timeout = TimeSpan.FromSeconds(settings.ConnectTimeoutSeconds);
+        }
+
+        if (settings.OperationTimeoutSeconds > 0)
+        {
+            client.OperationTimeout = TimeSpan.FromSeconds(settings.OperationTimeoutSeconds);
         }
 
         client.HostKeyReceived += (_, e) =>
@@ -110,7 +160,8 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         return client;
     }
 
-    private sealed class SshNetSftpSession(SftpClient client, SemaphoreSlim semaphore) : ISftpSession
+    private sealed class SshNetSftpSession(SftpClient client, SemaphoreSlim semaphore,
+        PrivateKeyFile? privateKeyFile) : ISftpSession
     {
         public IReadOnlyList<SftpEntry> List(string remoteDirectory)
         {
@@ -169,6 +220,7 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                 finally
                 {
                     client.Dispose();
+                    privateKeyFile?.Dispose();
                 }
             }
             finally

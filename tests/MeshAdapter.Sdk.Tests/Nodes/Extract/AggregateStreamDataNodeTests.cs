@@ -96,15 +96,15 @@ public class AggregateStreamDataNodeTests : NodeTestBase
 
     private static AggregateStreamDataNodeConfiguration Config(
         params AggregationColumnDto[] aggregations) => new()
-    {
-        ArchiveRtId = TestArchiveRtId,
-        TargetPath = "$.monthly",
-        Aggregations = aggregations.Length > 0
+        {
+            ArchiveRtId = TestArchiveRtId,
+            TargetPath = "$.monthly",
+            Aggregations = aggregations.Length > 0
             ? aggregations
             : [Agg("Energy", AggregationTypesDto.Sum)],
-        From = From,
-        To = To
-    };
+            From = From,
+            To = To
+        };
 
     private sealed class ResultBox
     {

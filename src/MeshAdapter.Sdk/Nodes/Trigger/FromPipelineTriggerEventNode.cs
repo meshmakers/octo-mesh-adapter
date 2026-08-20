@@ -19,7 +19,7 @@ internal class FromPipelineTriggerEventNode(IEventHubControl eventHubControl)
     {
         var address =
             $"{QueueNames.PipelineTriggerChannelName.ToLower()}-{context.TenantId.ToLower()}-{context.PipelineRtEntityId.RtId.ToString().ToLower()}";
-        
+
         _endpointHandle = eventHubControl.RegisterRoutedEventConsumer<PipelineTriggerSchedule>(address,
             async message =>
             {

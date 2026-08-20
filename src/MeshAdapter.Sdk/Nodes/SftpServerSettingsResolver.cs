@@ -8,7 +8,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// rejects an entry that cannot authenticate. Shared by every SFTP node, so the checks cannot
 /// drift apart between the read and the write direction.
 /// </summary>
-public static class SftpServerSettingsResolver
+internal static class SftpServerSettingsResolver
 {
     /// <summary>
     /// Resolves and validates the settings behind a server configuration name.

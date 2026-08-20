@@ -5,7 +5,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// case sensitive, so the comparison is ordinal; only the decorations people copy along with a
 /// fingerprint are normalised away.
 /// </summary>
-public static class SftpHostKeyVerifier
+internal static class SftpHostKeyVerifier
 {
     private const string Sha256Prefix = "SHA256:";
 

@@ -7,7 +7,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// </summary>
 [NodeDeprecated("Use FromHttpRequest@2 instead.")]
 [NodeName("FromHttpRequest", 1)]
-public record FromHttpRequestNodeConfiguration: TriggerNodeConfiguration
+public record FromHttpRequestNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>
     /// Defines the HTTP action to be performed
@@ -20,6 +20,6 @@ public record FromHttpRequestNodeConfiguration: TriggerNodeConfiguration
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public string Path { get; set; } = null!;
-    
-    
+
+
 }

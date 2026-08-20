@@ -1067,7 +1067,8 @@ public class GetStreamDataNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_GapScan_UsesArchivePeriodAsInterval()
     {
         SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy"))
-            with { Period = TimeSpan.FromMinutes(15) });
+            with
+        { Period = TimeSpan.FromMinutes(15) });
         SetupQueryResult(WindowRow(0, 15));
 
         var (dataContext, nodeContext, next) = PrepareTest(GapConfig() with { GapsOnly = true });
@@ -1083,7 +1084,8 @@ public class GetStreamDataNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_ExpectedInterval_WinsOverArchivePeriod()
     {
         SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy"))
-            with { Period = TimeSpan.FromMinutes(15) });
+            with
+        { Period = TimeSpan.FromMinutes(15) });
         SetupQueryResult(WindowRow(0, 15));
 
         var config = GapConfig() with { GapsOnly = true, ExpectedInterval = TimeSpan.FromMinutes(30) };
@@ -1221,7 +1223,8 @@ public class GetStreamDataNodeTests : NodeTestBase
     {
         // The remaining path to "no interval": nothing configured and the archive declares none.
         SetupArchive(CreateSnapshot(isTimeRange: true, columns: Ingested("Energy"))
-            with { Period = TimeSpan.Zero });
+            with
+        { Period = TimeSpan.Zero });
         SetupQueryResult(WindowRow(0, 15));
 
         var (dataContext, nodeContext, next, logger) =

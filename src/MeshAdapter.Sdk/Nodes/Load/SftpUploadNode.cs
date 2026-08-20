@@ -63,7 +63,7 @@ public class SftpUploadNode(
 
             // Connect and upload. The session holds the server's concurrency slot until it is
             // disposed, so it stays in a using scope.
-            using var session = await sessionFactory.ConnectAsync(serverConfiguration, c.ServerConfiguration);
+            using var session = await sessionFactory.ConnectAsync(serverConfiguration, c.ServerConfiguration, etlContext);
             session.EnsureDirectory(c.RemoteDirectory);
             session.Upload(uploadStream, remotePath);
         }

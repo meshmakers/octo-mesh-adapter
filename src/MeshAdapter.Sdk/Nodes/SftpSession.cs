@@ -43,12 +43,14 @@ public interface ISftpSessionFactory
 {
     /// <summary>
     /// Waits for a free slot of the named server configuration, connects and returns the open
-    /// session.
+    /// session. The slot counters live on the ETL context, the same scope
+    /// <c>EMailSender@1</c> uses for its own concurrency limit.
     /// </summary>
     /// <param name="settings">Resolved connection settings</param>
     /// <param name="serverConfigurationName">Name the concurrency limit is tracked under</param>
+    /// <param name="etlContext">The ETL context holding the slot counters</param>
     /// <param name="cancellationToken">Cancels the wait for a free slot</param>
     /// <returns>The open session</returns>
     Task<ISftpSession> ConnectAsync(SftpServerSettings settings, string serverConfigurationName,
-        CancellationToken cancellationToken = default);
+        IMeshEtlContext etlContext, CancellationToken cancellationToken = default);
 }

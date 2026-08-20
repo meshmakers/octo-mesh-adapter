@@ -30,9 +30,9 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             nodeContext.Error("RtIds is not set");
             return;
         }
-        
+
         var rtIds = GetRtIds(c, dataContext);
-        
+
         if (rtIds.Count == 0)
         {
             nodeContext.Error("No RtIds found");
@@ -55,11 +55,11 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
 
     private static List<OctoObjectId> GetRtIds(GetRtEntitiesByIdNodeConfiguration c, IDataContext dataContext)
     {
-        if(c.RtIds is { Count: > 0 })
+        if (c.RtIds is { Count: > 0 })
         {
             return c.RtIds.ToList();
         }
-        
+
         if (c.RtIdsPath != null)
         {
             var rtIds = dataContext.GetArray<string>(c.RtIdsPath)?.ToList();
@@ -71,7 +71,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
                 .Select(id => new OctoObjectId(id!))
                 .ToList();
         }
-        
+
         return [];
     }
 }

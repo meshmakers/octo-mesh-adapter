@@ -728,11 +728,14 @@ All three SFTP nodes resolve their connection from the same global configuration
   "PrivateKey": "-----BEGIN OPENSSH PRIVATE KEY-----...",
   "PrivateKeyPassphrase": "...",
   "MaxConcurrentConnections": 3,
+  "ConnectTimeoutSeconds": 30,
+  "OperationTimeoutSeconds": 600,
+  "WaitForSlotTimeoutSeconds": 300,
   "HostKeyFingerprint": "kSuxKMWLxOLE3nn3TxmXvJvI7NrHkGDhAo9SPHt9YQg"
 }
 ```
 
-`Password` or `PrivateKey` must be set. `MaxConcurrentConnections` bounds how many sessions this process opens against that server at the same time. `HostKeyFingerprint` is the SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix; when it is set, a server presenting a different key is refused. When it is absent, any host key is accepted, which is how every release before this option behaved.
+`Password` or `PrivateKey` must be set. `MaxConcurrentConnections` bounds how many sessions are open against that server at a time; the counters live on the ETL context, so a redeployed pipeline picks up a changed limit. The three timeout values are optional and default to SSH.NET's own behaviour: 30 seconds to connect, and no limit at all on an individual listing, download or upload, nor on waiting for a free slot. Leaving them at zero therefore keeps a server that accepts the connection and then stalls holding its slot until the process restarts, which is why a server with predictable transfer sizes should set them. `HostKeyFingerprint` is the SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix; when it is set, a server presenting a different key is refused. When it is absent, any host key is accepted, which is how every release before this option behaved.
 
 #### SftpListNode
 

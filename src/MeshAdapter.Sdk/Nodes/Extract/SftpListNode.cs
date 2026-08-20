@@ -13,6 +13,11 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 /// with <c>SftpDownload@1</c>. Splitting listing from reading lets a consumer drop files it has
 /// already processed before anything is transferred.
 /// <para />
+/// A server that omits modification times reports the same value for every entry, so a
+/// consumer that derives a file identity from <c>lastWriteTimeUtc</c> would see them all as
+/// one file. Every SFTP server in practice reports it; a listing where it is missing is worth
+/// treating as a misconfigured server rather than as data.
+/// <para />
 /// The array is always written, even when nothing matches, because a downstream
 /// <c>ForEach@1</c> aborts with <c>PathMustBeArray</c> when its iteration path holds no array.
 /// </summary>
@@ -43,7 +48,7 @@ public class SftpListNode(
         var now = DateTime.UtcNow;
 
         List<SftpEntry> entries;
-        using (var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration))
+        using (var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext))
         {
             entries = session.List(c.RemoteDirectory)
                 .Where(e => !e.IsDirectory)

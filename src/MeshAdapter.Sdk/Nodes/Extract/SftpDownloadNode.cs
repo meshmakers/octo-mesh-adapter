@@ -47,7 +47,7 @@ public class SftpDownloadNode(
         var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext);
 
         byte[] content;
-        using (var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration))
+        using (var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext))
         {
             content = session.Download(remotePath);
         }

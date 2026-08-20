@@ -9,12 +9,12 @@ public enum UpdateKind
     /// Inserts a new rt entity
     /// </summary>
     Insert = 0,
-    
+
     /// <summary>
     /// Updates an existing rt entity
     /// </summary>
     Update = 1,
-    
+
     /// <summary>
     /// Deletes an existing rt entity
     /// </summary>
@@ -30,7 +30,7 @@ public enum AssociationUpdateKind
     /// Crates a new relation
     /// </summary>
     Create = 0,
-    
+
     /// <summary>
     /// Deletes an existing relation
     /// </summary>

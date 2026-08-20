@@ -219,6 +219,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: File pattern is not configured. Set 'filePattern', for example \"AR*TXT\".");
     }
 
+    public static Exception SftpSlotWaitTimedOut(string serverConfigurationName, int waitSeconds)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"SFTP server configuration '{serverConfigurationName}': no free connection slot after {waitSeconds}s. Either transfers are stalling or MaxConcurrentConnections is too low for the pipeline.");
+    }
+
     public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)
     {
         return new MeshAdapterPipelineExecutionException(

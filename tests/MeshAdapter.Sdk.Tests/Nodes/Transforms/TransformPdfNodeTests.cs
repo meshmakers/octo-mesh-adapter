@@ -46,7 +46,7 @@ public class TransformPdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_SelectsAndReordersPagesAcrossSources()
     {
         var config = new TransformPdfNodeConfiguration
-            { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };
+        { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
             .Returns(new List<string?> { MakePdfBase64(2), MakePdfBase64(1) });
@@ -328,7 +328,7 @@ public class TransformPdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_SkipsUnreadableSource_WhenNotFailing()
     {
         var config = new TransformPdfNodeConfiguration
-            { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out", FailOnInvalidPdf = false };
+        { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out", FailOnInvalidPdf = false };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var notAPdf = Convert.ToBase64String("hello world"u8.ToArray());
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
@@ -363,7 +363,7 @@ public class TransformPdfNodeTests : NodeTestBase
     {
         await using var scratchSpace = new PipelineScratchSpace();
         var config = new TransformPdfNodeConfiguration
-            { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out", OutputAsScratchFile = true };
+        { Path = "$.pdfs", OpsPath = "$.ops", TargetPath = "$.out", OutputAsScratchFile = true };
         var (dataContext, nodeContext, next) = PrepareTest(config, scratchSpace: scratchSpace);
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs")).Returns(new List<string?> { MakePdfBase64(2) });
         A.CallTo(() => dataContext.GetArray<PdfPageOp>("$.ops")).Returns(new List<PdfPageOp?>

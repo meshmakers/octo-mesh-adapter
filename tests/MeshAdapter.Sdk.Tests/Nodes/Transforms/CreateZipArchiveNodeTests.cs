@@ -47,19 +47,23 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     {
         var config = new CreateZipArchiveNodeConfiguration
         {
-            Path = "$.entries", TargetPath = "$.zip",
-            AppendSequenceNumber = true, ManifestFileName = "belege.csv",
+            Path = "$.entries",
+            TargetPath = "$.zip",
+            AppendSequenceNumber = true,
+            ManifestFileName = "belege.csv",
         };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var entries = new JsonArray(
             new JsonObject
             {
-                ["fileName"] = "AP/RE-2025-001.pdf", ["contentBase64"] = B64("doc"),
+                ["fileName"] = "AP/RE-2025-001.pdf",
+                ["contentBase64"] = B64("doc"),
                 ["manifest"] = new JsonObject { ["Belegnummer"] = "RE-2025-001" },
             },
             new JsonObject
             {
-                ["fileName"] = "lieferanten.csv", ["contentBase64"] = B64("vendors"),
+                ["fileName"] = "lieferanten.csv",
+                ["contentBase64"] = B64("vendors"),
                 ["verbatim"] = true,
             });
         A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
@@ -81,7 +85,7 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_BundlesEntries_IncludingFolders()
     {
         var config = new CreateZipArchiveNodeConfiguration
-            { Path = "$.entries", TargetPath = "$.zip", ContentLengthTargetPath = "$.zipLen" };
+        { Path = "$.entries", TargetPath = "$.zip", ContentLengthTargetPath = "$.zipLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var entries = new JsonArray(
             new JsonObject { ["fileName"] = "AP/RE-2025-001.pdf", ["contentBase64"] = B64("first") },
@@ -211,7 +215,7 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_AppendSequenceNumber_MakesDuplicateNamesUnique()
     {
         var config = new CreateZipArchiveNodeConfiguration
-            { Path = "$.entries", TargetPath = "$.zip", AppendSequenceNumber = true };
+        { Path = "$.entries", TargetPath = "$.zip", AppendSequenceNumber = true };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var entries = new JsonArray(
             new JsonObject
@@ -241,8 +245,11 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     {
         var config = new CreateZipArchiveNodeConfiguration
         {
-            Path = "$.entries", TargetPath = "$.zip", AppendSequenceNumber = true,
-            ManifestFileName = "belege.csv", ManifestFileNameColumn = "Dateiname"
+            Path = "$.entries",
+            TargetPath = "$.zip",
+            AppendSequenceNumber = true,
+            ManifestFileName = "belege.csv",
+            ManifestFileNameColumn = "Dateiname"
         };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var entries = new JsonArray(
@@ -252,8 +259,10 @@ public class CreateZipArchiveNodeTests : NodeTestBase
                 ["contentBase64"] = B64("a"),
                 ["manifest"] = new JsonObject
                 {
-                    ["Datum"] = "2026-01-15", ["Belegnummer"] = "RE-1",
-                    ["LieferantKunde"] = "ACME; \"Söhne\" GmbH", ["Brutto"] = "119.00"
+                    ["Datum"] = "2026-01-15",
+                    ["Belegnummer"] = "RE-1",
+                    ["LieferantKunde"] = "ACME; \"Söhne\" GmbH",
+                    ["Brutto"] = "119.00"
                 }
             },
             new JsonObject
@@ -261,7 +270,7 @@ public class CreateZipArchiveNodeTests : NodeTestBase
                 ["pathSegments"] = new JsonArray("Ausgangsrechnungen", "2026-02-01_Kunde.pdf"),
                 ["contentBase64"] = B64("b"),
                 ["manifest"] = new JsonObject
-                    { ["Datum"] = "2026-02-01", ["Belegnummer"] = "AR-7", ["Netto"] = "100.00" }
+                { ["Datum"] = "2026-02-01", ["Belegnummer"] = "AR-7", ["Netto"] = "100.00" }
             });
         A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
 
@@ -287,7 +296,7 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     {
         await using var scratchSpace = new PipelineScratchSpace();
         var config = new CreateZipArchiveNodeConfiguration
-            { Path = "$.entries", TargetPath = "$.zip", PersistAsFileSystemItem = true };
+        { Path = "$.entries", TargetPath = "$.zip", PersistAsFileSystemItem = true };
         var (dataContext, nodeContext, next) = PrepareTest(config, scratchSpace: scratchSpace);
         A.CallTo(() => dataContext.Get<JsonNode>("$.entries"))
             .Returns(new JsonArray(new JsonObject { ["fileName"] = "a.pdf", ["contentBase64"] = B64("a") }));
@@ -302,8 +311,10 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     {
         var config = new CreateZipArchiveNodeConfiguration
         {
-            Path = "$.entries", TargetPath = "$.zip",
-            PersistAsFileSystemItem = true, RootFolderWellKnownName = "Documents"
+            Path = "$.entries",
+            TargetPath = "$.zip",
+            PersistAsFileSystemItem = true,
+            RootFolderWellKnownName = "Documents"
         };
         var (dataContext, nodeContext, next) = PrepareTest(config); // no scratch space
         A.CallTo(() => dataContext.Get<JsonNode>("$.entries"))

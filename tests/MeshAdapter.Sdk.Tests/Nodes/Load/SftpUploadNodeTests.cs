@@ -48,7 +48,7 @@ public class SftpUploadNodeTests : NodeTestBase
 
         _sftpSessionFactory = A.Fake<ISftpSessionFactory>();
         _sftpSession = A.Fake<ISftpSession>();
-        A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._,
+        A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
             A<CancellationToken>._)).Returns(Task.FromResult(_sftpSession));
     }
 
@@ -444,7 +444,7 @@ public class SftpUploadNodeTests : NodeTestBase
         // The concurrency slot is held by the session, so it is only handed back on dispose.
         A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>.That.Matches(
                 s => s.Host == "localhost" && s.Username == "testuser"),
-            TestServerConfig, A<CancellationToken>._)).MustHaveHappenedOnceExactly();
+            TestServerConfig, A<IMeshEtlContext>._, A<CancellationToken>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _sftpSession.Dispose()).MustHaveHappenedOnceExactly();
     }
 

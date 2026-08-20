@@ -31,7 +31,7 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync<RtNotificationTemplate>(session, queryOptions);
         await session.CommitTransactionAsync();
-        
+
         var notificationTemplate = r.Items.FirstOrDefault();
         if (notificationTemplate == null)
         {
@@ -40,7 +40,7 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
 
         dataContext.Set(c.SubjectTargetPath, notificationTemplate.SubjectTemplate, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         dataContext.Set(c.TargetPath, notificationTemplate.BodyTemplate, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-        
+
         await next(dataContext, nodeContext);
     }
 
@@ -50,7 +50,7 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         {
             return c.NotificationTemplateName;
         }
-        
+
         if (!string.IsNullOrEmpty(c.NotificationTemplateNamePath))
         {
             var templateName = dataContext.Get<string>(c.NotificationTemplateNamePath);
@@ -60,7 +60,7 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
             }
             return templateName;
         }
-        
+
         throw MeshAdapterPipelineExecutionException.NotificationTemplateNameNotSet(nodeContext);
     }
 }

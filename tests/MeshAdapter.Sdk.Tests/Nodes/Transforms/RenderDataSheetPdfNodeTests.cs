@@ -47,7 +47,7 @@ public class RenderDataSheetPdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_RendersPdf_WithPdfSignature()
     {
         var config = new RenderDataSheetPdfNodeConfiguration
-            { Path = "$.model", TargetPath = "$.pdf", ContentLengthTargetPath = "$.pdfLen" };
+        { Path = "$.model", TargetPath = "$.pdf", ContentLengthTargetPath = "$.pdfLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.Get<JsonNode>("$.model")).Returns(SampleModel());
 
@@ -112,12 +112,17 @@ public class RenderDataSheetPdfNodeTests : NodeTestBase
                         // Missing value: no formatting, no dangling suffix.
                         new JsonObject
                         {
-                            ["label"] = "Net", ["value"] = "", ["format"] = "N2", ["suffix"] = "EUR"
+                            ["label"] = "Net",
+                            ["value"] = "",
+                            ["format"] = "N2",
+                            ["suffix"] = "EUR"
                         },
                         // Non-numeric value with a format falls back to the raw string.
                         new JsonObject
                         {
-                            ["label"] = "Note", ["value"] = "n/a", ["format"] = "N2"
+                            ["label"] = "Note",
+                            ["value"] = "n/a",
+                            ["format"] = "N2"
                         })
                 })
         };

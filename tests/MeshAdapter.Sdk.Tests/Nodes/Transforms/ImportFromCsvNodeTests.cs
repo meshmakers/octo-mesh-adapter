@@ -189,7 +189,9 @@ public class ImportFromCsvNodeTests : NodeTestBase
     {
         var mapping = new CsvColumnMapping
         {
-            TargetProperty = "amount", DataType = CsvDataType.Double, NumberCulture = "de-AT"
+            TargetProperty = "amount",
+            DataType = CsvDataType.Double,
+            NumberCulture = "de-AT"
         };
         var nodeContext = A.Fake<INodeContext>();
 
@@ -203,7 +205,9 @@ public class ImportFromCsvNodeTests : NodeTestBase
     {
         var mapping = new CsvColumnMapping
         {
-            TargetProperty = "amount", DataType = CsvDataType.Double, NumberCulture = "de-AT"
+            TargetProperty = "amount",
+            DataType = CsvDataType.Double,
+            NumberCulture = "de-AT"
         };
         var nodeContext = A.Fake<INodeContext>();
 
@@ -217,7 +221,9 @@ public class ImportFromCsvNodeTests : NodeTestBase
     {
         var mapping = new CsvColumnMapping
         {
-            TargetProperty = "date", DataType = CsvDataType.DateTime, DateFormat = "dd.MM.yyyy"
+            TargetProperty = "date",
+            DataType = CsvDataType.DateTime,
+            DateFormat = "dd.MM.yyyy"
         };
         var nodeContext = A.Fake<INodeContext>();
 
@@ -264,7 +270,8 @@ public class ImportFromCsvNodeTests : NodeTestBase
     {
         var mapping = new CsvColumnMapping
         {
-            TargetProperty = "amount", DataType = CsvDataType.Double
+            TargetProperty = "amount",
+            DataType = CsvDataType.Double
         };
         var nodeContext = A.Fake<INodeContext>();
 

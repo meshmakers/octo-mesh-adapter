@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using FakeItEasy;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
@@ -19,6 +22,34 @@ public class SshNetSftpSessionFactoryTests
             Password = "secret",
             MaxConcurrentConnections = maxConcurrentConnections
         };
+    }
+
+    private static IMeshEtlContext EtlContext()
+    {
+        var etlContext = A.Fake<IMeshEtlContext>();
+        A.CallTo(() => etlContext.Properties).Returns(new Dictionary<string, object?>());
+        return etlContext;
+    }
+
+    [Fact]
+    public async Task ConnectAsync_KeepsItsSemaphoresInTheEtlContext()
+    {
+        var etlContext = A.Fake<IMeshEtlContext>();
+        var properties = new Dictionary<string, object?>();
+        A.CallTo(() => etlContext.Properties).Returns(properties);
+
+        var factory = new SshNetSftpSessionFactory();
+
+        // Connecting fails - there is no server - but the store has to exist by then, and it
+        // has to live on the ETL context rather than on the factory, so the limit is scoped
+        // the way every other node in this repository scopes it.
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => factory.ConnectAsync(Settings(3), "sftp-server-1", etlContext));
+
+        Assert.True(properties.ContainsKey("SftpSessionFactory.Semaphores"));
+        var semaphores = Assert.IsType<ConcurrentDictionary<string, SemaphoreSlim>>(
+            properties["SftpSessionFactory.Semaphores"]);
+        Assert.True(semaphores.ContainsKey("sftp-server-1"));
     }
 
     [Fact]
@@ -49,10 +80,10 @@ public class SshNetSftpSessionFactoryTests
             MaxConcurrentConnections = 1
         };
 
-        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1"));
+        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1", EtlContext()));
 
         // With a leaked slot the second attempt would wait forever instead of failing.
-        var second = factory.ConnectAsync(settings, "sftp-server-1");
+        var second = factory.ConnectAsync(settings, "sftp-server-1", EtlContext());
         var finished = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
 
         Assert.Same(second, finished);
@@ -67,7 +98,7 @@ public class SshNetSftpSessionFactoryTests
         var factory = new SshNetSftpSessionFactory();
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
-            () => factory.ConnectAsync(Settings(value), "sftp-server-1"));
+            () => factory.ConnectAsync(Settings(value), "sftp-server-1", EtlContext()));
         Assert.Contains("sftp-server-1", ex.Message);
     }
 }

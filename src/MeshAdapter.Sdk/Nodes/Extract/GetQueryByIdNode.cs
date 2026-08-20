@@ -235,7 +235,7 @@ public class GetQueryByIdNode(
         IResultSet<RtEntityGraphItem> resultSet, QueryResult queryResult)
     {
         queryResult.Columns.AddRange(simpleQuery.Columns.Select(column => new QueryResultColumns
-            { Header = column }));
+        { Header = column }));
         queryResult.Rows.AddRange(resultSet.Items.Select(entity => new QueryResultRow
         {
             RtId = entity.RtId,

@@ -47,7 +47,7 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
             </body></html>
             """;
         var config = new RenderHtmlPdfNodeConfiguration
-            { Path = "$.html", TargetPath = "$.pdf", Title = "Forwarded mail", ContentLengthTargetPath = "$.pdfLen" };
+        { Path = "$.html", TargetPath = "$.pdf", Title = "Forwarded mail", ContentLengthTargetPath = "$.pdfLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
         A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);

@@ -13,5 +13,5 @@ internal static class Constants
     /// <summary>
     /// Delimiters for parsing the name of the entity, the delimiter will be retained to the name
     /// </summary>
-    public static readonly char[] DelimitersRetained = ['=', '.',  '-'];
+    public static readonly char[] DelimitersRetained = ['=', '.', '-'];
 }

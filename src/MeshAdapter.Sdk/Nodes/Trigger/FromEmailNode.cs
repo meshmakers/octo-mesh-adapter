@@ -21,7 +21,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
     private ImapClient? _imapClient;
-    
+
     // ReSharper disable once ClassNeverInstantiated.Local
     private record EmailServerConfiguration
     {
@@ -38,7 +38,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
     public async Task StartAsync(ITriggerContext context)
     {
         var c = context.NodeContext.GetNodeConfiguration<FromEmailNodeConfiguration>();
-        
+
         if (!context.GlobalConfiguration.IsDefined(c.ServerConfiguration))
         {
             throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
@@ -48,13 +48,13 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
         }
 
         var serverConfig = context.GlobalConfiguration.GetValue<EmailServerConfiguration>(c.ServerConfiguration);
-        
+
         _cancellationTokenSource = new CancellationTokenSource();
         _imapClient = new ImapClient();
-        
+
         // Connect and authenticate
         await ConnectAndAuthenticateAsync(serverConfig);
-        
+
         // Start polling task
         _pollingTask = Task.Run(async () => await PollForEmailsAsync(context, serverConfig, c), _cancellationTokenSource.Token);
     }
@@ -71,7 +71,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
             {
                 await _imapClient!.ConnectAsync(config.Host, config.Port, SecureSocketOptions.StartTlsWhenAvailable);
             }
-            
+
             await _imapClient.AuthenticateAsync(config.Username, config.Password);
         }
         catch (Exception ex)
@@ -84,7 +84,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
     private async Task PollForEmailsAsync(ITriggerContext context, EmailServerConfiguration serverConfig, FromEmailNodeConfiguration nodeConfig)
     {
         var processedUids = new HashSet<UniqueId>();
-        
+
         while (!_cancellationTokenSource!.Token.IsCancellationRequested)
         {
             try
@@ -94,24 +94,24 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                 {
                     await ConnectAndAuthenticateAsync(serverConfig);
                 }
-                
+
                 // Open the folder
                 var folder = await _imapClient.GetFolderAsync(serverConfig.Folder);
                 await folder.OpenAsync(FolderAccess.ReadWrite);
-                
+
                 // Search for unread messages
                 var searchQuery = nodeConfig.OnlyUnread ? SearchQuery.NotSeen : SearchQuery.All;
                 var uids = await folder.SearchAsync(searchQuery);
-                
+
                 // Process new emails
                 var newEmails = new List<EmailData>();
                 foreach (var uid in uids)
                 {
                     if (processedUids.Contains(uid))
                         continue;
-                    
+
                     var message = await folder.GetMessageAsync(uid);
-                    
+
                     // Apply sender filter if specified
                     if (!string.IsNullOrWhiteSpace(nodeConfig.SenderFilter))
                     {
@@ -119,14 +119,14 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                         if (senderAddress == null || !senderAddress.Contains(nodeConfig.SenderFilter))
                             continue;
                     }
-                    
+
                     // Apply subject filter if specified
                     if (!string.IsNullOrWhiteSpace(nodeConfig.SubjectFilter))
                     {
                         if (message.Subject == null || !message.Subject.Contains(nodeConfig.SubjectFilter))
                             continue;
                     }
-                    
+
                     var emailData = new EmailData
                     {
                         Subject = message.Subject,
@@ -157,23 +157,23 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                             return attachment;
                         }).ToList() ?? new List<AttachmentData>()
                     };
-                    
+
                     newEmails.Add(emailData);
                     processedUids.Add(uid);
-                    
+
                     // Mark as read if configured
                     if (nodeConfig.MarkAsRead)
                     {
                         await folder.AddFlagsAsync(uid, MessageFlags.Seen, true);
                     }
-                    
+
                     // Delete if configured
                     if (nodeConfig.DeleteAfterProcessing)
                     {
                         await folder.AddFlagsAsync(uid, MessageFlags.Deleted, true);
                     }
                 }
-                
+
                 // Trigger the pipeline if we have new emails
                 if (newEmails.Count > 0)
                 {
@@ -183,20 +183,20 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                         Count = newEmails.Count,
                         ProcessedAt = DateTime.UtcNow
                     };
-                    
+
                     await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), emailBatch);
-                    
+
                     logger.LogInformation("Processed {Count} new emails", newEmails.Count);
                 }
-                
+
                 // Expunge deleted messages if any were deleted
                 if (nodeConfig.DeleteAfterProcessing && newEmails.Count > 0)
                 {
                     await folder.ExpungeAsync();
                 }
-                
+
                 await folder.CloseAsync();
-                
+
                 // Wait for the polling interval
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds), _cancellationTokenSource.Token);
             }
@@ -208,7 +208,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error while polling for emails");
-                
+
                 // Wait before retrying
                 await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
             }
@@ -218,7 +218,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
     public async Task StopAsync(ITriggerContext context)
     {
         _cancellationTokenSource?.Cancel();
-        
+
         if (_pollingTask != null)
         {
             try
@@ -230,12 +230,12 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                 logger.LogWarning("Email polling task did not complete within timeout");
             }
         }
-        
+
         if (_imapClient?.IsConnected == true)
         {
             await _imapClient.DisconnectAsync(true);
         }
-        
+
         _imapClient?.Dispose();
         _cancellationTokenSource?.Dispose();
     }
@@ -250,7 +250,7 @@ public class EmailData
     /// Email subject
     /// </summary>
     public string? Subject { get; set; }
-    
+
     /// <summary>
     /// Email sender (display name and address)
     /// </summary>
@@ -260,37 +260,37 @@ public class EmailData
     /// Email sender address only (e.g. user@example.com)
     /// </summary>
     public string? FromAddress { get; set; }
-    
+
     /// <summary>
     /// Email recipients
     /// </summary>
     public string? To { get; set; }
-    
+
     /// <summary>
     /// Email date
     /// </summary>
     public DateTime Date { get; set; }
-    
+
     /// <summary>
     /// Email body (text or HTML)
     /// </summary>
     public string? Body { get; set; }
-    
+
     /// <summary>
     /// HTML body of the email
     /// </summary>
     public string? HtmlBody { get; set; }
-    
+
     /// <summary>
     /// Plain text body of the email
     /// </summary>
     public string? TextBody { get; set; }
-    
+
     /// <summary>
     /// Email message ID
     /// </summary>
     public string? MessageId { get; set; }
-    
+
     /// <summary>
     /// List of email attachments
     /// </summary>
@@ -423,12 +423,12 @@ public class EmailBatch
     /// List of emails in the batch
     /// </summary>
     public List<EmailData> Emails { get; set; } = new();
-    
+
     /// <summary>
     /// Number of emails in the batch
     /// </summary>
     public int Count { get; set; }
-    
+
     /// <summary>
     /// Timestamp when the batch was processed
     /// </summary>

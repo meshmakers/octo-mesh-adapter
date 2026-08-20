@@ -24,7 +24,8 @@ internal class DeployPipelineNode(
     IMeshEtlContext etlContext,
     ICommunicationServicesClient communicationServicesClient,
     IServiceAccountTokenService serviceAccountTokenService) : IPipelineNode
-{    private static readonly RtCkId<CkTypeId> PipelineCkTypeId = new("System.Communication/Pipeline");
+{
+    private static readonly RtCkId<CkTypeId> PipelineCkTypeId = new("System.Communication/Pipeline");
     private static readonly RtCkId<CkAssociationRoleId> ExecutesRoleId = new("System.Communication/Executes");
     private static readonly RtCkId<CkAssociationRoleId> ParentChildRoleId = new("System/ParentChild");
     private static readonly RtCkId<CkTypeId> AdapterCkTypeId = new("System.Communication/Adapter");

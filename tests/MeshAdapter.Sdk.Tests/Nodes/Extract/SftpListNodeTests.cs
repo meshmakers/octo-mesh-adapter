@@ -29,7 +29,8 @@ public class SftpListNodeTests : NodeTestBase
         A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
         A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
             .Returns(new SftpServerSettings { Host = "sftp.example.com", Username = "user", Password = "secret" });
-        A.CallTo(() => _sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<CancellationToken>._))
+        A.CallTo(() => _sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+            A<CancellationToken>._))
             .Returns(Task.FromResult(_session));
     }
 

@@ -45,7 +45,7 @@ public class MergePdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_MergesTwoPdfs_IntoAllPages()
     {
         var config = new MergePdfNodeConfiguration
-            { Path = "$.pdfs", TargetPath = "$.merged", ContentLengthTargetPath = "$.mergedLen" };
+        { Path = "$.pdfs", TargetPath = "$.merged", ContentLengthTargetPath = "$.mergedLen" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
             .Returns(new List<string?> { MakePdfBase64(1), MakePdfBase64(2) });
@@ -66,7 +66,7 @@ public class MergePdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_SkipsInvalidPdf_WhenNotFailing()
     {
         var config = new MergePdfNodeConfiguration
-            { Path = "$.pdfs", TargetPath = "$.merged", FailOnInvalidPdf = false };
+        { Path = "$.pdfs", TargetPath = "$.merged", FailOnInvalidPdf = false };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         // Second entry is valid base64 but not a PDF -> import fails -> skipped.
         var notAPdf = Convert.ToBase64String("hello world"u8.ToArray());
@@ -85,7 +85,7 @@ public class MergePdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_InvalidPdf_ThrowsWhenFailOnInvalid()
     {
         var config = new MergePdfNodeConfiguration
-            { Path = "$.pdfs", TargetPath = "$.merged", FailOnInvalidPdf = true };
+        { Path = "$.pdfs", TargetPath = "$.merged", FailOnInvalidPdf = true };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         var notAPdf = Convert.ToBase64String("hello world"u8.ToArray());
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
@@ -112,7 +112,7 @@ public class MergePdfNodeTests : NodeTestBase
     {
         await using var scratchSpace = new PipelineScratchSpace();
         var config = new MergePdfNodeConfiguration
-            { Path = "$.pdfs", TargetPath = "$.merged", OutputAsScratchFile = true };
+        { Path = "$.pdfs", TargetPath = "$.merged", OutputAsScratchFile = true };
         var (dataContext, nodeContext, next) = PrepareTest(config, scratchSpace: scratchSpace);
         A.CallTo(() => dataContext.GetArray<string>("$.pdfs"))
             .Returns(new List<string?> { MakePdfBase64(1), MakePdfBase64(2) });

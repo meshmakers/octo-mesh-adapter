@@ -39,12 +39,12 @@ public record MappingEntry
     /// The source value
     /// </summary>
     public required object SourceValue { get; set; }
-    
+
     /// <summary>
     /// The target value
     /// </summary>
     public required object TargetValue { get; set; }
-    
+
     /// <summary>
     /// An optional description. This description is only added to the debug output of the node.
     /// </summary>

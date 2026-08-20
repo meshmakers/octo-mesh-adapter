@@ -41,6 +41,27 @@ public sealed record SftpServerSettings
     public int MaxConcurrentConnections { get; init; } = 3;
 
     /// <summary>
+    /// Seconds to wait for the connection to be established. Zero keeps SSH.NET's own default
+    /// of 30 seconds.
+    /// </summary>
+    public int ConnectTimeoutSeconds { get; init; }
+
+    /// <summary>
+    /// Seconds an individual operation - a listing, a download, an upload - may take. Zero
+    /// keeps SSH.NET's default, which is no limit at all: a server that accepts the connection
+    /// and then stalls holds the slot until the process restarts. Set it on a server whose
+    /// transfers have a known upper bound.
+    /// </summary>
+    public int OperationTimeoutSeconds { get; init; }
+
+    /// <summary>
+    /// Seconds to wait for a free slot of <see cref="MaxConcurrentConnections" /> before
+    /// failing. Zero waits indefinitely, which is the behaviour of every release before this
+    /// option existed.
+    /// </summary>
+    public int WaitForSlotTimeoutSeconds { get; init; }
+
+    /// <summary>
     /// SHA-256 fingerprint of the expected host key, non-padded base64 as printed by
     /// <c>ssh-keygen -lf</c>, with or without the <c>SHA256:</c> prefix. When set, a server
     /// presenting a different key is refused. When absent, any host key is accepted, which is

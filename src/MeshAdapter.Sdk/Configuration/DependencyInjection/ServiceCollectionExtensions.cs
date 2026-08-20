@@ -9,6 +9,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
@@ -113,6 +114,9 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+
+        // Shared by every SFTP node; the singleton also holds the per-server concurrency limit.
+        services.AddSingleton<ISftpSessionFactory, SshNetSftpSessionFactory>();
 
         // Register CommunicationServicesClient for DeployDataFlow node
         services.AddOptions<CommunicationServiceClientOptions>()

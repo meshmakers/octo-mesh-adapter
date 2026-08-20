@@ -201,6 +201,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
     }
 
+    public static Exception SftpHostKeyMismatch(string host, string expectedFingerprint, string presentedFingerprint)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"Host key of '{host}' does not match the configured fingerprint. Expected '{expectedFingerprint}', server presented '{presentedFingerprint}'. Update HostKeyFingerprint in the server configuration if the key was rotated deliberately.");
+    }
+
     public static Exception BinaryNotFound(INodeContext nodeContext, string rtId)
     {
         return new MeshAdapterPipelineExecutionException(

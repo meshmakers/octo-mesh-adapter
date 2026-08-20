@@ -1,4 +1,4 @@
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Shape of the tenant GlobalConfiguration entry that the SFTP nodes reference by name.

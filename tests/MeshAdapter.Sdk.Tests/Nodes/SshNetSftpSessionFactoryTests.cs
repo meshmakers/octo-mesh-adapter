@@ -1,7 +1,7 @@
 using Meshmakers.Octo.Sdk.MeshAdapter;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
-namespace MeshAdapter.Sdk.Tests.Nodes.Sftp;
+namespace MeshAdapter.Sdk.Tests.Nodes;
 
 /// <summary>
 /// Only the guards that run before a socket is opened are unit tested here. Everything past

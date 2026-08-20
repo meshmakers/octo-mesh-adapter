@@ -1,7 +1,7 @@
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Resolves the named GlobalConfiguration entry into <see cref="SftpServerSettings" /> and

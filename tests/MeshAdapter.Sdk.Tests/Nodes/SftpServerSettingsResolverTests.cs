@@ -4,9 +4,9 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
-namespace MeshAdapter.Sdk.Tests.Nodes.Sftp;
+namespace MeshAdapter.Sdk.Tests.Nodes;
 
 public class SftpServerSettingsResolverTests : NodeTestBase
 {

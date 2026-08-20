@@ -1,4 +1,4 @@
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// One entry of a remote directory listing.

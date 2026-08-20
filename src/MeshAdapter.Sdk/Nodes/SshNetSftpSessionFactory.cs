@@ -3,7 +3,7 @@ using System.Text;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// SSH.NET implementation of <see cref="ISftpSessionFactory" />. One semaphore per server

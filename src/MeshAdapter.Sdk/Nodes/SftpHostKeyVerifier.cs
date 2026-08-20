@@ -1,4 +1,4 @@
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Compares a configured host key fingerprint against the one a server presented. Base64 is

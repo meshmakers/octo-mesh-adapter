@@ -1,6 +1,6 @@
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
-namespace MeshAdapter.Sdk.Tests.Nodes.Sftp;
+namespace MeshAdapter.Sdk.Tests.Nodes;
 
 public class SftpHostKeyVerifierTests
 {

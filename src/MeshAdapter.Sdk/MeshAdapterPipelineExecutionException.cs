@@ -201,6 +201,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
     }
 
+    public static Exception CannotDecodeContent(INodeContext nodeContext, string encodingName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Downloaded content is not valid '{encodingName}'. Set the correct encoding, or switch OnEncodingError to Replace to accept a lossy read.");
+    }
+
     public static Exception FilePatternNotConfigured(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

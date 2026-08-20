@@ -207,6 +207,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Downloaded content is not valid '{encodingName}'. Set the correct encoding, or switch OnEncodingError to Replace to accept a lossy read.");
     }
 
+    public static Exception NoRemotePathSpecified(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No remote path specified. Set either 'remotePath' or 'remotePathPath'.");
+    }
+
     public static Exception FilePatternNotConfigured(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

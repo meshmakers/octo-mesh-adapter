@@ -72,18 +72,21 @@ public class SftpListNodeTests : NodeTestBase
     {
         A.CallTo(() => _session.List(RemoteDir)).Returns(new List<SftpEntry>
         {
-            File("AR00002.TXT"),
+            File("ARa.TXT"),
             File("BE00001.txt"),
-            File("AR00001.TXT"),
-            new("subdir", "/subdir", true, 0, DateTime.UtcNow.AddHours(-1))
+            File("AR_1.TXT"),
+            // Matches the pattern too, so only the directory check can keep it out.
+            new("AR_archive.TXT", "/AR_archive.TXT", true, 0, DateTime.UtcNow.AddHours(-1))
         });
 
         var emitted = await RunAsync(Config());
 
         Assert.NotNull(emitted);
         Assert.Equal(2, emitted!.Count);
-        Assert.Equal("AR00001.TXT", emitted[0]!["name"]!.GetValue<string>());
-        Assert.Equal("AR00002.TXT", emitted[1]!["name"]!.GetValue<string>());
+        // '_' (0x5F) sorts before 'a' (0x61) ordinally; a culture-aware comparer puts the
+        // punctuation elsewhere, so this pair is what pins StringComparer.Ordinal.
+        Assert.Equal("AR_1.TXT", emitted[0]!["name"]!.GetValue<string>());
+        Assert.Equal("ARa.TXT", emitted[1]!["name"]!.GetValue<string>());
     }
 
     [Fact]
@@ -146,6 +149,25 @@ public class SftpListNodeTests : NodeTestBase
         Assert.Equal(firstStamp, secondStamp);
         Assert.Equal(lastWrite,
             DateTime.Parse(firstStamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Utc)]
+    [InlineData(DateTimeKind.Unspecified)]
+    [InlineData(DateTimeKind.Local)]
+    public async Task ProcessObjectAsync_EmitsTheSameInstantRegardlessOfKind(DateTimeKind kind)
+    {
+        var lastWrite = DateTime.SpecifyKind(
+            new DateTime(2026, 8, 20, 11, 27, 35, DateTimeKind.Unspecified).AddTicks(8850000), kind);
+        A.CallTo(() => _session.List(RemoteDir)).Returns(new List<SftpEntry> { File("AR00001.TXT", lastWrite) });
+
+        var emitted = await RunAsync(Config());
+
+        // The round-trip specifier renders a Local value with a daylight-saving-dependent
+        // offset and an Unspecified one with no zone at all. A consumer builds a file identity
+        // from this string, so the same instant has to render identically either way, or the
+        // identity silently changes and nothing counts as processed any more.
+        Assert.Equal("2026-08-20T11:27:35.8850000Z", emitted![0]!["lastWriteTimeUtc"]!.GetValue<string>());
     }
 
     [Fact]

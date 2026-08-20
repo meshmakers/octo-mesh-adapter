@@ -61,9 +61,14 @@ public class SftpListNode(
                 ["name"] = entry.Name,
                 ["fullPath"] = entry.FullPath,
                 ["length"] = entry.Length,
-                // Round-trip format on purpose: a consumer derives a file identity from this
-                // string, so it has to read the same on every listing of an unchanged file.
-                ["lastWriteTimeUtc"] = entry.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture),
+                // Spelled out rather than the round-trip specifier, which renders according to
+                // the value's Kind: a Local value would carry a daylight-saving-dependent
+                // offset and an Unspecified one no zone at all. A consumer derives a file
+                // identity from this string, so the same instant must render identically or
+                // the identity changes underneath it and nothing counts as processed any more.
+                // The value is UTC by contract, which is what the property name states.
+                ["lastWriteTimeUtc"] = entry.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ",
+                    CultureInfo.InvariantCulture),
                 // Where the element came from, so a consumer can scope its own bookkeeping
                 // without repeating these three values in its own configuration. A JsonNode
                 // belongs to one parent, so every element builds its own object.

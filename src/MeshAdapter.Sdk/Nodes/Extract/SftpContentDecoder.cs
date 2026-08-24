@@ -21,7 +21,7 @@ internal static class SftpContentDecoder
 
         try
         {
-            return strict.GetString(content);
+            return StripByteOrderMark(strict.GetString(content));
         }
         catch (DecoderFallbackException)
         {
@@ -34,7 +34,22 @@ internal static class SftpContentDecoder
                 "Content is not valid '{0}'; undecodable bytes were replaced. Check the encoding option against what the source system writes.",
                 encodingName);
 
-            return SftpUploadEncoding.Resolve(encodingName).GetString(content);
+            return StripByteOrderMark(SftpUploadEncoding.Resolve(encodingName).GetString(content));
         }
+    }
+
+    /// <summary>
+    /// Drops a leading byte-order mark. A mark is valid UTF-8, so nothing on the decode path
+    /// reports it - kept, it travels on as an invisible first character and turns a downstream
+    /// header comparison or split into a mismatch that reads like bad data.
+    /// <para />
+    /// Applied to the decoded string rather than to the bytes, so it only ever fires for an
+    /// encoding that actually produces U+FEFF. Under a single-byte code page the same three
+    /// bytes are three ordinary characters, and reading them as a mark would be guessing that
+    /// the operator picked the wrong encoding.
+    /// </summary>
+    private static string StripByteOrderMark(string text)
+    {
+        return text.Length > 0 && text[0] == '\uFEFF' ? text[1..] : text;
     }
 }

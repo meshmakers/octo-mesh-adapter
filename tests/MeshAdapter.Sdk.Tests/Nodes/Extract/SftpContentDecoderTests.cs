@@ -61,6 +61,59 @@ public class SftpContentDecoderTests : NodeTestBase
     }
 
     [Fact]
+    public void Decode_Utf8WithByteOrderMark_DropsTheMark()
+    {
+        var (nodeContext, logger) = Prepare();
+        // A BOM is valid UTF-8, so neither the strict pass nor OnEncodingError sees anything
+        // wrong with it: kept, it would ride along as an invisible first character and turn a
+        // downstream header comparison or split into a silent mismatch.
+        var bytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat("Name;Value"u8.ToArray()).ToArray();
+
+        var text = SftpContentDecoder.Decode(bytes, "utf-8", EncodingErrorHandling.Fail, nodeContext);
+
+        Assert.Equal("Name;Value", text);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustNotHaveHappened();
+    }
+
+    [Fact]
+    public void Decode_Utf8WithByteOrderMarkAndUndecodableBytes_DropsTheMarkOnTheLenientPass()
+    {
+        var (nodeContext, _) = Prepare();
+        var bytes = new byte[] { 0xEF, 0xBB, 0xBF, 0x47, 0xFC, 0x73 };
+
+        var text = SftpContentDecoder.Decode(bytes, "utf-8", EncodingErrorHandling.Replace, nodeContext);
+
+        // The lenient pass decodes a second time, so it has to strip the mark as well.
+        Assert.Equal("G�s", text);
+    }
+
+    [Fact]
+    public void Decode_ContentWithNoMark_KeepsItsFirstCharacter()
+    {
+        var (nodeContext, _) = Prepare();
+
+        var text = SftpContentDecoder.Decode("Name;Value"u8.ToArray(), "utf-8", EncodingErrorHandling.Fail,
+            nodeContext);
+
+        Assert.Equal("Name;Value", text);
+    }
+
+    [Fact]
+    public void Decode_MarkBytesUnderASingleByteCodePage_AreLeftAlone()
+    {
+        var (nodeContext, _) = Prepare();
+        var bytes = new byte[] { 0xEF, 0xBB, 0xBF, 0x41 };
+
+        var text = SftpContentDecoder.Decode(bytes, "iso-8859-1", EncodingErrorHandling.Fail, nodeContext);
+
+        // Under a single-byte code page those three bytes are three ordinary characters, not a
+        // mark. Reading them as one would be guessing that the operator picked the wrong
+        // encoding, which is a decision only they can make.
+        Assert.Equal("ï»¿A", text);
+    }
+
+    [Fact]
     public void Decode_ValidUtf8_NeedsNoReplacement()
     {
         var (nodeContext, logger) = Prepare();

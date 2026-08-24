@@ -488,11 +488,40 @@ Downloads exactly one file and writes its decoded content to the target path. Re
 | `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
 | `Encoding` | string | Encoding the remote file is written in, default `utf-8`; unknown names are rejected when the configuration is bound |
 | `OnEncodingError` | enum | `Replace` (default): undecodable bytes become the replacement character and a warning is logged. `Fail`: the node aborts |
+| `MaxFileSizeBytes` | long | Largest file this node will read, default `104857600` (100 MiB). A larger file fails this node only |
 | `TargetPath` | string | Where the decoded content is written |
 
 **Features**:
 - One session per file, meant to run inside a `ForEach@1` over an `SftpList@1` result
 - No dry-run branch: reading has no side effects and the downstream chain must see the content
+- A leading UTF-8 byte-order mark is dropped from the decoded content. A mark is valid UTF-8, so nothing on the decode path reports it; kept, it rides along as an invisible first character and turns a downstream header comparison or split into a silent mismatch. Under a single-byte code page the same bytes are ordinary characters and are left alone
+- `MaxFileSizeBytes` bounds what the remote side can make this adapter allocate: the file is held in memory and then decoded to a string, so the peak is roughly three times the file. The size is checked against the server's own report before anything is transferred and again while the bytes arrive, so a file that grows in between cannot get past it. There is no unlimited setting; raise the value only as far as the pod's memory limit allows
+
+##### Wiring `SftpList@1` into `SftpDownload@1`
+
+`ForEach@1` seeds the current element under its `keyPath`, which defaults to `$.key`. `remotePathPath` has to name that same path — a guessed one such as `$.current.fullPath` resolves to nothing and fails every iteration with `ValueNotSet`:
+
+```yaml
+  - type: SftpList@1
+    serverConfiguration: LkvSftp
+    remoteDirectory: /out
+    filePattern: AR*TXT
+    targetPath: $.files
+
+  - type: ForEach@1
+    iterationPath: $.files
+    targetPath: $.loopResult          # NEVER omit: default "$" replaces the document root
+    maxDegreeOfParallelism: 1         # NEVER omit: default 0 = Environment.ProcessorCount
+    transformations:
+      - type: SftpDownload@1
+        serverConfiguration: LkvSftp
+        remotePathPath: $.key.fullPath
+        targetPath: $.key.content
+```
+
+Setting `keyPath` explicitly is the safer habit — `keyPath: $.current` then pairs with `remotePathPath: $.current.fullPath`. The two always move together.
+
+`maxDegreeOfParallelism` also decides how many files are read at once, and each iteration opens its own session: keep it at or below the server configuration's `MaxConcurrentConnections`, or the extra iterations only queue on the slot semaphore.
 
 ---
 
@@ -774,7 +803,18 @@ All three SFTP nodes resolve their connection from the same global configuration
 }
 ```
 
-`Password` or `PrivateKey` must be set. `MaxConcurrentConnections` bounds how many sessions are open against that server at a time; the counters live on the ETL context, so a redeployed pipeline picks up a changed limit. The three timeout values are optional and default to SSH.NET's own behaviour: 30 seconds to connect, and no limit at all on an individual listing, download or upload, nor on waiting for a free slot. Leaving them at zero therefore keeps a server that accepts the connection and then stalls holding its slot until the process restarts, which is why a server with predictable transfer sizes should set them. `HostKeyFingerprint` is the SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix; when it is set, a server presenting a different key is refused. When it is absent, any host key is accepted, which is how every release before this option behaved.
+`Password` or `PrivateKey` must be set. `MaxConcurrentConnections` bounds how many sessions are open against that server at a time; the counters live on the ETL context, so a redeployed pipeline picks up a changed limit.
+
+> **The last four keys are not usable yet.** The CK type `System.Communication/SftpConfiguration` declares only `Host`, `Port`, `Username`, `Password`, `PrivateKey`, `PrivateKeyPassphrase` and `MaxConcurrentConnections`, and it is `isFinal`, so no subtype can extend it. An attribute the type does not declare never reaches the serialized entity the adapter reads, so `ConnectTimeoutSeconds`, `OperationTimeoutSeconds`, `WaitForSlotTimeoutSeconds` and `HostKeyFingerprint` stay at their defaults no matter what is written into the entry. **Today's effective behaviour is therefore: any host key is accepted, no per-request timeout, and an unbounded wait for a free slot** — the same behaviour as before these options existed. They become live once the CK type in `octo-communication-controller-services` declares them as optional attributes (a CK version bump and a catalog release); the adapter side is complete and waits on that. `MaxConcurrentConnections` took exactly this route.
+
+The values mean, once they are reachable:
+
+- `ConnectTimeoutSeconds` — seconds to wait for the connection to be established. Zero keeps SSH.NET's default of 30 seconds.
+- `OperationTimeoutSeconds` — seconds SSH.NET waits on **one protocol request**, not on a listing, download or upload as a whole. A transfer is many requests, so a server that answers each one slowly stays inside the limit however long the file takes; what the value stops is a request that never comes back. Zero keeps SSH.NET's default of no limit at all, where one stalled request holds the concurrency slot until the process restarts.
+- `WaitForSlotTimeoutSeconds` — seconds to wait for a free slot of `MaxConcurrentConnections` before failing. Zero waits indefinitely.
+- `HostKeyFingerprint` — SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix. When set, a server presenting a different key is refused. When absent, any host key is accepted.
+
+All three timeouts are rejected when the settings are resolved if they are negative or beyond 2 147 483 seconds (about 24.8 days), which is the largest millisecond count the underlying timers accept.
 
 
 ### Trigger Nodes

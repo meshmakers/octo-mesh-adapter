@@ -30,7 +30,7 @@ public class SftpListNodeTests : NodeTestBase
         A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
             .Returns(new SftpServerSettings { Host = "sftp.example.com", Username = "user", Password = "secret" });
         A.CallTo(() => _sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
-            A<CancellationToken>._))
+            A<INodeContext>._, A<CancellationToken>._))
             .Returns(Task.FromResult(_session));
     }
 
@@ -247,5 +247,25 @@ public class SftpListNodeTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains("filePattern", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_EmptyRemoteDirectory_ThrowsBeforeConnecting(string remoteDirectory)
+    {
+        var config = Config();
+        config.RemoteDirectory = remoteDirectory;
+        var (dataContext, nodeContext, next) = PrepareTest<SftpListNodeConfiguration>(config);
+        var node = new SftpListNode(next, _etlContext, _sessionFactory);
+
+        // 'required' does not survive the pipeline deserializer, which is why the file pattern
+        // has a runtime guard. The directory has the same gap and would otherwise reach
+        // SSH.NET, where an empty path comes back as a raw library error.
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("remoteDirectory", ex.Message);
+        A.CallTo(() => _sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+            A<INodeContext>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 }

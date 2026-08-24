@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Renci.SshNet.Common;
@@ -12,8 +15,21 @@ namespace MeshAdapter.Sdk.Tests.Nodes;
 /// them needs a live SFTP server: the connection behaviour is covered by the SftpUpload node
 /// tests running against a faked session, and by the staging verification.
 /// </summary>
-public class SshNetSftpSessionFactoryTests
+public class SshNetSftpSessionFactoryTests : NodeTestBase
 {
+    private INodeContext NodeContext()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = "sftp-server-1",
+            RemoteDirectory = "/out",
+            FileName = "x.txt",
+            Path = "$.content"
+        };
+        var (_, nodeContext, _) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        return nodeContext;
+    }
+
     private static SftpServerSettings Settings(int maxConcurrentConnections)
     {
         return new SftpServerSettings
@@ -45,7 +61,7 @@ public class SshNetSftpSessionFactoryTests
         // has to live on the ETL context rather than on the factory, so the limit is scoped
         // the way every other node in this repository scopes it.
         await Assert.ThrowsAnyAsync<Exception>(
-            () => factory.ConnectAsync(SettingsWithBrokenKey(), "sftp-server-1", etlContext));
+            () => factory.ConnectAsync(SettingsWithBrokenKey(), "sftp-server-1", etlContext, NodeContext()));
 
         Assert.True(properties.ContainsKey("SftpSessionFactory.Semaphores"));
         var semaphores = Assert.IsType<ConcurrentDictionary<string, SemaphoreSlim>>(
@@ -124,7 +140,7 @@ public class SshNetSftpSessionFactoryTests
         };
 
         var translated = SshNetSftpSessionFactory.TranslateConnectFailure(
-            new SshConnectionException("Host key could not be verified."), settings, outcome);
+            new SshConnectionException("Host key could not be verified."), settings, outcome, NodeContext());
 
         Assert.IsType<MeshAdapterPipelineExecutionException>(translated);
         Assert.Contains("kSuxKMWLxOLE3nn3TxmXvJvI7NrHkGDhAo9SPHt9YQg", translated.Message);
@@ -138,7 +154,7 @@ public class SshNetSftpSessionFactoryTests
         var original = new SshConnectionException("Connection refused.");
 
         var translated = SshNetSftpSessionFactory.TranslateConnectFailure(original, settings,
-            new SshNetSftpSessionFactory.HostKeyOutcome());
+            new SshNetSftpSessionFactory.HostKeyOutcome(), NodeContext());
 
         Assert.Same(original, translated);
     }
@@ -149,13 +165,45 @@ public class SshNetSftpSessionFactoryTests
         const string expected = "kSuxKMWLxOLE3nn3TxmXvJvI7NrHkGDhAo9SPHt9YQg";
         const string presented = "2Fx1PLbtSbXBRCGCXFYRVJHhWkmB4CvKjTuIhFR2hAo";
 
-        var ex = MeshAdapterPipelineExecutionException.SftpHostKeyMismatch("sftp.example.com", expected, presented);
+        var nodeContext = NodeContext();
+        var ex = MeshAdapterPipelineExecutionException.SftpHostKeyMismatch(nodeContext, "sftp.example.com", expected,
+            presented);
 
         // An operator has to be able to tell a deliberately rotated key from the wrong server
         // without reproducing the connection by hand.
         Assert.Contains("sftp.example.com", ex.Message);
         Assert.Contains(expected, ex.Message);
         Assert.Contains(presented, ex.Message);
+        // A flow may hold several SFTP nodes against the same server. Without the node path
+        // the message names the host but not the step that reached it.
+        Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SlotWaitTimesOut_NamesTheNodeThatWasWaiting()
+    {
+        var factory = new SshNetSftpSessionFactory();
+        var settings = new SftpServerSettings
+        {
+            Host = "sftp.example.com",
+            Username = "user",
+            Password = "secret",
+            MaxConcurrentConnections = 1,
+            WaitForSlotTimeoutSeconds = 1
+        };
+        var etlContext = EtlContext();
+        var nodeContext = NodeContext();
+
+        // Take the only slot and never give it back, so the second caller runs into the wait.
+        var semaphores = new ConcurrentDictionary<string, SemaphoreSlim>();
+        semaphores["sftp-server-1"] = new SemaphoreSlim(0, 1);
+        etlContext.Properties["SftpSessionFactory.Semaphores"] = semaphores;
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => factory.ConnectAsync(settings, "sftp-server-1", etlContext, nodeContext));
+
+        Assert.Contains("sftp-server-1", ex.Message);
+        Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
     }
 
     [Fact]
@@ -175,14 +223,63 @@ public class SshNetSftpSessionFactoryTests
         // hand out a fresh slot and the test could never see a leak.
         var etlContext = EtlContext();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1", etlContext));
+        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1", etlContext, NodeContext()));
 
         // With a leaked slot the second attempt would wait forever instead of failing.
-        var second = factory.ConnectAsync(settings, "sftp-server-1", etlContext);
+        var second = factory.ConnectAsync(settings, "sftp-server-1", etlContext, NodeContext());
         var finished = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
 
         Assert.Same(second, finished);
         await Assert.ThrowsAnyAsync<Exception>(() => second);
+    }
+
+    [Fact]
+    public void ReadCapped_ContentWithinTheCap_IsReturnedWhole()
+    {
+        var content = new byte[200_000];
+        Random.Shared.NextBytes(content);
+
+        var read = SshNetSftpSessionFactory.ReadCapped(new MemoryStream(content), "/x", content.Length, content.Length);
+
+        // Larger than one chunk, so this also pins that the loop reassembles the pieces in order.
+        Assert.Equal(content, read);
+    }
+
+    [Fact]
+    public void ReadCapped_ContentExactlyAtTheCap_IsAccepted()
+    {
+        var content = new byte[1024];
+
+        var read = SshNetSftpSessionFactory.ReadCapped(new MemoryStream(content), "/x", 1024, 1024);
+
+        // The cap is what is still allowed, not the first value refused.
+        Assert.Equal(1024, read.Length);
+    }
+
+    [Fact]
+    public void ReadCapped_ContentPastTheCap_ThrowsWithoutReadingItAll()
+    {
+        var content = new byte[500_000];
+
+        var ex = Assert.Throws<SftpFileTooLargeException>(
+            () => SshNetSftpSessionFactory.ReadCapped(new MemoryStream(content), "/huge.bin", 100_000, 500_000));
+
+        Assert.Equal("/huge.bin", ex.RemotePath);
+        Assert.Equal(100_000, ex.MaxBytes);
+        // No size: this is the file that outgrew what the server reported, so there is no
+        // trustworthy number to put in the message.
+        Assert.Null(ex.Size);
+    }
+
+    [Fact]
+    public void ReadCapped_ServerUnderreportedTheSize_StillStopsAtTheCap()
+    {
+        var content = new byte[300_000];
+
+        // The stat said 10 bytes and the stream delivers 300 000. Sizing the buffer from that
+        // claim is fine; bounding the read by it would hand the remote side the decision.
+        Assert.Throws<SftpFileTooLargeException>(
+            () => SshNetSftpSessionFactory.ReadCapped(new MemoryStream(content), "/liar.bin", 100_000, 10));
     }
 
     [Theory]
@@ -192,8 +289,11 @@ public class SshNetSftpSessionFactoryTests
     {
         var factory = new SshNetSftpSessionFactory();
 
+        var nodeContext = NodeContext();
+
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
-            () => factory.ConnectAsync(Settings(value), "sftp-server-1", EtlContext()));
+            () => factory.ConnectAsync(Settings(value), "sftp-server-1", EtlContext(), nodeContext));
         Assert.Contains("sftp-server-1", ex.Message);
+        Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
     }
 }

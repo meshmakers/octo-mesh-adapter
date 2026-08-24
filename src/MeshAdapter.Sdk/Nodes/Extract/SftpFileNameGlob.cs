@@ -20,9 +20,23 @@ internal static class SftpFileNameGlob
     private const RegexOptions MatchOptions =
         RegexOptions.NonBacktracking | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
 
+    /// <summary>
+    /// Translates a pattern into the matcher a listing is filtered with. Built once per
+    /// listing rather than per entry: the pattern is the same for every entry, and a directory
+    /// with thousands of files would otherwise re-escape and re-parse it thousands of times.
+    /// </summary>
+    internal static Regex Compile(string pattern)
+    {
+        return new Regex(@"\A" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + @"\z",
+            MatchOptions);
+    }
+
+    /// <summary>
+    /// Matches a single name against a pattern. Builds the matcher for this one call, so
+    /// anything filtering more than one name takes <see cref="Compile" /> and keeps the result.
+    /// </summary>
     internal static bool Matches(string fileName, string pattern)
     {
-        var regex = @"\A" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + @"\z";
-        return Regex.IsMatch(fileName, regex, MatchOptions);
+        return Compile(pattern).IsMatch(fileName);
     }
 }

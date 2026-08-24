@@ -1,4 +1,29 @@
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
+
+/// <summary>
+/// Raised when a remote file is larger than the caller allowed. Carries the numbers rather
+/// than a finished sentence so the node can name the configuration property the operator has
+/// to raise, which this layer does not know about.
+/// </summary>
+/// <param name="remotePath">Path of the file that was refused</param>
+/// <param name="size">Size the server reported, or null when the file outgrew the cap mid-read</param>
+/// <param name="maxBytes">Cap that was exceeded</param>
+public sealed class SftpFileTooLargeException(string remotePath, long? size, long maxBytes)
+    : Exception(size is null
+        ? $"Remote file '{remotePath}' exceeds the {maxBytes} byte(s) allowed."
+        : $"Remote file '{remotePath}' is {size} byte(s), which exceeds the {maxBytes} byte(s) allowed.")
+{
+    /// <summary>Path of the file that was refused.</summary>
+    public string RemotePath { get; } = remotePath;
+
+    /// <summary>Size the server reported, or null when the file outgrew the cap mid-read.</summary>
+    public long? Size { get; } = size;
+
+    /// <summary>Cap that was exceeded.</summary>
+    public long MaxBytes { get; } = maxBytes;
+}
 
 /// <summary>
 /// One entry of a remote directory listing.
@@ -24,8 +49,12 @@ public interface ISftpSession : IDisposable
     /// <summary>Lists a remote directory, files and directories alike.</summary>
     IReadOnlyList<SftpEntry> List(string remoteDirectory);
 
-    /// <summary>Reads a remote file completely into memory.</summary>
-    byte[] Download(string remotePath);
+    /// <summary>
+    /// Reads a remote file completely into memory. The file size decides how much memory the
+    /// adapter allocates, so the caller states an upper bound: a file past it is refused with
+    /// <see cref="SftpFileTooLargeException" /> instead of being read.
+    /// </summary>
+    byte[] Download(string remotePath, long maxBytes);
 
     /// <summary>Writes a stream to a remote path, overwriting an existing file.</summary>
     void Upload(Stream content, string remotePath);
@@ -49,8 +78,9 @@ public interface ISftpSessionFactory
     /// <param name="settings">Resolved connection settings</param>
     /// <param name="serverConfigurationName">Name the concurrency limit is tracked under</param>
     /// <param name="etlContext">The ETL context holding the slot counters</param>
+    /// <param name="nodeContext">The node context, so a connection failure names the step it came from</param>
     /// <param name="cancellationToken">Cancels the wait for a free slot</param>
     /// <returns>The open session</returns>
     Task<ISftpSession> ConnectAsync(SftpServerSettings settings, string serverConfigurationName,
-        IMeshEtlContext etlContext, CancellationToken cancellationToken = default);
+        IMeshEtlContext etlContext, INodeContext nodeContext, CancellationToken cancellationToken = default);
 }

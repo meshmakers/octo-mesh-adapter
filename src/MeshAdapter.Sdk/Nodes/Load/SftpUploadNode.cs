@@ -54,18 +54,19 @@ public class SftpUploadNode(
                     encoding = c.Encoding,
                     onEncodingError = c.OnEncodingError.ToString()
                 });
-                await next(dataContext, nodeContext);
-                return;
             }
+            else
+            {
+                // Get upload stream
+                await using var uploadStream = await GetUploadStreamAsync(c, dataContext, nodeContext);
 
-            // Get upload stream
-            await using var uploadStream = await GetUploadStreamAsync(c, dataContext, nodeContext);
-
-            // Connect and upload. The session holds the server's concurrency slot until it is
-            // disposed, so it stays in a using scope.
-            using var session = await sessionFactory.ConnectAsync(serverConfiguration, c.ServerConfiguration, etlContext);
-            session.EnsureDirectory(c.RemoteDirectory);
-            session.Upload(uploadStream, remotePath);
+                // Connect and upload. The session holds the server's concurrency slot until it
+                // is disposed, so it stays in a using scope.
+                using var session = await sessionFactory.ConnectAsync(serverConfiguration, c.ServerConfiguration,
+                    etlContext, nodeContext);
+                session.EnsureDirectory(c.RemoteDirectory);
+                session.Upload(uploadStream, remotePath);
+            }
         }
         catch (MeshAdapterPipelineExecutionException)
         {
@@ -76,6 +77,10 @@ public class SftpUploadNode(
             throw MeshAdapterPipelineExecutionException.CannotUploadViaSftp(nodeContext, e);
         }
 
+        // Outside the try, and reached from both branches: the catch above speaks for the
+        // upload, so a failure further down the chain must not come back as "Cannot upload
+        // file via SFTP". A dry run took the other branch and wrote nothing, but the chain
+        // still has to see the run through.
         await next(dataContext, nodeContext);
     }
 

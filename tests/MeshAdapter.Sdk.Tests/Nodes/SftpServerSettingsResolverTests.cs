@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Common.Shared;
@@ -144,6 +145,72 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
             () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
         Assert.Contains("Seconds", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(2147484, 0, 0)]
+    [InlineData(0, 2147484, 0)]
+    [InlineData(0, 0, 2147484)]
+    public void Resolve_TimeoutBeyondWhatTheTimersAccept_Throws(int connect, int operation, int wait)
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns(new SftpServerSettings
+            {
+                Host = "sftp.example.com",
+                Username = "user",
+                Password = "secret",
+                ConnectTimeoutSeconds = connect,
+                OperationTimeoutSeconds = operation,
+                WaitForSlotTimeoutSeconds = wait
+            });
+
+        // One second past what an Int32 millisecond count holds. Left to the timers, it comes
+        // back as a bare ArgumentOutOfRangeException that names neither the property nor the
+        // configuration entry - and the connect timeout only reaches its setter once the
+        // client has been created.
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+        Assert.Contains("Seconds", ex.Message);
+        Assert.Contains(ServerConfig, ex.Message);
+    }
+
+    [Fact]
+    public void Resolve_TimeoutAtTheCeiling_IsAccepted()
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns(new SftpServerSettings
+            {
+                Host = "sftp.example.com",
+                Username = "user",
+                Password = "secret",
+                ConnectTimeoutSeconds = 2147483,
+                OperationTimeoutSeconds = 2147483,
+                WaitForSlotTimeoutSeconds = 2147483
+            });
+
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext());
+
+        Assert.Equal(2147483, settings.ConnectTimeoutSeconds);
+    }
+
+    [Fact]
+    public void Resolve_PayloadThatDoesNotFitTheShape_NamesTheNodeAndTheEntry()
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Throws(new JsonException("The JSON value could not be converted to System.Int32. Path: $.port"));
+
+        var nodeContext = NodeContext();
+
+        // Left alone, the deserializer's message reaches the run as a bare sentence about a
+        // JSON path, with nothing saying which node or which configuration entry it belongs to.
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, nodeContext));
+        Assert.Contains(ServerConfig, ex.Message);
+        Assert.Contains("System.Int32", ex.Message);
+        Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
     }
 
     [Fact]

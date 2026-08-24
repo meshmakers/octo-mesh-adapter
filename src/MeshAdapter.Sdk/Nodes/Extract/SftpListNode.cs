@@ -37,24 +37,33 @@ public class SftpListNode(
     {
         var c = nodeContext.GetNodeConfiguration<SftpListNodeConfiguration>();
 
+        // 'required' is a C# concept: the pipeline deserializer only rejects unknown
+        // properties, so a definition leaving either of these out arrives here as an empty
+        // string. Both are guarded, because the enforcement gap is the same for both and the
+        // directory would otherwise reach SSH.NET and come back as a raw path error.
+        if (string.IsNullOrWhiteSpace(c.RemoteDirectory))
+        {
+            throw MeshAdapterPipelineExecutionException.RemoteDirectoryNotConfigured(nodeContext);
+        }
+
         if (string.IsNullOrWhiteSpace(c.FilePattern))
         {
-            // 'required' is a C# concept: the pipeline deserializer only rejects unknown
-            // properties, so a definition without the pattern arrives here as an empty string.
             throw MeshAdapterPipelineExecutionException.FilePatternNotConfigured(nodeContext);
         }
 
         var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext);
         var now = DateTime.UtcNow;
+        var glob = SftpFileNameGlob.Compile(c.FilePattern);
 
         List<SftpEntry> entries;
         try
         {
-            using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext);
+            using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext,
+                nodeContext);
             entries = session.List(c.RemoteDirectory)
                 .Where(e => !e.IsDirectory)
                 .Where(e => IsPlainName(e, nodeContext))
-                .Where(e => SftpFileNameGlob.Matches(e.Name, c.FilePattern))
+                .Where(e => glob.IsMatch(e.Name))
                 // Only guard when asked to. The server's clock and this pod's clock are
                 // independent, so an unconditional comparison would drop a file whose mtime
                 // runs slightly ahead - invisibly, until the skew had passed.

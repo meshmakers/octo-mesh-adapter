@@ -10,6 +10,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// </summary>
 internal static class SftpServerSettingsResolver
 {
+    // Every one of the three ends up as a millisecond count in an Int32: SemaphoreSlim.WaitAsync
+    // and SSH.NET's own timeout properties both refuse anything beyond that. Caught here, the
+    // operator reads which property is wrong; caught there, it is a bare ArgumentOutOfRangeException
+    // - and for the connect timeout it arrives after the client was already created.
+    private const int MaxTimeoutSeconds = int.MaxValue / 1000;
+
     /// <summary>
     /// Resolves and validates the settings behind a server configuration name.
     /// </summary>
@@ -26,7 +32,20 @@ internal static class SftpServerSettingsResolver
                 nodeContext, "ServerConfiguration", serverConfigurationName);
         }
 
-        var settings = etlContext.GlobalConfiguration.GetValue<SftpServerSettings>(serverConfigurationName);
+        SftpServerSettings settings;
+        try
+        {
+            settings = etlContext.GlobalConfiguration.GetValue<SftpServerSettings>(serverConfigurationName);
+        }
+        catch (Exception e)
+        {
+            // An entry whose payload does not fit the shape - a string where a number belongs,
+            // a missing required attribute - surfaces from the deserializer as a bare message
+            // about a JSON path. Naming the node and the entry turns that into something an
+            // operator can act on without reading the adapter's source.
+            throw MeshAdapterPipelineExecutionException.InvalidSftpServerConfiguration(
+                nodeContext, serverConfigurationName, e);
+        }
 
         if (string.IsNullOrWhiteSpace(settings.PrivateKey) && string.IsNullOrWhiteSpace(settings.Password))
         {
@@ -48,23 +67,29 @@ internal static class SftpServerSettingsResolver
         if (settings.MaxConcurrentConnections <= 0)
         {
             throw MeshAdapterPipelineExecutionException.InvalidMaxConcurrentConnections(
-                serverConfigurationName, settings.MaxConcurrentConnections);
+                nodeContext, serverConfigurationName, settings.MaxConcurrentConnections);
         }
 
         // Zero means "leave it as it is", so a negative value is a mistake rather than a
         // synonym for it. Reading it as zero would leave an operator believing a limit applies.
-        RejectNegative(settings.ConnectTimeoutSeconds, nameof(settings.ConnectTimeoutSeconds));
-        RejectNegative(settings.OperationTimeoutSeconds, nameof(settings.OperationTimeoutSeconds));
-        RejectNegative(settings.WaitForSlotTimeoutSeconds, nameof(settings.WaitForSlotTimeoutSeconds));
+        CheckTimeout(settings.ConnectTimeoutSeconds, nameof(settings.ConnectTimeoutSeconds));
+        CheckTimeout(settings.OperationTimeoutSeconds, nameof(settings.OperationTimeoutSeconds));
+        CheckTimeout(settings.WaitForSlotTimeoutSeconds, nameof(settings.WaitForSlotTimeoutSeconds));
 
         return settings;
 
-        void RejectNegative(int value, string propertyName)
+        void CheckTimeout(int value, string propertyName)
         {
             if (value < 0)
             {
                 throw MeshAdapterPipelineExecutionException.NegativeSftpTimeout(
                     nodeContext, serverConfigurationName, propertyName, value);
+            }
+
+            if (value > MaxTimeoutSeconds)
+            {
+                throw MeshAdapterPipelineExecutionException.SftpTimeoutTooLarge(
+                    nodeContext, serverConfigurationName, propertyName, value, MaxTimeoutSeconds);
             }
         }
     }

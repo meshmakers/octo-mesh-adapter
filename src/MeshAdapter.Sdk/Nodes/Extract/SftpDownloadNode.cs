@@ -35,6 +35,11 @@ public class SftpDownloadNode(
             throw MeshAdapterPipelineExecutionException.NoRemotePathSpecified(nodeContext);
         }
 
+        if (c.MaxFileSizeBytes <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidMaxFileSizeBytes(nodeContext, c.MaxFileSizeBytes);
+        }
+
         var remotePath = string.IsNullOrWhiteSpace(c.RemotePathPath)
             ? c.RemotePath
             : dataContext.Get<string>(c.RemotePathPath);
@@ -49,12 +54,20 @@ public class SftpDownloadNode(
         byte[] content;
         try
         {
-            using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext);
-            content = session.Download(remotePath);
+            using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext,
+                nodeContext);
+            content = session.Download(remotePath, c.MaxFileSizeBytes);
         }
         catch (MeshAdapterPipelineExecutionException)
         {
             throw;
+        }
+        catch (SftpFileTooLargeException e)
+        {
+            // The session knows the numbers but not which node configured the limit, so the
+            // property an operator has to raise is named here.
+            throw MeshAdapterPipelineExecutionException.SftpFileTooLarge(nodeContext, e.RemotePath, e.Size,
+                e.MaxBytes);
         }
         catch (Exception e)
         {

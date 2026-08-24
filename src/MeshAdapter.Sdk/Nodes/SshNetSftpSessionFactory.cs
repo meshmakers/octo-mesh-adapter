@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 
@@ -19,12 +20,12 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
 
     /// <inheritdoc />
     public async Task<ISftpSession> ConnectAsync(SftpServerSettings settings, string serverConfigurationName,
-        IMeshEtlContext etlContext, CancellationToken cancellationToken = default)
+        IMeshEtlContext etlContext, INodeContext nodeContext, CancellationToken cancellationToken = default)
     {
         if (settings.MaxConcurrentConnections <= 0)
         {
             throw MeshAdapterPipelineExecutionException.InvalidMaxConcurrentConnections(
-                serverConfigurationName, settings.MaxConcurrentConnections);
+                nodeContext, serverConfigurationName, settings.MaxConcurrentConnections);
         }
 
         var semaphore = GetOrCreateSemaphore(etlContext, serverConfigurationName, settings);
@@ -37,7 +38,7 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                     cancellationToken))
             {
                 throw MeshAdapterPipelineExecutionException.SftpSlotWaitTimedOut(
-                    serverConfigurationName, settings.WaitForSlotTimeoutSeconds);
+                    nodeContext, serverConfigurationName, settings.WaitForSlotTimeoutSeconds);
             }
         }
         else
@@ -62,8 +63,11 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             // of the process, while a client that fails to dispose costs one socket.
             try
             {
-                client?.Dispose();
-                privateKeyFile?.Dispose();
+                // Each disposal stands on its own: letting one throw would skip the next and
+                // replace the failure the operator has to read - a host key mismatch would
+                // surface as whatever the teardown complained about instead.
+                DisposeQuietly(client);
+                DisposeQuietly(privateKeyFile);
             }
             finally
             {
@@ -74,7 +78,7 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             // and surfaces it as a generic connection failure. Translating it here keeps the
             // library's own teardown - it sends SSH_MSG_DISCONNECT and unsubscribes its key
             // exchange handlers - while still telling the operator which key was presented.
-            var translated = TranslateConnectFailure(exception, settings, hostKey);
+            var translated = TranslateConnectFailure(exception, settings, hostKey, nodeContext);
             if (!ReferenceEquals(translated, exception))
             {
                 throw translated;
@@ -115,15 +119,69 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
     /// names both fingerprints. Any other failure is returned untouched.
     /// </summary>
     internal static Exception TranslateConnectFailure(Exception exception, SftpServerSettings settings,
-        HostKeyOutcome hostKey)
+        HostKeyOutcome hostKey, INodeContext nodeContext)
     {
         if (exception is SshConnectionException && hostKey.Refused)
         {
             return MeshAdapterPipelineExecutionException.SftpHostKeyMismatch(
-                settings.Host, settings.HostKeyFingerprint!, hostKey.Presented ?? "<unknown>");
+                nodeContext, settings.Host, settings.HostKeyFingerprint!, hostKey.Presented ?? "<unknown>");
         }
 
         return exception;
+    }
+
+    /// <summary>
+    /// Reads a stream into memory and refuses more than <paramref name="maxBytes" />.
+    /// <para />
+    /// Copied by hand rather than through <c>DownloadFile</c> or <c>ReadAllBytes</c> so the cap
+    /// holds while the bytes arrive: the size the server reported was true a moment ago, and a
+    /// file that grows in between - or a server that lies about it - would otherwise decide how
+    /// much memory this pod allocates. The reported size only sizes the buffer, which spares
+    /// the repeated doubling a growing <see cref="MemoryStream" /> would do on the way to the
+    /// same length; it is never trusted as a bound.
+    /// </summary>
+    /// <param name="source">The stream to read</param>
+    /// <param name="remotePath">Path the stream belongs to, for the error message</param>
+    /// <param name="maxBytes">Largest result that will be returned</param>
+    /// <param name="expectedSize">Size the server reported, used only to size the buffer</param>
+    /// <returns>The bytes that were read</returns>
+    internal static byte[] ReadCapped(Stream source, string remotePath, long maxBytes, long expectedSize)
+    {
+        using var buffer = new MemoryStream(expectedSize > 0 && expectedSize <= int.MaxValue
+            ? (int)expectedSize
+            : 0);
+        var chunk = new byte[81920];
+        long total = 0;
+        int read;
+
+        while ((read = source.Read(chunk, 0, chunk.Length)) > 0)
+        {
+            total += read;
+            if (total > maxBytes)
+            {
+                throw new SftpFileTooLargeException(remotePath, null, maxBytes);
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Disposes without letting a failing teardown replace the failure that caused it. Only
+    /// used on the error path, where the exception on its way out is the one worth reading.
+    /// </summary>
+    private static void DisposeQuietly(IDisposable? disposable)
+    {
+        try
+        {
+            disposable?.Dispose();
+        }
+        catch
+        {
+            // Nothing to report it to - the caller is already unwinding an error.
+        }
     }
 
     private static SemaphoreSlim GetOrCreateSemaphore(IMeshEtlContext etlContext, string serverConfigurationName,
@@ -167,17 +225,28 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                 settings.Password ?? string.Empty);
         }
 
-        if (settings.ConnectTimeoutSeconds > 0)
+        // Past this point the client exists but the caller does not hold it yet, so a failure
+        // here would leak it: its socket and its key exchange state would stay alive until the
+        // finalizer ran, once per failed attempt.
+        try
         {
-            client.ConnectionInfo.Timeout = TimeSpan.FromSeconds(settings.ConnectTimeoutSeconds);
-        }
+            if (settings.ConnectTimeoutSeconds > 0)
+            {
+                client.ConnectionInfo.Timeout = TimeSpan.FromSeconds(settings.ConnectTimeoutSeconds);
+            }
 
-        if (settings.OperationTimeoutSeconds > 0)
+            if (settings.OperationTimeoutSeconds > 0)
+            {
+                client.OperationTimeout = TimeSpan.FromSeconds(settings.OperationTimeoutSeconds);
+            }
+
+            client.HostKeyReceived += (_, e) => e.CanTrust = EvaluateHostKey(settings, e.FingerPrintSHA256, hostKey);
+        }
+        catch
         {
-            client.OperationTimeout = TimeSpan.FromSeconds(settings.OperationTimeoutSeconds);
+            DisposeQuietly(client);
+            throw;
         }
-
-        client.HostKeyReceived += (_, e) => e.CanTrust = EvaluateHostKey(settings, e.FingerPrintSHA256, hostKey);
 
         return client;
     }
@@ -193,11 +262,18 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                 .ToList();
         }
 
-        public byte[] Download(string remotePath)
+        public byte[] Download(string remotePath, long maxBytes)
         {
-            using var stream = new MemoryStream();
-            client.DownloadFile(remotePath, stream);
-            return stream.ToArray();
+            // Ask before reading. A file past the cap is then refused without a byte crossing
+            // the wire, and the message can name the size the server reported.
+            var size = client.GetAttributes(remotePath).Size;
+            if (size > maxBytes)
+            {
+                throw new SftpFileTooLargeException(remotePath, size, maxBytes);
+            }
+
+            using var remote = client.OpenRead(remotePath);
+            return ReadCapped(remote, remotePath, maxBytes, size);
         }
 
         public void Upload(Stream content, string remotePath)

@@ -195,10 +195,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: No SFTP authentication configured. Set either Password or PrivateKey in the server configuration.");
     }
 
-    public static Exception InvalidMaxConcurrentConnections(string serverConfigurationName, int value)
+    public static Exception InvalidMaxConcurrentConnections(INodeContext nodeContext, string serverConfigurationName,
+        int value)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
     }
 
     public static Exception CannotDecodeContent(INodeContext nodeContext, string encodingName)
@@ -219,10 +220,17 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: File pattern is not configured. Set 'filePattern', for example \"AR*TXT\".");
     }
 
-    public static Exception SftpSlotWaitTimedOut(string serverConfigurationName, int waitSeconds)
+    public static Exception RemoteDirectoryNotConfigured(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"SFTP server configuration '{serverConfigurationName}': no free connection slot after {waitSeconds}s. Either transfers are stalling or MaxConcurrentConnections is too low for the pipeline.");
+            $"[{nodeContext.NodePath}]: Remote directory is not configured. Set 'remoteDirectory', for example \"/out\".");
+    }
+
+    public static Exception SftpSlotWaitTimedOut(INodeContext nodeContext, string serverConfigurationName,
+        int waitSeconds)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}': no free connection slot after {waitSeconds}s. Either transfers are stalling or MaxConcurrentConnections is too low for the pipeline.");
     }
 
     public static Exception NegativeSftpTimeout(INodeContext nodeContext, string serverConfigurationName,
@@ -230,6 +238,36 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has {propertyName} = {value}. Use zero to keep the default or a positive number of seconds.");
+    }
+
+    public static Exception SftpTimeoutTooLarge(INodeContext nodeContext, string serverConfigurationName,
+        string propertyName, int value, int maximumSeconds)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has {propertyName} = {value}, which is beyond the {maximumSeconds}s the underlying timers accept. Use zero to keep the default or a smaller number of seconds.");
+    }
+
+    public static Exception InvalidSftpServerConfiguration(INodeContext nodeContext, string serverConfigurationName,
+        Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' cannot be read: {exception.Message}", exception);
+    }
+
+    public static Exception SftpFileTooLarge(INodeContext nodeContext, string remotePath, long? size, long maxBytes)
+    {
+        var reported = size is null
+            ? "outgrew that while it was being read"
+            : $"is {size} byte(s)";
+
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote file '{remotePath}' {reported}, and MaxFileSizeBytes allows {maxBytes}. The whole file is held in memory and decoded to a string, so raise MaxFileSizeBytes only as far as this adapter can afford.");
+    }
+
+    public static Exception InvalidMaxFileSizeBytes(INodeContext nodeContext, long value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: MaxFileSizeBytes must be greater than zero, but was {value}. There is no unlimited setting: the content is read into memory and decoded to a string, so an unbounded read would decide this adapter's memory from the remote side.");
     }
 
     public static Exception CannotListViaSftp(INodeContext nodeContext, Exception exception)
@@ -250,10 +288,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has a blank HostKeyFingerprint. Remove the property to connect without host key verification, or set the SHA-256 fingerprint of the expected key.");
     }
 
-    public static Exception SftpHostKeyMismatch(string host, string expectedFingerprint, string presentedFingerprint)
+    public static Exception SftpHostKeyMismatch(INodeContext nodeContext, string host, string expectedFingerprint,
+        string presentedFingerprint)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"Host key of '{host}' does not match the configured fingerprint. Expected '{expectedFingerprint}', server presented '{presentedFingerprint}'. Update HostKeyFingerprint in the server configuration if the key was rotated deliberately.");
+            $"[{nodeContext.NodePath}]: Host key of '{host}' does not match the configured fingerprint. Expected '{expectedFingerprint}', server presented '{presentedFingerprint}'. Update HostKeyFingerprint in the server configuration if the key was rotated deliberately.");
     }
 
     public static Exception BinaryNotFound(INodeContext nodeContext, string rtId)

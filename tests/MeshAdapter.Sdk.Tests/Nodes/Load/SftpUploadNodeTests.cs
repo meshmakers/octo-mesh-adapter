@@ -7,6 +7,7 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
@@ -48,7 +49,7 @@ public class SftpUploadNodeTests : NodeTestBase
         _sftpSessionFactory = A.Fake<ISftpSessionFactory>();
         _sftpSession = A.Fake<ISftpSession>();
         A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
-            A<CancellationToken>._)).Returns(Task.FromResult(_sftpSession));
+            A<INodeContext>._, A<CancellationToken>._)).Returns(Task.FromResult(_sftpSession));
     }
 
     private SftpUploadNode CreateNode(NodeDelegate next)
@@ -443,8 +444,62 @@ public class SftpUploadNodeTests : NodeTestBase
         // The concurrency slot is held by the session, so it is only handed back on dispose.
         A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>.That.Matches(
                 s => s.Host == "localhost" && s.Username == "testuser"),
-            TestServerConfig, A<IMeshEtlContext>._, A<CancellationToken>._)).MustHaveHappenedOnceExactly();
+            TestServerConfig, A<IMeshEtlContext>._, A<INodeContext>._,
+            A<CancellationToken>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _sftpSession.Dispose()).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DryRunAndDownstreamFails_DoesNotBlameTheUpload()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config,
+            executionMode: new DefaultPipelineExecutionMode { IsDryRun = true });
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._))
+            .Throws(new InvalidOperationException("the node after this one failed"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        // The catch in this node speaks for the upload. Running the rest of the chain inside
+        // it turned every downstream failure into "Cannot upload file via SFTP", pointing an
+        // operator at the one step that had done nothing at all.
+        Assert.Equal("the node after this one failed", ex.Message);
+        A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+            A<INodeContext>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DownstreamFails_DoesNotBlameTheUpload()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestContentPath, "content");
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._))
+            .Throws(new InvalidOperationException("the node after this one failed"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal("the node after this one failed", ex.Message);
     }
 
     [Fact]

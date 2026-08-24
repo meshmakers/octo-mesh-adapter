@@ -282,6 +282,65 @@ public class SshNetSftpSessionFactoryTests : NodeTestBase
             () => SshNetSftpSessionFactory.ReadCapped(new MemoryStream(content), "/liar.bin", 100_000, 10));
     }
 
+    [Fact]
+    public void DisposeSession_DisconnectThrows_StillDisposesTheClientAndTheKeyMaterial()
+    {
+        var client = new RecordingDisposable();
+        var privateKeyFile = new RecordingDisposable();
+        var semaphore = new SemaphoreSlim(0, 1);
+
+        SshNetSftpSessionFactory.DisposeSession(
+            () => throw new SshConnectionException("The connection was closed by the server."),
+            client, privateKeyFile, semaphore);
+
+        Assert.True(client.Disposed);
+        Assert.True(privateKeyFile.Disposed);
+        Assert.Equal(1, semaphore.CurrentCount);
+    }
+
+    [Fact]
+    public void DisposeSession_EveryTeardownStepThrows_SwallowsThemAllAndHandsTheSlotBack()
+    {
+        var privateKeyFile = new RecordingDisposable();
+        var semaphore = new SemaphoreSlim(0, 1);
+
+        // This runs while a using block unwinds, usually carrying the node failure the operator
+        // has to read. A teardown that throws here would replace it, and the disposals after it
+        // would never run.
+        SshNetSftpSessionFactory.DisposeSession(
+            () => throw new SshConnectionException("The connection was closed by the server."),
+            new RecordingDisposable(true), privateKeyFile, semaphore);
+
+        // The plaintext key material is released even though the client threw before it.
+        Assert.True(privateKeyFile.Disposed);
+        // A slot lost here is lost for the lifetime of the process.
+        Assert.Equal(1, semaphore.CurrentCount);
+    }
+
+    [Fact]
+    public void DisposeSession_WithoutKeyMaterial_StillHandsTheSlotBack()
+    {
+        var semaphore = new SemaphoreSlim(0, 1);
+
+        SshNetSftpSessionFactory.DisposeSession(() => { }, new RecordingDisposable(), null, semaphore);
+
+        Assert.Equal(1, semaphore.CurrentCount);
+    }
+
+    private sealed class RecordingDisposable(bool throwOnDispose = false) : IDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public void Dispose()
+        {
+            Disposed = true;
+            if (throwOnDispose)
+            {
+                throw new InvalidOperationException("Teardown failed.");
+            }
+        }
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]

@@ -169,8 +169,47 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
     }
 
     /// <summary>
-    /// Disposes without letting a failing teardown replace the failure that caused it. Only
-    /// used on the error path, where the exception on its way out is the one worth reading.
+    /// Closes a session down and hands its slot back, without letting the teardown speak up.
+    /// <para />
+    /// This runs while a <c>using</c> block unwinds, which is usually carrying the failure the
+    /// operator has to read: a server that refused the upload, a file past the size cap. A
+    /// teardown that throws there replaces that failure with a connection complaint about the
+    /// way down, and the steps behind it never run - the key material would stay in memory
+    /// because the client tripped over the socket it no longer has. So each step stands on its
+    /// own, and the slot goes back in a <c>finally</c>, since a slot lost here is lost for the
+    /// lifetime of the process while an undisposed client costs one socket.
+    /// </summary>
+    /// <param name="disconnect">Closes the connection, if one is still standing</param>
+    /// <param name="client">The client to release</param>
+    /// <param name="privateKeyFile">Parsed key material to release, if the session holds any</param>
+    /// <param name="semaphore">Counter the session took its slot from</param>
+    internal static void DisposeSession(Action disconnect, IDisposable? client, IDisposable? privateKeyFile,
+        SemaphoreSlim semaphore)
+    {
+        try
+        {
+            try
+            {
+                disconnect();
+            }
+            catch
+            {
+                // Nothing to report it to - the caller is unwinding already.
+            }
+
+            DisposeQuietly(client);
+            DisposeQuietly(privateKeyFile);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Disposes without letting a failing teardown replace the failure that caused it. Both
+    /// callers run while something else is unwinding, so whatever is already on its way out is
+    /// the exception worth reading.
     /// </summary>
     private static void DisposeQuietly(IDisposable? disposable)
     {
@@ -315,28 +354,15 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
 
             _disposed = true;
 
-            try
+            // Reading IsConnected is part of the step: it asks the session, so a connection
+            // that fell over underneath us can fail here just as the disconnect can.
+            DisposeSession(() =>
             {
-                // Disconnect and Dispose are nested so a failing disconnect - a connection
-                // dropped underneath us, for instance - still disposes the client. A plain
-                // using block gave that guarantee before this seam existed.
-                try
+                if (client.IsConnected)
                 {
-                    if (client.IsConnected)
-                    {
-                        client.Disconnect();
-                    }
+                    client.Disconnect();
                 }
-                finally
-                {
-                    client.Dispose();
-                    privateKeyFile?.Dispose();
-                }
-            }
-            finally
-            {
-                semaphore.Release();
-            }
+            }, client, privateKeyFile, semaphore);
         }
     }
 }

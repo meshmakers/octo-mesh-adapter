@@ -1,10 +1,23 @@
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Shape of the tenant GlobalConfiguration entry that the SFTP nodes reference by name.
+/// <para>
+/// Every number carries <see cref="JsonNullAsDefaultAttribute" />: the entry is the serialized CK
+/// entity, where an attribute nobody filled in arrives as a present key holding null, and a
+/// non-nullable int would reject that instead of falling back to the value declared here. Only
+/// MaxConcurrentConnections is an optional attribute of System.Communication/SftpConfiguration
+/// today - the others are annotated so that declaring one of them optional later cannot bring the
+/// failure back.
+/// </para>
 /// </summary>
 public sealed record SftpServerSettings
 {
+    private const int DefaultPort = 22;
+    private const int DefaultMaxConcurrentConnections = 3;
+
     /// <summary>
     /// Host name or address of the SFTP server
     /// </summary>
@@ -13,7 +26,8 @@ public sealed record SftpServerSettings
     /// <summary>
     /// Port of the SFTP server
     /// </summary>
-    public int Port { get; init; } = 22;
+    [JsonNullAsDefault(DefaultPort)]
+    public int Port { get; init; } = DefaultPort;
 
     /// <summary>
     /// User name to authenticate with
@@ -41,12 +55,14 @@ public sealed record SftpServerSettings
     /// the load a server actually sees is this value times the number of pipelines addressing
     /// it - the same arithmetic <c>MaxConcurrentEmails</c> has always had.
     /// </summary>
-    public int MaxConcurrentConnections { get; init; } = 3;
+    [JsonNullAsDefault(DefaultMaxConcurrentConnections)]
+    public int MaxConcurrentConnections { get; init; } = DefaultMaxConcurrentConnections;
 
     /// <summary>
     /// Seconds to wait for the connection to be established. Zero keeps SSH.NET's own default
     /// of 30 seconds; a negative value is rejected when the settings are resolved.
     /// </summary>
+    [JsonNullAsDefault(0)]
     public int ConnectTimeoutSeconds { get; init; }
 
     /// <summary>
@@ -55,6 +71,7 @@ public sealed record SftpServerSettings
     /// and then stalls holds the slot until the process restarts. Set it on a server whose
     /// transfers have a known upper bound.
     /// </summary>
+    [JsonNullAsDefault(0)]
     public int OperationTimeoutSeconds { get; init; }
 
     /// <summary>
@@ -62,6 +79,7 @@ public sealed record SftpServerSettings
     /// failing. Zero waits indefinitely, which is the behaviour of every release before this
     /// option existed.
     /// </summary>
+    [JsonNullAsDefault(0)]
     public int WaitForSlotTimeoutSeconds { get; init; }
 
     /// <summary>

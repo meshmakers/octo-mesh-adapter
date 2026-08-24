@@ -1,5 +1,6 @@
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
+using Meshmakers.Common.Shared;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -158,6 +159,28 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         Assert.Equal(22, settings.Port);
         Assert.Equal(3, settings.MaxConcurrentConnections);
         Assert.Null(settings.HostKeyFingerprint);
+    }
+
+    [Fact]
+    public void Resolve_PayloadWithNullMaxConcurrentConnections_PassesTheNonPositiveGuard()
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns("""
+                     {
+                       "host": "sftp.example.com",
+                       "username": "user",
+                       "password": "secret",
+                       "maxConcurrentConnections": null
+                     }
+                     """.Deserialize<SftpServerSettings>());
+
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext());
+
+        // Deserializing the payload and validating it are two different steps, and the second
+        // one only helps if the first produced the default: reading the unset attribute as zero
+        // would trip the non-positive guard instead of connecting.
+        Assert.Equal(3, settings.MaxConcurrentConnections);
     }
 
     [Fact]

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
@@ -8,9 +7,11 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
@@ -29,6 +30,8 @@ public class SftpUploadNodeTests : NodeTestBase
     private readonly ITenantRepository _tenantRepository;
     private readonly IOctoSession _session;
     private readonly Dictionary<string, object?> _properties;
+    private readonly ISftpSessionFactory _sftpSessionFactory;
+    private readonly ISftpSession _sftpSession;
 
     public SftpUploadNodeTests()
     {
@@ -42,11 +45,16 @@ public class SftpUploadNodeTests : NodeTestBase
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _etlContext.Properties).Returns(_properties);
         A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+
+        _sftpSessionFactory = A.Fake<ISftpSessionFactory>();
+        _sftpSession = A.Fake<ISftpSession>();
+        A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+            A<INodeContext>._, A<CancellationToken>._)).Returns(Task.FromResult(_sftpSession));
     }
 
     private SftpUploadNode CreateNode(NodeDelegate next)
     {
-        return new SftpUploadNode(next, _etlContext);
+        return new SftpUploadNode(next, _etlContext, _sftpSessionFactory);
     }
 
     #region Configuration Validation Tests
@@ -413,10 +421,10 @@ public class SftpUploadNodeTests : NodeTestBase
 
     #endregion
 
-    #region Semaphore Thread-Safety Tests
+    #region Session Handling Tests
 
     [Fact]
-    public async Task ProcessObjectAsync_StoresSemaphoreDictionaryInProperties()
+    public async Task ProcessObjectAsync_ConnectsThroughTheSessionFactoryAndDisposesTheSession()
     {
         var config = new SftpUploadNodeConfiguration
         {
@@ -429,15 +437,108 @@ public class SftpUploadNodeTests : NodeTestBase
         SetupGlobalConfig();
 
         var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
-        SetupGetSimpleValueByPath<string?>(dataContext, TestContentPath, null);
+        SetupGetSimpleValueByPath(dataContext, TestContentPath, "content");
 
-        var node = CreateNode(next);
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
-            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        // The concurrency slot is held by the session, so it is only handed back on dispose.
+        A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>.That.Matches(
+                s => s.Host == "localhost" && s.Username == "testuser"),
+            TestServerConfig, A<IMeshEtlContext>._, A<INodeContext>._,
+            A<CancellationToken>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => _sftpSession.Dispose()).MustHaveHappenedOnceExactly();
+    }
 
-        Assert.True(_properties.ContainsKey("SftpUploadNode.Semaphores"));
-        Assert.IsType<ConcurrentDictionary<string, SemaphoreSlim>>(_properties["SftpUploadNode.Semaphores"]);
+    [Fact]
+    public async Task ProcessObjectAsync_DryRunAndDownstreamFails_DoesNotBlameTheUpload()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config,
+            executionMode: new DefaultPipelineExecutionMode { IsDryRun = true });
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._))
+            .Throws(new InvalidOperationException("the node after this one failed"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        // The catch in this node speaks for the upload. Running the rest of the chain inside
+        // it turned every downstream failure into "Cannot upload file via SFTP", pointing an
+        // operator at the one step that had done nothing at all.
+        Assert.Equal("the node after this one failed", ex.Message);
+        A.CallTo(() => _sftpSessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+            A<INodeContext>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DownstreamFails_DoesNotBlameTheUpload()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestContentPath, "content");
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._))
+            .Throws(new InvalidOperationException("the node after this one failed"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal("the node after this one failed", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_StringContent_UploadsEncodedBytesToResolvedPath()
+    {
+        var config = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = TestServerConfig,
+            RemoteDirectory = TestRemoteDir,
+            FileName = TestFileName,
+            Path = TestContentPath,
+            Encoding = "iso-8859-1"
+        };
+
+        SetupGlobalConfig();
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, TestContentPath, "Grüsse");
+
+        byte[]? uploaded = null;
+        A.CallTo(() => _sftpSession.Upload(A<Stream>._, A<string>._))
+            .Invokes((Stream content, string _) =>
+            {
+                using var buffer = new MemoryStream();
+                content.CopyTo(buffer);
+                uploaded = buffer.ToArray();
+            });
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        // Creating the directory after writing into it would be useless, so the order is part
+        // of the contract rather than an accident of the implementation.
+        A.CallTo(() => _sftpSession.EnsureDirectory(TestRemoteDir)).MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => _sftpSession.Upload(A<Stream>._, TestRemoteDir + "/" + TestFileName))
+                .MustHaveHappenedOnceExactly());
+        Assert.NotNull(uploaded);
+        // In ISO-8859-1 the umlaut is a single byte; in UTF-8 it would be two.
+        Assert.Equal(6, uploaded!.Length);
+        Assert.Equal(0xFC, uploaded[2]);
     }
 
     #endregion
@@ -459,7 +560,8 @@ public class SftpUploadNodeTests : NodeTestBase
         }
         """;
 
-        // SftpServerConfiguration is private; deserialize dynamically using STJ.
+        // Deserialize into whatever type the caller asks for, so this helper keeps working
+        // whichever settings type the node resolves.
         A.CallTo(_globalConfiguration)
             .Where(call => call.Method.Name == "GetValue" && call.Method.IsGenericMethod)
             .WithNonVoidReturnType()

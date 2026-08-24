@@ -9,6 +9,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
@@ -75,6 +76,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<SignalSenderNode>()
             .RegisterNode<GetQueryByIdNode>()
             .RegisterNode<GetStreamDataNode>()
+            .RegisterNode<SftpListNode>()
+            .RegisterNode<SftpDownloadNode>()
             .RegisterNode<AggregateStreamDataNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
@@ -113,6 +116,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+
+        // Shared by every SFTP node. Stateless: the per-server concurrency counters live on
+        // the ETL context, so a redeployed pipeline picks up a changed limit.
+        services.AddSingleton<ISftpSessionFactory, SshNetSftpSessionFactory>();
 
         // Register CommunicationServicesClient for DeployDataFlow node
         services.AddOptions<CommunicationServiceClientOptions>()

@@ -187,7 +187,30 @@ internal class LlmQueryNode(
                 nodeContext.Warning(
                     "responseFormat=json is incompatible with MCP tools on most providers; " +
                     "sending the request without response_format and relying on the system " +
-                    "prompt to enforce JSON. Make sure the system prompt requests JSON output.");
+                    "prompt to enforce JSON. Make sure the system prompt requests JSON output." +
+                    (string.IsNullOrWhiteSpace(config.JsonSchema)
+                        ? string.Empty
+                        : " The configured jsonSchema is NOT enforced in tool mode."));
+            }
+
+            // Server-side structured output (AB#4464 follow-up): when a jsonSchema is
+            // configured, the schema is compiled into a grammar by the provider
+            // (Anthropic structured outputs / OpenAI json_schema) and constrains token
+            // generation itself — guaranteed-parseable JSON at zero extra token cost.
+            // Preferred over prompt-enforced JSON, which demonstrably fails on
+            // quote-heavy content (unescaped quotes in verbatim citations).
+            JsonElement? responseSchema = null;
+            if (wantsJson && !hasTools && !string.IsNullOrWhiteSpace(config.JsonSchema))
+            {
+                try
+                {
+                    responseSchema = JsonSerializer.Deserialize<JsonElement>(config.JsonSchema);
+                }
+                catch (JsonException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"jsonSchema is not valid JSON: {ex.Message}");
+                }
             }
 
             var options = new ChatOptions
@@ -197,7 +220,12 @@ internal class LlmQueryNode(
                 Temperature = (float?)config.Temperature,
                 TopP = config.TopP,
                 TopK = config.TopK,
-                ResponseFormat = wantsJson && !hasTools ? ChatResponseFormat.Json : null,
+                ResponseFormat = wantsJson && !hasTools
+                    ? responseSchema is not null
+                        ? ChatResponseFormat.ForJsonSchema(responseSchema.Value,
+                            schemaName: "llm_query_response")
+                        : ChatResponseFormat.Json
+                    : null,
                 Tools = hasTools ? [..mcpTools] : null
             };
 
@@ -220,7 +248,10 @@ internal class LlmQueryNode(
 
             // Parse + post-process the response (mirrors the Anthropic node's pattern,
             // including the prose-wrapped-JSON extraction fallback in ExtractJsonFromText).
-            var processedResponse = ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
+            // For JSON responses that fail to parse, a bounded repair pass re-asks the
+            // model with ONLY the broken output + parser error (not the original context).
+            var processedResponse = await ProcessJsonResponseWithRepairAsync(
+                aiResponse, config, client, options, nodeContext, ct);
 
             // Store the processed response via the typed STJ-based Set API.
             // The serializer argument from the old API is gone — IDataContext is
@@ -627,47 +658,114 @@ internal class LlmQueryNode(
         return promptBuilder.ToString();
     }
 
-    private static object ProcessResponse(string aiResponse, string responseFormat, INodeContext nodeContext)
+    /// <summary>
+    /// Parses a JSON response, with the prose-wrapped-JSON extraction fallback. On failure,
+    /// runs a BOUNDED repair loop (hard-capped at 2 attempts): the repair request contains
+    /// ONLY the broken output and the parser error — not the original context — so its cost
+    /// is proportional to the output size and there is no retry-until-timeout by
+    /// construction. Returns the parsed JsonElement, or the original text when repair is
+    /// disabled/exhausted (pre-existing fallback behavior, fails loudly downstream).
+    /// Internal for unit tests (InternalsVisibleTo).
+    /// </summary>
+    internal static async Task<object> ProcessJsonResponseWithRepairAsync(
+        string aiResponse, LlmQueryNodeConfiguration config, IChatClient client,
+        ChatOptions options, INodeContext nodeContext, CancellationToken ct)
     {
-        if (!responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase)) return aiResponse;
+        if (!config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            return aiResponse;
+        }
+
+        if (TryParseJson(aiResponse, nodeContext, out var element, out var parseError))
+        {
+            return element;
+        }
+
+        var maxAttempts = Math.Clamp(config.MaxJsonRepairAttempts, 0, 2);
+        var current = aiResponse;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            nodeContext.Warning(
+                $"Response is not valid JSON ({parseError}); bounded repair attempt " +
+                $"{attempt}/{maxAttempts} (sending only the broken output back, not the original context)");
+            nodeContext.Debug($"Unparseable response excerpt: {Truncate(current, 500)}");
+
+            var repairMessages = new List<ChatMessage>
+            {
+                new(ChatRole.System,
+                    "You repair invalid JSON. Return ONLY the corrected JSON document - " +
+                    "no prose, no code fences. Preserve the content exactly; fix only the " +
+                    "syntax (escaping, delimiters, brackets)."),
+                new(ChatRole.User,
+                    $"The following JSON is invalid. Parser error: {parseError}\n\n{current}")
+            };
+
+            var repairOptions = new ChatOptions
+            {
+                ModelId = options.ModelId,
+                MaxOutputTokens = options.MaxOutputTokens,
+                Temperature = 0f,
+                ResponseFormat = options.ResponseFormat ?? ChatResponseFormat.Json
+            };
+
+            var repairResponse = await client.GetResponseAsync(repairMessages, repairOptions, ct);
+            current = repairResponse.Text ?? string.Empty;
+
+            if (TryParseJson(current, nodeContext, out element, out parseError))
+            {
+                nodeContext.Info($"JSON repaired successfully on attempt {attempt}");
+                return element;
+            }
+        }
+
+        nodeContext.Warning(maxAttempts > 0
+            ? $"JSON could not be repaired after {maxAttempts} attempt(s) ({parseError}). Returning as text."
+            : $"Could not parse JSON and repair is disabled ({parseError}). Returning as text.");
+        return aiResponse;
+    }
+
+    /// <summary>
+    /// Whole-string parse first; on failure, the prose-wrapped-JSON extraction fallback
+    /// (```json fences, then brace scanning). STJ deliberately — see the serializer note
+    /// in the git history of ProcessResponse.
+    /// </summary>
+    private static bool TryParseJson(string text, INodeContext nodeContext,
+        out JsonElement element, out string? error)
+    {
         try
         {
-            var jsonElement = JsonSerializer.Deserialize<JsonElement>(aiResponse);
-            return jsonElement;
+            element = JsonSerializer.Deserialize<JsonElement>(text);
+            error = null;
+            return true;
         }
-        catch (JsonException)
+        catch (JsonException outerEx)
         {
-            var extractedJson = ExtractJsonFromText(aiResponse);
+            var extractedJson = ExtractJsonFromText(text);
             if (extractedJson != null)
             {
                 try
                 {
-                    // STJ here, deliberately: (1) the unqualified JsonException
-                    // in the catch below is System.Text.Json's (only
-                    // Newtonsoft.Json.Linq is imported), so Newtonsoft's
-                    // JsonReaderException from JToken.Parse would escape the
-                    // fallback and fail the whole node; (2) the clean-parse
-                    // branch above returns a JsonElement — returning a JToken
-                    // here would hand the STJ-native IDataContext.Set a
-                    // Newtonsoft tree it cannot serialize faithfully.
-                    var jsonElement = JsonSerializer.Deserialize<JsonElement>(extractedJson);
+                    element = JsonSerializer.Deserialize<JsonElement>(extractedJson);
                     nodeContext.Debug("Successfully extracted JSON from mixed response");
-                    return jsonElement;
+                    error = null;
+                    return true;
                 }
-                catch (JsonException ex)
+                catch (JsonException innerEx)
                 {
-                    nodeContext.Warning(
-                        $"Could not parse extracted JSON: {ex.Message}. Returning as text.");
+                    element = default;
+                    error = innerEx.Message;
+                    return false;
                 }
-            }
-            else
-            {
-                nodeContext.Warning("No JSON block found in response. Returning as text.");
             }
 
-            return aiResponse;
+            element = default;
+            error = outerEx.Message;
+            return false;
         }
     }
+
+    private static string Truncate(string text, int maxLength) =>
+        text.Length <= maxLength ? text : text[..maxLength] + "…";
 
     private static string? ExtractJsonFromText(string text)
     {

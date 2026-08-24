@@ -194,6 +194,27 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     }
     """;
 
+    /// <summary>
+    /// Optional JSON Schema (as JSON text) for the response. When set (and no MCP tools
+    /// are configured), the schema is enforced SERVER-SIDE via the provider's structured
+    /// outputs (Anthropic structured outputs / OpenAI json_schema — constrained decoding):
+    /// invalid JSON becomes impossible instead of improbable, at no extra token cost.
+    /// This is the preferred mechanism over prompt-enforced JSON; requires a model that
+    /// supports structured outputs (unsupported models return a provider error).
+    /// </summary>
+    [PropertyGroup("Output", 4, "code")]
+    public string? JsonSchema { get; set; }
+
+    /// <summary>
+    /// Fallback when a JSON response does not parse (no or unsupported server-side schema
+    /// enforcement): number of bounded repair attempts (default 1, hard-capped at 2,
+    /// 0 = off). A repair call sends ONLY the broken output plus the parser error back to
+    /// the model — not the original context — so its cost is proportional to the output
+    /// size, and there is no retry loop by construction.
+    /// </summary>
+    [PropertyGroup("Output", 5)]
+    public int MaxJsonRepairAttempts { get; set; } = 1;
+
     // ---- Options group ----
 
     /// <summary>

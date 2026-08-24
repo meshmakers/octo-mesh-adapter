@@ -30,6 +30,22 @@ public class SftpFileNameGlobTests
     }
 
     [Fact]
+    public void Matches_NameWithAnEmbeddedNewline_IsCoveredByTheAnyRunWildcard()
+    {
+        // '.' stops at a newline unless the matcher is told otherwise, so '*' would cover any
+        // run of characters except the one a POSIX name is still allowed to contain - and the
+        // entry would be dropped from the listing without a word.
+        Assert.True(SftpFileNameGlob.Matches("re\nport.txt", "*.txt"));
+    }
+
+    [Fact]
+    public void Matches_SingleCharacterWildcard_CoversANewline()
+    {
+        // Same reason as above for the one-character wildcard: a newline is one character.
+        Assert.True(SftpFileNameGlob.Matches("a\nb.txt", "a?b.txt"));
+    }
+
+    [Fact]
     public async Task Matches_ManyWildcardsAgainstANearMiss_DoesNotHang()
     {
         // Each '*' becomes an independent '.*'; a backtracking engine then needs O(n^k) on a

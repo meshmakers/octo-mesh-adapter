@@ -17,8 +17,11 @@ internal static class SftpFileNameGlob
     // 'I' does not fold to 'i', so a pattern like AI* would quietly stop matching ai_*.
     // \A and \z instead of ^ and $: '$' also matches before a trailing newline, and a POSIX
     // file name may contain one - such a file would pass as though the newline were not there.
-    private const RegexOptions MatchOptions =
-        RegexOptions.NonBacktracking | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+    // Singleline: the same names reach the wildcards, where '.' stops at a newline by default.
+    // Without it '*' would cover any run of characters except the one run a file name is still
+    // allowed to hold, and such an entry would drop out of the listing without a word.
+    private const RegexOptions MatchOptions = RegexOptions.NonBacktracking | RegexOptions.IgnoreCase |
+                                              RegexOptions.CultureInvariant | RegexOptions.Singleline;
 
     /// <summary>
     /// Translates a pattern into the matcher a listing is filtered with. Built once per

@@ -17,7 +17,10 @@ internal static class HttpRequestSender
         Func<HttpRequestMessage> requestFactory, HttpRetryOptions retry, int? timeoutSeconds,
         TimeProvider timeProvider, INodeContext nodeContext)
     {
-        var attempts = Math.Max(1, retry.MaxAttempts); // a misconfigured 0 must still try once
+        // A definition can present either value as an explicit null, which overwrites the property
+        // initializer, so both are resolved here rather than trusted.
+        var attempts = Math.Max(1, retry.MaxAttempts ?? HttpRetryOptions.DefaultMaxAttempts);
+        var backoffBaseSeconds = retry.BackoffBaseSeconds ?? HttpRetryOptions.DefaultBackoffBaseSeconds;
         string url = "";
         int? lastStatus = null;
         var lastDetail = "no detail";
@@ -70,10 +73,10 @@ internal static class HttpRequestSender
                     : "the request was cancelled";
             }
 
-            if (attempt < attempts && retry.BackoffBaseSeconds > 0)
+            if (attempt < attempts && backoffBaseSeconds > 0)
             {
                 await Task.Delay(
-                    TimeSpan.FromSeconds(retry.BackoffBaseSeconds * Math.Pow(2, attempt - 1)),
+                    TimeSpan.FromSeconds(backoffBaseSeconds * Math.Pow(2, attempt - 1)),
                     timeProvider);
             }
         }

@@ -128,13 +128,22 @@ public class MakeHttpRequestNode(
         MakeHttpRequestNodeConfiguration c, HttpPagingOptions paging, string url,
         HttpApiSettings? apiSettings, string? body)
     {
-        var collected = new JsonArray();
-        var page = paging.FirstPageNumber;
+        // A definition can present any of these as an explicit null, which overwrites the property
+        // initializer, so they are resolved here rather than read straight off the configuration.
+        var pageParameterName = paging.PageParameterName ?? HttpPagingOptions.DefaultPageParameterName;
+        var pageSizeParameterName =
+            paging.PageSizeParameterName ?? HttpPagingOptions.DefaultPageSizeParameterName;
+        var pageSize = paging.PageSize ?? HttpPagingOptions.DefaultPageSize;
+        var stopOnShortPage = paging.StopOnShortPage ?? HttpPagingOptions.DefaultStopOnShortPage;
+        var maxPages = paging.MaxPages ?? HttpPagingOptions.DefaultMaxPages;
 
-        for (var walked = 0; walked < paging.MaxPages; walked++)
+        var collected = new JsonArray();
+        var page = paging.FirstPageNumber ?? HttpPagingOptions.DefaultFirstPageNumber;
+
+        for (var walked = 0; walked < maxPages; walked++)
         {
             var pageUrl = AppendQuery(url,
-                $"{paging.PageParameterName}={page}&{paging.PageSizeParameterName}={paging.PageSize}");
+                $"{pageParameterName}={page}&{pageSizeParameterName}={pageSize}");
 
             // Retries belong to the page that failed: a page that runs out of attempts ends the
             // whole walk, and one that succeeds moves it on without refetching what came before.
@@ -154,7 +163,7 @@ public class MakeHttpRequestNode(
                 collected.Add(item?.DeepClone());
             }
 
-            if (items.Count == 0 || (paging.StopOnShortPage && items.Count < paging.PageSize))
+            if (items.Count == 0 || (stopOnShortPage && items.Count < pageSize))
             {
                 // Written as a JsonNode, the same overload a single response takes: the value is
                 // deep-cloned either way, and one call shape keeps consumers and tests honest.
@@ -166,7 +175,7 @@ public class MakeHttpRequestNode(
             page++;
         }
 
-        throw MeshAdapterPipelineExecutionException.HttpPagingCapReached(nodeContext, paging.MaxPages);
+        throw MeshAdapterPipelineExecutionException.HttpPagingCapReached(nodeContext, maxPages);
     }
 
     private static string AppendQuery(string url, string query)
@@ -210,7 +219,9 @@ public class MakeHttpRequestNode(
 
         if (apiSettings is not null)
         {
-            request.Headers.Add(c.AuthHeaderName, c.AuthHeaderValuePrefix + apiSettings.ApiKey);
+            request.Headers.Add(
+                c.AuthHeaderName ?? MakeHttpRequestNodeConfiguration.DefaultAuthHeaderName,
+                (c.AuthHeaderValuePrefix ?? "") + apiSettings.ApiKey);
         }
 
         if (!string.IsNullOrEmpty(body))

@@ -48,37 +48,63 @@ public record HttpPathParameter
     /// Page-number paging over a collection endpoint. Absent means a single request. The property
     /// names are page-number specific so a cursor mode can be added later without renaming.
     /// </summary>
+    /// <remarks>
+    /// Every optional member is nullable even though it carries an initializer. An initializer
+    /// applies only when the key is absent from the definition; a key that is present and null
+    /// overwrites it, and the reader would get a zero or a null it never wrote. Nullable here plus
+    /// a fallback where the value is read makes "absent" and "present but null" mean the same
+    /// thing. The defaults live in the constants so the initializer and the fallback cannot drift.
+    /// </remarks>
     public record HttpPagingOptions
     {
+        /// <summary>The <see cref="PageParameterName" /> an unset property resolves to.</summary>
+        public const string DefaultPageParameterName = "page";
+
+        /// <summary>The <see cref="PageSizeParameterName" /> an unset property resolves to.</summary>
+        public const string DefaultPageSizeParameterName = "pageSize";
+
+        /// <summary>The <see cref="PageSize" /> an unset property resolves to.</summary>
+        public const int DefaultPageSize = 100;
+
+        /// <summary>The <see cref="FirstPageNumber" /> an unset property resolves to.</summary>
+        public const int DefaultFirstPageNumber = 1;
+
+        /// <summary>The <see cref="StopOnShortPage" /> an unset property resolves to.</summary>
+        public const bool DefaultStopOnShortPage = true;
+
+        /// <summary>The <see cref="MaxPages" /> an unset property resolves to.</summary>
+        public const int DefaultMaxPages = 500;
+
         /// <summary>
         /// Single-level path of the form "$.name" addressing the array inside one response, for
-        /// example "$.result". Deeper addressing belongs to a downstream transformation.
+        /// example "$.result". Deeper addressing belongs to a downstream transformation. Required
+        /// when paging is configured: a walk with nothing to read cannot report a result.
         /// </summary>
         public string ItemsPath { get; set; } = "";
 
         /// <summary>Query parameter carrying the page number.</summary>
-        public string PageParameterName { get; set; } = "page";
+        public string? PageParameterName { get; set; } = DefaultPageParameterName;
 
         /// <summary>Query parameter carrying the page size.</summary>
-        public string PageSizeParameterName { get; set; } = "pageSize";
+        public string? PageSizeParameterName { get; set; } = DefaultPageSizeParameterName;
 
         /// <summary>Elements requested per page.</summary>
-        public int PageSize { get; set; } = 100;
+        public int? PageSize { get; set; } = DefaultPageSize;
 
         /// <summary>Number of the first page; some APIs count from zero.</summary>
-        public int FirstPageNumber { get; set; } = 1;
+        public int? FirstPageNumber { get; set; } = DefaultFirstPageNumber;
 
         /// <summary>
         /// Treat a page holding fewer elements than requested as the last one. Turn it off for an
         /// API that caps the page size server-side, where every page looks short.
         /// </summary>
-        public bool StopOnShortPage { get; set; } = true;
+        public bool? StopOnShortPage { get; set; } = DefaultStopOnShortPage;
 
         /// <summary>
         /// Upper bound on pages. Reaching it fails: a target that ignores the page parameter
         /// answers with the same page forever, and a silent stop would truncate the result.
         /// </summary>
-        public int MaxPages { get; set; } = 500;
+        public int? MaxPages { get; set; } = DefaultMaxPages;
     }
 
     /// <summary>
@@ -97,13 +123,23 @@ public record HttpPathParameter
     /// Retry behaviour for one request. Absent means a single attempt, which is what the node did
     /// before the option existed.
     /// </summary>
+    /// <remarks>
+    /// Nullable members with constant defaults, for the reason given on
+    /// <see cref="HttpPagingOptions" />.
+    /// </remarks>
     public record HttpRetryOptions
     {
+        /// <summary>The <see cref="MaxAttempts" /> an unset property resolves to.</summary>
+        public const int DefaultMaxAttempts = 1;
+
+        /// <summary>The <see cref="BackoffBaseSeconds" /> an unset property resolves to.</summary>
+        public const double DefaultBackoffBaseSeconds = 1;
+
         /// <summary>Total attempts per request, so 1 means no retry.</summary>
-        public int MaxAttempts { get; set; } = 1;
+        public int? MaxAttempts { get; set; } = DefaultMaxAttempts;
 
         /// <summary>Delay before attempt n is base * 2^(n-1) seconds; 0 disables waiting.</summary>
-        public double BackoffBaseSeconds { get; set; } = 1;
+        public double? BackoffBaseSeconds { get; set; } = DefaultBackoffBaseSeconds;
     }
 
     /// <summary>
@@ -112,6 +148,9 @@ public record HttpPathParameter
     [NodeName("MakeHttpRequest", 1)]
     public record MakeHttpRequestNodeConfiguration : TargetPathNodeConfiguration
     {
+        /// <summary>The <see cref="AuthHeaderName" /> an unset property resolves to.</summary>
+        public const string DefaultAuthHeaderName = "Authorization";
+
         /// <summary>
         /// the HTTP method to use for the request (values: GET, POST, PUT, DELETE)
         /// </summary>
@@ -167,13 +206,13 @@ public record HttpPathParameter
         /// target expecting a bare token.
         /// </summary>
         [PropertyGroup("Connection", 6)]
-        public string AuthHeaderName { get; set; } = "Authorization";
+        public string? AuthHeaderName { get; set; } = DefaultAuthHeaderName;
 
         /// <summary>
         /// Scheme prefix placed before the key, for example "Bearer ". Empty by default.
         /// </summary>
         [PropertyGroup("Connection", 7)]
-        public string AuthHeaderValuePrefix { get; set; } = "";
+        public string? AuthHeaderValuePrefix { get; set; } = "";
 
         /// <summary>
         /// Retry behaviour for transient failures: 5xx, 408, 429, network errors and timeouts.

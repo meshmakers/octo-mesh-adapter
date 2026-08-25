@@ -859,6 +859,28 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' must provide both 'baseUrl' and 'apiKey'.");
     }
 
+    public static Exception HttpPagingItemsPathUnusable(INodeContext nodeContext, string itemsPath,
+        int page)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The response for page {page} carries no array at '{itemsPath}'. " +
+            "An empty array ends the walk; a missing or non-array value means the response shape changed.");
+    }
+
+    public static Exception HttpPagingCapReached(INodeContext nodeContext, int maxPages)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The paged request reached its limit of {maxPages} pages. " +
+            "Raise maxPages if the collection really is that large, or check that the target honours " +
+            "the page parameter - the result would otherwise be truncated silently.");
+    }
+
+    public static Exception HttpPagingItemsPathNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Paging needs an itemsPath naming the array inside one response.");
+    }
+
     public static Exception HttpRequestFailed(INodeContext nodeContext, string url, int? statusCode,
         int attempts, string detail)
     {

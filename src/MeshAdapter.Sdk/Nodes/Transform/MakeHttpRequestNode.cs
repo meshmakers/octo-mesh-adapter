@@ -62,6 +62,13 @@ public class MakeHttpRequestNode(
             url = CombineUrl(apiSettings.BaseUrl, url);
         }
 
+        if (c.Paging is { } pagingOptions && string.IsNullOrWhiteSpace(pagingOptions.ItemsPath))
+        {
+            // A configuration mistake, so it fails whatever OnHttpError says - a page walk with
+            // nothing to read would otherwise report an empty result as a successful one.
+            throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathNotSet(nodeContext);
+        }
+
         try
         {
             // Replace path parameters in URL
@@ -81,11 +88,18 @@ public class MakeHttpRequestNode(
                 }
             }
 
-            using var response = await HttpRequestSender.SendAsync(httpClient,
-                () => BuildRequest(dataContext, nodeContext, c, url, apiSettings, body),
-                c.Retry ?? new HttpRetryOptions(), c.TimeoutSeconds, _timeProvider, nodeContext);
+            if (c.Paging is { } paging)
+            {
+                await FetchAllPagesAsync(dataContext, nodeContext, c, paging, url, apiSettings, body);
+            }
+            else
+            {
+                using var response = await HttpRequestSender.SendAsync(httpClient,
+                    () => BuildRequest(dataContext, nodeContext, c, url, apiSettings, body),
+                    c.Retry ?? new HttpRetryOptions(), c.TimeoutSeconds, _timeProvider, nodeContext);
 
-            await StoreResponseAsync(dataContext, nodeContext, c, response);
+                await StoreResponseAsync(dataContext, nodeContext, c, response);
+            }
         }
         catch (MeshAdapterPipelineExecutionException e) when (c.OnHttpError == HttpErrorHandling.LogAndStop)
         {
@@ -103,6 +117,83 @@ public class MakeHttpRequestNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Walks the pages of a paged endpoint and writes the elements of every page as one flat array
+    /// at the target path. The write happens once the walk is complete, so a run that fails part
+    /// way through leaves no half-filled array behind.
+    /// </summary>
+    private async Task FetchAllPagesAsync(IDataContext dataContext, INodeContext nodeContext,
+        MakeHttpRequestNodeConfiguration c, HttpPagingOptions paging, string url,
+        HttpApiSettings? apiSettings, string? body)
+    {
+        var collected = new JsonArray();
+        var page = paging.FirstPageNumber;
+
+        for (var walked = 0; walked < paging.MaxPages; walked++)
+        {
+            var pageUrl = AppendQuery(url,
+                $"{paging.PageParameterName}={page}&{paging.PageSizeParameterName}={paging.PageSize}");
+
+            // Retries belong to the page that failed: a page that runs out of attempts ends the
+            // whole walk, and one that succeeds moves it on without refetching what came before.
+            using var pageResponse = await HttpRequestSender.SendAsync(httpClient,
+                () => BuildRequest(dataContext, nodeContext, c, pageUrl, apiSettings, body),
+                c.Retry ?? new HttpRetryOptions(), c.TimeoutSeconds, _timeProvider, nodeContext);
+
+            var pageBody = await pageResponse.Content.ReadAsStringAsync();
+            var items = ReadItems(pageBody, paging.ItemsPath)
+                        ?? throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathUnusable(
+                            nodeContext, paging.ItemsPath, page);
+
+            nodeContext.Debug("Page {0} carried {1} element(s)", page, items.Count);
+
+            foreach (var item in items)
+            {
+                collected.Add(item?.DeepClone());
+            }
+
+            if (items.Count == 0 || (paging.StopOnShortPage && items.Count < paging.PageSize))
+            {
+                // Written as a JsonNode, the same overload a single response takes: the value is
+                // deep-cloned either way, and one call shape keeps consumers and tests honest.
+                dataContext.Set<JsonNode>(c.TargetPath, collected, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
+                return;
+            }
+
+            page++;
+        }
+
+        throw MeshAdapterPipelineExecutionException.HttpPagingCapReached(nodeContext, paging.MaxPages);
+    }
+
+    private static string AppendQuery(string url, string query)
+    {
+        return url.Contains('?') ? $"{url}&{query}" : $"{url}?{query}";
+    }
+
+    /// <summary>
+    /// Reads the array one page carries, or null when the response holds no array there - which is
+    /// a changed response shape rather than the end of the walk.
+    /// </summary>
+    private static JsonArray? ReadItems(string body, string itemsPath)
+    {
+        JsonNode? parsed;
+        try
+        {
+            parsed = JsonNode.Parse(body);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        // The path is the flat "$.name" form the pipeline uses for a response envelope; anything
+        // deeper belongs to a downstream transformation rather than to the page walk.
+        var name = itemsPath.StartsWith("$.", StringComparison.Ordinal) ? itemsPath[2..] : itemsPath;
+        return (parsed as JsonObject)?[name] as JsonArray;
     }
 
     /// <summary>

@@ -598,6 +598,247 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Equal(3, handler.CallCount);
     }
 
+    private static MakeHttpRequestNodeConfiguration PagingConfig(HttpPagingOptions paging)
+    {
+        return new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api/article", TargetPath = "$.items",
+            OnHttpError = HttpErrorHandling.Throw, Paging = paging
+        };
+    }
+
+    private static string Page(params int[] ids)
+    {
+        return "{\"result\":[" + string.Join(",", ids.Select(i => $"{{\"id\":{i}}}")) + "]}";
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_Paging_CollectsEveryPageFlatAndInOrder()
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", PageSize = 2 });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json(Page(1, 2)),
+            SequencedHttpMessageHandler.Json(Page(3, 4)),
+            SequencedHttpMessageHandler.Json(Page(5)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(3, handler.CallCount);
+        Assert.Equal("https://host/api/article?page=1&pageSize=2",
+            handler.Requests[0].RequestUri!.ToString());
+        Assert.Equal("https://host/api/article?page=3&pageSize=2",
+            handler.Requests[2].RequestUri!.ToString());
+        A.CallTo(() => dataContext.Set("$.items",
+                A<JsonNode?>.That.Matches(n => n!.AsArray().Count == 5 &&
+                                               n.AsArray()[0]!["id"]!.GetValue<int>() == 1 &&
+                                               n.AsArray()[4]!["id"]!.GetValue<int>() == 5),
+                A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_Paging_StopsOnEmptyPage()
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", PageSize = 2 });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json(Page(1, 2)),
+            SequencedHttpMessageHandler.Json(Page()));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingWithoutShortPageStop_WalksToTheEmptyPage()
+    {
+        var config = PagingConfig(new HttpPagingOptions
+        {
+            ItemsPath = "$.result", PageSize = 2, StopOnShortPage = false
+        });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json(Page(1)),
+            SequencedHttpMessageHandler.Json(Page(2)),
+            SequencedHttpMessageHandler.Json(Page()));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(3, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingFirstPageNumberZero_StartsAtZero()
+    {
+        var config = PagingConfig(new HttpPagingOptions
+        {
+            ItemsPath = "$.result", PageSize = 2, FirstPageNumber = 0
+        });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("page=0", handler.Requests[0].RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingKeepsAnExistingQuery()
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", PageSize = 2 });
+        config.Url = "https://host/api/salesOrder?status-eq=CONFIRMED";
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("https://host/api/salesOrder?status-eq=CONFIRMED&page=1&pageSize=2",
+            handler.Requests[0].RequestUri!.ToString());
+    }
+
+    [Theory]
+    [InlineData("{\"other\":[]}")]
+    [InlineData("{\"result\":{\"id\":1}}")]
+    [InlineData("not json at all")]
+    public async Task ProcessObjectAsync_PagingUnusableItemsPath_FailsInsteadOfStopping(string body)
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", PageSize = 2 });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(body));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("$.result", ex.Message);
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonNode?>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingCapReached_FailsAndWritesNothing()
+    {
+        var config = PagingConfig(new HttpPagingOptions
+        {
+            ItemsPath = "$.result", PageSize = 2, MaxPages = 3
+        });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        // A target that ignores the page parameter answers with the same full page forever.
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1, 2)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Equal(3, handler.CallCount);
+        Assert.Contains("3", ex.Message);
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonNode?>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingWithoutItemsPath_Throws()
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "", PageSize = 2 });
+        config.OnHttpError = HttpErrorHandling.LogAndStop; // a configuration mistake throws anyway
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingRetriesOnePageInPlace()
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", PageSize = 2 });
+        config.Retry = new HttpRetryOptions { MaxAttempts = 2, BackoffBaseSeconds = 0 };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json(Page(1, 2)),
+            SequencedHttpMessageHandler.Status(HttpStatusCode.ServiceUnavailable, "busy"),
+            SequencedHttpMessageHandler.Json(Page(3, 4)),
+            SequencedHttpMessageHandler.Json(Page(5)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // Page 2 was retried rather than skipped, and page 1 was not fetched again.
+        Assert.Equal(4, handler.CallCount);
+        Assert.Equal("https://host/api/article?page=2&pageSize=2",
+            handler.Requests[2].RequestUri!.ToString());
+        A.CallTo(() => dataContext.Set("$.items",
+                A<JsonNode?>.That.Matches(n => n!.AsArray().Count == 5),
+                A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingExhaustedOnOnePage_FailsTheWholeRun()
+    {
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", PageSize = 2 });
+        config.Retry = new HttpRetryOptions { MaxAttempts = 2, BackoffBaseSeconds = 0 };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json(Page(1, 2)),
+            SequencedHttpMessageHandler.Status(HttpStatusCode.ServiceUnavailable, "busy"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonNode?>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Theory]
+    [InlineData("{\"other\":[]}")]   // unusable itemsPath
+    [InlineData("{\"result\":[{\"id\":1},{\"id\":2}]}")]   // full page forever, so the cap is hit
+    public async Task ProcessObjectAsync_PagingFailureUnderDefault_IsQuietAndWritesNothing(string body)
+    {
+        // The paging failure paths follow OnHttpError like every other runtime outcome: with the
+        // default they are reported and stop the branch instead of failing the execution.
+        var config = PagingConfig(new HttpPagingOptions
+        {
+            ItemsPath = "$.result", PageSize = 2, MaxPages = 2
+        });
+        config.OnHttpError = HttpErrorHandling.LogAndStop;
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(body));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => logger.Error(A<string>._, A<string>._, A<Exception>._, A<string>._,
+            A<object[]>._)).MustHaveHappened();
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonNode?>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingDefaults_AreTheDocumentedOnes()
+    {
+        var paging = new HttpPagingOptions { ItemsPath = "$.result" };
+
+        Assert.Equal("page", paging.PageParameterName);
+        Assert.Equal("pageSize", paging.PageSizeParameterName);
+        Assert.Equal(100, paging.PageSize);
+        Assert.Equal(1, paging.FirstPageNumber);
+        Assert.True(paging.StopOnShortPage);
+        Assert.Equal(500, paging.MaxPages);
+    }
+
     private class MockHttpMessageHandler(HttpStatusCode statusCode, string content) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,

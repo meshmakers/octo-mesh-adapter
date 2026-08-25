@@ -45,6 +45,43 @@ public record HttpPathParameter
     }
 
     /// <summary>
+    /// Page-number paging over a collection endpoint. Absent means a single request. The property
+    /// names are page-number specific so a cursor mode can be added later without renaming.
+    /// </summary>
+    public record HttpPagingOptions
+    {
+        /// <summary>
+        /// Single-level path of the form "$.name" addressing the array inside one response, for
+        /// example "$.result". Deeper addressing belongs to a downstream transformation.
+        /// </summary>
+        public string ItemsPath { get; set; } = "";
+
+        /// <summary>Query parameter carrying the page number.</summary>
+        public string PageParameterName { get; set; } = "page";
+
+        /// <summary>Query parameter carrying the page size.</summary>
+        public string PageSizeParameterName { get; set; } = "pageSize";
+
+        /// <summary>Elements requested per page.</summary>
+        public int PageSize { get; set; } = 100;
+
+        /// <summary>Number of the first page; some APIs count from zero.</summary>
+        public int FirstPageNumber { get; set; } = 1;
+
+        /// <summary>
+        /// Treat a page holding fewer elements than requested as the last one. Turn it off for an
+        /// API that caps the page size server-side, where every page looks short.
+        /// </summary>
+        public bool StopOnShortPage { get; set; } = true;
+
+        /// <summary>
+        /// Upper bound on pages. Reaching it fails: a target that ignores the page parameter
+        /// answers with the same page forever, and a silent stop would truncate the result.
+        /// </summary>
+        public int MaxPages { get; set; } = 500;
+    }
+
+    /// <summary>
     /// What a failed request does to the pipeline.
     /// </summary>
     public enum HttpErrorHandling
@@ -188,4 +225,10 @@ public record HttpPathParameter
         /// </summary>
         [PropertyGroup("Data Mapping", 4, "jsonpath")]
         public string? ContentLengthTargetPath { get; set; }
+
+        /// <summary>
+        /// Collects every page of a paged endpoint into one flat array at the target path.
+        /// </summary>
+        [PropertyGroup("Data Mapping", 5)]
+        public HttpPagingOptions? Paging { get; set; }
     }

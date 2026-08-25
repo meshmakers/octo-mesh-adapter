@@ -29,25 +29,14 @@ internal static class HttpRequestSender
     {
         // A definition can present either value as an explicit null, which overwrites the property
         // initializer, so both are resolved here rather than trusted.
-        var attempts = Math.Max(1, retry.MaxAttempts ?? HttpRetryOptions.DefaultMaxAttempts);
-        var backoffBaseSeconds = retry.BackoffBaseSeconds ?? HttpRetryOptions.DefaultBackoffBaseSeconds;
+        // A backstop for a direct caller. The node validates the same settings during its
+        // configuration checks, because a check that lives here runs inside the node's own net and
+        // would be answered with a log entry under the default error handling.
+        ValidateRetryOptions(retry, nodeContext);
+
+        var attempts = ResolveAttempts(retry);
+        var backoffBaseSeconds = ResolveBackoffBaseSeconds(retry);
         string? lastResponseBody = null;
-
-        // Configuration mistakes, so they fail before a request goes out and whatever the caller's
-        // error handling says. Both are values only a definition can produce.
-        if (attempts > HttpRetryOptions.MaxAllowedAttempts)
-        {
-            throw MeshAdapterPipelineExecutionException.InvalidHttpRetryOptions(nodeContext,
-                $"retry.maxAttempts is {attempts}, which is beyond the limit of " +
-                $"{HttpRetryOptions.MaxAllowedAttempts}. A request that needs more attempts than that " +
-                "is broken rather than slow.");
-        }
-
-        if (backoffBaseSeconds < 0)
-        {
-            throw MeshAdapterPipelineExecutionException.InvalidHttpRetryOptions(nodeContext,
-                $"retry.backoffBaseSeconds is {backoffBaseSeconds}. Use zero to retry without waiting.");
-        }
         string url = "";
         int? lastStatus = null;
         var lastDetail = "no detail";
@@ -107,8 +96,11 @@ internal static class HttpRequestSender
                 lastResponseBody = null;
                 lastDetail = timeoutSource?.IsCancellationRequested == true
                     ? $"the attempt exceeded the configured timeout of {timeoutSeconds} s"
-                    : "the attempt was cancelled before it answered, which is the HTTP client's own " +
-                      "timeout when it is shorter than the configured one";
+                    : timeoutSeconds is > 0
+                        ? "the attempt was cancelled before the configured timeout elapsed, which is " +
+                          "the HTTP client's own timeout when it is the shorter of the two"
+                        : "the attempt was cancelled before it answered, which is the HTTP client's " +
+                          "own timeout";
             }
 
             if (attempt < attempts && backoffBaseSeconds > 0)
@@ -124,6 +116,45 @@ internal static class HttpRequestSender
 
         throw MeshAdapterPipelineExecutionException.HttpRequestFailed(
             nodeContext, url, lastStatus, attempts, lastDetail, lastResponseBody);
+    }
+
+    /// <summary>
+    /// Rejects retry settings a pipeline definition can produce but no sender can honour. Called
+    /// by the node while it checks its configuration - that is, before the block that turns a
+    /// failure into a log entry, because a configuration mistake has to fail whatever the
+    /// configured error handling says.
+    /// </summary>
+    /// <param name="retry">The settings to check, already defaulted for absent sections</param>
+    /// <param name="nodeContext">The node context, for error reporting</param>
+    public static void ValidateRetryOptions(HttpRetryOptions retry, INodeContext nodeContext)
+    {
+        var attempts = ResolveAttempts(retry);
+        if (attempts > HttpRetryOptions.MaxAllowedAttempts)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpRetryOptions(nodeContext,
+                $"retry.maxAttempts is {attempts}, which is beyond the limit of " +
+                $"{HttpRetryOptions.MaxAllowedAttempts}. A request that needs more attempts than that " +
+                "is broken rather than slow.");
+        }
+
+        var backoffBaseSeconds = ResolveBackoffBaseSeconds(retry);
+        if (backoffBaseSeconds < 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpRetryOptions(nodeContext,
+                $"retry.backoffBaseSeconds is {backoffBaseSeconds}. Use zero to retry without waiting.");
+        }
+    }
+
+    // A definition can present either value as an explicit null, which overwrites the property
+    // initializer, so both are resolved rather than trusted.
+    private static int ResolveAttempts(HttpRetryOptions retry)
+    {
+        return Math.Max(1, retry.MaxAttempts ?? HttpRetryOptions.DefaultMaxAttempts);
+    }
+
+    private static double ResolveBackoffBaseSeconds(HttpRetryOptions retry)
+    {
+        return retry.BackoffBaseSeconds ?? HttpRetryOptions.DefaultBackoffBaseSeconds;
     }
 
     private static bool IsTransient(int statusCode)

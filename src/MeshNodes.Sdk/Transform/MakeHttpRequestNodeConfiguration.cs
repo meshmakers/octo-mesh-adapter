@@ -143,9 +143,10 @@ public record HttpPathParameter
         public const int MaxBackoffSeconds = 60;
 
         /// <summary>
-        /// Upper bound on <see cref="MaxAttempts" />. With the wait cap, the worst case is roughly
-        /// eight minutes of retrying; beyond that a request is not slow, it is broken, and a
-        /// pipeline tick should end rather than pile up behind it.
+        /// Upper bound on <see cref="MaxAttempts" />. Ten attempts means nine waits, so with the
+        /// wait cap the worst case is nine minutes of waiting plus the requests themselves; beyond
+        /// that a request is not slow, it is broken, and a pipeline tick should end rather than
+        /// pile up behind it.
         /// </summary>
         public const int MaxAllowedAttempts = 10;
 

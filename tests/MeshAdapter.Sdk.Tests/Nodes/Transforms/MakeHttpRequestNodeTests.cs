@@ -891,6 +891,34 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Empty(handler.Requests);
     }
 
+    [Theory]
+    [InlineData(11, 1.0)]
+    [InlineData(1, -1.0)]
+    public async Task ProcessObjectAsync_RetryOptionsOutOfBounds_ThrowsWithDefaultErrorHandling(
+        int maxAttempts, double backoffBaseSeconds)
+    {
+        // Configuration mistakes, so they fail whatever OnHttpError says. Checking them where the
+        // request is sent would not be enough: that is inside the node's own net, which under the
+        // default reports and stops, leaving a green execution with a retry policy nobody honoured.
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response",
+            OnHttpError = HttpErrorHandling.LogAndStop,
+            Retry = new HttpRetryOptions
+            {
+                MaxAttempts = maxAttempts, BackoffBaseSeconds = backoffBaseSeconds
+            }
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_PagingDefaults_AreTheDocumentedOnes()
     {

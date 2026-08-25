@@ -69,6 +69,11 @@ public class MakeHttpRequestNode(
             }
         }
 
+        // Checked here rather than where the request is sent: that is inside the block below,
+        // whose catch answers a failure with a log entry under the default error handling, and a
+        // configuration mistake must fail whatever that setting says.
+        HttpRequestSender.ValidateRetryOptions(c.Retry ?? new HttpRetryOptions(), nodeContext);
+
         if (c.Paging is { } pagingOptions)
         {
             // Configuration mistakes, so they fail whatever OnHttpError says - each of them would
@@ -376,14 +381,18 @@ public class MakeHttpRequestNode(
     /// Joins a configured base URL and a relative path with exactly one separator, whatever
     /// combination of trailing and leading slashes the two carry.
     /// </summary>
-    private static string ResolveAuthHeaderName(MakeHttpRequestNodeConfiguration config)
-    {
-        return config.AuthHeaderName ?? MakeHttpRequestNodeConfiguration.DefaultAuthHeaderName;
-    }
-
     internal static string CombineUrl(string baseUrl, string relativeUrl)
     {
         return $"{baseUrl.TrimEnd('/')}/{relativeUrl.TrimStart('/')}";
+    }
+
+    /// <summary>
+    /// The header the configured key travels in. Resolved rather than read, because a definition
+    /// can carry an explicit null over the property initializer.
+    /// </summary>
+    private static string ResolveAuthHeaderName(MakeHttpRequestNodeConfiguration config)
+    {
+        return config.AuthHeaderName ?? MakeHttpRequestNodeConfiguration.DefaultAuthHeaderName;
     }
 
     private static bool ValidateConfiguration(MakeHttpRequestNodeConfiguration config, INodeContext nodeContext)

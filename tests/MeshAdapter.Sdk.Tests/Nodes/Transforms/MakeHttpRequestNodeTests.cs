@@ -839,6 +839,50 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Equal(500, paging.MaxPages);
     }
 
+    [Fact]
+    public async Task ProcessObjectAsync_WithApiConfiguration_NeverLogsTheKey()
+    {
+        // The configured header is attached directly rather than through the header-parameter
+        // path, which reports every value it adds at debug level. Routing the key through there
+        // would write it into the pipeline log of every run.
+        const string key = "super-secret-token-value";
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "/article", TargetPath = "$.response",
+            ApiConfiguration = "TestApi", AuthHeaderName = "AuthenticationToken"
+        };
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings
+        {
+            BaseUrl = "https://host/api/v1", ApiKey = key
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // The key did travel, so the assertion below is about where it did not.
+        Assert.Equal(key, handler.Requests.Single().Headers.GetValues("AuthenticationToken").Single());
+        var logged = Fake.GetCalls(logger).SelectMany(c => c.Arguments.SelectMany(Flatten)).ToList();
+        Assert.NotEmpty(logged);
+        Assert.DoesNotContain(logged, text => text.Contains(key, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Renders one logged argument as the strings it can put into a message, unwrapping the
+    /// params array the logger takes so a value inside it is not hidden behind "System.Object[]".
+    /// </summary>
+    private static IEnumerable<string> Flatten(object? argument)
+    {
+        if (argument is object?[] many)
+        {
+            return many.Select(a => a?.ToString() ?? "");
+        }
+
+        return [argument?.ToString() ?? ""];
+    }
+
     private class MockHttpMessageHandler(HttpStatusCode statusCode, string content) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,

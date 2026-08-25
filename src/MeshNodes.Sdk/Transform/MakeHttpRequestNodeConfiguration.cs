@@ -94,10 +94,24 @@ public record HttpPathParameter
         /// <summary>
         /// Name of a GlobalConfiguration entry providing the API base URL and key. When set, the
         /// request URL is a path relative to that base and the key is sent in
-        /// <c>AuthHeaderName</c>.
+        /// <see cref="AuthHeaderName" />.
         /// </summary>
         [PropertyGroup("Connection", 5)]
         public string? ApiConfiguration { get; set; }
+
+        /// <summary>
+        /// Header the key from <see cref="ApiConfiguration" /> is sent in. The key is inserted as
+        /// it is; with the default header and no prefix it goes out scheme-less, which suits a
+        /// target expecting a bare token.
+        /// </summary>
+        [PropertyGroup("Connection", 6)]
+        public string AuthHeaderName { get; set; } = "Authorization";
+
+        /// <summary>
+        /// Scheme prefix placed before the key, for example "Bearer ". Empty by default.
+        /// </summary>
+        [PropertyGroup("Connection", 7)]
+        public string AuthHeaderValuePrefix { get; set; } = "";
 
         /// <summary>
         /// The media type of the request body (values: application/json, application/x-www-form-urlencoded).

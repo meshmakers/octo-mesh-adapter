@@ -858,4 +858,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' must provide both 'baseUrl' and 'apiKey'.");
     }
+
+    public static Exception AbsoluteUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: URL '{url}' is absolute while an ApiConfiguration is set. " +
+            "Configure a path relative to the configured base URL, or drop the ApiConfiguration and " +
+            "supply the header yourself - the configured key must not be sent to another host.");
+    }
 }

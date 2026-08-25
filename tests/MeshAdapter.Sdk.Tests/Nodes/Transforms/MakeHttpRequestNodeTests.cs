@@ -7,6 +7,8 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
@@ -17,6 +19,110 @@ public class MakeHttpRequestNodeTests : NodeTestBase
     {
         var handler = new MockHttpMessageHandler(statusCode, responseContent);
         return new HttpClient(handler);
+    }
+
+    private static readonly IMeshEtlContext EmptyEtlContext = CreateEtlContext(null);
+
+    private static IMeshEtlContext CreateEtlContext(HttpApiSettings? settings, string entry = "TestApi")
+    {
+        var etlContext = A.Fake<IMeshEtlContext>();
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined(entry)).Returns(settings is not null);
+        if (settings is not null)
+        {
+            A.CallTo(() => globalConfiguration.GetValue<HttpApiSettings>(entry)).Returns(settings);
+        }
+
+        return etlContext;
+    }
+
+    [Theory]
+    [InlineData("https://host/api/v1", "/article", "https://host/api/v1/article")]
+    [InlineData("https://host/api/v1/", "/article", "https://host/api/v1/article")]
+    [InlineData("https://host/api/v1", "article", "https://host/api/v1/article")]
+    [InlineData("https://host/api/v1/", "article", "https://host/api/v1/article")]
+    public async Task ProcessObjectAsync_WithApiConfiguration_JoinsBaseAndPath(
+        string baseUrl, string path, string expected)
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = path, TargetPath = "$.response",
+            ApiConfiguration = "TestApi", AuthHeaderName = "AuthenticationToken"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{\"result\":[]}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings { BaseUrl = baseUrl, ApiKey = "token-1" });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(expected, handler.Requests.Single().RequestUri!.ToString());
+    }
+
+    [Theory]
+    [InlineData("", "token-1")]
+    [InlineData("Bearer ", "Bearer token-1")]
+    public async Task ProcessObjectAsync_WithApiConfiguration_SendsAuthHeader(string prefix, string expected)
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "/article", TargetPath = "$.response",
+            ApiConfiguration = "TestApi", AuthHeaderName = "AuthenticationToken",
+            AuthHeaderValuePrefix = prefix
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{\"result\":[]}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings
+        {
+            BaseUrl = "https://host/api/v1", ApiKey = "token-1"
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(expected, handler.Requests.Single().Headers.GetValues("AuthenticationToken").Single());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_AbsoluteUrlWithApiConfiguration_ThrowsAndSendsNothing()
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://elsewhere.example.com/article", TargetPath = "$.response",
+            ApiConfiguration = "TestApi"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings
+        {
+            BaseUrl = "https://host/api/v1", ApiKey = "token-1"
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_UndefinedApiConfiguration_ThrowsWithDefaultErrorHandling()
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "/article", TargetPath = "$.response", ApiConfiguration = "TestApi"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), CreateEtlContext(null));
+
+        // OnHttpError is untouched here: a configuration mistake is never a runtime outcome.
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("TestApi", ex.Message);
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]
@@ -31,7 +137,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{\"result\":\"success\"}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => dataContext.Set(
@@ -67,7 +173,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, responseBody);
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // Set<string> with the raw body must be the call that happens.
@@ -103,7 +209,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{\"result\":\"ok\"}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => dataContext.Set(
@@ -127,7 +233,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{\"result\":\"success\"}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
@@ -145,7 +251,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.InternalServerError, "Server Error");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextNotCalled(next, dataContext, nodeContext);
@@ -165,7 +271,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
 
         SetupGetSimpleValueByPath(dataContext, "$.url", "http://example.com/api/data");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
@@ -182,7 +288,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextNotCalled(next, dataContext, nodeContext);
@@ -204,7 +310,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
@@ -233,7 +339,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
                 TargetValueWriteModes _) =>
                 capturedString = value);
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal("plain text response", capturedString);
@@ -251,7 +357,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextNotCalled(next, dataContext, nodeContext);
@@ -270,7 +376,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{\"id\":1}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
@@ -292,7 +398,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
         var httpClient = CreateMockHttpClient(HttpStatusCode.OK, "{}");
 
-        var node = new MakeHttpRequestNode(next, httpClient);
+        var node = new MakeHttpRequestNode(next, httpClient, EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
@@ -337,7 +443,7 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         var next = A.Fake<NodeDelegate>();
 
         var handler = new CapturingHandler(HttpStatusCode.OK, "{}");
-        var node = new MakeHttpRequestNode(next, new HttpClient(handler));
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // Expected: the exact bytes the legacy Get<JsonNode> + ToJsonString(options) produced.

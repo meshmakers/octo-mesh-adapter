@@ -2,6 +2,7 @@
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -13,9 +14,17 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 /// <param name="next"></param>
 /// <param name="httpClient"></param>
+/// <param name="etlContext"></param>
+/// <param name="timeProvider"></param>
 [NodeConfiguration(typeof(MakeHttpRequestNodeConfiguration))]
-public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPipelineNode
+public class MakeHttpRequestNode(
+    NodeDelegate next,
+    HttpClient httpClient,
+    IMeshEtlContext etlContext,
+    TimeProvider? timeProvider = null) : IPipelineNode
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     /// <summary>
     /// run the HTTP request
     /// </summary>
@@ -31,16 +40,30 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
             return;
         }
 
-        try
+        var url = GetUrl(dataContext, c);
+        if (string.IsNullOrWhiteSpace(url))
         {
-            // Get the URL
-            var url = GetUrl(dataContext, c);
-            if (string.IsNullOrWhiteSpace(url))
+            nodeContext.Error("URL is not set. Please provide a Url or UrlPath");
+            return;
+        }
+
+        HttpApiSettings? apiSettings = null;
+        if (!string.IsNullOrWhiteSpace(c.ApiConfiguration))
+        {
+            // Outside the try below on purpose: a configuration mistake is not a runtime outcome
+            // and must not be answered with a log line.
+            apiSettings = HttpApiSettingsResolver.Resolve(etlContext, c.ApiConfiguration, nodeContext);
+
+            if (Uri.TryCreate(url, UriKind.Absolute, out _))
             {
-                nodeContext.Error("URL is not set. Please provide a Url or UrlPath");
-                return;
+                throw MeshAdapterPipelineExecutionException.AbsoluteUrlWithHttpApiConfiguration(nodeContext, url);
             }
 
+            url = CombineUrl(apiSettings.BaseUrl, url);
+        }
+
+        try
+        {
             // Replace path parameters in URL
             url = ReplacePathParameters(dataContext, nodeContext, url, c.PathParameters);
 
@@ -51,6 +74,11 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
 
             // Add headers
             AddHeaders(dataContext, nodeContext, request, c.HeaderParameters);
+
+            if (apiSettings is not null)
+            {
+                request.Headers.Add(c.AuthHeaderName, c.AuthHeaderValuePrefix + apiSettings.ApiKey);
+            }
 
             // Add body for non-GET requests
             if (!string.Equals(c.Method, "GET", StringComparison.OrdinalIgnoreCase))
@@ -137,6 +165,15 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Joins a configured base URL and a relative path with exactly one separator, whatever
+    /// combination of trailing and leading slashes the two carry.
+    /// </summary>
+    internal static string CombineUrl(string baseUrl, string relativeUrl)
+    {
+        return $"{baseUrl.TrimEnd('/')}/{relativeUrl.TrimStart('/')}";
     }
 
     private static bool ValidateConfiguration(MakeHttpRequestNodeConfiguration config, INodeContext nodeContext)

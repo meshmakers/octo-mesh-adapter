@@ -580,8 +580,65 @@ Executes HTTP requests to external services.
 | `HeaderParameters` | ICollection | HTTP headers with dynamic replacement |
 | `PathParameters` | ICollection | URL path parameter substitution |
 | `TargetPath` | string | Response storage location |
+| `ApiConfiguration` | string? | GlobalConfiguration entry supplying `baseUrl` and `apiKey` |
+| `AuthHeaderName` / `AuthHeaderValuePrefix` | string | Header the key is sent in, and an optional scheme prefix |
+| `TimeoutSeconds` | int? | Timeout per attempt; unset leaves the HTTP client default |
+| `Retry` | HttpRetryOptions? | `MaxAttempts` (default 1, so no retry; at most 10), `BackoffBaseSeconds` (default 1, waited after a failed attempt and doubling, each wait capped at 60 s) |
+| `Paging` | HttpPagingOptions? | Page-number walk collecting every page into one array |
+| `OnHttpError` | enum | `LogAndStop` (default) or `Throw` |
 
 **Features**: Dynamic header/path parameter substitution, JSON/text body support, response parsing.
+
+> **Configured access:** with `ApiConfiguration` set, the URL is a path relative to the entry's
+> `baseUrl` and the key travels in `AuthHeaderName` (`Authorization` by default, sent scheme-less
+> unless `AuthHeaderValuePrefix` supplies one). A URL that names its own scheme is rejected in that
+> mode, since the entry already decides which host is being talked to; a path is a path whether or
+> not it starts with a slash. The entry is read when the pipeline is deployed, so a rotated key
+> takes effect after a redeploy.
+
+> **Limitation - custom auth headers and redirects:** the shared HTTP client follows redirects
+> automatically. .NET strips the `Authorization` header when a redirect crosses to another origin,
+> but it does not strip other headers, so a key sent under a custom `AuthHeaderName` would travel
+> to the redirect target. The initial request is pinned to the configured host, so this needs a
+> target that answers a 30x pointing elsewhere. Existing behaviour of this node and its client
+> registration, unchanged here and tracked separately; until it is addressed, prefer the default
+> `Authorization` header for a target that may redirect.
+
+> **Paging:** `ItemsPath` is a single-level path of the form `$.name` naming the array inside one
+> response. The walk stops on an empty page and, unless `StopOnShortPage` is turned off, on a page
+> shorter than `PageSize`; a response without an array at `ItemsPath` and reaching `MaxPages` both
+> fail rather than truncating the result quietly. All pages land as one flat array at `TargetPath`,
+> written once the walk is complete.
+
+> **Failures:** `OnHttpError` decides what a runtime failure means - `LogAndStop` reports it and
+> skips the following nodes while the execution still succeeds, `Throw` fails the execution so a
+> surrounding `ForEach@1` with `continueOnError` can isolate the item. Configuration mistakes
+> always fail. Retries cover 5xx, 408, 429, network errors and timeouts; other statuses fail at
+> once.
+
+> **Retrying a request that changes state:** a retry re-sends the request unchanged. On a GET that
+> is free; on a POST, PUT or DELETE it is a decision. A request whose response was lost may well
+> have been carried out by the target, and the retry carries it out again - enable retries there
+> only where a repeat is tolerated, for instance because the target deduplicates on a key the body
+> carries.
+
+> **Bounds:** the two bounds behave differently on purpose. A computed wait is **clamped** to 60 s
+> - the doubling keeps its shape and simply stops growing, so a long retry policy stays inside a
+> pipeline tick rather than being refused. `MaxAttempts` above 10 is **rejected** as a configuration
+> error, because there is no sensible way to silently run fewer attempts than were asked for. The
+> same rule decides the rest: a value that can be honoured approximately is clamped, a value that
+> cannot be honoured at all fails. `TimeoutSeconds` must be a positive number of seconds within
+> what the timers accept, and only leaving it out means "keep the client's own"; it can only
+> shorten an attempt, since the HTTP client's own timeout is process-wide and applies underneath,
+> so a larger value never takes effect and a failure names whichever of the two ended the attempt.
+> `Paging` numbers are rejected when they describe a walk nobody can run (`PageSize` or `MaxPages`
+> below one, a negative `FirstPageNumber`), and a URL carrying a fragment is rejected while paging
+> is on, because a fragment never reaches the server and the page parameters behind it would be
+> dropped from every request.
+
+> **Explicit nulls:** every optional number and string of the new sections is nullable with a
+> documented default. A pipeline definition that carries `pageSize: null` overwrites the property
+> initializer, so the defaults are resolved where the values are read, not where they are declared.
 
 #### ImportFromExcelNode
 

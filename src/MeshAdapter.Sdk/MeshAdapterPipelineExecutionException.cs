@@ -20,6 +20,13 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
     }
 
+    /// <summary>
+    /// The untruncated response body of a failed HTTP request, where the failure carries one. The
+    /// message keeps only the first few hundred characters so a thrown failure stays readable; a
+    /// caller that reports rather than throws restores the full text from here.
+    /// </summary>
+    public string? ResponseBody { get; private init; }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
@@ -843,5 +850,126 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: a per-execution scratch space is required ({reason}).");
+    }
+
+    public static Exception InvalidHttpApiConfiguration(INodeContext nodeContext, string configurationName,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' cannot be read as HTTP API settings.",
+            inner);
+    }
+
+    public static Exception IncompleteHttpApiConfiguration(INodeContext nodeContext, string configurationName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' must provide both 'baseUrl' and 'apiKey'.");
+    }
+
+    public static Exception HttpPagingItemsPathUnusable(INodeContext nodeContext, string itemsPath,
+        int page)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The response for page {page} carries no array at '{itemsPath}'. " +
+            "An empty array ends the walk; a missing or non-array value means the response shape changed.");
+    }
+
+    public static Exception HttpPagingCapReached(INodeContext nodeContext, int maxPages)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The paged request reached its limit of {maxPages} pages. " +
+            "Raise maxPages if the collection really is that large, or check that the target honours " +
+            "the page parameter - the result would otherwise be truncated silently.");
+    }
+
+    public static Exception HttpPagingConflictsWithOption(INodeContext nodeContext, string option)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {option} describes a single response and cannot be combined " +
+            "with paging, which writes the collected elements of every page.");
+    }
+
+    public static Exception HttpPagingParameterAlreadyInQuery(INodeContext nodeContext,
+        string parameterName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The URL already carries a '{parameterName}' query parameter, " +
+            "which the page walk also appends. Remove it from the URL, or name the paging parameter " +
+            "differently.");
+    }
+
+    public static Exception HttpPagingItemsPathNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Paging needs an itemsPath naming the array inside one response.");
+    }
+
+    public static Exception HttpRequestFailed(INodeContext nodeContext, string url, int? statusCode,
+        int attempts, string detail, string? responseBody = null)
+    {
+        var status = statusCode is null ? "no response" : $"HTTP {statusCode}";
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Request to '{url}' failed after {attempts} attempts ({status}): {detail}")
+        {
+            ResponseBody = responseBody
+        };
+    }
+
+    public static Exception InvalidHttpNodeOption(INodeContext nodeContext, string detail)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");
+    }
+
+    public static Exception UnusableAuthHeaderName(INodeContext nodeContext, string headerName)
+    {
+        // The value is deliberately absent from the message: it is the API key.
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: authHeaderName '{headerName}' is not a usable HTTP header name. " +
+            "A header name is a token: letters, digits and !#$%&'*+-.^_`|~, with no spaces.");
+    }
+
+    public static Exception HttpPagingUrlHasFragment(INodeContext nodeContext, string url)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: URL '{url}' carries a fragment while paging is configured. " +
+            "A fragment is never sent to the server, so the page parameters appended after it would " +
+            "never reach the target and the walk would run to its limit against the first page. " +
+            "Remove the fragment from the URL.");
+    }
+
+    public static Exception InvalidHttpRetryOptions(INodeContext nodeContext, string detail)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");
+    }
+
+    public static Exception HttpApiBaseUrlNotAbsolute(INodeContext nodeContext, string configurationName,
+        string baseUrl)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' has baseUrl '{baseUrl}', " +
+            "which is not an absolute http or https URL.");
+    }
+
+    public static Exception AuthHeaderCollision(INodeContext nodeContext, string headerName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Header '{headerName}' is both the auth header of the configured " +
+            "API and a header parameter, so the request would carry two values for it. Rename one of " +
+            "them, or drop the ApiConfiguration and supply the header yourself.");
+    }
+
+    public static Exception AuthHeaderNotAccepted(INodeContext nodeContext, string headerName)
+    {
+        // The value is deliberately absent from the message: it is the API key.
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Header name '{headerName}' is not a valid HTTP header name.");
+    }
+
+    public static Exception SchemeQualifiedUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: URL '{url}' names its own scheme while an ApiConfiguration is " +
+            "set, which configures the host to talk to. Configure a path relative to the configured " +
+            "base URL, or drop the ApiConfiguration and supply the header yourself.");
     }
 }

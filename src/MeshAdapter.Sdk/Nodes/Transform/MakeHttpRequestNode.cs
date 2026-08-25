@@ -31,6 +31,22 @@ public class MakeHttpRequestNode(
     private static readonly Regex SchemeQualified =
         new("^[A-Za-z][A-Za-z0-9+.-]*://", RegexOptions.Compiled);
 
+    /// <summary>
+    /// An HTTP header name, which RFC 9110 defines as a token. Checked before the request is built
+    /// so an unusable name is a configuration error rather than something the header collection
+    /// refuses later, from inside the block that answers failures with a log entry.
+    /// </summary>
+    private static readonly Regex HeaderToken =
+        new(@"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// The largest timeout the underlying timers accept: they take a millisecond count in an
+    /// Int32. The value is deliberately not an operational limit - the HTTP client's own timeout
+    /// applies underneath in any case, so a long value is ineffective rather than dangerous, and
+    /// how long a target may take is not this node's policy to make.
+    /// </summary>
+    private const int MaxTimeoutSeconds = int.MaxValue / 1000;
+
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     /// <summary>
@@ -71,6 +87,12 @@ public class MakeHttpRequestNode(
             url = CombineUrl(apiSettings.BaseUrl, url);
 
             var authHeaderName = ResolveAuthHeaderName(c);
+            if (!HeaderToken.IsMatch(authHeaderName))
+            {
+                throw MeshAdapterPipelineExecutionException.UnusableAuthHeaderName(
+                    nodeContext, authHeaderName);
+            }
+
             if (c.HeaderParameters.Any(h =>
                     string.Equals(h.Name, authHeaderName, StringComparison.OrdinalIgnoreCase)))
             {
@@ -82,6 +104,7 @@ public class MakeHttpRequestNode(
         // whose catch answers a failure with a log entry under the default error handling, and a
         // configuration mistake must fail whatever that setting says.
         HttpRequestSender.ValidateRetryOptions(c.Retry ?? new HttpRetryOptions(), nodeContext);
+        ValidateTimeout(c, nodeContext);
 
         if (c.Paging is { } pagingOptions)
         {
@@ -90,6 +113,15 @@ public class MakeHttpRequestNode(
             if (string.IsNullOrWhiteSpace(pagingOptions.ItemsPath))
             {
                 throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathNotSet(nodeContext);
+            }
+
+            ValidatePagingNumbers(pagingOptions, nodeContext);
+
+            // A fragment never reaches the server, so page parameters appended behind one would be
+            // dropped from every request and the walk would run to its limit against page one.
+            if (url.Contains('#', StringComparison.Ordinal))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingUrlHasFragment(nodeContext, url);
             }
 
             // Both describe a single response body. The walk writes the collected array and never
@@ -409,6 +441,64 @@ public class MakeHttpRequestNode(
     internal static string CombineUrl(string baseUrl, string relativeUrl)
     {
         return $"{baseUrl.TrimEnd('/')}/{relativeUrl.TrimStart('/')}";
+    }
+
+    /// <summary>
+    /// Rejects a timeout the node cannot apply as configured. Only null means "unset": a zero or a
+    /// negative would otherwise pass silently as unset, and a value beyond what the timer can
+    /// represent would throw from inside the runtime block, where it is answered with a log entry
+    /// even in <see cref="HttpErrorHandling.Throw" /> mode.
+    /// </summary>
+    private static void ValidateTimeout(MakeHttpRequestNodeConfiguration config, INodeContext nodeContext)
+    {
+        if (config.TimeoutSeconds is not { } seconds)
+        {
+            return;
+        }
+
+        if (seconds <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"timeoutSeconds is {seconds}. Leave it out to keep the HTTP client's own timeout; " +
+                "a value has to be a positive number of seconds.");
+        }
+
+        if (seconds > MaxTimeoutSeconds)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"timeoutSeconds is {seconds}, which is beyond the {MaxTimeoutSeconds}s the " +
+                "underlying timers accept.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects paging numbers that describe a walk nobody can run. Each of these is reachable only
+    /// from a definition, and each would otherwise surface inside the runtime block: a page size of
+    /// zero asks for nothing and disables the short-page stop, a page limit of zero ends the walk
+    /// before the first request with a limit error, and a negative first page is not a page.
+    /// </summary>
+    private static void ValidatePagingNumbers(HttpPagingOptions paging, INodeContext nodeContext)
+    {
+        var pageSize = paging.PageSize ?? HttpPagingOptions.DefaultPageSize;
+        if (pageSize <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"paging.pageSize is {pageSize}. A page has to hold at least one element.");
+        }
+
+        var maxPages = paging.MaxPages ?? HttpPagingOptions.DefaultMaxPages;
+        if (maxPages <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"paging.maxPages is {maxPages}. The walk has to be allowed at least one page.");
+        }
+
+        var firstPageNumber = paging.FirstPageNumber ?? HttpPagingOptions.DefaultFirstPageNumber;
+        if (firstPageNumber < 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"paging.firstPageNumber is {firstPageNumber}. Counting starts at zero or above.");
+        }
     }
 
     /// <summary>

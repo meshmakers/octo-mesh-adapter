@@ -959,8 +959,143 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Empty(handler.Requests);
     }
 
+    [Theory]
+    // Explicit zeroes and negatives: values a definition can produce, each of which would
+    // otherwise be answered inside the runtime catch and leave a green execution behind.
+    [InlineData(0, null, null)]
+    [InlineData(-1, null, null)]
+    [InlineData(null, 0, null)]
+    [InlineData(null, -5, null)]
+    [InlineData(null, null, -1)]
+    [InlineData(int.MinValue, null, null)]
+    public async Task ProcessObjectAsync_PagingNumbersOutOfRange_ThrowsWithDefaultErrorHandling(
+        int? pageSize, int? maxPages, int? firstPageNumber)
+    {
+        var paging = new HttpPagingOptions { ItemsPath = "$.result" };
+        if (pageSize is not null) paging.PageSize = pageSize;
+        if (maxPages is not null) paging.MaxPages = maxPages;
+        if (firstPageNumber is not null) paging.FirstPageNumber = firstPageNumber;
+        var config = PagingConfig(paging);
+        config.OnHttpError = HttpErrorHandling.LogAndStop;
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
-    public async Task ProcessObjectAsync_PagingDefaults_AreTheDocumentedOnes()
+    public async Task ProcessObjectAsync_FirstPageNumberZero_IsAccepted()
+    {
+        // Zero is a legitimate first page - some APIs count from it - so only negatives are wrong.
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result", FirstPageNumber = 0 });
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page()));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("page=0", handler.Requests[0].RequestUri!.ToString());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(int.MinValue)]
+    // Beyond what the underlying timer can represent: the constructor would throw from inside the
+    // runtime catch, which swallows it even in Throw mode.
+    [InlineData(int.MaxValue)]
+    public async Task ProcessObjectAsync_TimeoutOutOfRange_ThrowsWithDefaultErrorHandling(int timeoutSeconds)
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response",
+            OnHttpError = HttpErrorHandling.LogAndStop, TimeoutSeconds = timeoutSeconds
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_TimeoutUnset_StaysUnset()
+    {
+        // Only null means "leave the client's own timeout in place"; that path must stay open.
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response", TimeoutSeconds = null
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("Auth Token")]
+    [InlineData("Auth:Token")]
+    [InlineData("Auth\nToken")]
+    public async Task ProcessObjectAsync_AuthHeaderNameUnusable_ThrowsWithoutTheKey(string headerName)
+    {
+        // A header name is a token. An unusable one is a configuration mistake, and the message
+        // must name the header rather than what would have been sent under it.
+        const string key = "super-secret-token-value";
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "/article", TargetPath = "$.response",
+            OnHttpError = HttpErrorHandling.LogAndStop,
+            ApiConfiguration = "TestApi", AuthHeaderName = headerName
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings
+        {
+            BaseUrl = "https://host/api/v1", ApiKey = key
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.DoesNotContain(key, ex.Message, StringComparison.Ordinal);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingWithFragmentInUrl_Throws()
+    {
+        // A fragment is never sent to the server, so paging parameters appended after it would
+        // vanish from every request and the walk would run to its cap against page one. Refused
+        // rather than worked around: a fragment on an API endpoint is a mistake in itself.
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result" });
+        config.Url = "https://host/api/article#section";
+        config.OnHttpError = HttpErrorHandling.LogAndStop;
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("fragment", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public void PagingDefaults_AreTheDocumentedOnes()
     {
         var paging = new HttpPagingOptions { ItemsPath = "$.result" };
 

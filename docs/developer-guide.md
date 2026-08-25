@@ -596,6 +596,14 @@ Executes HTTP requests to external services.
 > not it starts with a slash. The entry is read when the pipeline is deployed, so a rotated key
 > takes effect after a redeploy.
 
+> **Limitation - custom auth headers and redirects:** the shared HTTP client follows redirects
+> automatically. .NET strips the `Authorization` header when a redirect crosses to another origin,
+> but it does not strip other headers, so a key sent under a custom `AuthHeaderName` would travel
+> to the redirect target. The initial request is pinned to the configured host, so this needs a
+> target that answers a 30x pointing elsewhere. Existing behaviour of this node and its client
+> registration, unchanged here and tracked separately; until it is addressed, prefer the default
+> `Authorization` header for a target that may redirect.
+
 > **Paging:** `ItemsPath` is a single-level path of the form `$.name` naming the array inside one
 > response. The walk stops on an empty page and, unless `StopOnShortPage` is turned off, on a page
 > shorter than `PageSize`; a response without an array at `ItemsPath` and reaching `MaxPages` both
@@ -614,11 +622,19 @@ Executes HTTP requests to external services.
 > only where a repeat is tolerated, for instance because the target deduplicates on a key the body
 > carries.
 
-> **Bounds:** each wait is capped at 60 s and `MaxAttempts` at 10, so a retrying request stays
-> inside a pipeline tick instead of growing into an outage of its own; both are configuration
-> errors when exceeded. `TimeoutSeconds` can only shorten an attempt: the HTTP client's own
-> timeout is process-wide and applies underneath, so a larger value never takes effect, and a
-> failure names whichever of the two actually ended the attempt.
+> **Bounds:** the two bounds behave differently on purpose. A computed wait is **clamped** to 60 s
+> - the doubling keeps its shape and simply stops growing, so a long retry policy stays inside a
+> pipeline tick rather than being refused. `MaxAttempts` above 10 is **rejected** as a configuration
+> error, because there is no sensible way to silently run fewer attempts than were asked for. The
+> same rule decides the rest: a value that can be honoured approximately is clamped, a value that
+> cannot be honoured at all fails. `TimeoutSeconds` must be a positive number of seconds within
+> what the timers accept, and only leaving it out means "keep the client's own"; it can only
+> shorten an attempt, since the HTTP client's own timeout is process-wide and applies underneath,
+> so a larger value never takes effect and a failure names whichever of the two ended the attempt.
+> `Paging` numbers are rejected when they describe a walk nobody can run (`PageSize` or `MaxPages`
+> below one, a negative `FirstPageNumber`), and a URL carrying a fragment is rejected while paging
+> is on, because a fragment never reaches the server and the page parameters behind it would be
+> dropped from every request.
 
 > **Explicit nulls:** every optional number and string of the new sections is nullable with a
 > documented default. A pipeline definition that carries `pageSize: null` overwrites the property

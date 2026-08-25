@@ -220,6 +220,13 @@ public record HttpPathParameter
         /// it is; with the default header and no prefix it goes out scheme-less, which suits a
         /// target expecting a bare token.
         /// </summary>
+        /// <remarks>
+        /// Redirects: the shared HTTP client follows them automatically, and .NET strips the
+        /// <c>Authorization</c> header when one crosses to another origin but leaves other headers
+        /// in place. A key sent under a custom name would therefore travel to the redirect target.
+        /// The first request always goes to the configured host, so it takes a target answering a
+        /// 30x that points elsewhere; for such a target, prefer the default header.
+        /// </remarks>
         [PropertyGroup("Connection", 6)]
         public string? AuthHeaderName { get; set; } = DefaultAuthHeaderName;
 

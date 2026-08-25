@@ -243,6 +243,12 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_ResponseHandlingFails_IsLoggedInBothModes` | Non-HTTP failures keep the original net in both modes |
 | `ProcessObjectAsync_ThrowMode_IsIsolatedByForEachContinueOnError` | Per-item isolation through the real loop node |
 | `ProcessObjectAsync_Paging_*` | Page walk: order, stop rules, cap, retry in place, existing query kept |
+| `PagingDefaults_AreTheDocumentedOnes` | The documented defaults, synchronous because nothing is awaited |
+| `ProcessObjectAsync_PagingNumbersOutOfRange_ThrowsWithDefaultErrorHandling` | Zero or negative page size, page limit and first page refused in preflight |
+| `ProcessObjectAsync_FirstPageNumberZero_IsAccepted` | Zero stays a legitimate first page |
+| `ProcessObjectAsync_TimeoutOutOfRange_ThrowsWithDefaultErrorHandling` | Zero, negative and beyond-timer values refused; only null means unset |
+| `ProcessObjectAsync_AuthHeaderNameUnusable_ThrowsWithoutTheKey` | Blank or non-token header name refused, message without the key |
+| `ProcessObjectAsync_PagingWithFragmentInUrl_Throws` | A fragment plus paging refused rather than worked around |
 | `ProcessObjectAsync_PagingUnusableItemsPath_FailsInsteadOfStopping` | A changed response shape is not zero elements |
 | `ProcessObjectAsync_WithApiConfiguration_NeverLogsTheKey` | Key never reaches the log, including base64 keys the typed header parser rejects |
 | `ProcessObjectAsync_AuthHeaderCollidesWithHeaderParameter_ThrowsWithoutTheKey` | Two sources for one header refused, message without the value |

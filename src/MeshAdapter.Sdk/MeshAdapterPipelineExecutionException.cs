@@ -915,6 +915,28 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         };
     }
 
+    public static Exception InvalidHttpNodeOption(INodeContext nodeContext, string detail)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");
+    }
+
+    public static Exception UnusableAuthHeaderName(INodeContext nodeContext, string headerName)
+    {
+        // The value is deliberately absent from the message: it is the API key.
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: authHeaderName '{headerName}' is not a usable HTTP header name. " +
+            "A header name is a token: letters, digits and !#$%&'*+-.^_`|~, with no spaces.");
+    }
+
+    public static Exception HttpPagingUrlHasFragment(INodeContext nodeContext, string url)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: URL '{url}' carries a fragment while paging is configured. " +
+            "A fragment is never sent to the server, so the page parameters appended after it would " +
+            "never reach the target and the walk would run to its limit against the first page. " +
+            "Remove the fragment from the URL.");
+    }
+
     public static Exception InvalidHttpRetryOptions(INodeContext nodeContext, string detail)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");

@@ -583,7 +583,7 @@ Executes HTTP requests to external services.
 | `ApiConfiguration` | string? | GlobalConfiguration entry supplying `baseUrl` and `apiKey` |
 | `AuthHeaderName` / `AuthHeaderValuePrefix` | string | Header the key is sent in, and an optional scheme prefix |
 | `TimeoutSeconds` | int? | Timeout per attempt; unset leaves the HTTP client default |
-| `Retry` | HttpRetryOptions? | `MaxAttempts` (default 1, so no retry), `BackoffBaseSeconds` (default 1, waited after a failed attempt and doubling) |
+| `Retry` | HttpRetryOptions? | `MaxAttempts` (default 1, so no retry; at most 10), `BackoffBaseSeconds` (default 1, waited after a failed attempt and doubling, each wait capped at 60 s) |
 | `Paging` | HttpPagingOptions? | Page-number walk collecting every page into one array |
 | `OnHttpError` | enum | `LogAndStop` (default) or `Throw` |
 
@@ -606,6 +606,18 @@ Executes HTTP requests to external services.
 > surrounding `ForEach@1` with `continueOnError` can isolate the item. Configuration mistakes
 > always fail. Retries cover 5xx, 408, 429, network errors and timeouts; other statuses fail at
 > once.
+
+> **Retrying a request that changes state:** a retry re-sends the request unchanged. On a GET that
+> is free; on a POST, PUT or DELETE it is a decision. A request whose response was lost may well
+> have been carried out by the target, and the retry carries it out again - enable retries there
+> only where a repeat is tolerated, for instance because the target deduplicates on a key the body
+> carries.
+
+> **Bounds:** each wait is capped at 60 s and `MaxAttempts` at 10, so a retrying request stays
+> inside a pipeline tick instead of growing into an outage of its own; both are configuration
+> errors when exceeded. `TimeoutSeconds` can only shorten an attempt: the HTTP client's own
+> timeout is process-wide and applies underneath, so a larger value never takes effect, and a
+> failure names whichever of the two actually ended the attempt.
 
 > **Explicit nulls:** every optional number and string of the new sections is nullable with a
 > documented default. A pipeline definition that carries `pageSize: null` overwrites the property

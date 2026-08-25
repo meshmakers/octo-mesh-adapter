@@ -233,10 +233,20 @@ public record HttpPathParameter
         /// Absent means a single attempt.
         /// </summary>
         /// <remarks>
+        /// <para>
+        /// A retry re-sends the request as it was. That is safe for a GET, and it is a decision
+        /// for anything that changes state: a POST whose response was lost - a timeout, a dropped
+        /// connection, a 502 from a proxy that had already forwarded it - may well have been
+        /// carried out by the target, and the retry then carries it out again. Enable retries on a
+        /// non-idempotent method only where the target tolerates a repeat, for instance because it
+        /// deduplicates by a key the body carries.
+        /// </para>
+        /// <para>
         /// Nullable on purpose. A definition carrying an explicit null overwrites a property
         /// initializer, so a non-nullable property with a default would hand the node a null it
         /// cannot see coming - the same shape of mistake that a null integer in a settings entry
         /// once caused. Read it through <c>Retry ?? new HttpRetryOptions()</c> at every use site.
+        /// </para>
         /// </remarks>
         [PropertyGroup("Connection", 8)]
         public HttpRetryOptions? Retry { get; set; }
@@ -245,6 +255,11 @@ public record HttpPathParameter
         /// Timeout in seconds applied to each attempt. Unset leaves the HTTP client's own default
         /// in place; the client is shared, so its timeout is never changed.
         /// </summary>
+        /// <remarks>
+        /// It can only shorten an attempt, never lengthen one: the client's own timeout is
+        /// process-wide and applies underneath, so a value above it never takes effect. A failure
+        /// reports which of the two ended the attempt rather than assuming this one did.
+        /// </remarks>
         [PropertyGroup("Connection", 9)]
         public int? TimeoutSeconds { get; set; }
 

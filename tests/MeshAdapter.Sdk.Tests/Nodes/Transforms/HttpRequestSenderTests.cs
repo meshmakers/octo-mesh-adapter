@@ -251,6 +251,26 @@ public class HttpRequestSenderTests : NodeTestBase
     }
 
     [Fact]
+    public async Task SendAsync_CancellationThatIsNotOurTimeout_DoesNotClaimTheConfiguredTimeout()
+    {
+        // The per-attempt timeout cannot undercut the HTTP client's own, which is process-wide:
+        // configure 600 s against a client that gives up after 100 s and the client's timeout is
+        // what ends the attempt. Reporting that as "exceeded the configured timeout of 600 s"
+        // would send an operator looking for a setting that never took effect.
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Throws(new TaskCanceledException()));
+        var time = new FakeTimeProvider();
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => WithAdvancingTime(time, HttpRequestSender.SendAsync(
+                new HttpClient(handler), Get(), new HttpRetryOptions { MaxAttempts = 1 },
+                600, time, NodeContext())));
+
+        Assert.DoesNotContain("600", ex.Message, StringComparison.Ordinal);
+        Assert.IsNotType<OperationCanceledException>(ex);
+    }
+
+    [Fact]
     public async Task SendAsync_DefaultOptions_MakesExactlyOneAttempt()
     {
         var handler = new SequencedHttpMessageHandler(

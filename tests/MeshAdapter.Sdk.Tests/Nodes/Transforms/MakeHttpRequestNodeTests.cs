@@ -904,6 +904,52 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Equal(500, paging.MaxPages);
     }
 
+    [Fact]
+    public async Task ProcessObjectAsync_FormBodyThatIsNotAJsonObject_IsReportedAndSendsNothing()
+    {
+        // Legacy behaviour, pinned before the pre-flight check that replaces the throwaway probe:
+        // an unusable body is reported and stops the branch, and no request goes out.
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "POST", Url = "https://host/api", TargetPath = "$.response",
+            BodyContentType = "application/x-www-form-urlencoded", Body = "[1,2,3]"
+        };
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => logger.Error(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustHaveHappened();
+        Assert.Empty(handler.Requests);
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_FormBodyThatIsAJsonObject_SendsFormFields()
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "POST", Url = "https://host/api", TargetPath = "$.response",
+            BodyContentType = "application/x-www-form-urlencoded",
+            Body = "{\"grant_type\":\"client_credentials\",\"scope\":\"read write\"}"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        string? sent = null;
+        var handler = new SequencedHttpMessageHandler(async (request, token) =>
+        {
+            sent = await request.Content!.ReadAsStringAsync(token);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("grant_type=client_credentials&scope=read+write", sent);
+    }
+
     [Theory]
     [InlineData("super-secret-token-value")]
     // A base64 key: '=' padding and '/' are not token characters, so the strongly typed

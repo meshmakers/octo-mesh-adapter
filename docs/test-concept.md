@@ -242,11 +242,18 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_ThrowMode_IsIsolatedByForEachContinueOnError` | Per-item isolation through the real loop node |
 | `ProcessObjectAsync_Paging_*` | Page walk: order, stop rules, cap, retry in place, existing query kept |
 | `ProcessObjectAsync_PagingUnusableItemsPath_FailsInsteadOfStopping` | A changed response shape is not zero elements |
+| `ProcessObjectAsync_WithApiConfiguration_NeverLogsTheKey` | Key never reaches the log, including base64 keys the typed header parser rejects |
+| `ProcessObjectAsync_AuthHeaderCollidesWithHeaderParameter_ThrowsWithoutTheKey` | Two sources for one header refused, message without the value |
+| `ProcessObjectAsync_FailingStatusWithDefaults_LogsTheFullResponseBody` | The default path still logs the whole body, not the truncated message |
+| `ProcessObjectAsync_PagingWithSingleResponseOptions_Throws` | Base64 / contentLengthTargetPath alongside paging refused |
+| `ProcessObjectAsync_PagingParameterAlreadyInTheQuery_Throws` | A page parameter already in the URL refused |
+| `ProcessObjectAsync_FormBodyThat*` | Legacy form-urlencoded behaviour, pinned around the pre-flight body check |
 
 **`HttpRequestSenderTests`** covers one request in isolation: the transient set (5xx, 408, 429,
 `HttpRequestException`, `TaskCanceledException`) against the non-transient one, the exhausted-attempts
 message (status, attempt count, body truncated to 300 characters), the per-attempt timeout against a
-target that never answers, and the backoff sequence 1 s / 2 s / 4 s. Delays are pinned through a
+target that never answers, the per-wait cap and the attempt limit, a cancellation that is not this
+node's own timeout, and the backoff sequence 1 s / 2 s / 4 s. Delays are pinned through a
 `FakeTimeProvider` subclass that records the delays asked for, not through the gaps between handler
 calls - the clock is driven by polling, so a continuation reaching the handler a step late would
 report a gap that says nothing about what was waited for.
@@ -257,6 +264,11 @@ produces: a property initializer applies only when a key is **absent**, so a key
 null hands the node a value nobody wrote. Assertions are about the behaviour that follows (the
 header actually sent, the first page actually requested, the delay actually waited) rather than
 about the property values, which after resolution would only restate what they are meant to prove.
+
+**`SequencedHttpMessageHandlerTests`** covers the test double itself, because several node tests
+assert through it: a script with no steps is refused rather than reaching for a negative index, and
+a recorded request still answers for its URL and headers after the message it came from has been
+disposed - which the sender does to every request it sends.
 
 **Mocking Requirements**:
 ```csharp

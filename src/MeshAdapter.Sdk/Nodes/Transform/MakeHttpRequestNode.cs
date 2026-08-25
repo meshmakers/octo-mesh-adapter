@@ -116,15 +116,15 @@ public class MakeHttpRequestNode(
 
             nodeContext.Debug("Making HTTP {0} request to {1}", c.Method, url);
 
-            // The body is identical for every attempt, so it is resolved and checked once - the
-            // instance built here only answers whether the content type can carry it and is
-            // discarded, because each attempt needs its own. A body it cannot carry stops the
-            // branch before any request goes out, reported by CreateContent exactly as before.
+            // The body is identical for every attempt, so it is resolved and checked once, while
+            // the content itself is built per attempt because a sent message cannot be sent again.
+            // The check reads the body rather than building a throwaway content: a body the
+            // configured content type cannot carry stops the branch before any request goes out.
             string? body = null;
             if (!string.Equals(c.Method, "GET", StringComparison.OrdinalIgnoreCase))
             {
                 body = GetBody(dataContext, c);
-                if (!string.IsNullOrEmpty(body) && CreateContent(body, c, nodeContext) == null)
+                if (!string.IsNullOrEmpty(body) && !IsBodyUsable(body, c, nodeContext))
                 {
                     return;
                 }
@@ -468,26 +468,56 @@ public class MakeHttpRequestNode(
         return true;
     }
 
+    private const string FormBodyRequiresJsonObject =
+        "Body content type application/x-www-form-urlencoded requires a JSON object body";
+
+    private static bool IsFormContent(MakeHttpRequestNodeConfiguration config)
+    {
+        return string.Equals(config.BodyContentType, "application/x-www-form-urlencoded",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The body a form-urlencoded request needs: a JSON object whose properties become the fields.
+    /// Null means the body is not one, which is the only way building the content can fail.
+    /// </summary>
+    private static JsonObject? TryParseFormBody(string body)
+    {
+        try
+        {
+            return JsonNode.Parse(body) as JsonObject;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the configured content type can carry this body. Reports the same message the
+    /// content builder used to, so an unusable body still stops the branch with the same text.
+    /// </summary>
+    private static bool IsBodyUsable(string body, MakeHttpRequestNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (!IsFormContent(config) || TryParseFormBody(body) is not null)
+        {
+            return true;
+        }
+
+        nodeContext.Error(FormBodyRequiresJsonObject);
+        return false;
+    }
+
     private static HttpContent? CreateContent(string body, MakeHttpRequestNodeConfiguration config,
         INodeContext nodeContext)
     {
-        if (string.Equals(config.BodyContentType, "application/x-www-form-urlencoded",
-                StringComparison.OrdinalIgnoreCase))
+        if (IsFormContent(config))
         {
-            // The body must be a JSON object; its properties become the form fields.
-            JsonObject? bodyObject;
-            try
-            {
-                bodyObject = JsonNode.Parse(body) as JsonObject;
-            }
-            catch (Exception)
-            {
-                bodyObject = null;
-            }
-
+            var bodyObject = TryParseFormBody(body);
             if (bodyObject == null)
             {
-                nodeContext.Error("Body content type application/x-www-form-urlencoded requires a JSON object body");
+                nodeContext.Error(FormBodyRequiresJsonObject);
                 return null;
             }
 

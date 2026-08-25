@@ -98,13 +98,17 @@ internal static class HttpRequestSender
             }
             catch (Exception e) when (e is TaskCanceledException or OperationCanceledException)
             {
-                // The only cancellation reaching here is this node's own timeout: the pipeline
-                // hands nodes no token to observe.
+                // The pipeline hands nodes no token to observe, so a cancellation here is a
+                // timeout - but not necessarily ours. The per-attempt timeout cannot undercut the
+                // HTTP client's own, which is process-wide, so a value above it never takes
+                // effect and the client ends the attempt instead. Only the source that actually
+                // fired may be named, or an operator goes looking for a setting that did nothing.
                 lastStatus = null;
                 lastResponseBody = null;
-                lastDetail = timeoutSeconds is > 0
+                lastDetail = timeoutSource?.IsCancellationRequested == true
                     ? $"the attempt exceeded the configured timeout of {timeoutSeconds} s"
-                    : "the request was cancelled";
+                    : "the attempt was cancelled before it answered, which is the HTTP client's own " +
+                      "timeout when it is shorter than the configured one";
             }
 
             if (attempt < attempts && backoffBaseSeconds > 0)

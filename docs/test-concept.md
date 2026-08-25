@@ -233,7 +233,9 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithJsonResponse_ParsesJson` | JSON response parsing |
 | `ProcessObjectAsync_WithApiConfiguration_JoinsBaseAndPath` | Base URL and relative path join, one separator either way |
 | `ProcessObjectAsync_WithApiConfiguration_SendsAuthHeader` | Configured key in the configured header, with and without a scheme prefix |
-| `ProcessObjectAsync_AbsoluteUrlWithApiConfiguration_ThrowsAndSendsNothing` | The key is never sent to another host |
+| `ProcessObjectAsync_AbsoluteUrlWithApiConfiguration_ThrowsAndSendsNothing` | A URL naming its own scheme is refused |
+| `HasExplicitScheme_AnswersTheSameOnEveryPlatform` | The guard reads a scheme, not absoluteness, so a leading slash means the same on Linux and Windows |
+| `ProcessObjectAsync_LeadingSlashPathWithApiConfiguration_IsJoinedNotRejected` | The ordinary way to write a path is joined, not rejected |
 | `ProcessObjectAsync_UndefinedApiConfiguration_ThrowsWithDefaultErrorHandling` | A configuration mistake fails whatever OnHttpError says |
 | `ProcessObjectAsync_FailingStatusWithDefaults_LogsStopsAndDoesNotThrow` | Unchanged failure behaviour without the new properties |
 | `ProcessObjectAsync_RetriesExhaustedWithDefaults_StaysQuiet` | Using the new features does not change what a failure does |

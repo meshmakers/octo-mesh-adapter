@@ -6,6 +6,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -23,6 +24,13 @@ public class MakeHttpRequestNode(
     IMeshEtlContext etlContext,
     TimeProvider? timeProvider = null) : IPipelineNode
 {
+    /// <summary>
+    /// A scheme followed by an authority, which is what it takes for a URL to name a target of its
+    /// own. Anything without one is a path, however many separators it starts with.
+    /// </summary>
+    private static readonly Regex SchemeQualified =
+        new("^[A-Za-z][A-Za-z0-9+.-]*://", RegexOptions.Compiled);
+
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     /// <summary>
@@ -54,9 +62,10 @@ public class MakeHttpRequestNode(
             // and must not be answered with a log line.
             apiSettings = HttpApiSettingsResolver.Resolve(etlContext, c.ApiConfiguration, nodeContext);
 
-            if (Uri.TryCreate(url, UriKind.Absolute, out _))
+            if (HasExplicitScheme(url))
             {
-                throw MeshAdapterPipelineExecutionException.AbsoluteUrlWithHttpApiConfiguration(nodeContext, url);
+                throw MeshAdapterPipelineExecutionException.SchemeQualifiedUrlWithHttpApiConfiguration(
+                    nodeContext, url);
             }
 
             url = CombineUrl(apiSettings.BaseUrl, url);
@@ -375,6 +384,22 @@ public class MakeHttpRequestNode(
                     c.TargetValueWriteMode);
             }
         }
+    }
+
+    /// <summary>
+    /// Whether the URL names its own scheme, and with it a target of its own.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="Uri.TryCreate(string, UriKind, out Uri)" /> with
+    /// <see cref="UriKind.Absolute" />: on Unix a leading slash makes that succeed with an implicit
+    /// file scheme, so "/article" - the ordinary way to write a path, and the way every source
+    /// pipeline writes one - would count as absolute on a Linux agent and not on a Windows
+    /// developer machine. The question the guard actually asks is whether a scheme is spelled out,
+    /// and that has the same answer everywhere.
+    /// </remarks>
+    internal static bool HasExplicitScheme(string url)
+    {
+        return SchemeQualified.IsMatch(url);
     }
 
     /// <summary>

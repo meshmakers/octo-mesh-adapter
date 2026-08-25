@@ -943,11 +943,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Header name '{headerName}' is not a valid HTTP header name.");
     }
 
-    public static Exception AbsoluteUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)
+    public static Exception SchemeQualifiedUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: URL '{url}' is absolute while an ApiConfiguration is set. " +
-            "Configure a path relative to the configured base URL, or drop the ApiConfiguration and " +
-            "supply the header yourself - the configured key must not be sent to another host.");
+            $"[{nodeContext.NodePath}]: URL '{url}' names its own scheme while an ApiConfiguration is " +
+            "set, which configures the host to talk to. Configure a path relative to the configured " +
+            "base URL, or drop the ApiConfiguration and supply the header yourself.");
     }
 }

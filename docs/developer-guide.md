@@ -591,9 +591,10 @@ Executes HTTP requests to external services.
 
 > **Configured access:** with `ApiConfiguration` set, the URL is a path relative to the entry's
 > `baseUrl` and the key travels in `AuthHeaderName` (`Authorization` by default, sent scheme-less
-> unless `AuthHeaderValuePrefix` supplies one). An absolute URL is rejected in that mode, so a typo
-> cannot send the key to another host. The entry is read when the pipeline is deployed, so a
-> rotated key takes effect after a redeploy.
+> unless `AuthHeaderValuePrefix` supplies one). A URL that names its own scheme is rejected in that
+> mode, since the entry already decides which host is being talked to; a path is a path whether or
+> not it starts with a slash. The entry is read when the pipeline is deployed, so a rotated key
+> takes effect after a redeploy.
 
 > **Paging:** `ItemsPath` is a single-level path of the form `$.name` naming the array inside one
 > response. The walk stops on an empty page and, unless `StopOnShortPage` is turned off, on a page

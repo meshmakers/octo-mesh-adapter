@@ -88,6 +88,46 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Equal(expected, handler.Requests.Single().Headers.GetValues("AuthenticationToken").Single());
     }
 
+    [Theory]
+    // A path is a path, whether or not it starts with a separator. On Linux a leading slash makes
+    // Uri.TryCreate(UriKind.Absolute) succeed with an implicit file scheme, which is why the guard
+    // asks about a scheme rather than about absoluteness - the answer must not depend on the OS.
+    [InlineData("/article", false)]
+    [InlineData("article", false)]
+    [InlineData("/api/v1/salesOrder?status-eq=CONFIRMED", false)]
+    [InlineData("//host/article", false)]
+    [InlineData("", false)]
+    [InlineData("https://elsewhere.example.com/article", true)]
+    [InlineData("http://elsewhere.example.com/article", true)]
+    [InlineData("HTTPS://ELSEWHERE.EXAMPLE.COM/x", true)]
+    [InlineData("ftp://host/x", true)]
+    public void HasExplicitScheme_AnswersTheSameOnEveryPlatform(string url, bool expected)
+    {
+        Assert.Equal(expected, MakeHttpRequestNode.HasExplicitScheme(url));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_LeadingSlashPathWithApiConfiguration_IsJoinedNotRejected()
+    {
+        // The case the guard used to swallow on Linux: a leading slash is the ordinary way to write
+        // a path, and every source pipeline writes one.
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "/article", TargetPath = "$.response", ApiConfiguration = "TestApi"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings
+        {
+            BaseUrl = "https://host/api/v1", ApiKey = "token-1"
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("https://host/api/v1/article", handler.Requests.Single().RequestUri!.ToString());
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_AbsoluteUrlWithApiConfiguration_ThrowsAndSendsNothing()
     {

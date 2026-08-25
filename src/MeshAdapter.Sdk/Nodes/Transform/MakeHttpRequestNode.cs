@@ -69,102 +69,125 @@ public class MakeHttpRequestNode(
 
             nodeContext.Debug("Making HTTP {0} request to {1}", c.Method, url);
 
-            // Create HTTP request message
-            using var request = new HttpRequestMessage(new(c.Method), url);
-
-            // Add headers
-            AddHeaders(dataContext, nodeContext, request, c.HeaderParameters);
-
-            if (apiSettings is not null)
-            {
-                request.Headers.Add(c.AuthHeaderName, c.AuthHeaderValuePrefix + apiSettings.ApiKey);
-            }
-
-            // Add body for non-GET requests
+            // The body is the same for every attempt, so a body the content type cannot carry
+            // stops the branch before any request goes out, reported by CreateContent as before.
+            string? body = null;
             if (!string.Equals(c.Method, "GET", StringComparison.OrdinalIgnoreCase))
             {
-                var body = GetBody(dataContext, c);
-                if (!string.IsNullOrEmpty(body))
+                body = GetBody(dataContext, c);
+                if (!string.IsNullOrEmpty(body) && CreateContent(body, c, nodeContext) == null)
                 {
-                    request.Content = CreateContent(body, c, nodeContext);
-                    if (request.Content == null)
-                    {
-                        return;
-                    }
+                    return;
                 }
             }
 
-            // Send the request
-            using var response = await httpClient.SendAsync(request);
+            using var response = await HttpRequestSender.SendAsync(httpClient,
+                () => BuildRequest(dataContext, nodeContext, c, url, apiSettings, body),
+                c.Retry ?? new HttpRetryOptions(), c.TimeoutSeconds, _timeProvider, nodeContext);
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                nodeContext.Error("HTTP request failed. Status: {0}, Response: {1}",
-                    response.StatusCode, errorContent);
-                return;
-            }
-
-            if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
-            {
-                var responseBytes = await response.Content.ReadAsByteArrayAsync();
-                nodeContext.Debug("HTTP request successful. Status: {0}, {1} bytes stored base64-encoded",
-                    response.StatusCode, responseBytes.Length);
-                dataContext.Set(c.TargetPath, Convert.ToBase64String(responseBytes), c.DocumentMode,
-                    c.TargetValueKind, c.TargetValueWriteMode);
-                if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
-                {
-                    dataContext.Set(c.ContentLengthTargetPath, (long)responseBytes.Length);
-                }
-            }
-            else
-            {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
-                    response.StatusCode, responseContent);
-
-                JsonNode? responseJson = null;
-
-                if (!string.Equals(c.ResponseFormat, "Text", StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        // Only treat the response as JSON when it parses to an object. The
-                        // legacy JObject.Parse threw for scalars and arrays, falling through
-                        // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
-                        // (scalars, arrays, objects) -- without the JsonObject filter, a
-                        // body like "42" or "[1,2,3]" would be silently stored as a typed
-                        // JSON value, and a downstream Get<string>(targetPath) couldn't
-                        // recover the original wire text. Pre-migration parity:
-                        // objects-as-JSON, everything else as text.
-                        responseJson = JsonNode.Parse(responseContent) as JsonObject;
-                    }
-                    catch (Exception)
-                    {
-                        // this is fine, the response is not json
-                    }
-                }
-
-                // Store response in data context at the configured path
-                if (responseJson != null)
-                {
-                    dataContext.Set(c.TargetPath, responseJson, c.DocumentMode, c.TargetValueKind,
-                        c.TargetValueWriteMode);
-                }
-                else
-                {
-                    dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
-                        c.TargetValueWriteMode);
-                }
-            }
+            await StoreResponseAsync(dataContext, nodeContext, c, response);
         }
-        catch (Exception ex)
+        catch (MeshAdapterPipelineExecutionException e) when (c.OnHttpError == HttpErrorHandling.LogAndStop)
         {
-            nodeContext.Error(ex, "Error making HTTP request");
+            nodeContext.Error(e, "Error making HTTP request");
+            return;
+        }
+        catch (Exception e) when (e is not MeshAdapterPipelineExecutionException)
+        {
+            // The net the node has always had, kept in every mode. Throw widens what fails the
+            // execution to HTTP outcomes and to nothing else: a malformed response body or a header
+            // the target refuses would otherwise start escaping from a node whose owner only
+            // enabled paging.
+            nodeContext.Error(e, "Error making HTTP request");
             return;
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Builds one request message. Called once per attempt, because a message that has been sent
+    /// cannot be sent again, and neither can the content it carries.
+    /// </summary>
+    private static HttpRequestMessage BuildRequest(IDataContext dataContext, INodeContext nodeContext,
+        MakeHttpRequestNodeConfiguration c, string url, HttpApiSettings? apiSettings, string? body)
+    {
+        var request = new HttpRequestMessage(new(c.Method), url);
+
+        // Add headers
+        AddHeaders(dataContext, nodeContext, request, c.HeaderParameters);
+
+        if (apiSettings is not null)
+        {
+            request.Headers.Add(c.AuthHeaderName, c.AuthHeaderValuePrefix + apiSettings.ApiKey);
+        }
+
+        if (!string.IsNullOrEmpty(body))
+        {
+            request.Content = CreateContent(body, c, nodeContext);
+        }
+
+        return request;
+    }
+
+    /// <summary>
+    /// Stores a successful response at the configured target path, in the configured format.
+    /// </summary>
+    private static async Task StoreResponseAsync(IDataContext dataContext, INodeContext nodeContext,
+        MakeHttpRequestNodeConfiguration c, HttpResponseMessage response)
+    {
+        if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
+        {
+            var responseBytes = await response.Content.ReadAsByteArrayAsync();
+            nodeContext.Debug("HTTP request successful. Status: {0}, {1} bytes stored base64-encoded",
+                response.StatusCode, responseBytes.Length);
+            dataContext.Set(c.TargetPath, Convert.ToBase64String(responseBytes), c.DocumentMode,
+                c.TargetValueKind, c.TargetValueWriteMode);
+            if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
+            {
+                dataContext.Set(c.ContentLengthTargetPath, (long)responseBytes.Length);
+            }
+        }
+        else
+        {
+            var responseContent = await response.Content.ReadAsStringAsync();
+            nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
+                response.StatusCode, responseContent);
+
+            JsonNode? responseJson = null;
+
+            if (!string.Equals(c.ResponseFormat, "Text", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    // Only treat the response as JSON when it parses to an object. The
+                    // legacy JObject.Parse threw for scalars and arrays, falling through
+                    // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
+                    // (scalars, arrays, objects) -- without the JsonObject filter, a
+                    // body like "42" or "[1,2,3]" would be silently stored as a typed
+                    // JSON value, and a downstream Get<string>(targetPath) couldn't
+                    // recover the original wire text. Pre-migration parity:
+                    // objects-as-JSON, everything else as text.
+                    responseJson = JsonNode.Parse(responseContent) as JsonObject;
+                }
+                catch (Exception)
+                {
+                    // this is fine, the response is not json
+                }
+            }
+
+            // Store response in data context at the configured path
+            if (responseJson != null)
+            {
+                dataContext.Set(c.TargetPath, responseJson, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
+            }
+            else
+            {
+                dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
+            }
+        }
     }
 
     /// <summary>

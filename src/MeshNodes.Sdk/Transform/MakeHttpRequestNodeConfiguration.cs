@@ -45,6 +45,18 @@ public record HttpPathParameter
     }
 
     /// <summary>
+    /// What a failed request does to the pipeline.
+    /// </summary>
+    public enum HttpErrorHandling
+    {
+        /// <summary>Report the failure and stop this branch, leaving the execution successful.</summary>
+        LogAndStop,
+
+        /// <summary>Fail the execution, so a surrounding loop or the run itself reports it.</summary>
+        Throw
+    }
+
+    /// <summary>
     /// Retry behaviour for one request. Absent means a single attempt, which is what the node did
     /// before the option existed.
     /// </summary>
@@ -145,6 +157,15 @@ public record HttpPathParameter
         /// </summary>
         [PropertyGroup("Connection", 9)]
         public int? TimeoutSeconds { get; set; }
+
+        /// <summary>
+        /// How a failed request is answered. The default keeps the behaviour the node had before
+        /// the option existed: the failure is logged and the following nodes are skipped, while
+        /// the execution still succeeds. It governs runtime outcomes only - a configuration
+        /// mistake always fails.
+        /// </summary>
+        [PropertyGroup("Connection", 10)]
+        public HttpErrorHandling OnHttpError { get; set; } = HttpErrorHandling.LogAndStop;
 
         /// <summary>
         /// The media type of the request body (values: application/json, application/x-www-form-urlencoded).

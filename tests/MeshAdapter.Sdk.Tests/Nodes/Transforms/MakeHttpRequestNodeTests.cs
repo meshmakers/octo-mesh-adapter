@@ -6,10 +6,14 @@ using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
@@ -453,6 +457,145 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         // Relaxed encoder: umlaut emitted literally, not \u-escaped; compact (no newlines).
         Assert.Contains("Grüße", handler.LastBody);
         Assert.DoesNotContain("\n", handler.LastBody);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_FailingStatusWithDefaults_LogsStopsAndDoesNotThrow()
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response"
+        };
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Status(HttpStatusCode.InternalServerError, "boom"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => logger.Error(A<string>._, A<string>._, A<Exception>._, A<string>._, A<object[]>._))
+            .MustHaveHappened();
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonNode?>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_RetriesExhaustedWithDefaults_StaysQuiet()
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response",
+            Retry = new HttpRetryOptions { MaxAttempts = 3, BackoffBaseSeconds = 0 },
+            TimeoutSeconds = 5
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Status(HttpStatusCode.ServiceUnavailable, "busy"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(3, handler.CallCount);
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonNode?>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_FailingStatusWithThrow_Throws()
+    {
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response",
+            OnHttpError = HttpErrorHandling.Throw
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Status(HttpStatusCode.InternalServerError, "boom"));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.IsNotType<OperationCanceledException>(ex);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ResponseHandlingFails_IsLoggedInBothModes()
+    {
+        // A response the storage step cannot handle is not an HTTP outcome, so OnHttpError does not
+        // govern it: it stays reported rather than escaping, exactly as before the option existed.
+        foreach (var mode in new[] { HttpErrorHandling.LogAndStop, HttpErrorHandling.Throw })
+        {
+            var config = new MakeHttpRequestNodeConfiguration
+            {
+                Method = "GET", Url = "https://host/api", TargetPath = "$.response",
+                ResponseFormat = "Auto", OnHttpError = mode
+            };
+            var (dataContext, nodeContext, next, logger) =
+                PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
+            A.CallTo(() => dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._)).Throws(new InvalidOperationException("boom"));
+            var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("plain text"));
+
+            var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+
+            A.CallTo(() => logger.Error(A<string>._, A<string>._, A<Exception>._, A<string>._,
+                A<object[]>._)).MustHaveHappened();
+        }
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ThrowMode_IsIsolatedByForEachContinueOnError()
+    {
+        // The isolation the per-item composition depends on, exercised through the real loop node
+        // rather than asserted about the exception type: ForEach@1 absorbs every exception except
+        // OperationCanceledException, so the node's failure has to be one it can absorb.
+        var services = new ServiceCollection();
+        var builder = services.AddDataPipelineSerializer();
+        builder.RegisterNode(typeof(ForEachNode));
+        builder.RegisterNode(typeof(MakeHttpRequestNode));
+
+        // Second item fails permanently, the others answer.
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json("{\"ok\":1}"),
+            SequencedHttpMessageHandler.Status(HttpStatusCode.InternalServerError, "boom"),
+            SequencedHttpMessageHandler.Json("{\"ok\":3}"));
+        services.AddSingleton(new HttpClient(handler));
+        services.AddSingleton(EmptyEtlContext);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(
+            JsonDocument.Parse("{\"orders\":[{\"id\":1},{\"id\":2},{\"id\":3}]}"));
+        var forEachConfig = new ForEachNodeConfiguration
+        {
+            IterationPath = "$.orders",
+            KeyPath = "$.key",
+            TargetPath = "$.loopResult",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations =
+            [
+                new MakeHttpRequestNodeConfiguration
+                {
+                    Method = "GET", Url = "https://host/api/customer", TargetPath = "$.customer",
+                    OnHttpError = HttpErrorHandling.Throw
+                }
+            ]
+        };
+
+        var rootNodeContext = NodeContext.CreateRootNodeContext(
+            services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachConfig, dataContext);
+        var next = A.Fake<NodeDelegate>();
+
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => new ForEachNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        // One aggregated failure naming the failed index, and the other two iterations ran.
+        Assert.Contains("[1]", ex.Message);
+        Assert.Equal(3, handler.CallCount);
     }
 
     private class MockHttpMessageHandler(HttpStatusCode statusCode, string content) : HttpMessageHandler

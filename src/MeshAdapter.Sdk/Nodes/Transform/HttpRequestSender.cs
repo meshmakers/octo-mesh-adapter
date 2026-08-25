@@ -32,7 +32,7 @@ internal static class HttpRequestSender
 
             try
             {
-                var request = requestFactory();
+                using var request = requestFactory();
                 url = request.RequestUri?.ToString() ?? url;
                 var response = await client.SendAsync(request,
                     timeoutSource?.Token ?? CancellationToken.None);

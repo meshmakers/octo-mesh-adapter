@@ -13,6 +13,16 @@ internal static class HttpRequestSender
 {
     private const int MaxDetailLength = 300;
 
+    /// <summary>
+    /// Sends one request until it succeeds or its attempts are used up.
+    /// </summary>
+    /// <param name="client">The shared HTTP client; its own timeout is never changed</param>
+    /// <param name="requestFactory">Builds the message for one attempt - a sent message cannot be sent again</param>
+    /// <param name="retry">Attempts and backoff base</param>
+    /// <param name="timeoutSeconds">Timeout per attempt, or null for the client's own</param>
+    /// <param name="timeProvider">Clock behind both the timeout and the backoff</param>
+    /// <param name="nodeContext">The node context, for error reporting</param>
+    /// <returns>The successful response, which the caller disposes</returns>
     public static async Task<HttpResponseMessage> SendAsync(HttpClient client,
         Func<HttpRequestMessage> requestFactory, HttpRetryOptions retry, int? timeoutSeconds,
         TimeProvider timeProvider, INodeContext nodeContext)

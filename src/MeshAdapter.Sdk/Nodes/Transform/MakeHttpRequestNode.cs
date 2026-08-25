@@ -14,8 +14,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 /// <param name="next"></param>
 /// <param name="httpClient"></param>
-/// <param name="etlContext"></param>
-/// <param name="timeProvider"></param>
+/// <param name="etlContext">Carries the tenant global configuration an ApiConfiguration is read from</param>
+/// <param name="timeProvider">Clock behind the retry backoff and the per-attempt timeout; the system clock unless a test supplies one</param>
 [NodeConfiguration(typeof(MakeHttpRequestNodeConfiguration))]
 public class MakeHttpRequestNode(
     NodeDelegate next,
@@ -76,8 +76,10 @@ public class MakeHttpRequestNode(
 
             nodeContext.Debug("Making HTTP {0} request to {1}", c.Method, url);
 
-            // The body is the same for every attempt, so a body the content type cannot carry
-            // stops the branch before any request goes out, reported by CreateContent as before.
+            // The body is identical for every attempt, so it is resolved and checked once - the
+            // instance built here only answers whether the content type can carry it and is
+            // discarded, because each attempt needs its own. A body it cannot carry stops the
+            // branch before any request goes out, reported by CreateContent exactly as before.
             string? body = null;
             if (!string.Equals(c.Method, "GET", StringComparison.OrdinalIgnoreCase))
             {

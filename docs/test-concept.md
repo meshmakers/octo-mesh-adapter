@@ -231,6 +231,32 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithPathParameters_SubstitutesPath` | URL path substitution |
 | `ProcessObjectAsync_WithErrorResponse_HandlesError` | HTTP error handling |
 | `ProcessObjectAsync_WithJsonResponse_ParsesJson` | JSON response parsing |
+| `ProcessObjectAsync_WithApiConfiguration_JoinsBaseAndPath` | Base URL and relative path join, one separator either way |
+| `ProcessObjectAsync_WithApiConfiguration_SendsAuthHeader` | Configured key in the configured header, with and without a scheme prefix |
+| `ProcessObjectAsync_AbsoluteUrlWithApiConfiguration_ThrowsAndSendsNothing` | The key is never sent to another host |
+| `ProcessObjectAsync_UndefinedApiConfiguration_ThrowsWithDefaultErrorHandling` | A configuration mistake fails whatever OnHttpError says |
+| `ProcessObjectAsync_FailingStatusWithDefaults_LogsStopsAndDoesNotThrow` | Unchanged failure behaviour without the new properties |
+| `ProcessObjectAsync_RetriesExhaustedWithDefaults_StaysQuiet` | Using the new features does not change what a failure does |
+| `ProcessObjectAsync_FailingStatusWithThrow_Throws` | Opt-in loud failure |
+| `ProcessObjectAsync_ResponseHandlingFails_IsLoggedInBothModes` | Non-HTTP failures keep the original net in both modes |
+| `ProcessObjectAsync_ThrowMode_IsIsolatedByForEachContinueOnError` | Per-item isolation through the real loop node |
+| `ProcessObjectAsync_Paging_*` | Page walk: order, stop rules, cap, retry in place, existing query kept |
+| `ProcessObjectAsync_PagingUnusableItemsPath_FailsInsteadOfStopping` | A changed response shape is not zero elements |
+
+**`HttpRequestSenderTests`** covers one request in isolation: the transient set (5xx, 408, 429,
+`HttpRequestException`, `TaskCanceledException`) against the non-transient one, the exhausted-attempts
+message (status, attempt count, body truncated to 300 characters), the per-attempt timeout against a
+target that never answers, and the backoff sequence 1 s / 2 s / 4 s. Delays are pinned through a
+`FakeTimeProvider` subclass that records the delays asked for, not through the gaps between handler
+calls — the clock is driven by polling, so a continuation reaching the handler a step late would
+report a gap that says nothing about what was waited for.
+
+**`MakeHttpRequestConfigurationDeserializationTests`** drives real pipeline definitions through
+`IPipelineConfigurationSerializer`, which is the only path that produces what a tenant's YAML
+produces: a property initializer applies only when a key is **absent**, so a key that is present and
+null hands the node a value nobody wrote. Assertions are about the behaviour that follows (the
+header actually sent, the first page actually requested, the delay actually waited) rather than
+about the property values, which after resolution would only restate what they are meant to prove.
 
 **Mocking Requirements**:
 ```csharp

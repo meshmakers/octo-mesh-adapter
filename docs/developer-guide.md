@@ -580,8 +580,36 @@ Executes HTTP requests to external services.
 | `HeaderParameters` | ICollection | HTTP headers with dynamic replacement |
 | `PathParameters` | ICollection | URL path parameter substitution |
 | `TargetPath` | string | Response storage location |
+| `ApiConfiguration` | string? | GlobalConfiguration entry supplying `baseUrl` and `apiKey` |
+| `AuthHeaderName` / `AuthHeaderValuePrefix` | string | Header the key is sent in, and an optional scheme prefix |
+| `TimeoutSeconds` | int? | Timeout per attempt; unset leaves the HTTP client default |
+| `Retry` | HttpRetryOptions? | `MaxAttempts` (default 1, so no retry), `BackoffBaseSeconds` (default 1, waited after a failed attempt and doubling) |
+| `Paging` | HttpPagingOptions? | Page-number walk collecting every page into one array |
+| `OnHttpError` | enum | `LogAndStop` (default) or `Throw` |
 
 **Features**: Dynamic header/path parameter substitution, JSON/text body support, response parsing.
+
+> **Configured access:** with `ApiConfiguration` set, the URL is a path relative to the entry's
+> `baseUrl` and the key travels in `AuthHeaderName` (`Authorization` by default, sent scheme-less
+> unless `AuthHeaderValuePrefix` supplies one). An absolute URL is rejected in that mode, so a typo
+> cannot send the key to another host. The entry is read when the pipeline is deployed, so a
+> rotated key takes effect after a redeploy.
+
+> **Paging:** `ItemsPath` is a single-level path of the form `$.name` naming the array inside one
+> response. The walk stops on an empty page and, unless `StopOnShortPage` is turned off, on a page
+> shorter than `PageSize`; a response without an array at `ItemsPath` and reaching `MaxPages` both
+> fail rather than truncating the result quietly. All pages land as one flat array at `TargetPath`,
+> written once the walk is complete.
+
+> **Failures:** `OnHttpError` decides what a runtime failure means - `LogAndStop` reports it and
+> skips the following nodes while the execution still succeeds, `Throw` fails the execution so a
+> surrounding `ForEach@1` with `continueOnError` can isolate the item. Configuration mistakes
+> always fail. Retries cover 5xx, 408, 429, network errors and timeouts; other statuses fail at
+> once.
+
+> **Explicit nulls:** every optional number and string of the new sections is nullable with a
+> documented default. A pipeline definition that carries `pageSize: null` overwrites the property
+> initializer, so the defaults are resolved where the values are read, not where they are declared.
 
 #### ImportFromExcelNode
 

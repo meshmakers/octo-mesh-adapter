@@ -10,6 +10,13 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// </summary>
 internal static class HttpApiSettingsResolver
 {
+    /// <summary>
+    /// Resolves and validates the settings behind an API configuration name.
+    /// </summary>
+    /// <param name="etlContext">The ETL context carrying the tenant global configuration</param>
+    /// <param name="apiConfigurationName">Name of the global configuration entry</param>
+    /// <param name="nodeContext">The node context, for error reporting</param>
+    /// <returns>The resolved settings</returns>
     public static HttpApiSettings Resolve(IMeshEtlContext etlContext, string apiConfigurationName,
         INodeContext nodeContext)
     {

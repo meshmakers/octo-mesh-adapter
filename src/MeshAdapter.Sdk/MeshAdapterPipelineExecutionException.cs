@@ -844,4 +844,18 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: a per-execution scratch space is required ({reason}).");
     }
+
+    public static Exception InvalidHttpApiConfiguration(INodeContext nodeContext, string configurationName,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' cannot be read as HTTP API settings.",
+            inner);
+    }
+
+    public static Exception IncompleteHttpApiConfiguration(INodeContext nodeContext, string configurationName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' must provide both 'baseUrl' and 'apiKey'.");
+    }
 }

@@ -92,6 +92,14 @@ public record HttpPathParameter
         public List<HttpHeaderParameter> HeaderParameters { get; set; } = new();
 
         /// <summary>
+        /// Name of a GlobalConfiguration entry providing the API base URL and key. When set, the
+        /// request URL is a path relative to that base and the key is sent in
+        /// <c>AuthHeaderName</c>.
+        /// </summary>
+        [PropertyGroup("Connection", 5)]
+        public string? ApiConfiguration { get; set; }
+
+        /// <summary>
         /// The media type of the request body (values: application/json, application/x-www-form-urlencoded).
         /// For application/x-www-form-urlencoded the body must be a JSON object whose properties become the form fields.
         /// </summary>

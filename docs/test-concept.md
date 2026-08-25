@@ -248,7 +248,7 @@ Transform nodes process data without external dependencies. Focus on data transf
 message (status, attempt count, body truncated to 300 characters), the per-attempt timeout against a
 target that never answers, and the backoff sequence 1 s / 2 s / 4 s. Delays are pinned through a
 `FakeTimeProvider` subclass that records the delays asked for, not through the gaps between handler
-calls — the clock is driven by polling, so a continuation reaching the handler a step late would
+calls - the clock is driven by polling, so a continuation reaching the handler a step late would
 report a gap that says nothing about what was waited for.
 
 **`MakeHttpRequestConfigurationDeserializationTests`** drives real pipeline definitions through

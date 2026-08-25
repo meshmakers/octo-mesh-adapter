@@ -31,6 +31,23 @@ internal static class HttpRequestSender
         // initializer, so both are resolved here rather than trusted.
         var attempts = Math.Max(1, retry.MaxAttempts ?? HttpRetryOptions.DefaultMaxAttempts);
         var backoffBaseSeconds = retry.BackoffBaseSeconds ?? HttpRetryOptions.DefaultBackoffBaseSeconds;
+        string? lastResponseBody = null;
+
+        // Configuration mistakes, so they fail before a request goes out and whatever the caller's
+        // error handling says. Both are values only a definition can produce.
+        if (attempts > HttpRetryOptions.MaxAllowedAttempts)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpRetryOptions(nodeContext,
+                $"retry.maxAttempts is {attempts}, which is beyond the limit of " +
+                $"{HttpRetryOptions.MaxAllowedAttempts}. A request that needs more attempts than that " +
+                "is broken rather than slow.");
+        }
+
+        if (backoffBaseSeconds < 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpRetryOptions(nodeContext,
+                $"retry.backoffBaseSeconds is {backoffBaseSeconds}. Use zero to retry without waiting.");
+        }
         string url = "";
         int? lastStatus = null;
         var lastDetail = "no detail";
@@ -56,28 +73,35 @@ internal static class HttpRequestSender
                 }
 
                 var status = (int)response.StatusCode;
-                var body = Truncate(await response.Content.ReadAsStringAsync(), MaxDetailLength);
+                // Kept untruncated alongside the shortened form: the message stays readable when
+                // it is thrown, while a caller that reports rather than throws can log the whole
+                // body, which is what the node did before it could throw at all.
+                var responseBody = await response.Content.ReadAsStringAsync();
+                var body = Truncate(responseBody, MaxDetailLength);
                 response.Dispose();
 
                 if (!IsTransient(status))
                 {
                     throw MeshAdapterPipelineExecutionException.HttpRequestFailed(
-                        nodeContext, url, status, attempt, body);
+                        nodeContext, url, status, attempt, body, responseBody);
                 }
 
                 lastStatus = status;
                 lastDetail = body;
+                lastResponseBody = responseBody;
             }
             catch (HttpRequestException e)
             {
                 lastStatus = null;
                 lastDetail = e.Message;
+                lastResponseBody = null;
             }
             catch (Exception e) when (e is TaskCanceledException or OperationCanceledException)
             {
                 // The only cancellation reaching here is this node's own timeout: the pipeline
                 // hands nodes no token to observe.
                 lastStatus = null;
+                lastResponseBody = null;
                 lastDetail = timeoutSeconds is > 0
                     ? $"the attempt exceeded the configured timeout of {timeoutSeconds} s"
                     : "the request was cancelled";
@@ -85,14 +109,17 @@ internal static class HttpRequestSender
 
             if (attempt < attempts && backoffBaseSeconds > 0)
             {
-                await Task.Delay(
-                    TimeSpan.FromSeconds(backoffBaseSeconds * Math.Pow(2, attempt - 1)),
-                    timeProvider);
+                // Capped per wait: doubling is unbounded, and beyond the cap the delay would stop
+                // being a backoff and start being an outage of its own - at the far end, a value
+                // the timer refuses, which would leave the wait itself as the failure.
+                var seconds = Math.Min(backoffBaseSeconds * Math.Pow(2, attempt - 1),
+                    HttpRetryOptions.MaxBackoffSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(seconds), timeProvider);
             }
         }
 
         throw MeshAdapterPipelineExecutionException.HttpRequestFailed(
-            nodeContext, url, lastStatus, attempts, lastDetail);
+            nodeContext, url, lastStatus, attempts, lastDetail, lastResponseBody);
     }
 
     private static bool IsTransient(int statusCode)

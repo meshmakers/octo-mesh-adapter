@@ -45,6 +45,17 @@ internal static class HttpApiSettingsResolver
                 nodeContext, apiConfigurationName);
         }
 
+        // Present is not the same as usable. A base without a scheme survives the blank check and
+        // then fails inside the send as a bare InvalidOperationException about a relative URI,
+        // which the node reports and swallows - leaving a green execution that fetched nothing.
+        // Checked here, it is what it is: a configuration mistake.
+        if (!Uri.TryCreate(settings.BaseUrl, UriKind.Absolute, out var baseUri) ||
+            (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw MeshAdapterPipelineExecutionException.HttpApiBaseUrlNotAbsolute(
+                nodeContext, apiConfigurationName, settings.BaseUrl);
+        }
+
         return settings;
     }
 }

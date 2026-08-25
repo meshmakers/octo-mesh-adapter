@@ -135,6 +135,20 @@ public record HttpPathParameter
         /// <summary>The <see cref="BackoffBaseSeconds" /> an unset property resolves to.</summary>
         public const double DefaultBackoffBaseSeconds = 1;
 
+        /// <summary>
+        /// Upper bound on a single wait. Doubling is unbounded, so a long enough run would reach
+        /// waits of hours and eventually a value the timer refuses outright; capping each wait
+        /// keeps a retrying request inside a pipeline tick.
+        /// </summary>
+        public const int MaxBackoffSeconds = 60;
+
+        /// <summary>
+        /// Upper bound on <see cref="MaxAttempts" />. With the wait cap, the worst case is roughly
+        /// eight minutes of retrying; beyond that a request is not slow, it is broken, and a
+        /// pipeline tick should end rather than pile up behind it.
+        /// </summary>
+        public const int MaxAllowedAttempts = 10;
+
         /// <summary>Total attempts per request, so 1 means no retry.</summary>
         public int? MaxAttempts { get; set; } = DefaultMaxAttempts;
 

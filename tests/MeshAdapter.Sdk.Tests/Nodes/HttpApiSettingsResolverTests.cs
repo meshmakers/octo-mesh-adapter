@@ -71,6 +71,25 @@ public class HttpApiSettingsResolverTests : NodeTestBase
         Assert.DoesNotContain(Key, ex.Message);
     }
 
+    [Theory]
+    [InlineData("host/api/v1")]          // no scheme at all
+    [InlineData("/api/v1")]              // relative
+    [InlineData("ftp://host/api")]       // not an HTTP scheme
+    [InlineData("file:///c:/api")]
+    public void Resolve_BaseUrlIsNotAnHttpUrl_Throws(string baseUrl)
+    {
+        // A blank check is not enough: a scheme-less base survives it and only fails deep inside
+        // the send, where the node's own net logs it and the run finishes green in both modes.
+        A.CallTo(() => _globalConfiguration.IsDefined(Entry)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<HttpApiSettings>(Entry))
+            .Returns(new HttpApiSettings { BaseUrl = baseUrl, ApiKey = Key });
+
+        var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
+            () => HttpApiSettingsResolver.Resolve(_etlContext, Entry, NodeContext()));
+        Assert.Contains(Entry, ex.Message);
+        Assert.DoesNotContain(Key, ex.Message);
+    }
+
     [Fact]
     public void Resolve_NullPayload_Throws()
     {

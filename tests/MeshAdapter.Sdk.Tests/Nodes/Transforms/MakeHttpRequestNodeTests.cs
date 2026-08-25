@@ -502,6 +502,29 @@ public class MakeHttpRequestNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_FailingStatusWithDefaults_LogsTheFullResponseBody()
+    {
+        // Parity with the node before it could throw: it reported the status and the WHOLE body.
+        // The exception message truncates the body to stay readable when it is thrown, so the
+        // default path must log something other than the message alone.
+        var body = new string('x', 500);
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "https://host/api", TargetPath = "$.response"
+        };
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Status(HttpStatusCode.InternalServerError, body));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var logged = Fake.GetCalls(logger).SelectMany(c => c.Arguments.SelectMany(Flatten)).ToList();
+        Assert.Contains(logged, text => text.Contains(body, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_FailingStatusWithThrow_Throws()
     {
         var config = new MakeHttpRequestNodeConfiguration
@@ -826,6 +849,48 @@ public class MakeHttpRequestNodeTests : NodeTestBase
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
     }
 
+    [Theory]
+    [InlineData("Base64", null)]
+    [InlineData("Auto", "$.length")]
+    public async Task ProcessObjectAsync_PagingWithSingleResponseOptions_Throws(
+        string responseFormat, string? contentLengthTargetPath)
+    {
+        // Both settings describe one response: the page walk writes a collected array and never a
+        // body or a byte count, so the combination silently does nothing. A configuration mistake,
+        // so it fails whatever OnHttpError says.
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result" });
+        config.OnHttpError = HttpErrorHandling.LogAndStop;
+        config.ResponseFormat = responseFormat;
+        config.ContentLengthTargetPath = contentLengthTargetPath;
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PagingParameterAlreadyInTheQuery_Throws()
+    {
+        // Appending a second "page" would leave the target to pick one; if it picks the first, the
+        // walk asks for the same page 500 times and then reports a cap it never really reached.
+        var config = PagingConfig(new HttpPagingOptions { ItemsPath = "$.result" });
+        config.Url = "https://host/api/article?page=2";
+        config.OnHttpError = HttpErrorHandling.LogAndStop;
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json(Page(1)));
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), EmptyEtlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("page", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_PagingDefaults_AreTheDocumentedOnes()
     {
@@ -839,17 +904,21 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         Assert.Equal(500, paging.MaxPages);
     }
 
-    [Fact]
-    public async Task ProcessObjectAsync_WithApiConfiguration_NeverLogsTheKey()
+    [Theory]
+    [InlineData("super-secret-token-value")]
+    // A base64 key: '=' padding and '/' are not token characters, so the strongly typed
+    // Authorization parser rejects the value - and puts it into the exception message.
+    [InlineData("c3VwZXItc2VjcmV0LXRva2VuLXZhbHVlLXdpdGgtcGFkZGluZw==")]
+    [InlineData("ab/cd+ef==")]
+    public async Task ProcessObjectAsync_WithApiConfiguration_NeverLogsTheKey(string key)
     {
-        // The configured header is attached directly rather than through the header-parameter
-        // path, which reports every value it adds at debug level. Routing the key through there
-        // would write it into the pipeline log of every run.
-        const string key = "super-secret-token-value";
+        // Two ways the key could escape: the header-parameter path reports every value it adds at
+        // debug level, and a header the strongly typed parser rejects throws with the offending
+        // value in its message, which the node's own net would then log.
         var config = new MakeHttpRequestNodeConfiguration
         {
             Method = "GET", Url = "/article", TargetPath = "$.response",
-            ApiConfiguration = "TestApi", AuthHeaderName = "AuthenticationToken"
+            ApiConfiguration = "TestApi"
         };
         var (dataContext, nodeContext, next, logger) =
             PrepareTestWithLogger<MakeHttpRequestNodeConfiguration>(config);
@@ -863,10 +932,41 @@ public class MakeHttpRequestNodeTests : NodeTestBase
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // The key did travel, so the assertion below is about where it did not.
-        Assert.Equal(key, handler.Requests.Single().Headers.GetValues("AuthenticationToken").Single());
+        Assert.Equal(key, handler.Requests.Single().Headers.GetValues("Authorization").Single());
         var logged = Fake.GetCalls(logger).SelectMany(c => c.Arguments.SelectMany(Flatten)).ToList();
         Assert.NotEmpty(logged);
         Assert.DoesNotContain(logged, text => text.Contains(key, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_AuthHeaderCollidesWithHeaderParameter_ThrowsWithoutTheKey()
+    {
+        // Two sources writing the same header would send both values. Refused as a configuration
+        // mistake, and the message names the header rather than what would have gone into it.
+        const string key = "super-secret-token-value";
+        var config = new MakeHttpRequestNodeConfiguration
+        {
+            Method = "GET", Url = "/article", TargetPath = "$.response",
+            ApiConfiguration = "TestApi", AuthHeaderName = "AuthenticationToken",
+            HeaderParameters =
+            [
+                new HttpHeaderParameter { Name = "authenticationtoken", Value = "set-by-hand" }
+            ]
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<MakeHttpRequestNodeConfiguration>(config);
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var etlContext = CreateEtlContext(new HttpApiSettings
+        {
+            BaseUrl = "https://host/api/v1", ApiKey = key
+        });
+
+        var node = new MakeHttpRequestNode(next, new HttpClient(handler), etlContext);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("AuthenticationToken", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(key, ex.Message, StringComparison.Ordinal);
+        Assert.Empty(handler.Requests);
     }
 
     /// <summary>

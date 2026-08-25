@@ -60,13 +60,53 @@ public class MakeHttpRequestNode(
             }
 
             url = CombineUrl(apiSettings.BaseUrl, url);
+
+            var authHeaderName = ResolveAuthHeaderName(c);
+            if (c.HeaderParameters.Any(h =>
+                    string.Equals(h.Name, authHeaderName, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw MeshAdapterPipelineExecutionException.AuthHeaderCollision(nodeContext, authHeaderName);
+            }
         }
 
-        if (c.Paging is { } pagingOptions && string.IsNullOrWhiteSpace(pagingOptions.ItemsPath))
+        if (c.Paging is { } pagingOptions)
         {
-            // A configuration mistake, so it fails whatever OnHttpError says - a page walk with
-            // nothing to read would otherwise report an empty result as a successful one.
-            throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathNotSet(nodeContext);
+            // Configuration mistakes, so they fail whatever OnHttpError says - each of them would
+            // otherwise let a run report success while doing nothing of what was configured.
+            if (string.IsNullOrWhiteSpace(pagingOptions.ItemsPath))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathNotSet(nodeContext);
+            }
+
+            // Both describe a single response body. The walk writes the collected array and never
+            // a body or a byte count, so either one set alongside paging is silently ignored.
+            if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingConflictsWithOption(
+                    nodeContext, "responseFormat: Base64");
+            }
+
+            if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingConflictsWithOption(
+                    nodeContext, "contentLengthTargetPath");
+            }
+
+            // The walk appends its own page parameters. A URL that already carries one leaves the
+            // target to choose between two values; choosing the first makes every page identical,
+            // and the run ends on a page cap it never really reached.
+            foreach (var parameterName in new[]
+                     {
+                         pagingOptions.PageParameterName ?? HttpPagingOptions.DefaultPageParameterName,
+                         pagingOptions.PageSizeParameterName ?? HttpPagingOptions.DefaultPageSizeParameterName
+                     })
+            {
+                if (QueryContainsParameter(url, parameterName))
+                {
+                    throw MeshAdapterPipelineExecutionException.HttpPagingParameterAlreadyInQuery(
+                        nodeContext, parameterName);
+                }
+            }
         }
 
         try
@@ -105,7 +145,19 @@ public class MakeHttpRequestNode(
         }
         catch (MeshAdapterPipelineExecutionException e) when (c.OnHttpError == HttpErrorHandling.LogAndStop)
         {
-            nodeContext.Error(e, "Error making HTTP request");
+            // Before this node could throw, a failed request was reported with its status and its
+            // WHOLE response body. The exception message truncates that body so a thrown failure
+            // stays readable, so the untruncated text travels on the exception and is restored
+            // here: the default path must not quietly log less than it used to.
+            if (e.ResponseBody is not null)
+            {
+                nodeContext.Error(e, "Error making HTTP request. Response: {0}", e.ResponseBody);
+            }
+            else
+            {
+                nodeContext.Error(e, "Error making HTTP request");
+            }
+
             return;
         }
         catch (Exception e) when (e is not MeshAdapterPipelineExecutionException)
@@ -186,6 +238,24 @@ public class MakeHttpRequestNode(
     }
 
     /// <summary>
+    /// Whether the URL's query already carries a parameter of that name. Compared per parameter
+    /// rather than by substring, so a "page" does not match a "pageSize" or a "rampage".
+    /// </summary>
+    private static bool QueryContainsParameter(string url, string parameterName)
+    {
+        var separator = url.IndexOf('?');
+        if (separator < 0)
+        {
+            return false;
+        }
+
+        return url[(separator + 1)..]
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(pair => pair.Split('=', 2)[0])
+            .Any(name => string.Equals(name, parameterName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// Reads the array one page carries, or null when the response holds no array there - which is
     /// a changed response shape rather than the end of the walk.
     /// </summary>
@@ -221,9 +291,17 @@ public class MakeHttpRequestNode(
 
         if (apiSettings is not null)
         {
-            request.Headers.Add(
-                c.AuthHeaderName ?? MakeHttpRequestNodeConfiguration.DefaultAuthHeaderName,
-                (c.AuthHeaderValuePrefix ?? "") + apiSettings.ApiKey);
+            // Added without validation on purpose. A key is an opaque token, and the strongly
+            // typed parsers reject shapes that are perfectly good keys - a base64 key with '='
+            // padding under the default Authorization header is rejected as a malformed scheme.
+            // Worse, the parser puts the offending value into its exception message, so a
+            // validating Add would turn the key into log content by way of the node's own net.
+            var authHeaderName = ResolveAuthHeaderName(c);
+            if (!request.Headers.TryAddWithoutValidation(authHeaderName,
+                    (c.AuthHeaderValuePrefix ?? "") + apiSettings.ApiKey))
+            {
+                throw MeshAdapterPipelineExecutionException.AuthHeaderNotAccepted(nodeContext, authHeaderName);
+            }
         }
 
         if (!string.IsNullOrEmpty(body))
@@ -298,6 +376,11 @@ public class MakeHttpRequestNode(
     /// Joins a configured base URL and a relative path with exactly one separator, whatever
     /// combination of trailing and leading slashes the two carry.
     /// </summary>
+    private static string ResolveAuthHeaderName(MakeHttpRequestNodeConfiguration config)
+    {
+        return config.AuthHeaderName ?? MakeHttpRequestNodeConfiguration.DefaultAuthHeaderName;
+    }
+
     internal static string CombineUrl(string baseUrl, string relativeUrl)
     {
         return $"{baseUrl.TrimEnd('/')}/{relativeUrl.TrimStart('/')}";

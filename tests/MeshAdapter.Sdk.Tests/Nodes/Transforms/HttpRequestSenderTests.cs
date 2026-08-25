@@ -193,6 +193,64 @@ public class HttpRequestSenderTests : NodeTestBase
     }
 
     [Fact]
+    public async Task SendAsync_Backoff_IsCappedPerWait()
+    {
+        // Doubling is unbounded: with a base of one second the tenth wait would already be over
+        // eight minutes, and a large base reaches the point where Task.Delay refuses the value and
+        // throws out of the wait itself. Each wait is capped, so the doubling stops growing rather
+        // than the run falling over.
+        var time = new RecordingTimeProvider();
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Status(HttpStatusCode.ServiceUnavailable, "busy"));
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => WithAdvancingTime(time, HttpRequestSender.SendAsync(
+                new HttpClient(handler),
+                Get(),
+                new HttpRetryOptions { MaxAttempts = 8, BackoffBaseSeconds = 30 },
+                null, time, NodeContext())));
+
+        Assert.Equal(7, time.RequestedDelays.Count);
+        Assert.All(time.RequestedDelays, d => Assert.True(
+            d <= TimeSpan.FromSeconds(HttpRetryOptions.MaxBackoffSeconds),
+            $"wait of {d} exceeds the cap"));
+        // The first waits still double until they reach the cap, and stay there afterwards.
+        Assert.Equal(TimeSpan.FromSeconds(30), time.RequestedDelays[0]);
+        Assert.Equal(TimeSpan.FromSeconds(HttpRetryOptions.MaxBackoffSeconds), time.RequestedDelays[1]);
+        Assert.Equal(TimeSpan.FromSeconds(HttpRetryOptions.MaxBackoffSeconds), time.RequestedDelays[6]);
+    }
+
+    [Fact]
+    public async Task SendAsync_MaxAttemptsBeyondTheLimit_ThrowsBeforeAnyRequest()
+    {
+        // A configuration mistake, so it fails whatever the caller's error handling says.
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var time = new FakeTimeProvider();
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => HttpRequestSender.SendAsync(new HttpClient(handler), Get(),
+                new HttpRetryOptions { MaxAttempts = HttpRetryOptions.MaxAllowedAttempts + 1 },
+                null, time, NodeContext()));
+
+        Assert.Contains(HttpRetryOptions.MaxAllowedAttempts.ToString(), ex.Message);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task SendAsync_NegativeBackoffBase_ThrowsBeforeAnyRequest()
+    {
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Json("{}"));
+        var time = new FakeTimeProvider();
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => HttpRequestSender.SendAsync(new HttpClient(handler), Get(),
+                new HttpRetryOptions { MaxAttempts = 2, BackoffBaseSeconds = -1 },
+                null, time, NodeContext()));
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public async Task SendAsync_DefaultOptions_MakesExactlyOneAttempt()
     {
         var handler = new SequencedHttpMessageHandler(

@@ -20,6 +20,13 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
     }
 
+    /// <summary>
+    /// The untruncated response body of a failed HTTP request, where the failure carries one. The
+    /// message keeps only the first few hundred characters so a thrown failure stays readable; a
+    /// caller that reports rather than throws restores the full text from here.
+    /// </summary>
+    public string? ResponseBody { get; private init; }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
@@ -875,6 +882,22 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "the page parameter - the result would otherwise be truncated silently.");
     }
 
+    public static Exception HttpPagingConflictsWithOption(INodeContext nodeContext, string option)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {option} describes a single response and cannot be combined " +
+            "with paging, which writes the collected elements of every page.");
+    }
+
+    public static Exception HttpPagingParameterAlreadyInQuery(INodeContext nodeContext,
+        string parameterName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The URL already carries a '{parameterName}' query parameter, " +
+            "which the page walk also appends. Remove it from the URL, or name the paging parameter " +
+            "differently.");
+    }
+
     public static Exception HttpPagingItemsPathNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(
@@ -882,11 +905,42 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     }
 
     public static Exception HttpRequestFailed(INodeContext nodeContext, string url, int? statusCode,
-        int attempts, string detail)
+        int attempts, string detail, string? responseBody = null)
     {
         var status = statusCode is null ? "no response" : $"HTTP {statusCode}";
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: Request to '{url}' failed after {attempts} attempts ({status}): {detail}");
+            $"[{nodeContext.NodePath}]: Request to '{url}' failed after {attempts} attempts ({status}): {detail}")
+        {
+            ResponseBody = responseBody
+        };
+    }
+
+    public static Exception InvalidHttpRetryOptions(INodeContext nodeContext, string detail)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");
+    }
+
+    public static Exception HttpApiBaseUrlNotAbsolute(INodeContext nodeContext, string configurationName,
+        string baseUrl)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' has baseUrl '{baseUrl}', " +
+            "which is not an absolute http or https URL.");
+    }
+
+    public static Exception AuthHeaderCollision(INodeContext nodeContext, string headerName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Header '{headerName}' is both the auth header of the configured " +
+            "API and a header parameter, so the request would carry two values for it. Rename one of " +
+            "them, or drop the ApiConfiguration and supply the header yourself.");
+    }
+
+    public static Exception AuthHeaderNotAccepted(INodeContext nodeContext, string headerName)
+    {
+        // The value is deliberately absent from the message: it is the API key.
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Header name '{headerName}' is not a valid HTTP header name.");
     }
 
     public static Exception AbsoluteUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)

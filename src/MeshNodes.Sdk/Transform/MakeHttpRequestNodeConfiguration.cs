@@ -45,6 +45,19 @@ public record HttpPathParameter
     }
 
     /// <summary>
+    /// Retry behaviour for one request. Absent means a single attempt, which is what the node did
+    /// before the option existed.
+    /// </summary>
+    public record HttpRetryOptions
+    {
+        /// <summary>Total attempts per request, so 1 means no retry.</summary>
+        public int MaxAttempts { get; set; } = 1;
+
+        /// <summary>Delay before attempt n is base * 2^(n-1) seconds; 0 disables waiting.</summary>
+        public double BackoffBaseSeconds { get; set; } = 1;
+    }
+
+    /// <summary>
     /// Make a http request
     /// </summary>
     [NodeName("MakeHttpRequest", 1)]
@@ -112,6 +125,26 @@ public record HttpPathParameter
         /// </summary>
         [PropertyGroup("Connection", 7)]
         public string AuthHeaderValuePrefix { get; set; } = "";
+
+        /// <summary>
+        /// Retry behaviour for transient failures: 5xx, 408, 429, network errors and timeouts.
+        /// Absent means a single attempt.
+        /// </summary>
+        /// <remarks>
+        /// Nullable on purpose. A definition carrying an explicit null overwrites a property
+        /// initializer, so a non-nullable property with a default would hand the node a null it
+        /// cannot see coming - the same shape of mistake that a null integer in a settings entry
+        /// once caused. Read it through <c>Retry ?? new HttpRetryOptions()</c> at every use site.
+        /// </remarks>
+        [PropertyGroup("Connection", 8)]
+        public HttpRetryOptions? Retry { get; set; }
+
+        /// <summary>
+        /// Timeout in seconds applied to each attempt. Unset leaves the HTTP client's own default
+        /// in place; the client is shared, so its timeout is never changed.
+        /// </summary>
+        [PropertyGroup("Connection", 9)]
+        public int? TimeoutSeconds { get; set; }
 
         /// <summary>
         /// The media type of the request body (values: application/json, application/x-www-form-urlencoded).

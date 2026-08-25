@@ -859,6 +859,14 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' must provide both 'baseUrl' and 'apiKey'.");
     }
 
+    public static Exception HttpRequestFailed(INodeContext nodeContext, string url, int? statusCode,
+        int attempts, string detail)
+    {
+        var status = statusCode is null ? "no response" : $"HTTP {statusCode}";
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Request to '{url}' failed after {attempts} attempts ({status}): {detail}");
+    }
+
     public static Exception AbsoluteUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)
     {
         return new MeshAdapterPipelineExecutionException(

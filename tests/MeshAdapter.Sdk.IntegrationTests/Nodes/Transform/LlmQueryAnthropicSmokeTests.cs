@@ -60,7 +60,7 @@ public class LlmQueryAnthropicSmokeTests
         var config = new LlmQueryNodeConfiguration
         {
             Provider = LlmProvider.Anthropic,
-            ApiKey = apiKey,
+            ApiKeyConfigurationName = "smoke-llm",
             Model = Model,
 
             Question = "Summarize the following text in exactly one sentence.",
@@ -100,6 +100,11 @@ public class LlmQueryAnthropicSmokeTests
             });
 
         var etlContext = A.Fake<IMeshEtlContext>();
+        // Inline ApiKey was removed from the node config (security); keys come from an
+        // AiConfiguration entity — faked here via GlobalConfiguration.
+        A.CallTo(() => etlContext.GlobalConfiguration.IsDefined("smoke-llm")).Returns(true);
+        A.CallTo(() => etlContext.GlobalConfiguration.GetRawJson("smoke-llm"))
+            .Returns($"{{\"apiKey\":\"{apiKey}\"}}");
         var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------
@@ -148,7 +153,7 @@ public class LlmQueryAnthropicSmokeTests
         var config = new LlmQueryNodeConfiguration
         {
             Provider = LlmProvider.Anthropic,
-            ApiKey = apiKey,
+            ApiKeyConfigurationName = "smoke-llm",
             Model = Model,
 
             Question = "What is 2 + 2? Answer with the number only.",
@@ -169,6 +174,11 @@ public class LlmQueryAnthropicSmokeTests
 
         var (dataContext, nodeContext, next) = PrepareTest(config, input);
         var etlContext = A.Fake<IMeshEtlContext>();
+        // Inline ApiKey was removed from the node config (security); keys come from an
+        // AiConfiguration entity — faked here via GlobalConfiguration.
+        A.CallTo(() => etlContext.GlobalConfiguration.IsDefined("smoke-llm")).Returns(true);
+        A.CallTo(() => etlContext.GlobalConfiguration.GetRawJson("smoke-llm"))
+            .Returns($"{{\"apiKey\":\"{apiKey}\"}}");
         var node = new LlmQueryNode(next, etlContext, A.Fake<IServiceAccountTokenService>());
 
         // ---------------- Act ----------------

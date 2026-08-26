@@ -57,7 +57,6 @@ public class LlmQuerySmokeTests
         {
             Provider = LlmProvider.OpenAiCompatible,
             BaseUrl = OllamaBaseUrl,
-            ApiKey = "ollama", // any non-empty string — Ollama ignores it
             Model = Model,
 
             Question = "Summarize the following text in exactly one sentence.",
@@ -154,7 +153,6 @@ public class LlmQuerySmokeTests
         {
             Provider = LlmProvider.OpenAiCompatible,
             BaseUrl = OllamaBaseUrl,
-            ApiKey = "ollama",
             Model = Model,
 
             Question = "What is 2 + 2? Answer with the number only.",
@@ -263,7 +261,6 @@ public class LlmQuerySmokeTests
         {
             Provider = LlmProvider.OpenAiCompatible,
             BaseUrl = OllamaBaseUrl,
-            ApiKey = "ollama",
             Model = Model,
 
             // Force a non-trivial response so we're confident the call hasn't
@@ -319,7 +316,6 @@ public class LlmQuerySmokeTests
         {
             Provider = LlmProvider.OpenAiCompatible,
             BaseUrl = OllamaBaseUrl,
-            ApiKey = "ollama",
             Model = bogusModel,
             Question = "Anything.",
             SystemPrompt = "You are helpful.",
@@ -373,7 +369,6 @@ public class LlmQuerySmokeTests
         {
             Provider = LlmProvider.OpenAiCompatible,
             BaseUrl = OllamaBaseUrl,
-            ApiKey = "ollama",
             Model = bogusModel,
             Question = "Anything.",
             SystemPrompt = "You are helpful.",

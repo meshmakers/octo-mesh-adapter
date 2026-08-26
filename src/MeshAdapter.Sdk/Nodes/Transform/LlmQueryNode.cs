@@ -110,15 +110,12 @@ internal class LlmQueryNode(
                 return;
             }
 
-            // Build the context (main content + any additional data paths)
-            var context = BuildContext(mainContent, config.DataPaths, dataContext, nodeContext);
-
-            // JSON mode: normalize straight double quotes in the CONTEXT to typographic
-            // ones (" -> ”).
-            if (config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
-            {
-                context = context.Replace('"', '”');
-            }
+            // Build the context (main content + any additional data paths). In JSON mode,
+            // straight double quotes are normalized to typographic ones (" -> ”) INSIDE
+            // content string values only — never in the serialized JSON syntax.
+            var sanitizeQuotes = config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase);
+            var context = BuildContext(mainContent, config.DataPaths, dataContext, nodeContext,
+                sanitizeQuotes);
 
             // Build the user prompt (CONTENT / QUESTION / optional JSON sample)
             var userPrompt = BuildUserPrompt(config.Question, context,
@@ -487,11 +484,12 @@ internal class LlmQueryNode(
     // ----------------------------------------------------------------------
 
     private static string BuildContext(
-        string mainContent, string[]? dataPaths, IDataContext dataContext, INodeContext nodeContext)
+        string mainContent, string[]? dataPaths, IDataContext dataContext, INodeContext nodeContext,
+        bool sanitizeQuotesInValues = false)
     {
         var ctx = new StringBuilder();
         ctx.AppendLine("Main Content:");
-        ctx.AppendLine(mainContent);
+        ctx.AppendLine(sanitizeQuotesInValues ? SanitizeQuotes(mainContent) : mainContent);
         ctx.AppendLine();
 
         if (dataPaths is not { Length: > 0 }) return ctx.ToString();
@@ -509,17 +507,27 @@ internal class LlmQueryNode(
                 ctx.AppendLine($"Data from {dataPath}:");
                 if (kind == DataKind.String)
                 {
-                    ctx.AppendLine(dataContext.Get<string>(dataPath));
+                    var s = dataContext.Get<string>(dataPath);
+                    ctx.AppendLine(sanitizeQuotesInValues && s != null ? SanitizeQuotes(s) : s);
                 }
                 else
                 {
                     var value = dataContext.Get<object?>(dataPath);
-                    ctx.AppendLine(JsonSerializer.Serialize(value,
-                        new JsonSerializerOptions
-                        {
-                            WriteIndented = true,
-                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                        }));
+                    var options = new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                    };
+                    if (sanitizeQuotesInValues)
+                    {
+                        // Sanitize string VALUES only; the serialized JSON syntax stays intact.
+                        var node = JsonSerializer.SerializeToNode(value, options);
+                        ctx.AppendLine(SanitizeStringValues(node)?.ToJsonString(options));
+                    }
+                    else
+                    {
+                        ctx.AppendLine(JsonSerializer.Serialize(value, options));
+                    }
                 }
 
                 ctx.AppendLine();
@@ -884,6 +892,61 @@ internal class LlmQueryNode(
 
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..maxLength] + "…";
+
+    /// <summary>
+    /// Replaces the double-quote glyph family (" „ “ ” « ») with a single quote in content
+    /// text. Applied to context CONTENT in JSON mode: models normalize typographic quotes
+    /// back to straight ones when quoting verbatim (e.g. „G:“ becomes "G:"), which
+    /// terminates the JSON string under constrained decoding and truncates content.
+    /// Removing the whole glyph family from the input removes the trigger.
+    /// </summary>
+    private static string SanitizeQuotes(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        foreach (var c in text)
+        {
+            sb.Append(c is '"' or '„' or '“' or '”' or '«' or '»' ? '\'' : c);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Rebuilds a JSON tree with <see cref="SanitizeQuotes"/> applied to every string
+    /// VALUE; keys and structure are untouched. Internal for unit tests.
+    /// </summary>
+    internal static System.Text.Json.Nodes.JsonNode? SanitizeStringValues(
+        System.Text.Json.Nodes.JsonNode? node)
+    {
+        switch (node)
+        {
+            case System.Text.Json.Nodes.JsonObject obj:
+            {
+                var result = new System.Text.Json.Nodes.JsonObject();
+                foreach (var kvp in obj)
+                {
+                    result[kvp.Key] = SanitizeStringValues(kvp.Value);
+                }
+
+                return result;
+            }
+            case System.Text.Json.Nodes.JsonArray arr:
+            {
+                var result = new System.Text.Json.Nodes.JsonArray();
+                foreach (var item in arr)
+                {
+                    result.Add(SanitizeStringValues(item));
+                }
+
+                return result;
+            }
+            case System.Text.Json.Nodes.JsonValue value
+                when value.TryGetValue<string>(out var s):
+                return System.Text.Json.Nodes.JsonValue.Create(SanitizeQuotes(s));
+            default:
+                return node?.DeepClone();
+        }
+    }
 
     private static string? ExtractJsonFromText(string text)
     {

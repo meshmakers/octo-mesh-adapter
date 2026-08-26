@@ -3,142 +3,87 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-/// Configuration for a provider-agnostic LLM Query node. Currently, supports:
-/// <list type="bullet">
-///   <item><description>OpenAICompatible</description></item>
-///   <item><description>Anthropic</description></item>
-/// </list>
+/// Queries an LLM with pipeline data. Provider-agnostic: supports OpenAI-compatible
+/// endpoints and the native Anthropic API.
 /// </summary>
 [NodeName("LlmQuery", 1)]
 public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 {
-    
     // ---- Connection group ----
 
     /// <summary>
-    /// LLM provider. v0.1 supports <see cref="LlmProvider.OpenAiCompatible"/>
+    /// LLM provider. OpenAiCompatible covers OpenAI cloud, Azure OpenAI and self-hosted
+    /// endpoints (Ollama, vLLM, Cerebras, ...); Anthropic uses the native Claude API.
     /// </summary>
     [PropertyGroup("Connection")]
     public LlmProvider Provider { get; set; } = LlmProvider.OpenAiCompatible;
 
     /// <summary>
-    /// Base URL for OpenAI-compatible endpoints. Leave null for actual OpenAI
-    /// cloud (api.openai.com). Examples:
-    /// <list type="bullet">
-    ///   <item><description>Ollama:    http://localhost:11434/v1/</description></item>
-    ///   <item><description>vLLM:      http://vllm-server:8000/v1/</description></item>
-    ///   <item><description>Cerebras:  https://api.cerebras.ai/v1/</description></item>
-    ///   <item><description>Groq:      https://api.groq.com/openai/v1/</description></item>
-    /// </list>
-    /// The trailing slash is required. Ignored when Provider = Anthropic.
+    /// Endpoint URL for OpenAI-compatible backends, with trailing slash
+    /// (e.g. http://localhost:11434/v1/). Null = OpenAI cloud. Ignored for Anthropic.
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public string? BaseUrl { get; set; }
 
     /// <summary>
-    /// Name of the AiConfiguration entity in GlobalConfiguration to load the API
-    /// key from. When set, the API key is read from the configuration entity and
-    /// never exposed in the data context. Takes precedence over
-    /// <see cref="ApiKey"/>.
+    /// Well-known name of the AiConfiguration entity to load the API key from.
+    /// Required for authenticated providers; leave null for backends without
+    /// authentication (e.g. local Ollama).
     /// </summary>
     [PropertyGroup("Connection", 2)]
     public string? ApiKeyConfigurationName { get; set; }
 
-    /// <summary>
-    /// LLM provider API key. Prefer <see cref="ApiKeyConfigurationName"/> in
-    /// production to avoid exposing keys in pipeline definitions. For Ollama
-    /// (no authentication), set this to any non-empty string (e.g. "ollama");
-    /// the OpenAI SDK requires a non-null credential even when the backend
-    /// ignores it.
-    /// </summary>
-    [PropertyGroup("Connection", 3, "password")]
-    public string? ApiKey { get; set; }
-
     // ---- AI Configuration group ----
 
     /// <summary>
-    /// Model identifier. Provider-specific:
-    /// <list type="bullet">
-    ///   <item><description>OpenAI:   gpt-4.1-mini, gpt-5-nano</description></item>
-    ///   <item><description>Ollama:   qwen2.5:7b-instruct, llama3.3:8b, nemotron-3-nano:4b</description></item>
-    ///   <item><description>Cerebras: gpt-oss-120b, llama-3.3-70b</description></item>
-    /// </list>
+    /// Model identifier as expected by the provider
+    /// (e.g. claude-sonnet-4-6, gpt-4.1-mini, qwen2.5:7b-instruct).
     /// </summary>
     [PropertyGroup("AI Configuration")]
     public string Model { get; set; } = "nemotron-3-nano:4b";
 
     /// <summary>
-    /// The question/prompt to ask the AI about the data.
+    /// The task or question for the model.
     /// </summary>
     [PropertyGroup("AI Configuration", 1, "textarea")]
     public required string Question { get; set; }
 
     /// <summary>
-    /// System prompt to set the context for the AI.
+    /// System prompt setting role and rules for the model.
     /// </summary>
     [PropertyGroup("AI Configuration", 2, "textarea")]
     public string SystemPrompt { get; set; } = "You are a helpful AI assistant that extracts specific information from documents. Always provide accurate, structured responses based only on the information provided.";
 
     /// <summary>
-    /// Maximum tokens for the response.
+    /// Maximum tokens in the response.
     /// </summary>
     [PropertyGroup("AI Configuration", 3)]
     public int MaxTokens { get; set; } = 4096;
 
     /// <summary>
-    /// Sampling temperature, typically 0.0–1.0. Lower = more deterministic;
-    /// higher = more random. Default 0.3 works well for extraction and
-    /// summarization tasks; bump to 0.7 for varied creative output. Set to
-    /// null (omit from YAML) to let the provider apply its own default.
-    /// <para>
-    /// <b>Mutually exclusive with <see cref="TopP"/>.</b> Industry convention
-    /// (OpenAI, Anthropic, Cerebras, Ollama) is to use only one of these
-    /// sampling controls — combining them produces unpredictable interactions
-    /// and Anthropic rejects such requests outright. For most pipelines, set
-    /// only Temperature and leave TopP null. The node throws a configuration
-    /// error if both are non-null.
-    /// </para>
+    /// Sampling temperature (0.0-1.0); lower is more deterministic. Null = provider
+    /// default. Mutually exclusive with TopP.
     /// </summary>
     [PropertyGroup("AI Configuration / Sampling", 4)]
     public double? Temperature { get; set; } = 0.3;
 
     /// <summary>
-    /// Nucleus-sampling threshold, 0.0–1.0. Optional; null = provider default.
-    /// Lower values restrict sampling to higher-probability tokens.
-    /// <para>
-    /// <b>Mutually exclusive with <see cref="Temperature"/>.</b> If you set
-    /// TopP, also set Temperature to null. Most pipelines should prefer
-    /// Temperature; TopP is for users who specifically want nucleus-sampling
-    /// semantics. The node throws a configuration error if both are non-null.
-    /// </para>
+    /// Nucleus-sampling threshold (0.0-1.0). Null = provider default.
+    /// Mutually exclusive with Temperature.
     /// </summary>
     [PropertyGroup("AI Configuration / Sampling", 5)]
     public float? TopP { get; set; }
 
     /// <summary>
-    /// Top-K sampling cutoff. Optional; null = provider default.
-    /// <para>
-    /// Orthogonal to <see cref="Temperature"/> / <see cref="TopP"/> — may be
-    /// set independently alongside either one. OpenAI cloud silently ignores
-    /// TopK; honoured by Anthropic, Ollama, and most OpenAI-compatible
-    /// self-hosted backends.
-    /// </para>
+    /// Top-K sampling cutoff. Null = provider default. May be combined with
+    /// Temperature or TopP; not honored by all providers.
     /// </summary>
     [PropertyGroup("AI Configuration / Sampling", 6)]
     public int? TopK { get; set; }
 
     /// <summary>
-    /// Maximum call duration in seconds before cancellation fires.
-    /// Default 90 seconds; typical range 30–300. Examples:
-    /// <c>30</c> for fast extraction, <c>120</c> for longer summaries,
-    /// <c>300</c> for large prompts or slow self-hosted models.
-    /// <para>
-    /// Note: the OpenAI SDK's internal HttpClient ceiling is 100 seconds;
-    /// if you need longer timeouts than that on the OpenAI-compatible path,
-    /// the node must construct a custom transport (see
-    /// <c>docs/spike2_llmquery_fork.md</c> Phase D). The Anthropic path
-    /// does not have this ceiling.
-    /// </para>
+    /// Maximum call duration in seconds before cancellation (default 90).
+    /// The OpenAI-compatible path is capped at 100 seconds by the OpenAI SDK.
     /// </summary>
     [PropertyGroup("AI Configuration", 7)]
     public int TimeoutSeconds { get; set; } = 90;
@@ -146,16 +91,14 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     // ---- Paths group ----
 
     /// <summary>
-    /// Optional context data paths to include in the query
-    /// (e.g., ["$.ExtractedText", "$.DocumentMetadata"]).
+    /// Additional data paths whose values are appended to the prompt as context.
     /// </summary>
     [PropertyGroup("Paths", 0, "jsonpath")]
     public string[]? DataPaths { get; set; }
 
     /// <summary>
-    /// Optional JSON path to conversation history array. Each entry should have
-    /// "role" (user/assistant) and "content" fields. When set, previous messages
-    /// are included for multi-turn conversations.
+    /// Path to a conversation history array of {role, content} entries,
+    /// included as previous messages for multi-turn calls.
     /// </summary>
     [PropertyGroup("Paths", 1, "jsonpath")]
     public string? ConversationHistoryPath { get; set; }
@@ -163,54 +106,42 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     // ---- Output group ----
 
     /// <summary>
-    /// Expected response format ("json" or "text").
+    /// Response format: "json" or "text".
     /// </summary>
     [PropertyGroup("Output")]
     public string ResponseFormat { get; set; } = "json";
 
     /// <summary>
-    /// Whether to include the raw AI response in the output.
+    /// Whether to additionally write the raw model response to RawResponseOutputPath.
     /// </summary>
     [PropertyGroup("Output", 1)]
     public bool IncludeRawResponse { get; set; } = false;
 
     /// <summary>
-    /// Output path for the raw AI response (if IncludeRawResponse is true).
+    /// Output path for the raw model response (used when IncludeRawResponse is true).
     /// </summary>
     [PropertyGroup("Output", 2, "jsonpath")]
     public string? RawResponseOutputPath { get; set; }
 
     /// <summary>
-    /// Sample JSON format for structured responses.
+    /// Optional example JSON appended to the prompt to guide response shape and field
+    /// semantics. Empty = no example.
     /// </summary>
     [PropertyGroup("Output", 3, "code")]
-    public string JsonFormatSample { get; set; } = """
-    {
-      "transactionDate": "2024-01-15",
-      "companyAddress": "Main St, City, Country",
-      "grossTotal": 1200.00,
-      "netTotal": 1000.00,
-      "taxAmount": 200.00
-    }
-    """;
+    public string JsonFormatSample { get; set; } = string.Empty;
 
     /// <summary>
-    /// Optional JSON Schema (as JSON text) for the response. When set (and no MCP tools
-    /// are configured), the schema is enforced SERVER-SIDE via the provider's structured
-    /// outputs (Anthropic structured outputs / OpenAI json_schema — constrained decoding):
-    /// invalid JSON becomes impossible instead of improbable, at no extra token cost.
-    /// This is the preferred mechanism over prompt-enforced JSON; requires a model that
-    /// supports structured outputs (unsupported models return a provider error).
+    /// Optional JSON Schema enforced server-side via the provider's structured outputs
+    /// (constrained decoding): responses are guaranteed to parse. Requires a model with
+    /// structured-output support. Not applied when MCP tools are configured.
     /// </summary>
     [PropertyGroup("Output", 4, "code")]
     public string? JsonSchema { get; set; }
 
     /// <summary>
-    /// Fallback when a JSON response does not parse (no or unsupported server-side schema
-    /// enforcement): number of bounded repair attempts (default 1, hard-capped at 2,
-    /// 0 = off). A repair call sends ONLY the broken output plus the parser error back to
-    /// the model — not the original context — so its cost is proportional to the output
-    /// size, and there is no retry loop by construction.
+    /// Bounded repair for unparseable JSON responses: up to this many follow-up calls
+    /// (default 1, capped at 2, 0 = off), each resending only the broken output plus
+    /// the parser error - never the original context.
     /// </summary>
     [PropertyGroup("Output", 5)]
     public int MaxJsonRepairAttempts { get; set; } = 1;
@@ -218,7 +149,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     // ---- Options group ----
 
     /// <summary>
-    /// Whether to continue processing if the AI query fails.
+    /// Whether to continue the pipeline if the LLM call fails.
     /// </summary>
     [PropertyGroup("Options")]
     public bool ContinueOnError { get; set; } = false;
@@ -226,31 +157,15 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     // ---- MCP group ----
 
     /// <summary>
-    /// Well-known names of <c>System.Communication/McpConfiguration</c> entities
-    /// whose MCP servers should be wired into the LLM call as tool providers.
-    /// Each named configuration is loaded from <c>GlobalConfiguration</c> at
-    /// pipeline-execution time, an <c>McpClient</c> is opened against it, and
-    /// the union of <c>ListToolsAsync()</c> results is passed to the LLM via
-    /// <c>ChatOptions.Tools</c>. Tool-call execution is handled by MEAI's
-    /// <c>UseFunctionInvocation()</c> middleware — provider-agnostic, works for
-    /// both the OpenAI-compatible and Anthropic-native branches.
-    /// <para>
-    /// Leave empty (default) for pipelines that don't need MCP tools — the LLM
-    /// then runs in plain chat mode with no tool-use loop. Multiple names let a
-    /// single pipeline compose tools from several MCP servers (filesystem,
-    /// knowledge-graph, GitHub, etc.).
-    /// </para>
+    /// Well-known names of McpConfiguration entities whose MCP servers provide tools
+    /// for this call. Empty = plain chat mode without tools.
     /// </summary>
     [PropertyGroup("MCP", 0)]
     public IList<string> McpConfigurationNames { get; set; } = new List<string>();
 
     /// <summary>
-    /// Per-pipeline budget for how many tool-call rounds the LLM may make
-    /// before the node forces a stop. Default 8 matches the legacy
-    /// <c>AnthropicAiQuery@1</c> behavior and is enough for most agentic
-    /// extraction flows. Raise for long multi-step workflows; lower for
-    /// strict cost-control. Has no effect when
-    /// <see cref="McpConfigurationNames"/> is empty.
+    /// Maximum tool-call rounds before the node forces a stop (default 8).
+    /// No effect when no MCP tools are configured.
     /// </summary>
     [PropertyGroup("MCP", 1)]
     public int MaxToolRounds { get; set; } = 8;

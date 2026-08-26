@@ -113,6 +113,13 @@ internal class LlmQueryNode(
             // Build the context (main content + any additional data paths)
             var context = BuildContext(mainContent, config.DataPaths, dataContext, nodeContext);
 
+            // JSON mode: normalize straight double quotes in the CONTEXT to typographic
+            // ones (" -> ”).
+            if (config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
+            {
+                context = context.Replace('"', '”');
+            }
+
             // Build the user prompt (CONTENT / QUESTION / optional JSON sample)
             var userPrompt = BuildUserPrompt(config.Question, context,
                 config.ResponseFormat, config.JsonFormatSample);
@@ -211,6 +218,14 @@ internal class LlmQueryNode(
                     throw new InvalidOperationException(
                         $"jsonSchema is not valid JSON: {ex.Message}");
                 }
+            }
+            else if (wantsJson && !hasTools && config.Provider == LlmProvider.Anthropic)
+            {
+                // Anthropic's API has no plain JSON mode; without a jsonSchema the JSON
+                // discipline is prompt-only and may fail on quote-heavy content.
+                nodeContext.Warning(
+                    "Anthropic without jsonSchema: JSON is prompt-enforced only. " +
+                    "Set jsonSchema for guaranteed structured output.");
             }
 
             var options = new ChatOptions
@@ -410,9 +425,8 @@ internal class LlmQueryNode(
         if (string.IsNullOrEmpty(apiKey))
         {
             throw new InvalidOperationException(
-                "Anthropic provider requires a non-empty API key. " +
-                "Set ApiKey directly or use ApiKeyConfigurationName to " +
-                "reference an AiConfiguration entity.");
+                "Anthropic provider requires an API key. Set ApiKeyConfigurationName " +
+                "to reference an AiConfiguration entity that holds it.");
         }
 
         var client = new Anthropic.AnthropicClient { ApiKey = apiKey };
@@ -430,19 +444,6 @@ internal class LlmQueryNode(
         // bridge. Model passed here becomes the default; ChatOptions.ModelId
         // can override it per-call but our node body always sets it
         // explicitly, so the default is the only path that fires.
-        //
-        // Telemetry observation (Spike 4 evidence): this path emits
-        // gen_ai.provider.name = "anthropic" (vs the OpenAI-compat path's
-        // "openai"). server.address = "api.anthropic.com". Bonus tags
-        // include gen_ai.usage.cache_read.input_tokens (prompt caching)
-        // and gen_ai.response.time_to_first_chunk on streaming responses.
-        // .UseFunctionInvocation() — same middleware as the OpenAI-compat path.
-        // Anthropic's native tool-use blocks get mapped to MEAI tool calls by
-        // the SDK's IChatClient adapter; the MEAI middleware then invokes the
-        // matching AIFunction from ChatOptions.Tools. MCP tools flow through
-        // this path identically to the OpenAI-compat branch.
-        // MaximumIterationsPerRequest enforces the configured MaxToolRounds
-        // budget (same wiring as the OpenAI-compat factory).
         return client
             .AsIChatClient(config.Model)
             .AsBuilder()
@@ -452,16 +453,14 @@ internal class LlmQueryNode(
             .Build();
     }
 
-    // ----------------------------------------------------------------------
-    // ApiKey resolution: prefer ApiKeyConfigurationName (CK entity lookup),
-    // fall back to direct ApiKey field. Returns null if neither is set —
-    // downstream uses "unused" as a dummy for backends without auth.
-    // ----------------------------------------------------------------------
-
     private static string? ResolveApiKey(
         LlmQueryNodeConfiguration config, IMeshEtlContext etlContext, INodeContext nodeContext)
     {
-        if (string.IsNullOrEmpty(config.ApiKeyConfigurationName)) return config.ApiKey;
+        // API keys are only ever read from an AiConfiguration entity — no inline key on
+        // the node, so keys cannot end up in pipeline definitions, seeds or exports.
+        // Null is legitimate for backends without authentication (e.g. local Ollama).
+        if (string.IsNullOrEmpty(config.ApiKeyConfigurationName)) return null;
+
         if (etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
         {
             var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
@@ -476,10 +475,10 @@ internal class LlmQueryNode(
         }
 
         nodeContext.Warning(
-            $"AiConfiguration '{config.ApiKeyConfigurationName}' not found or has no ApiKey. " +
-            "Falling back to ApiKey field (may be null for backends without auth).");
+            $"AiConfiguration '{config.ApiKeyConfigurationName}' not found or has no ApiKey; " +
+            "continuing without an API key (only valid for backends without authentication).");
 
-        return config.ApiKey;
+        return null;
     }
 
     // ----------------------------------------------------------------------
@@ -639,19 +638,16 @@ internal class LlmQueryNode(
         promptBuilder.AppendLine();
 
         if (!responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase)) return promptBuilder.ToString();
-        promptBuilder.AppendLine("Please provide your response in valid JSON format. For example:");
+
         if (string.IsNullOrWhiteSpace(jsonExample))
         {
-            promptBuilder.AppendLine("{");
-            promptBuilder.AppendLine("  \"transactionDate\": \"2024-01-15\",");
-            promptBuilder.AppendLine("  \"companyAddress\": \"123 Main St, City, Country\",");
-            promptBuilder.AppendLine("  \"grossTotal\": 1200.00,");
-            promptBuilder.AppendLine("  \"netTotal\": 1000.00,");
-            promptBuilder.AppendLine("  \"taxAmount\": 200.00");
-            promptBuilder.AppendLine("}");
+            // No example configured: request JSON without inventing a domain-specific
+            // sample (a default example would leak unrelated fields into every prompt).
+            promptBuilder.AppendLine("Please provide your response in valid JSON format.");
         }
         else
         {
+            promptBuilder.AppendLine("Please provide your response in valid JSON format. For example:");
             promptBuilder.AppendLine(jsonExample);
         }
 
@@ -741,6 +737,7 @@ internal class LlmQueryNode(
         catch (JsonException outerEx)
         {
             var extractedJson = ExtractJsonFromText(text);
+            var candidate = extractedJson ?? text;
             if (extractedJson != null)
             {
                 try
@@ -752,15 +749,136 @@ internal class LlmQueryNode(
                 }
                 catch (JsonException innerEx)
                 {
-                    element = default;
-                    error = innerEx.Message;
-                    return false;
+                    outerEx = innerEx;
+                }
+            }
+
+            // Deterministic repair tier: mechanical defects (naked quotes inside strings,
+            // trailing commas, unclosed strings/brackets) have mechanical fixes — free and
+            // instant, before any LLM repair call is considered.
+            var repaired = RepairJsonMechanically(candidate);
+            if (repaired != candidate)
+            {
+                try
+                {
+                    element = JsonSerializer.Deserialize<JsonElement>(repaired);
+                    nodeContext.Info("JSON repaired deterministically (no LLM call)");
+                    error = null;
+                    return true;
+                }
+                catch (JsonException)
+                {
+                    // fall through to the original error
                 }
             }
 
             element = default;
             error = outerEx.Message;
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Mechanical JSON repair for the defect classes LLMs actually produce:
+    /// (1) naked double quotes inside string values — a quote whose next non-whitespace
+    /// character is not valid JSON continuation (, : } ] or end) is content, not a
+    /// terminator, and gets escaped; (2) trailing commas before } or ]; (3) unterminated
+    /// strings and unclosed braces/brackets at the end of the document. Purely syntactic —
+    /// content judgment stays with the LLM repair tier. A wrong guess on (1) produces a
+    /// mis-spliced string, which downstream verification (quote-verbatim checks) flags.
+    /// </summary>
+    internal static string RepairJsonMechanically(string text)
+    {
+        var sb = new System.Text.StringBuilder(text.Length + 16);
+        var stack = new Stack<char>();
+        var inString = false;
+        var escaped = false;
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                    sb.Append(c);
+                    continue;
+                }
+
+                switch (c)
+                {
+                    case '\\':
+                        escaped = true;
+                        sb.Append(c);
+                        continue;
+                    case '"':
+                    {
+                        // Terminator or content? Look at the next non-whitespace char.
+                        var j = i + 1;
+                        while (j < text.Length && char.IsWhiteSpace(text[j])) j++;
+                        var isTerminator = j >= text.Length ||
+                                           text[j] is ',' or ':' or '}' or ']';
+                        if (isTerminator)
+                        {
+                            inString = false;
+                            sb.Append(c);
+                        }
+                        else
+                        {
+                            sb.Append("\\\""); // content — escape it
+                        }
+
+                        continue;
+                    }
+                    default:
+                        sb.Append(c);
+                        continue;
+                }
+            }
+
+            switch (c)
+            {
+                case '"':
+                    inString = true;
+                    sb.Append(c);
+                    break;
+                case '{':
+                    stack.Push('}');
+                    sb.Append(c);
+                    break;
+                case '[':
+                    stack.Push(']');
+                    sb.Append(c);
+                    break;
+                case '}' or ']':
+                    if (stack.Count > 0 && stack.Peek() == c) stack.Pop();
+                    // Trailing comma before a closer: drop the comma.
+                    TrimTrailingComma(sb);
+                    sb.Append(c);
+                    break;
+                default:
+                    sb.Append(c);
+                    break;
+            }
+        }
+
+        // Close what the model left open (truncated output).
+        if (inString) sb.Append('"');
+        while (stack.Count > 0)
+        {
+            TrimTrailingComma(sb);
+            sb.Append(stack.Pop());
+        }
+
+        return sb.ToString();
+
+        static void TrimTrailingComma(System.Text.StringBuilder builder)
+        {
+            var k = builder.Length - 1;
+            while (k >= 0 && char.IsWhiteSpace(builder[k])) k--;
+            if (k >= 0 && builder[k] == ',') builder.Remove(k, 1);
         }
     }
 

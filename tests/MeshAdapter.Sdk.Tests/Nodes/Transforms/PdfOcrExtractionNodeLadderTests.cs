@@ -88,10 +88,14 @@ public class PdfOcrExtractionNodeLadderTests
 
         const string invoiceXml = "<rsm:CrossIndustryInvoice>ZUGFeRD</rsm:CrossIndustryInvoice>";
         var extractor = A.Fake<IPdfTextExtractor>();
+        // Spec filename must win over other XML attachments regardless of order.
         A.CallTo(() => extractor.Extract(A<byte[]>._, A<int>._))
             .Returns(new PdfTextExtractionResult(
                 [new PdfPageText(1, "Rechnung 4711 Betrag 119,00 EUR", true)],
-                [new PdfEmbeddedFile("factur-x.xml", Encoding.UTF8.GetBytes(invoiceXml))]));
+                [
+                    new PdfEmbeddedFile("attachment-notes.xml", Encoding.UTF8.GetBytes("<notes/>")),
+                    new PdfEmbeddedFile("factur-x.xml", Encoding.UTF8.GetBytes(invoiceXml))
+                ]));
 
         var node = new PdfOcrExtractionNode(next, extractor);
 

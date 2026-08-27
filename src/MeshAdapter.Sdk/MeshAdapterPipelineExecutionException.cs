@@ -32,6 +32,24 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
     }
 
+    public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: columns must list at least one column.");
+    }
+
+    public static Exception DelimitedColumnNull(INodeContext nodeContext, int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: column {columnIndex} is null.");
+    }
+
+    public static Exception DelimitedColumnAmbiguous(INodeContext nodeContext, int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: column {columnIndex} sets both value and valuePath.");
+    }
+
     public static Exception InvalidValue(object? value)
     {
         return new MeshAdapterPipelineExecutionException($"Invalid value: {value}");

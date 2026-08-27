@@ -68,6 +68,13 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
             var column = columns[i];
             var raw = column.Value ?? ReadValue(record, column, nodeContext, recordIndex, i);
             values[i] = EnforceStructure(raw, c, nodeContext, recordIndex, i);
+
+            // Checked on the rendered text so that absent, null and empty are one rule, not three.
+            if (column.Required && values[i].Length == 0)
+            {
+                throw MeshAdapterPipelineExecutionException.DelimitedRequiredColumnEmpty(
+                    nodeContext, recordIndex, i);
+            }
         }
 
         return string.Join(c.Delimiter, values);

@@ -286,4 +286,46 @@ public class RenderDelimitedTextNodeTests
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
     }
+
+    [Theory]
+    [InlineData("""{"rows":[{}]}""")]            // absent
+    [InlineData("""{"rows":[{"id":null}]}""")]   // explicit null
+    [InlineData("""{"rows":[{"id":""}]}""")]     // present but empty
+    public async Task ProcessObjectAsync_RequiredColumnWithoutValue_Throws(string json)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id", Required = true });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse(json));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("record 0", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_RequiredColumnWithValue_Renders()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id", Required = true });
+        config.TrailingNewLine = false;
+        var (dataContext, nodeContext, next) =
+            PrepareTest(config, JsonNode.Parse("""{"rows":[{"id":"1"}]}"""));
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("1", written());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ColumnWithoutRequired_KeepsAnEmptyValue()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" },
+            new DelimitedColumn { Value = "tail" });
+        config.TrailingNewLine = false;
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[{}]}"""));
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("|tail", written());
+    }
 }

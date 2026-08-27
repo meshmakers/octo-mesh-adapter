@@ -198,4 +198,92 @@ public class RenderDelimitedTextNodeTests
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
     }
+
+    [Theory]
+    [InlineData("a|b")]
+    [InlineData("a\nb")]
+    [InlineData("a\rb")]
+    public async Task ProcessObjectAsync_ValueBreaksTheStructure_FailsByDefault(string value)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" },
+            new DelimitedColumn { Value = "tail" });
+        var data = new JsonObject { ["rows"] = new JsonArray(new JsonObject { ["v"] = value }) };
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("record 0", ex.Message);
+        Assert.Contains("column 0", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ReplaceHandling_SubstitutesAndKeepsTheColumnCount()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" },
+            new DelimitedColumn { Value = "tail" });
+        config.OnDelimiterInValue = DelimiterInValueHandling.Replace;
+        config.Replacement = "-";
+        config.TrailingNewLine = false;
+        var data = new JsonObject { ["rows"] = new JsonArray(new JsonObject { ["v"] = "a|b" }) };
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("a-b|tail", written());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_StripHandling_RemovesTheOffendingCharacters()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" },
+            new DelimitedColumn { Value = "tail" });
+        config.OnDelimiterInValue = DelimiterInValueHandling.Strip;
+        config.TrailingNewLine = false;
+        var data = new JsonObject { ["rows"] = new JsonArray(new JsonObject { ["v"] = "a|b\nc" }) };
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("abc|tail", written());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("a\nb")]
+    public async Task ProcessObjectAsync_UnusableDelimiter_Throws(string? delimiter)
+    {
+        var config = Config(new DelimitedColumn { Value = "A" });
+        config.Delimiter = delimiter;
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[]}"""));
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ReplacementContainsTheDelimiter_Throws()
+    {
+        var config = Config(new DelimitedColumn { Value = "A" });
+        config.OnDelimiterInValue = DelimiterInValueHandling.Replace;
+        config.Replacement = "|";
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[]}"""));
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    /// <summary>A constant is checked too - a layout can misconfigure one just as easily.</summary>
+    [Fact]
+    public async Task ProcessObjectAsync_ConstantCarriesTheDelimiter_FailsByDefault()
+    {
+        var config = Config(new DelimitedColumn { Value = "a|b" });
+        var (dataContext, nodeContext, next) = PrepareTest(config,
+            JsonNode.Parse("""{"rows":[{}]}"""));
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
 }

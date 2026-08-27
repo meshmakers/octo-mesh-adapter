@@ -46,6 +46,35 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: '{path}' must resolve to an array of records.");
     }
 
+    public static Exception DelimitedDelimiterUnusable(INodeContext nodeContext, string? delimiter)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: delimiter '{delimiter}' is empty or contains a line break.");
+    }
+
+    public static Exception DelimitedReplacementUnusable(INodeContext nodeContext, string replacement)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: replacement '{replacement}' contains the delimiter or a " +
+            "line break, which would only move the problem.");
+    }
+
+    public static Exception DelimitedValueBreaksStructure(INodeContext nodeContext, int recordIndex,
+        int columnIndex, string value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: the value " +
+            $"'{value}' contains the delimiter or a line break and would shift every column after it.");
+    }
+
+    public static Exception DelimitedRequiredColumnEmpty(INodeContext nodeContext, int recordIndex,
+        int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex} is required but " +
+            "rendered empty.");
+    }
+
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

@@ -66,10 +66,50 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         for (var i = 0; i < columns.Count; i++)
         {
             var column = columns[i];
-            values[i] = column.Value ?? ReadValue(record, column, nodeContext, recordIndex, i);
+            var raw = column.Value ?? ReadValue(record, column, nodeContext, recordIndex, i);
+            values[i] = EnforceStructure(raw, c, nodeContext, recordIndex, i);
         }
 
         return string.Join(c.Delimiter, values);
+    }
+
+    private static bool ContainsLineBreak(string value) =>
+        value.Contains('\r', StringComparison.Ordinal) || value.Contains('\n', StringComparison.Ordinal);
+
+    /// <summary>
+    /// A delimiter or a line break inside a value shifts every column after it, and the receiving
+    /// side has no quoting convention that could signal the difference. So the value is either
+    /// refused or rewritten - it is never passed through as it stands.
+    /// </summary>
+    private static string EnforceStructure(string value, RenderDelimitedTextNodeConfiguration c,
+        INodeContext nodeContext, int recordIndex, int columnIndex)
+    {
+        if (!value.Contains(c.Delimiter!, StringComparison.Ordinal) && !ContainsLineBreak(value))
+        {
+            return value;
+        }
+
+        if (c.OnDelimiterInValue == DelimiterInValueHandling.Fail)
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedValueBreaksStructure(
+                nodeContext, recordIndex, columnIndex, value);
+        }
+
+        var replacement = c.OnDelimiterInValue == DelimiterInValueHandling.Replace
+            ? c.Replacement ?? string.Empty
+            : string.Empty;
+
+        var cleaned = value
+            .Replace(c.Delimiter!, replacement, StringComparison.Ordinal)
+            .Replace("\r\n", replacement, StringComparison.Ordinal)
+            .Replace("\r", replacement, StringComparison.Ordinal)
+            .Replace("\n", replacement, StringComparison.Ordinal);
+
+        nodeContext.Warning(
+            "RenderDelimitedText: record {0}, column {1} contained the delimiter or a line break; " +
+            "the value was rewritten", recordIndex, columnIndex);
+
+        return cleaned;
     }
 
     private static string ReadValue(IDataContext record, DelimitedColumn column,
@@ -102,6 +142,18 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         if (c.Columns is null || c.Columns.Count == 0)
         {
             throw MeshAdapterPipelineExecutionException.DelimitedColumnsNotSet(nodeContext);
+        }
+
+        if (string.IsNullOrEmpty(c.Delimiter) || ContainsLineBreak(c.Delimiter))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedDelimiterUnusable(nodeContext, c.Delimiter);
+        }
+
+        // Replacing a structural character with another one would only move the problem.
+        var replacement = c.Replacement ?? string.Empty;
+        if (replacement.Contains(c.Delimiter, StringComparison.Ordinal) || ContainsLineBreak(replacement))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedReplacementUnusable(nodeContext, replacement);
         }
 
         var index = 0;

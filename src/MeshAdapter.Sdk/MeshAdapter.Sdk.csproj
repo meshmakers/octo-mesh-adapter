@@ -37,6 +37,7 @@
     <ItemGroup>
         <PackageReference Include="Anthropic" Version="12.24.1" />
         <PackageReference Include="IronOcr" Version="2026.6.1" />
+        <PackageReference Include="PdfPig" Version="0.1.14" />
         <!-- Cover-sheet rendering (RenderDataSheetPdf) + PDF merge (MergePdf) for
              the accounting BMD handover export. QuestPDF Community license is set
              in RenderDataSheetPdfNode; PdfSharp (MIT) does the page-level merge. -->

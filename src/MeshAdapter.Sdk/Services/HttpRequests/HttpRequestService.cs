@@ -64,13 +64,20 @@ internal class HttpRequestService(IOptions<AdapterOptions> adapterOptions) : IHt
         }
         if (context.Request.ContentLength > 0)
         {
-            if (context.Request.ContentType == MimeTypes.MimeTypeJson)
+            // Compare MEDIA TYPES, not the raw Content-Type header. Clients routinely
+            // append parameters ("application/json; charset=utf-8" — Bot Framework,
+            // Chatbox, most HTTP libraries), which an exact string match silently
+            // misclassifies: the JSON body then reaches trigger nodes as one raw
+            // string instead of a parsed object, and $.body.* paths resolve to nothing 
+            var mediaType = context.Request.GetTypedHeaders().ContentType?.MediaType.Value;
+
+            if (context.Request.HasJsonContentType())
             {
                 using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
                 var bodyText = await reader.ReadToEndAsync();
                 input["body"] = JsonNode.Parse(bodyText);
             }
-            else if (context.Request.ContentType == MimeTypes.MimeText)
+            else if (string.Equals(mediaType, MimeTypes.MimeText, StringComparison.OrdinalIgnoreCase))
             {
                 using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
                 var body = await reader.ReadToEndAsync();

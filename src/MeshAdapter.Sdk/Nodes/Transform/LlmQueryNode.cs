@@ -529,9 +529,12 @@ internal class LlmQueryNode(
             var role = entry.GetKind("$.role") is DataKind.String
                 ? entry.Get<string>("$.role")
                 : null;
-            var content = entry.GetKind("$.content") is DataKind.String
-                ? entry.Get<string>("$.content")
-                : null;
+            var content = entry.GetKind("$.content") switch
+            {
+                DataKind.String => entry.Get<string>("$.content"),
+                DataKind.Array => ExtractTextFromContentParts(entry),
+                _ => null
+            };
             if (string.IsNullOrEmpty(role) || string.IsNullOrEmpty(content))
             {
                 continue;
@@ -545,6 +548,40 @@ internal class LlmQueryNode(
 
         nodeContext.Debug($"Loaded {result.Count} messages from conversation history");
         return result;
+    }
+
+    /// <summary>
+    /// Flattens an OpenAI content-parts array ("content": [{"type":"text","text":"..."}])
+    /// into a single string by concatenating the text parts in order. Non-text parts
+    /// (image_url, input_audio, ...) are ignored. Returns null when no text part is
+    /// present, so the caller's empty-content skip applies unchanged.
+    /// </summary>
+    private static string? ExtractTextFromContentParts(IDataContext entry)
+    {
+        var sb = new StringBuilder();
+        foreach (var part in entry.SelectMatches("$.content[*]"))
+        {
+            if (part.GetKind("$.type") is not DataKind.String ||
+                !string.Equals(part.Get<string>("$.type"), "text", StringComparison.OrdinalIgnoreCase) ||
+                part.GetKind("$.text") is not DataKind.String)
+            {
+                continue;
+            }
+
+            var text = part.Get<string>("$.text");
+            if (string.IsNullOrEmpty(text))
+            {
+                continue;
+            }
+
+            if (sb.Length > 0)
+            {
+                sb.AppendLine();
+            }
+            sb.Append(text);
+        }
+
+        return sb.Length > 0 ? sb.ToString() : null;
     }
 
     // ----------------------------------------------------------------------

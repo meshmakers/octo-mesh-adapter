@@ -308,4 +308,64 @@ public class RenderDelimitedTextNodeTests
 
         Assert.Equal("|tail", written());
     }
+
+    /// <summary>
+    /// A fixed 34-column layout of the kind this node exists for: two constants, five value columns
+    /// and 26 reserved columns that always render empty. Pins the exact bytes, including the
+    /// trailing line feed, and that an absent optional value leaves an empty column rather than
+    /// swallowing one.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_FixedThirtyFourColumnLayout_ProducesTheExactDocument()
+    {
+        var config = FixedLayoutConfig();
+        var data = JsonNode.Parse("""
+            {"rows":[
+              {"key":"4269","label":"First item","code":"TW_001","gtin":"4270004042719","unit":"pc.","amount":"35"},
+              {"key":"28607","label":"Second item","code":"TW_003","unit":"pc.","amount":"0"}
+            ]}
+            """);
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        const string expected =
+            "A*||4269|First item|TW_001||||||4270004042719|pc.||||||||35|||1|||||||||||\n" +
+            "A*||28607|Second item|TW_003|||||||pc.||||||||0|||1|||||||||||\n";
+
+        var text = written();
+        Assert.Equal(expected, text);
+        Assert.All(text!.Split('\n', StringSplitOptions.RemoveEmptyEntries),
+            line => Assert.Equal(34, line.Split('|').Length));
+        Assert.DoesNotContain('\r', text);
+        Assert.EndsWith("\n", text, StringComparison.Ordinal);
+    }
+
+    private static RenderDelimitedTextNodeConfiguration FixedLayoutConfig()
+    {
+        var columns = new List<DelimitedColumn>();
+        for (var i = 1; i <= 34; i++)
+        {
+            columns.Add(i switch
+            {
+                1 => new DelimitedColumn { Value = "A*" },
+                3 => new DelimitedColumn { ValuePath = "$.key", Required = true },
+                4 => new DelimitedColumn { ValuePath = "$.label" },
+                5 => new DelimitedColumn { ValuePath = "$.code" },
+                11 => new DelimitedColumn { ValuePath = "$.gtin" },
+                12 => new DelimitedColumn { ValuePath = "$.unit" },
+                20 => new DelimitedColumn { ValuePath = "$.amount" },
+                23 => new DelimitedColumn { Value = "1" },
+                _ => new DelimitedColumn()
+            });
+        }
+
+        return new RenderDelimitedTextNodeConfiguration
+        {
+            Path = "$.rows",
+            TargetPath = "$.text",
+            Columns = columns
+        };
+    }
 }

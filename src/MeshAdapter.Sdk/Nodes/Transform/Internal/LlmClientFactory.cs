@@ -79,6 +79,14 @@ internal static class LlmClientFactory
             }
         }
 
+        if (string.IsNullOrEmpty(config.Model))
+        {
+            // No hard-coded default: pinned model ids go out of date.
+            throw new ArgumentException(
+                "AI model is required. Set 'aiModel' on the AiConfiguration (recommended) " +
+                "or 'model' on the node.", nameof(config.Model));
+        }
+
         return config.Model;
     }
 

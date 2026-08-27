@@ -14,16 +14,23 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 internal static class LlmMcpTools
 {
     /// <summary>
-    /// Opens a client per server and aggregates their tools. A broken server logs a
-    /// warning and is skipped. Opened clients are added to <paramref name="clients"/>
-    /// immediately so the caller's finally block always disposes them.
+    /// Opens a client per server and aggregates their tools, optionally filtered by
+    /// <paramref name="allowedToolNames"/> (case-insensitive; null/empty = all). A broken
+    /// server logs a warning and is skipped. Opened clients are added to
+    /// <paramref name="clients"/> immediately so the caller's finally block always
+    /// disposes them.
     /// </summary>
     internal static async Task<IList<AIFunction>> LoadAsync(
         IList<McpServerResolver.McpServerConfig> servers,
         List<McpClient> clients,
+        string[]? allowedToolNames,
         INodeContext nodeContext,
         CancellationToken ct)
     {
+        var allowlist = allowedToolNames is { Length: > 0 }
+            ? new HashSet<string>(allowedToolNames, StringComparer.OrdinalIgnoreCase)
+            : null;
+
         var allTools = new List<AIFunction>();
         foreach (var server in servers)
         {
@@ -35,17 +42,33 @@ internal static class LlmMcpTools
                 clients.Add(client);
                 var tools = await client.ListToolsAsync(cancellationToken: ct);
 
-                nodeContext.Debug(
-                    $"MCP server '{server.Name}' contributed {tools.Count} tool(s): " +
-                    string.Join(", ", tools.Select(t => t.Name)));
+                var accepted = allowlist is null
+                    ? tools.ToList()
+                    : tools.Where(t => allowlist.Contains(t.Name)).ToList();
 
-                allTools.AddRange(tools.Cast<AIFunction>());
+                nodeContext.Debug(
+                    $"MCP server '{server.Name}' contributed {accepted.Count} of {tools.Count} " +
+                    $"tool(s): {string.Join(", ", accepted.Select(t => t.Name))}");
+
+                allTools.AddRange(accepted.Cast<AIFunction>());
             }
             catch (Exception ex)
             {
                 nodeContext.Warning(
                     $"Failed to connect to MCP server '{server.Name}': {ex.Message}. " +
                     "Continuing without its tools.");
+            }
+        }
+
+        // Allowlist names that matched nothing are usually typos — surface them.
+        if (allowlist is not null)
+        {
+            var unmatched = allowlist.Except(allTools.Select(t => t.Name),
+                StringComparer.OrdinalIgnoreCase).ToList();
+            if (unmatched.Count > 0)
+            {
+                nodeContext.Warning(
+                    $"McpToolNames entries matched no tool: {string.Join(", ", unmatched)}");
             }
         }
 

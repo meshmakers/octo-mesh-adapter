@@ -39,11 +39,12 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// Model identifier as expected by the provider
     /// (e.g. claude-sonnet-4-6, gpt-4.1-mini, qwen2.5:7b-instruct).
-    /// An aiModel set on the referenced AiConfiguration entity takes precedence;
-    /// this property is the fallback when the entity defines none.
+    /// An aiModel set on the referenced AiConfiguration entity takes precedence.
+    /// No default: pinned model ids go out of date, so a model must be provided
+    /// here or on the AiConfiguration.
     /// </summary>
     [PropertyGroup("AI Configuration")]
-    public string Model { get; set; } = "nemotron-3-nano:4b";
+    public string? Model { get; set; }
 
     /// <summary>
     /// The task or question for the model.
@@ -167,9 +168,17 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     public IList<string> McpConfigurationNames { get; set; } = new List<string>();
 
     /// <summary>
+    /// Optional tool allowlist (case-insensitive names). Null/empty = all tools from
+    /// the configured MCP servers are offered. Restricting tools cuts prompt tokens
+    /// and keeps the model on task.
+    /// </summary>
+    [PropertyGroup("MCP", 1)]
+    public string[]? McpToolNames { get; set; }
+
+    /// <summary>
     /// Maximum tool-call rounds before the node forces a stop (default 8).
     /// No effect when no MCP tools are configured.
     /// </summary>
-    [PropertyGroup("MCP", 1)]
+    [PropertyGroup("MCP", 2)]
     public int MaxToolRounds { get; set; } = 8;
 }

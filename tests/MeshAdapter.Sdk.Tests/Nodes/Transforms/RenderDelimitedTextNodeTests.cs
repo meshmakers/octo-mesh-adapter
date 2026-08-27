@@ -1,50 +1,23 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
 public class RenderDelimitedTextNodeTests
 {
-    /// <summary>
-    /// Builds a real <see cref="DataContextImpl" /> over the test data, wrapped by FakeItEasy so
-    /// that reads (SelectMatches/GetKind/Get) run against the real implementation while Set calls
-    /// can be observed. This exercises the genuine path-resolution behavior end-to-end.
-    /// </summary>
     private static (IDataContext DataContext, INodeContext NodeContext, NodeDelegate Next) PrepareTest(
-        RenderDelimitedTextNodeConfiguration config, JsonNode? testData)
-    {
-        var services = new ServiceCollection();
-        var logger = A.Fake<IPipelineLogger>();
-
-        var data = testData ?? new JsonObject();
-        IDataContext real = new DataContextImpl(JsonDocument.Parse(data.ToJsonString()));
-        var dataContext = A.Fake<IDataContext>(o => o.Wrapping(real));
-
-        var rootNodeContext =
-            NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("RenderDelimitedText", 0, config, dataContext);
-
-        var next = A.Fake<NodeDelegate>();
-        return (dataContext, nodeContext, next);
-    }
+        RenderDelimitedTextNodeConfiguration config, JsonNode? testData) =>
+        DelimitedTextTestContext.Prepare(config, testData);
 
     private static Func<string?> CaptureWrite(IDataContext dataContext,
-        RenderDelimitedTextNodeConfiguration config)
-    {
-        string? written = null;
-        A.CallTo(() => dataContext.Set(config.TargetPath, A<string>._, A<DocumentModes>._,
-                A<ValueKinds>._, A<TargetValueWriteModes>._))
-            .Invokes((string _, string? value, DocumentModes _, ValueKinds _, TargetValueWriteModes _) =>
-                written = value);
-        return () => written;
-    }
+        RenderDelimitedTextNodeConfiguration config) =>
+        DelimitedTextTestContext.CaptureWrite(dataContext, config);
 
     private static RenderDelimitedTextNodeConfiguration Config(params DelimitedColumn[] columns) =>
         new()
@@ -249,6 +222,11 @@ public class RenderDelimitedTextNodeTests
         Assert.Equal("abc|tail", written());
     }
 
+    /// <summary>
+    /// The message is asserted, not just the throw: an empty delimiter also makes the replacement
+    /// check trip (every string contains the empty string), so a bare ThrowsAsync would still pass
+    /// with the delimiter guard removed - and report the wrong cause to whoever reads the log.
+    /// </summary>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -259,8 +237,10 @@ public class RenderDelimitedTextNodeTests
         config.Delimiter = delimiter;
         var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[]}"""));
 
-        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("delimiter", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("replacement", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

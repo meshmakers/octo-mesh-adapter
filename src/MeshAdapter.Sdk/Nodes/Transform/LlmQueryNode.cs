@@ -106,7 +106,8 @@ internal class LlmQueryNode(
             }
 
             var mcpTools = mcpServers.Count > 0
-                ? await LlmMcpTools.LoadAsync(mcpServers, mcpClients, nodeContext, ct)
+                ? await LlmMcpTools.LoadAsync(
+                    mcpServers, mcpClients, config.McpToolNames, nodeContext, ct)
                 : (IList<AIFunction>)Array.Empty<AIFunction>();
 
             var messages = new List<ChatMessage>

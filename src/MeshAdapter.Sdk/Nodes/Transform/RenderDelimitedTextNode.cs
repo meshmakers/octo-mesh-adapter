@@ -36,9 +36,9 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
 
         // The separator is chosen here, never taken from the operating system: the same definition
         // has to produce the same bytes on every host.
-        const string separator = "\n";
+        var separator = c.LineEnding == DelimitedLineEnding.CrLf ? "\r\n" : "\n";
         var text = string.Join(separator, rows);
-        if (rows.Count > 0)
+        if (rows.Count > 0 && c.TrailingNewLine)
         {
             text += separator;
         }

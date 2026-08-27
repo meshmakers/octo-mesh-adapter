@@ -95,4 +95,32 @@ public class RenderDelimitedTextNodeTests
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
+
+    [Fact]
+    public async Task ProcessObjectAsync_CrLfLineEnding_UsesCarriageReturnAndLineFeed()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        config.LineEnding = DelimitedLineEnding.CrLf;
+        var data = JsonNode.Parse("""{"rows":[{"id":"1"},{"id":"2"}]}""");
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("1\r\n2\r\n", written());
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_TrailingNewLineDisabled_LastRowHasNoSeparator()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        config.TrailingNewLine = false;
+        var data = JsonNode.Parse("""{"rows":[{"id":"1"},{"id":"2"}]}""");
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("1\n2", written());
+    }
 }

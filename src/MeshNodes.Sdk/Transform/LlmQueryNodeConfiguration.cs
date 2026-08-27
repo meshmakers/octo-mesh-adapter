@@ -28,7 +28,8 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// Well-known name of the AiConfiguration entity to load the API key from.
     /// Required for authenticated providers; leave null for backends without
-    /// authentication (e.g. local Ollama).
+    /// authentication (e.g. local Ollama). If the entity also defines an aiModel,
+    /// it overrides <see cref="Model"/>.
     /// </summary>
     [PropertyGroup("Connection", 2)]
     public string? ApiKeyConfigurationName { get; set; }
@@ -38,6 +39,8 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// Model identifier as expected by the provider
     /// (e.g. claude-sonnet-4-6, gpt-4.1-mini, qwen2.5:7b-instruct).
+    /// An aiModel set on the referenced AiConfiguration entity takes precedence;
+    /// this property is the fallback when the entity defines none.
     /// </summary>
     [PropertyGroup("AI Configuration")]
     public string Model { get; set; } = "nemotron-3-nano:4b";

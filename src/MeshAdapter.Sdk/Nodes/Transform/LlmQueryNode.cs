@@ -66,9 +66,10 @@ internal class LlmQueryNode(
             }
 
             var apiKey = LlmClientFactory.ResolveApiKey(config, etlContext, nodeContext);
+            var model = LlmClientFactory.ResolveModel(config, etlContext, nodeContext);
 
             nodeContext.Debug(
-                $"Starting LlmQuery (provider: {config.Provider}, model: {config.Model})");
+                $"Starting LlmQuery (provider: {config.Provider}, model: {model})");
 
             // GetKind first to distinguish "path not present" from "present but empty".
             string? mainContent = null;
@@ -93,7 +94,7 @@ internal class LlmQueryNode(
             var userPrompt = LlmPromptBuilder.BuildUserPrompt(
                 config.Question, context, config.ResponseFormat, config.JsonFormatSample);
 
-            var client = LlmClientFactory.Create(config, apiKey);
+            var client = LlmClientFactory.Create(config, apiKey, model);
 
             var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
             if (mcpServers.Count > 0)
@@ -124,7 +125,7 @@ internal class LlmQueryNode(
                 }
             }
 
-            var options = BuildChatOptions(config, wantsJson, mcpTools, nodeContext);
+            var options = BuildChatOptions(config, model, wantsJson, mcpTools, nodeContext);
 
             nodeContext.Debug($"Calling LLM with {context.Length} characters of context");
 
@@ -215,8 +216,8 @@ internal class LlmQueryNode(
     /// with a jsonSchema, the schema is enforced server-side via structured outputs.
     /// </summary>
     private static ChatOptions BuildChatOptions(
-        LlmQueryNodeConfiguration config, bool wantsJson, IList<AIFunction> mcpTools,
-        INodeContext nodeContext)
+        LlmQueryNodeConfiguration config, string model, bool wantsJson,
+        IList<AIFunction> mcpTools, INodeContext nodeContext)
     {
         var hasTools = mcpTools.Count > 0;
 
@@ -253,7 +254,7 @@ internal class LlmQueryNode(
 
         return new ChatOptions
         {
-            ModelId = config.Model,
+            ModelId = model,
             MaxOutputTokens = config.MaxTokens,
             Temperature = (float?)config.Temperature,
             TopP = config.TopP,

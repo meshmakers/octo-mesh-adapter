@@ -21,12 +21,13 @@ internal static class LlmClientFactory
     /// </summary>
     internal const string ActivitySourceName = "Meshmakers.Octo.Sdk.MeshAdapter.LlmQuery";
 
-    internal static IChatClient Create(LlmQueryNodeConfiguration config, string? apiKey)
+    internal static IChatClient Create(
+        LlmQueryNodeConfiguration config, string? apiKey, string model)
     {
         return config.Provider switch
         {
-            LlmProvider.OpenAiCompatible => CreateOpenAiCompatible(config, apiKey),
-            LlmProvider.Anthropic => CreateAnthropic(config, apiKey),
+            LlmProvider.OpenAiCompatible => CreateOpenAiCompatible(config, apiKey, model),
+            LlmProvider.Anthropic => CreateAnthropic(config, apiKey, model),
             _ => throw new ArgumentOutOfRangeException(nameof(config.Provider),
                 $"Unsupported provider: {config.Provider}")
         };
@@ -59,8 +60,30 @@ internal static class LlmClientFactory
         return null;
     }
 
+    /// <summary>
+    /// Resolves the model: the AiConfiguration's aiModel wins over the node's Model.
+    /// </summary>
+    internal static string ResolveModel(
+        LlmQueryNodeConfiguration config, IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName)
+            && etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        {
+            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
+            var model = JObject.Parse(rawJson).Value<string>("aiModel");
+            if (!string.IsNullOrEmpty(model))
+            {
+                nodeContext.Debug(
+                    $"Model '{model}' loaded from configuration '{config.ApiKeyConfigurationName}'");
+                return model;
+            }
+        }
+
+        return config.Model;
+    }
+
     private static IChatClient CreateOpenAiCompatible(
-        LlmQueryNodeConfiguration config, string? apiKey)
+        LlmQueryNodeConfiguration config, string? apiKey, string model)
     {
         // The OpenAI SDK requires a non-empty credential even for auth-less backends.
         var credential = new ApiKeyCredential(apiKey ?? "unused");
@@ -72,7 +95,7 @@ internal static class LlmClientFactory
         }
 
         return new OpenAI.Chat.ChatClient(
-                model: config.Model,
+                model: model,
                 credential: credential,
                 options: options)
             .AsIChatClient()
@@ -83,7 +106,8 @@ internal static class LlmClientFactory
             .Build();
     }
 
-    private static IChatClient CreateAnthropic(LlmQueryNodeConfiguration config, string? apiKey)
+    private static IChatClient CreateAnthropic(
+        LlmQueryNodeConfiguration config, string? apiKey, string model)
     {
         if (string.IsNullOrEmpty(apiKey))
         {
@@ -100,7 +124,7 @@ internal static class LlmClientFactory
         }
 
         return client
-            .AsIChatClient(config.Model)
+            .AsIChatClient(model)
             .AsBuilder()
             .UseOpenTelemetry(sourceName: ActivitySourceName)
             .UseFunctionInvocation(configure: c =>

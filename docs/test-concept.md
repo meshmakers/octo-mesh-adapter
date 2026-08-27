@@ -221,6 +221,35 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithPathBasedRtId_ResolvesPath` | Dynamic ID resolution |
 | `ProcessObjectAsync_WithTimestampPath_UsesExternalTimestamp` | External timestamp |
 
+#### RenderDelimitedTextNode
+
+| Test Case | Description |
+|-----------|-------------|
+| `ProcessObjectAsync_ConstantPathAndEmptyColumns_RendersOneRowPerElement` | Constant, read and empty columns in one row |
+| `ProcessObjectAsync_ColumnsEmpty_Throws` | Empty column list is a configuration error |
+| `ProcessObjectAsync_ColumnWithValueAndValuePath_Throws` | Ambiguous column is a configuration error |
+| `ProcessObjectAsync_CrLfLineEnding_UsesCarriageReturnAndLineFeed` | Record separator option |
+| `ProcessObjectAsync_TrailingNewLineDisabled_LastRowHasNoSeparator` | Trailing newline option |
+| `ProcessObjectAsync_ScalarKinds_RenderPerHouseRule` | String, raw number token, boolean, null, absent |
+| `ProcessObjectAsync_NonScalarValue_Throws` | Object and array values are refused |
+| `ProcessObjectAsync_EmptyArray_WritesAnEmptyStringAndContinues` | Empty batch writes an empty document, never nothing |
+| `ProcessObjectAsync_PathIsNotAnArray_Throws` | Object, scalar or absent source path |
+| `ProcessObjectAsync_ValueBreaksTheStructure_FailsByDefault` | Delimiter, CR or LF inside a value |
+| `ProcessObjectAsync_ReplaceHandling_SubstitutesAndKeepsTheColumnCount` | Replace handling |
+| `ProcessObjectAsync_StripHandling_RemovesTheOffendingCharacters` | Strip handling |
+| `ProcessObjectAsync_UnusableDelimiter_Throws` | Null, empty or line-break delimiter, asserted on the message |
+| `ProcessObjectAsync_ReplacementContainsTheDelimiter_Throws` | Replacement that would move the problem |
+| `ProcessObjectAsync_ConstantCarriesTheDelimiter_FailsByDefault` | Constants are checked like read values |
+| `ProcessObjectAsync_RequiredColumnWithoutValue_Throws` | Absent, null and empty under `Required` |
+| `ProcessObjectAsync_RequiredColumnWithValue_Renders` | `Required` satisfied |
+| `ProcessObjectAsync_ColumnWithoutRequired_KeepsAnEmptyValue` | Optional column stays empty |
+| `ProcessObjectAsync_FixedThirtyFourColumnLayout_ProducesTheExactDocument` | Byte-exact 34-column layout, mutation-proven |
+
+`RenderDelimitedTextConfigurationDeserializationTests` covers what a pipeline definition can
+produce and a C# object initializer cannot: documented defaults when options are omitted, and
+explicit `null` for `delimiter`, `columns` and a column `value`. It also pins that a failed
+preflight writes nothing and does not continue the chain.
+
 #### MakeHttpRequestNode
 
 | Test Case | Description |

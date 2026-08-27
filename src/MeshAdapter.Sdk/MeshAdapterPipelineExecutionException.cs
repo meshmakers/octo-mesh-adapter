@@ -32,6 +32,14 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
     }
 
+    public static Exception DelimitedValueNotScalar(INodeContext nodeContext, int recordIndex,
+        int columnIndex, string valuePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: " +
+            $"'{valuePath}' resolves to an object or array, which cannot be a column value.");
+    }
+
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -58,13 +59,14 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         for (var i = 0; i < columns.Count; i++)
         {
             var column = columns[i];
-            values[i] = column.Value ?? ReadValue(record, column);
+            values[i] = column.Value ?? ReadValue(record, column, nodeContext, recordIndex, i);
         }
 
         return string.Join(c.Delimiter, values);
     }
 
-    private static string ReadValue(IDataContext record, DelimitedColumn column)
+    private static string ReadValue(IDataContext record, DelimitedColumn column,
+        INodeContext nodeContext, int recordIndex, int columnIndex)
     {
         if (string.IsNullOrEmpty(column.ValuePath))
         {
@@ -72,7 +74,19 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         }
 
         var path = JsonNodePath.NormalizePathOrRelative(column.ValuePath);
-        return record.Get<string>(path) ?? string.Empty;
+
+        // Text conversion follows the house rule the other text-producing nodes use: a number keeps
+        // its raw JSON token so no culture can reshape it, a boolean is capitalised, and an object
+        // or array is refused - it would arrive as indented multi-line JSON and break the record.
+        return record.GetKind(path) switch
+        {
+            DataKind.Undefined or DataKind.Null => string.Empty,
+            DataKind.String => record.Get<string>(path) ?? string.Empty,
+            DataKind.Number => record.Get<JsonNode>(path)?.ToJsonString() ?? string.Empty,
+            DataKind.Boolean => record.Get<bool>(path) ? "True" : "False",
+            _ => throw MeshAdapterPipelineExecutionException.DelimitedValueNotScalar(
+                nodeContext, recordIndex, columnIndex, column.ValuePath)
+        };
     }
 
     private static void ValidateConfiguration(RenderDelimitedTextNodeConfiguration c,

@@ -123,4 +123,38 @@ public class RenderDelimitedTextNodeTests
 
         Assert.Equal("1\n2", written());
     }
+
+    [Theory]
+    [InlineData("""{"rows":[{"v":"text"}]}""", "text")]
+    [InlineData("""{"rows":[{"v":35}]}""", "35")]
+    [InlineData("""{"rows":[{"v":1.62}]}""", "1.62")]
+    [InlineData("""{"rows":[{"v":0.00}]}""", "0.00")]
+    [InlineData("""{"rows":[{"v":true}]}""", "True")]
+    [InlineData("""{"rows":[{"v":false}]}""", "False")]
+    [InlineData("""{"rows":[{"v":null}]}""", "")]
+    [InlineData("""{"rows":[{}]}""", "")]
+    public async Task ProcessObjectAsync_ScalarKinds_RenderPerHouseRule(string json, string expected)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" });
+        config.TrailingNewLine = false;
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse(json));
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(expected, written());
+    }
+
+    [Theory]
+    [InlineData("""{"rows":[{"v":{"a":1}}]}""")]
+    [InlineData("""{"rows":[{"v":[1,2]}]}""")]
+    public async Task ProcessObjectAsync_NonScalarValue_Throws(string json)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse(json));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("$.v", ex.Message);
+    }
 }

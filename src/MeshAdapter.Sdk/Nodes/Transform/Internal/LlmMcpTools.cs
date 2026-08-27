@@ -15,8 +15,9 @@ internal static class LlmMcpTools
 {
     /// <summary>
     /// Opens a client per server and aggregates their tools, optionally filtered by
-    /// <paramref name="allowedToolNames"/> (case-insensitive; null/empty = all). A broken
-    /// server logs a warning and is skipped. Opened clients are added to
+    /// <paramref name="allowedToolNames"/> (case-insensitive; null/empty = all) and
+    /// capped at <paramref name="maxResultChars"/> per tool result (0 = unlimited).
+    /// A broken server logs a warning and is skipped. Opened clients are added to
     /// <paramref name="clients"/> immediately so the caller's finally block always
     /// disposes them.
     /// </summary>
@@ -24,6 +25,7 @@ internal static class LlmMcpTools
         IList<McpServerResolver.McpServerConfig> servers,
         List<McpClient> clients,
         string[]? allowedToolNames,
+        int maxResultChars,
         INodeContext nodeContext,
         CancellationToken ct)
     {
@@ -50,7 +52,10 @@ internal static class LlmMcpTools
                     $"MCP server '{server.Name}' contributed {accepted.Count} of {tools.Count} " +
                     $"tool(s): {string.Join(", ", accepted.Select(t => t.Name))}");
 
-                allTools.AddRange(accepted.Cast<AIFunction>());
+                allTools.AddRange(maxResultChars > 0
+                    ? accepted.Select(AIFunction (t) =>
+                        new ResultCappingFunction(t, maxResultChars, nodeContext))
+                    : accepted.Cast<AIFunction>());
             }
             catch (Exception ex)
             {
@@ -141,6 +146,47 @@ internal static class LlmMcpTools
             }
 
             nodeContext.Debug($"  <- {call.Name} result: {resultText}");
+        }
+    }
+
+    /// <summary>
+    /// Caps a tool result before it enters the conversation. Oversized results are cut
+    /// at the limit and marked as truncated so the model knows data is missing.
+    /// </summary>
+    private sealed class ResultCappingFunction(
+        AIFunction inner, int maxChars, INodeContext nodeContext) : AIFunction
+    {
+        public override string Name => inner.Name;
+        public override string Description => inner.Description;
+        public override JsonElement JsonSchema => inner.JsonSchema;
+        public override JsonSerializerOptions JsonSerializerOptions => inner.JsonSerializerOptions;
+        public override IReadOnlyDictionary<string, object?> AdditionalProperties => inner.AdditionalProperties;
+
+        protected override async ValueTask<object?> InvokeCoreAsync(
+            AIFunctionArguments arguments, CancellationToken cancellationToken)
+        {
+            var result = await inner.InvokeAsync(arguments, cancellationToken);
+
+            string text;
+            try
+            {
+                text = result as string
+                       ?? JsonSerializer.Serialize(result, SystemTextJsonOptions.Default);
+            }
+            catch (Exception)
+            {
+                return result;
+            }
+
+            if (text.Length <= maxChars)
+            {
+                return result;
+            }
+
+            nodeContext.Warning(
+                $"MCP tool '{inner.Name}' result truncated from {text.Length} to {maxChars} chars. " +
+                "Request fewer fields (e.g. attributePaths) to avoid truncation.");
+            return text[..maxChars] + "\n[TRUNCATED — result too large; request fewer fields.]";
         }
     }
 

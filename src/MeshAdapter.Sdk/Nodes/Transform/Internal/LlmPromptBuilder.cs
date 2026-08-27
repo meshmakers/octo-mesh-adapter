@@ -14,18 +14,45 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 internal static class LlmPromptBuilder
 {
     /// <summary>
+    /// Resolves the optional main content: string values verbatim, other explicit
+    /// (non-"$") values as indented JSON. The default "$" root or an absent path
+    /// yields null — MCP-only pipelines carry no document payload.
+    /// </summary>
+    internal static string? ResolveMainContent(IDataContext dataContext, string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+
+        var kind = dataContext.GetKind(path);
+        if (kind == DataKind.String)
+        {
+            return dataContext.Get<string>(path);
+        }
+
+        if (kind != DataKind.Undefined && path != "$")
+        {
+            return JsonSerializer.Serialize(dataContext.Get<object?>(path),
+                new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Builds the context block (main content + optional data-path values). With
     /// <paramref name="sanitizeQuotesInValues"/>, the double-quote glyph family in content
     /// is replaced so the model cannot copy a JSON string terminator into its output.
     /// </summary>
     internal static string BuildContext(
-        string mainContent, string[]? dataPaths, IDataContext dataContext, INodeContext nodeContext,
+        string? mainContent, string[]? dataPaths, IDataContext dataContext, INodeContext nodeContext,
         bool sanitizeQuotesInValues = false)
     {
         var ctx = new StringBuilder();
-        ctx.AppendLine("Main Content:");
-        ctx.AppendLine(sanitizeQuotesInValues ? SanitizeQuotes(mainContent) : mainContent);
-        ctx.AppendLine();
+        if (!string.IsNullOrEmpty(mainContent))
+        {
+            ctx.AppendLine("Main Content:");
+            ctx.AppendLine(sanitizeQuotesInValues ? SanitizeQuotes(mainContent) : mainContent);
+            ctx.AppendLine();
+        }
 
         if (dataPaths is not { Length: > 0 }) return ctx.ToString();
         ctx.AppendLine("Additional Context:");

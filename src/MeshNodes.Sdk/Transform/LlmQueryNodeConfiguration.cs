@@ -181,4 +181,12 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("MCP", 2)]
     public int MaxToolRounds { get; set; } = 8;
+
+    /// <summary>
+    /// Maximum characters of a single MCP tool result passed back to the model
+    /// (default 50000; 0 = unlimited). Oversized results are cut and marked as
+    /// truncated to keep context size and cost bounded.
+    /// </summary>
+    [PropertyGroup("MCP", 3)]
+    public int MaxToolResultChars { get; set; } = 50_000;
 }

@@ -71,18 +71,19 @@ internal class LlmQueryNode(
             nodeContext.Debug(
                 $"Starting LlmQuery (provider: {config.Provider}, model: {model})");
 
-            // GetKind first to distinguish "path not present" from "present but empty".
-            string? mainContent = null;
-            if (dataContext.GetKind(config.Path) is not DataKind.Undefined)
-            {
-                mainContent = dataContext.Get<string>(config.Path);
-            }
-
+            var mainContent = LlmPromptBuilder.ResolveMainContent(dataContext, config.Path);
             if (string.IsNullOrEmpty(mainContent))
             {
-                nodeContext.Warning($"No content found at path: {config.Path}");
-                await next(dataContext, nodeContext);
-                return;
+                if (config.McpConfigurationNames.Count == 0)
+                {
+                    nodeContext.Warning($"No content found at path: {config.Path}");
+                    await next(dataContext, nodeContext);
+                    return;
+                }
+
+                // Loud on purpose: a typo'd Path must not silently become an agentic run.
+                nodeContext.Warning(
+                    $"No content at path '{config.Path}' — running in MCP-only mode");
             }
 
             var wantsJson = config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase);
@@ -99,15 +100,15 @@ internal class LlmQueryNode(
             var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
             if (mcpServers.Count > 0)
             {
-                // octo-mcp-service requires a bearer on every request (AB#4315); tokens are
+                // octo-mcp-service requires a bearer on every request; tokens are
                 // cached per configuration name in the singleton provider.
                 mcpServers = await McpServerResolver.ApplyServiceAccountTokensAsync(
                     mcpServers, serviceAccountTokenService, etlContext, nodeContext, ct);
             }
 
             var mcpTools = mcpServers.Count > 0
-                ? await LlmMcpTools.LoadAsync(
-                    mcpServers, mcpClients, config.McpToolNames, nodeContext, ct)
+                ? await LlmMcpTools.LoadAsync(mcpServers, mcpClients, config.McpToolNames,
+                    config.MaxToolResultChars, nodeContext, ct)
                 : (IList<AIFunction>)Array.Empty<AIFunction>();
 
             var messages = new List<ChatMessage>

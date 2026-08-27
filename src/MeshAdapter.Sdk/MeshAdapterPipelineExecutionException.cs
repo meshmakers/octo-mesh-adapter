@@ -40,6 +40,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"'{valuePath}' resolves to an object or array, which cannot be a column value.");
     }
 
+    public static Exception DelimitedSourceNotAnArray(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' must resolve to an array of records.");
+    }
+
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

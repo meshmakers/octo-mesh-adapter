@@ -157,4 +157,45 @@ public class RenderDelimitedTextNodeTests
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains("$.v", ex.Message);
     }
+
+    /// <summary>
+    /// A guard downstream of this node compares the written text against "". A skipped write would
+    /// leave the path absent, the comparison reads null, and "null is not empty" is TRUE - so the
+    /// delivery such a guard exists to stop would run. Assert the write, never the absence of one.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_EmptyArray_WritesAnEmptyStringAndContinues()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[]}"""));
+
+        var writes = 0;
+        string? written = null;
+        A.CallTo(() => dataContext.Set(config.TargetPath, A<string>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .Invokes((string _, string? v, DocumentModes _, ValueKinds _, TargetValueWriteModes _) =>
+            {
+                writes++;
+                written = v;
+            });
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(1, writes);
+        Assert.Equal(string.Empty, written);
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Theory]
+    [InlineData("""{"rows":{"id":"1"}}""")]     // object instead of array
+    [InlineData("""{"rows":"text"}""")]          // scalar instead of array
+    [InlineData("""{}""")]                        // path absent entirely
+    public async Task ProcessObjectAsync_PathIsNotAnArray_Throws(string json)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse(json));
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
 }

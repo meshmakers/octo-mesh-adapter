@@ -26,6 +26,13 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
 
         var columns = c.Columns!.ToList();
 
+        // An empty batch is legitimate; a path that is not an array is a wiring mistake. Producing
+        // a silently empty document from a mis-typed path is worse than failing here.
+        if (dataContext.GetKind(c.Path) != DataKind.Array)
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedSourceNotAnArray(nodeContext, c.Path);
+        }
+
         // One detached read context per array item, in document order.
         var rows = new List<string>();
         var recordIndex = 0;

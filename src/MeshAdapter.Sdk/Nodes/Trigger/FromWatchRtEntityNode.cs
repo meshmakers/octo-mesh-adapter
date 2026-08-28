@@ -1,5 +1,6 @@
 using System.Reactive.Linq;
 using Meshmakers.Common.Shared;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
@@ -32,11 +33,11 @@ public class FromWatchRtEntityNode(ISystemContext systemContext) : ITriggerPipel
             RtId = c.RtId,
             BeforeFieldFilterCriteria = c.BeforeFieldFilters != null
                 ? FieldFilterCriteria.Create().Fields(c.BeforeFieldFilters.Select(f =>
-                    new FieldFilter(f.AttributePath, (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList())
+                    new FieldFilter(f.AttributePath, f.Operator.ToFieldFilterOperator(), f.ComparisonValue)).ToList())
                 : null,
             FieldFilterCriteria = c.FieldFilters != null
                 ? FieldFilterCriteria.Create().Fields(c.FieldFilters.Select(f =>
-                    new FieldFilter(f.AttributePath, (FieldFilterOperator)f.Operator, f.ComparisonValue)).ToList())
+                    new FieldFilter(f.AttributePath, f.Operator.ToFieldFilterOperator(), f.ComparisonValue)).ToList())
                 : null,
         };
 

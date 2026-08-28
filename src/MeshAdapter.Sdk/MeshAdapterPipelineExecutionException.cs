@@ -75,6 +75,20 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "rendered empty.");
     }
 
+    public static Exception DelimitedPathNotSet(INodeContext nodeContext, string property)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{property}' must be a JSONPath; an empty one would be " +
+            "read as the document root.");
+    }
+
+    public static Exception DelimitedOptionUndefined(INodeContext nodeContext, string property,
+        int value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{property}' has the undefined value {value}.");
+    }
+
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

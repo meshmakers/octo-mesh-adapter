@@ -61,17 +61,25 @@ public record RenderDelimitedTextNodeConfiguration : SourceTargetPathNodeConfigu
     [PropertyGroup("Options", 0)]
     public string? Delimiter { get; set; } = "|";
 
-    /// <summary>Record separator. Never derived from the operating system.</summary>
+    /// <summary>
+    /// Record separator, <see cref="DelimitedLineEnding.Lf" /> when unset. Never derived from the
+    /// operating system.
+    /// </summary>
     [PropertyGroup("Options", 1)]
-    public DelimitedLineEnding LineEnding { get; set; } = DelimitedLineEnding.Lf;
+    public DelimitedLineEnding? LineEnding { get; set; }
 
-    /// <summary>Whether a final record separator is appended after the last row.</summary>
+    /// <summary>
+    /// Whether a final record separator is appended after the last row; true when unset.
+    /// </summary>
     [PropertyGroup("Options", 2)]
-    public bool TrailingNewLine { get; set; } = true;
+    public bool? TrailingNewLine { get; set; }
 
-    /// <summary>How a value containing the delimiter, CR or LF is handled.</summary>
+    /// <summary>
+    /// How a value containing the delimiter, CR or LF is handled;
+    /// <see cref="DelimiterInValueHandling.Fail" /> when unset.
+    /// </summary>
     [PropertyGroup("Options", 3)]
-    public DelimiterInValueHandling OnDelimiterInValue { get; set; } = DelimiterInValueHandling.Fail;
+    public DelimiterInValueHandling? OnDelimiterInValue { get; set; }
 
     /// <summary>
     /// Substitute used by <see cref="DelimiterInValueHandling.Replace" />. Defaults to the empty
@@ -84,4 +92,13 @@ public record RenderDelimitedTextNodeConfiguration : SourceTargetPathNodeConfigu
     // ReSharper disable once CollectionNeverUpdated.Global
     [PropertyGroup("Data Mapping", 0)]
     public ICollection<DelimitedColumn>? Columns { get; set; }
+
+    /// <summary>Default record separator when <see cref="LineEnding" /> is unset.</summary>
+    public const DelimitedLineEnding DefaultLineEnding = DelimitedLineEnding.Lf;
+
+    /// <summary>Default for <see cref="TrailingNewLine" /> when unset.</summary>
+    public const bool DefaultTrailingNewLine = true;
+
+    /// <summary>Default handling when <see cref="OnDelimiterInValue" /> is unset.</summary>
+    public const DelimiterInValueHandling DefaultOnDelimiterInValue = DelimiterInValueHandling.Fail;
 }

@@ -44,9 +44,11 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
 
         // The separator is chosen here, never taken from the operating system: the same definition
         // has to produce the same bytes on every host.
-        var separator = c.LineEnding == DelimitedLineEnding.CrLf ? "\r\n" : "\n";
+        var lineEnding = c.LineEnding ?? RenderDelimitedTextNodeConfiguration.DefaultLineEnding;
+        var separator = lineEnding == DelimitedLineEnding.CrLf ? "\r\n" : "\n";
         var text = string.Join(separator, rows);
-        if (rows.Count > 0 && c.TrailingNewLine)
+        if (rows.Count > 0 &&
+            (c.TrailingNewLine ?? RenderDelimitedTextNodeConfiguration.DefaultTrailingNewLine))
         {
             text += separator;
         }
@@ -96,13 +98,15 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
             return value;
         }
 
-        if (c.OnDelimiterInValue == DelimiterInValueHandling.Fail)
+        var handling = c.OnDelimiterInValue ??
+                       RenderDelimitedTextNodeConfiguration.DefaultOnDelimiterInValue;
+        if (handling == DelimiterInValueHandling.Fail)
         {
             throw MeshAdapterPipelineExecutionException.DelimitedValueBreaksStructure(
                 nodeContext, recordIndex, columnIndex, value);
         }
 
-        var replacement = c.OnDelimiterInValue == DelimiterInValueHandling.Replace
+        var replacement = handling == DelimiterInValueHandling.Replace
             ? c.Replacement ?? string.Empty
             : string.Empty;
 
@@ -146,6 +150,35 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
     private static void ValidateConfiguration(RenderDelimitedTextNodeConfiguration c,
         INodeContext nodeContext)
     {
+        // A blank target path is not a harmless mistake: the data context treats an empty path as a
+        // write to the document root, so the rendered document would replace the whole pipeline
+        // data and the chain would carry on without a word. The properties are non-nullable, but a
+        // definition carrying an explicit null overwrites the initializer, so the value gets here.
+        if (string.IsNullOrWhiteSpace(c.Path))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedPathNotSet(nodeContext, "path");
+        }
+
+        if (string.IsNullOrWhiteSpace(c.TargetPath))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedPathNotSet(nodeContext, "targetPath");
+        }
+
+        // An out-of-range enum deserializes without complaint and would otherwise land in whichever
+        // branch the switch happens to end in - for the handling option that meant silently
+        // rewriting values instead of failing on them.
+        if (c.LineEnding is { } lineEnding && !Enum.IsDefined(lineEnding))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedOptionUndefined(
+                nodeContext, "lineEnding", (int)lineEnding);
+        }
+
+        if (c.OnDelimiterInValue is { } handling && !Enum.IsDefined(handling))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedOptionUndefined(
+                nodeContext, "onDelimiterInValue", (int)handling);
+        }
+
         if (c.Columns is null || c.Columns.Count == 0)
         {
             throw MeshAdapterPipelineExecutionException.DelimitedColumnsNotSet(nodeContext);

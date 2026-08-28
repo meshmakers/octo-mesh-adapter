@@ -80,8 +80,8 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     public static Exception DelimitedPathNotSet(INodeContext nodeContext, string property)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: '{property}' must be a JSONPath; an empty one would be " +
-            "read as the document root.");
+            $"[{nodeContext.NodePath}]: '{property}' must be a JSONPath; an empty one would " +
+            "address the document root.");
     }
 
     public static Exception DelimitedOptionUndefined(INodeContext nodeContext, string property,
@@ -125,8 +125,19 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     /// Keeps a sample of an offending value out of an unbounded message: it travels into logs and
     /// execution results, and the values this is used for are exactly the ones that can be large.
     /// </summary>
-    private static string Truncate(string value) =>
-        value.Length <= 200 ? value : value[..200] + "...";
+    private static string Truncate(string value)
+    {
+        // Escaped before it is shortened, not after: this sample is taken from values that
+        // are here BECAUSE they carry a delimiter or a line break, so a raw one would split
+        // the message across several lines in the log and the execution result - one failure
+        // has to stay one entry, and record data must not be able to forge a second one.
+        var escaped = value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+
+        return escaped.Length <= 200 ? escaped : escaped[..200] + "...";
+    }
 
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {

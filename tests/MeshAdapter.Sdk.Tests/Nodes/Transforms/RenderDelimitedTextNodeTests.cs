@@ -408,6 +408,84 @@ public class RenderDelimitedTextNodeTests
         Assert.Contains("column 0", ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The sample in the message comes from values that are there BECAUSE they carry a delimiter or
+    /// a line break, so a raw one would split the message across several lines in the log and in the
+    /// execution result. One failure has to stay one entry, and record data must not be able to
+    /// forge what looks like a second one.
+    /// </summary>
+    [Theory]
+    [InlineData("harmless\nINFO: nothing to see here")]
+    [InlineData("harmless\r\nINFO: nothing to see here")]
+    [InlineData("harmless\rINFO: nothing to see here")]
+    public async Task ProcessObjectAsync_StructureBreakingValue_MessageStaysOneLine(string value)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" });
+        var data = new JsonObject { ["rows"] = new JsonArray(new JsonObject { ["v"] = value }) };
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.DoesNotContain('\n', ex.Message);
+        Assert.DoesNotContain('\r', ex.Message);
+        Assert.Contains("record 0", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The target path needs the same check as the source. Checked only for blankness it survives
+    /// preflight and surfaces from the write layer after every row has been rendered, as a raw
+    /// error naming neither the node nor the property.
+    /// </summary>
+    [Theory]
+    [InlineData("$.text[")]
+    [InlineData("$.out[*].text")]
+    [InlineData("$..text")]
+    public async Task ProcessObjectAsync_UnusableTargetPath_IsAConfigurationError(string targetPath)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        config.TargetPath = targetPath;
+        var (dataContext, nodeContext, next) =
+            PrepareTest(config, JsonNode.Parse("""{"rows":[{"id":"1"}]}"""));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("targetPath", ex.Message, StringComparison.Ordinal);
+        DelimitedTextTestContext.AssertNothingWritten(dataContext);
+        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+    }
+
+    /// <summary>
+    /// The data context resolves an unrooted path on a read, so the configured paths are normalized
+    /// before they are validated and used - checking the raw string would reject a source path the
+    /// context handles perfectly well, and leave an unrooted target path to fail at the write.
+    /// </summary>
+    [Theory]
+    [InlineData("rows", "$.text")]
+    [InlineData("$.rows", "text")]
+    [InlineData("rows", "text")]
+    public async Task ProcessObjectAsync_UnrootedPaths_AreAccepted(string path, string targetPath)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        config.Path = path;
+        config.TargetPath = targetPath;
+        config.TrailingNewLine = false;
+        var (dataContext, nodeContext, next) =
+            PrepareTest(config, JsonNode.Parse("""{"rows":[{"id":"1"},{"id":"2"}]}"""));
+
+        string? written = null;
+        A.CallTo(() => dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .Invokes((string _, string? v, DocumentModes _, ValueKinds _, TargetValueWriteModes _) =>
+                written = v)
+            .CallsWrappedMethod();
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("1\n2", written);
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
     /// <summary>A constant is checked too - a layout can misconfigure one just as easily.</summary>
     [Fact]
     public async Task ProcessObjectAsync_ConstantCarriesTheDelimiter_FailsByDefault()

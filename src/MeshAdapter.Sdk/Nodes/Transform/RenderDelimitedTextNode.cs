@@ -25,19 +25,26 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         // let a run report success while producing a document nobody can parse.
         ValidateConfiguration(c, nodeContext);
 
+        // Both paths are normalized once and used in that form throughout, the way the value paths
+        // already are: the data context accepts an unrooted path on a read, so validating the raw
+        // string would reject a source path it would otherwise handle, and an unrooted TARGET path
+        // reaches the write layer as an unusable canonical path.
+        var sourcePath = JsonNodePath.NormalizePathOrRelative(c.Path);
+        var targetPath = JsonNodePath.NormalizePathOrRelative(c.TargetPath);
+
         var columns = c.Columns!.ToList();
 
         // An empty batch is legitimate; a path that is not an array is a wiring mistake. Producing
         // a silently empty document from a mis-typed path is worse than failing here.
-        if (dataContext.GetKind(c.Path) != DataKind.Array)
+        if (dataContext.GetKind(sourcePath) != DataKind.Array)
         {
-            throw MeshAdapterPipelineExecutionException.DelimitedSourceNotAnArray(nodeContext, c.Path);
+            throw MeshAdapterPipelineExecutionException.DelimitedSourceNotAnArray(nodeContext, sourcePath);
         }
 
         // One detached read context per array item, in document order.
         var rows = new List<string>();
         var recordIndex = 0;
-        foreach (var record in dataContext.SelectMatches($"{c.Path}[*]"))
+        foreach (var record in dataContext.SelectMatches($"{sourcePath}[*]"))
         {
             // A scalar or nested array is still an element of an array, so the source check above
             // lets it through, but no value path resolves against one: every read column would
@@ -58,10 +65,10 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         // unreachable; if it ever happens the node would otherwise write an empty document and
         // report success, which is indistinguishable from a legitimately empty batch and loses the
         // data silently. Cheap to check and it can never fire on a healthy read.
-        if (rows.Count == 0 && dataContext.Length(c.Path) > 0)
+        if (rows.Count == 0 && dataContext.Length(sourcePath) > 0)
         {
             throw MeshAdapterPipelineExecutionException.DelimitedSourceDisagrees(
-                nodeContext, c.Path, dataContext.Length(c.Path));
+                nodeContext, sourcePath, dataContext.Length(sourcePath));
         }
 
         // The separator is chosen here, never taken from the operating system: the same definition
@@ -75,7 +82,7 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
             text += separator;
         }
 
-        dataContext.Set(c.TargetPath, text, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+        dataContext.Set(targetPath, text, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         nodeContext.Info("RenderDelimitedText: rendered {0} record(s), {1} character(s)",
             recordIndex, text.Length);
@@ -223,7 +230,12 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
             throw MeshAdapterPipelineExecutionException.DelimitedReplacementUnusable(nodeContext, replacement);
         }
 
-        ValidateSinglePath(c.Path, "path", nodeContext);
+        ValidateSinglePath(JsonNodePath.NormalizePathOrRelative(c.Path), "path", nodeContext);
+
+        // The target path needs the same check as the source: checked only for blankness it
+        // survives preflight and surfaces from the write layer after every row has been
+        // rendered, as a raw error naming neither the node nor the property.
+        ValidateSinglePath(JsonNodePath.NormalizePathOrRelative(c.TargetPath), "targetPath", nodeContext);
 
         var index = 0;
         foreach (var column in c.Columns)

@@ -471,6 +471,74 @@ well-known name. It still takes the first - only the silence is gone.
 
 ---
 
+#### SftpListNode
+
+Lists a remote directory over SFTP and emits one element per matching file. Metadata only; the content is read with `SftpDownloadNode`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference for SFTP server |
+| `RemoteDirectory` | string | Directory to list |
+| `FilePattern` | string | Glob: `*` any run of characters, `?` exactly one, anchored, case insensitive, everything else literal |
+| `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0) |
+| `TargetPath` | string | Where the array is written |
+
+Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nested `source` object with `serverConfiguration`, `remoteDirectory` and `filePattern`.
+
+**Features**:
+- Directory entries excluded, result ordered by name (ordinal)
+- Empty result still writes an empty array, so a downstream `ForEach@1` does not abort with `PathMustBeArray`
+- `lastWriteTimeUtc` is written with an explicit UTC format rather than the round-trip specifier, so the same instant reads identically regardless of the value's `Kind` and a consumer can build a stable file identity from it
+- `source` stamp lets a consumer scope its bookkeeping without repeating the connection values
+
+#### SftpDownloadNode
+
+Downloads exactly one file and writes its decoded content to the target path. Read counterpart of `SftpUploadNode`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference for SFTP server |
+| `RemotePath` | string | Static remote path (set this or `RemotePathPath`) |
+| `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
+| `Encoding` | string | Encoding the remote file is written in, default `utf-8`; unknown names are rejected when the configuration is bound |
+| `OnEncodingError` | enum | `Replace` (default): undecodable bytes become the replacement character and a warning is logged. `Fail`: the node aborts |
+| `MaxFileSizeBytes` | long | Largest file this node will read, default `104857600` (100 MiB). A larger file fails this node only |
+| `TargetPath` | string | Where the decoded content is written |
+
+**Features**:
+- One session per file, meant to run inside a `ForEach@1` over an `SftpList@1` result
+- No dry-run branch: reading has no side effects and the downstream chain must see the content
+- A leading UTF-8 byte-order mark is dropped from the decoded content. A mark is valid UTF-8, so nothing on the decode path reports it; kept, it rides along as an invisible first character and turns a downstream header comparison or split into a silent mismatch. Under a single-byte code page the same bytes are ordinary characters and are left alone
+- `MaxFileSizeBytes` bounds what the remote side can make this adapter allocate: the file is held in memory and then decoded to a string, so the peak is roughly three times the file. The size is checked against the server's own report before anything is transferred and again while the bytes arrive, so a file that grows in between cannot get past it. There is no unlimited setting; raise the value only as far as the pod's memory limit allows
+
+##### Wiring `SftpList@1` into `SftpDownload@1`
+
+`ForEach@1` seeds the current element under its `keyPath`, which defaults to `$.key`. `remotePathPath` has to name that same path — a guessed one such as `$.current.fullPath` resolves to nothing and fails every iteration with `ValueNotSet`:
+
+```yaml
+  - type: SftpList@1
+    serverConfiguration: LkvSftp
+    remoteDirectory: /out
+    filePattern: AR*TXT
+    targetPath: $.files
+
+  - type: ForEach@1
+    iterationPath: $.files
+    targetPath: $.loopResult          # NEVER omit: default "$" replaces the document root
+    maxDegreeOfParallelism: 1         # NEVER omit: default 0 = Environment.ProcessorCount
+    transformations:
+      - type: SftpDownload@1
+        serverConfiguration: LkvSftp
+        remotePathPath: $.key.fullPath
+        targetPath: $.key.content
+```
+
+Setting `keyPath` explicitly is the safer habit — `keyPath: $.current` then pairs with `remotePathPath: $.current.fullPath`. The two always move together.
+
+`maxDegreeOfParallelism` also decides how many files are read at once, and each iteration opens its own session: keep it at or below the server configuration's `MaxConcurrentConnections`, or the extra iterations only queue on the slot semaphore.
+
+---
+
 ### Transform Nodes
 
 Transform nodes process, modify, and enrich data within the pipeline.
@@ -526,8 +594,65 @@ Executes HTTP requests to external services.
 | `HeaderParameters` | ICollection | HTTP headers with dynamic replacement |
 | `PathParameters` | ICollection | URL path parameter substitution |
 | `TargetPath` | string | Response storage location |
+| `ApiConfiguration` | string? | GlobalConfiguration entry supplying `baseUrl` and `apiKey` |
+| `AuthHeaderName` / `AuthHeaderValuePrefix` | string | Header the key is sent in, and an optional scheme prefix |
+| `TimeoutSeconds` | int? | Timeout per attempt; unset leaves the HTTP client default |
+| `Retry` | HttpRetryOptions? | `MaxAttempts` (default 1, so no retry; at most 10), `BackoffBaseSeconds` (default 1, waited after a failed attempt and doubling, each wait capped at 60 s) |
+| `Paging` | HttpPagingOptions? | Page-number walk collecting every page into one array |
+| `OnHttpError` | enum | `LogAndStop` (default) or `Throw` |
 
 **Features**: Dynamic header/path parameter substitution, JSON/text body support, response parsing.
+
+> **Configured access:** with `ApiConfiguration` set, the URL is a path relative to the entry's
+> `baseUrl` and the key travels in `AuthHeaderName` (`Authorization` by default, sent scheme-less
+> unless `AuthHeaderValuePrefix` supplies one). A URL that names its own scheme is rejected in that
+> mode, since the entry already decides which host is being talked to; a path is a path whether or
+> not it starts with a slash. The entry is read when the pipeline is deployed, so a rotated key
+> takes effect after a redeploy.
+
+> **Limitation - custom auth headers and redirects:** the shared HTTP client follows redirects
+> automatically. .NET strips the `Authorization` header when a redirect crosses to another origin,
+> but it does not strip other headers, so a key sent under a custom `AuthHeaderName` would travel
+> to the redirect target. The initial request is pinned to the configured host, so this needs a
+> target that answers a 30x pointing elsewhere. Existing behaviour of this node and its client
+> registration, unchanged here and tracked separately; until it is addressed, prefer the default
+> `Authorization` header for a target that may redirect.
+
+> **Paging:** `ItemsPath` is a single-level path of the form `$.name` naming the array inside one
+> response. The walk stops on an empty page and, unless `StopOnShortPage` is turned off, on a page
+> shorter than `PageSize`; a response without an array at `ItemsPath` and reaching `MaxPages` both
+> fail rather than truncating the result quietly. All pages land as one flat array at `TargetPath`,
+> written once the walk is complete.
+
+> **Failures:** `OnHttpError` decides what a runtime failure means - `LogAndStop` reports it and
+> skips the following nodes while the execution still succeeds, `Throw` fails the execution so a
+> surrounding `ForEach@1` with `continueOnError` can isolate the item. Configuration mistakes
+> always fail. Retries cover 5xx, 408, 429, network errors and timeouts; other statuses fail at
+> once.
+
+> **Retrying a request that changes state:** a retry re-sends the request unchanged. On a GET that
+> is free; on a POST, PUT or DELETE it is a decision. A request whose response was lost may well
+> have been carried out by the target, and the retry carries it out again - enable retries there
+> only where a repeat is tolerated, for instance because the target deduplicates on a key the body
+> carries.
+
+> **Bounds:** the two bounds behave differently on purpose. A computed wait is **clamped** to 60 s
+> - the doubling keeps its shape and simply stops growing, so a long retry policy stays inside a
+> pipeline tick rather than being refused. `MaxAttempts` above 10 is **rejected** as a configuration
+> error, because there is no sensible way to silently run fewer attempts than were asked for. The
+> same rule decides the rest: a value that can be honoured approximately is clamped, a value that
+> cannot be honoured at all fails. `TimeoutSeconds` must be a positive number of seconds within
+> what the timers accept, and only leaving it out means "keep the client's own"; it can only
+> shorten an attempt, since the HTTP client's own timeout is process-wide and applies underneath,
+> so a larger value never takes effect and a failure names whichever of the two ended the attempt.
+> `Paging` numbers are rejected when they describe a walk nobody can run (`PageSize` or `MaxPages`
+> below one, a negative `FirstPageNumber`), and a URL carrying a fragment is rejected while paging
+> is on, because a fragment never reaches the server and the page parameters behind it would be
+> dropped from every request.
+
+> **Explicit nulls:** every optional number and string of the new sections is nullable with a
+> documented default. A pipeline definition that carries `pageSize: null` overwrites the property
+> initializer, so the defaults are resolved where the values are read, not where they are declared.
 
 #### ImportFromExcelNode
 
@@ -618,6 +743,54 @@ Filters to keep only the latest updates per entity, avoiding duplicate updates.
 #### PlaceholderReplaceNode
 
 String template substitution with variable replacement for dynamic string generation.
+
+#### RenderDelimitedTextNode
+
+Renders an array of records into ONE delimited-text document: one row per array element, one
+column per configured entry.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Path` | string | JSONPath of the source **array**; each element must be an object |
+| `TargetPath` | string | Receives the rendered document as a single string |
+| `Delimiter` | string | Text between columns (default `\|`); exactly one character, never a line break |
+| `LineEnding` | enum? | `Lf` when unset, or `CrLf` - never taken from the operating system |
+| `TrailingNewLine` | bool? | Append a final record separator; true when unset |
+| `OnDelimiterInValue` | enum? | `Fail` when unset, or `Replace` / `Strip` |
+| `Replacement` | string | Substitute used by `Replace`; defaults to empty, which equals `Strip` |
+| `Columns` | ICollection | Output columns in order: `Value` (constant), `ValuePath` (relative, single-valued JSONPath), `Required` |
+
+A column entry with neither `Value` nor `ValuePath` renders **empty** - that is how a fixed
+layout expresses a reserved field, and such layouts are mostly reserved fields. Setting both is a
+configuration error. `Required` turns an empty rendered value into a failure naming the record
+and the column; left unset a column is optional, which is the normal case.
+
+**Value to text**: a string emits its value; a number emits its **raw JSON token**, so `1.62`
+stays `1.62` and `0.00` stays `0.00` and no culture can reshape it; a boolean emits
+`True`/`False` (the convention `Concat@1` and `FormatString@1` already use); an absent or null
+value emits nothing. An object or array at a `ValuePath` is **refused** - it would be serialised
+as indented multi-line JSON and silently destroy the record structure.
+
+> **No quoting, by design.** Fixed-layout delimited formats generally have no escaping
+> convention, so emitting quotes would send them onward as payload. A value carrying the
+> delimiter, CR or LF is therefore refused (`Fail`) or rewritten (`Replace` / `Strip`, both
+> logged) - never passed through, because it would shift every column after it and the receiving
+> side cannot tell the difference. Constants are checked the same way. A `Replacement` that
+> itself contains the delimiter or a line break is rejected up front, since it would only move
+> the problem.
+
+> **A record that is not an object is refused**, because every read column would render empty
+> while the constants print - structurally valid rows with no content in them.
+
+> **An empty input array writes an empty string - it never skips the write.** This matters when
+> a downstream guard decides whether to deliver: a typical `If@1` compares the rendered text
+> against `""`, and with the path absent that comparison reads `null`, making "not empty" TRUE
+> and letting the empty delivery through. Writing the empty string keeps the guard meaningful.
+> A `Path` that is not an array is a wiring mistake and fails instead.
+
+**Configuration errors fail before any work**: an empty or null `Columns` list, a null entry in
+it, a column setting both `Value` and `ValuePath`, an unusable `Delimiter` or `Replacement`, and
+a blank `Path`/`TargetPath`, a `Delimiter` that is not exactly one character, an undefined `LineEnding`/`OnDelimiterInValue`, and any `Path`/`ValuePath` that does not parse or that selects a set. Nothing is written and the chain does not continue in those cases.
 
 #### QueryResultToMarkdownTableNode
 
@@ -798,8 +971,41 @@ Uploads files to an SFTP server. Supports both binary files from MongoDB storage
 - Binary file upload from MongoDB large binary storage
 - String content upload as file (e.g., CSV data)
 - File name sanitization to prevent path traversal
+- Optional host key pinning via `HostKeyFingerprint` in the server configuration
 
----
+##### SFTP server configuration entry
+
+All three SFTP nodes resolve their connection from the same global configuration entry:
+
+```json
+{
+  "Host": "sftp.example.com",
+  "Port": 22,
+  "Username": "user",
+  "Password": "...",
+  "PrivateKey": "-----BEGIN OPENSSH PRIVATE KEY-----...",
+  "PrivateKeyPassphrase": "...",
+  "MaxConcurrentConnections": 3,
+  "ConnectTimeoutSeconds": 30,
+  "OperationTimeoutSeconds": 600,
+  "WaitForSlotTimeoutSeconds": 300,
+  "HostKeyFingerprint": "kSuxKMWLxOLE3nn3TxmXvJvI7NrHkGDhAo9SPHt9YQg"
+}
+```
+
+`Password` or `PrivateKey` must be set. `MaxConcurrentConnections` bounds how many sessions are open against that server at a time; the counters live on the ETL context, so a redeployed pipeline picks up a changed limit.
+
+> **The last four keys are not usable yet.** The CK type `System.Communication/SftpConfiguration` declares only `Host`, `Port`, `Username`, `Password`, `PrivateKey`, `PrivateKeyPassphrase` and `MaxConcurrentConnections`, and it is `isFinal`, so no subtype can extend it. An attribute the type does not declare never reaches the serialized entity the adapter reads, so `ConnectTimeoutSeconds`, `OperationTimeoutSeconds`, `WaitForSlotTimeoutSeconds` and `HostKeyFingerprint` stay at their defaults no matter what is written into the entry. **Today's effective behaviour is therefore: any host key is accepted, no per-request timeout, and an unbounded wait for a free slot** — the same behaviour as before these options existed. They become live once the CK type in `octo-communication-controller-services` declares them as optional attributes (a CK version bump and a catalog release); the adapter side is complete and waits on that. `MaxConcurrentConnections` took exactly this route.
+
+The values mean, once they are reachable:
+
+- `ConnectTimeoutSeconds` — seconds to wait for the connection to be established. Zero keeps SSH.NET's default of 30 seconds.
+- `OperationTimeoutSeconds` — seconds SSH.NET waits on **one protocol request**, not on a listing, download or upload as a whole. A transfer is many requests, so a server that answers each one slowly stays inside the limit however long the file takes; what the value stops is a request that never comes back. Zero keeps SSH.NET's default of no limit at all, where one stalled request holds the concurrency slot until the process restarts.
+- `WaitForSlotTimeoutSeconds` — seconds to wait for a free slot of `MaxConcurrentConnections` before failing. Zero waits indefinitely.
+- `HostKeyFingerprint` — SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix. When set, a server presenting a different key is refused. When absent, any host key is accepted.
+
+All three timeouts are rejected when the settings are resolved if they are negative or beyond 2 147 483 seconds (about 24.8 days), which is the largest millisecond count the underlying timers accept.
+
 
 ### Trigger Nodes
 
@@ -944,7 +1150,7 @@ Create EtlContext (via MeshContextCreatorService)
 IEtlDataOrchestrator.ExecutePipelineAsync()
         ↓
 Execute Node Pipeline:
-  ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, etc.)
+  ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, SftpList, SftpDownload, etc.)
   ├─ Transform Nodes (DataMapping, CreateUpdateInfo, MakeHttpRequest, etc.)
   └─ Load Nodes (ApplyChanges, SaveStreamDataInArchive, EMailSender, SftpUpload)
         ↓

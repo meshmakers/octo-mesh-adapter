@@ -221,6 +221,45 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithPathBasedRtId_ResolvesPath` | Dynamic ID resolution |
 | `ProcessObjectAsync_WithTimestampPath_UsesExternalTimestamp` | External timestamp |
 
+#### RenderDelimitedTextNode
+
+| Test Case | Description |
+|-----------|-------------|
+| `ProcessObjectAsync_ConstantPathAndEmptyColumns_RendersOneRowPerElement` | Constant, read and empty columns in one row |
+| `ProcessObjectAsync_ColumnsEmpty_Throws` | Empty column list is a configuration error |
+| `ProcessObjectAsync_ColumnWithValueAndValuePath_Throws` | Ambiguous column is a configuration error |
+| `ProcessObjectAsync_CrLfLineEnding_UsesCarriageReturnAndLineFeed` | Record separator option |
+| `ProcessObjectAsync_TrailingNewLineDisabled_LastRowHasNoSeparator` | Trailing newline option |
+| `ProcessObjectAsync_ScalarKinds_RenderPerHouseRule` | String, raw number token, boolean, null, absent |
+| `ProcessObjectAsync_NonScalarValue_Throws` | Object and array values are refused |
+| `ProcessObjectAsync_EmptyArray_WritesAnEmptyStringAndContinues` | Empty batch writes an empty document, never nothing |
+| `ProcessObjectAsync_PathIsNotAnArray_Throws` | Object, scalar or absent source path |
+| `ProcessObjectAsync_ValueBreaksTheStructure_FailsByDefault` | Delimiter, CR or LF inside a value |
+| `ProcessObjectAsync_ReplaceHandling_SubstitutesAndKeepsTheColumnCount` | Replace handling |
+| `ProcessObjectAsync_StripHandling_RemovesTheOffendingCharacters` | Strip handling |
+| `ProcessObjectAsync_UnusableDelimiter_Throws` | Null, empty or line-break delimiter, asserted on the message |
+| `ProcessObjectAsync_ReplacementContainsTheDelimiter_Throws` | Replacement that would move the problem |
+| `ProcessObjectAsync_ConstantCarriesTheDelimiter_FailsByDefault` | Constants are checked like read values |
+| `ProcessObjectAsync_RequiredColumnWithoutValue_Throws` | Absent, null and empty under `Required` |
+| `ProcessObjectAsync_RequiredColumnWithValue_Renders` | `Required` satisfied |
+| `ProcessObjectAsync_ColumnWithoutRequired_KeepsAnEmptyValue` | Optional column stays empty |
+| `ProcessObjectAsync_FixedThirtyFourColumnLayout_ProducesTheExactDocument` | Byte-exact 34-column layout, mutation-proven |
+| `ProcessObjectAsync_BlankPathOrTargetPath_ThrowsAndWritesNothing` | Blank path or target path (an empty target path would write the document root) |
+| `ProcessObjectAsync_MultiCharacterDelimiter_IsRefused` | Delimiter must be exactly one character |
+| `ProcessObjectAsync_RecordIsNotAnObject_Throws` | Scalar, nested-array and null records |
+| `ProcessObjectAsync_SourceReportsRecordsButIterationYieldsNone_Throws` | Source and iteration disagree |
+| `ProcessObjectAsync_MalformedValuePath_IsAConfigurationError` | Unparsable value path, named by column |
+| `ProcessObjectAsync_MalformedSourcePath_IsAConfigurationError` | Unparsable source path |
+| `ProcessObjectAsync_MultiValuedValuePath_IsRefused` | Wildcard, filter and recursive descent |
+| `ProcessObjectAsync_SimpleValuePath_IsAccepted` | Dotted and indexed paths stay legal |
+| `ProcessObjectAsync_StructureBreakingValueIsHuge_MessageStaysBounded` | Offending value is sampled, not quoted whole |
+
+`RenderDelimitedTextConfigurationDeserializationTests` covers what a pipeline definition can
+produce and a C# object initializer cannot: documented defaults when options are omitted, and
+explicit `null` for `delimiter`, `columns`, a column `value`, `trailingNewLine`, `lineEnding`
+and `onDelimiterInValue`, plus undefined enum values for the latter two. It also pins that a failed
+preflight writes nothing and does not continue the chain.
+
 #### MakeHttpRequestNode
 
 | Test Case | Description |
@@ -231,6 +270,52 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithPathParameters_SubstitutesPath` | URL path substitution |
 | `ProcessObjectAsync_WithErrorResponse_HandlesError` | HTTP error handling |
 | `ProcessObjectAsync_WithJsonResponse_ParsesJson` | JSON response parsing |
+| `ProcessObjectAsync_WithApiConfiguration_JoinsBaseAndPath` | Base URL and relative path join, one separator either way |
+| `ProcessObjectAsync_WithApiConfiguration_SendsAuthHeader` | Configured key in the configured header, with and without a scheme prefix |
+| `ProcessObjectAsync_AbsoluteUrlWithApiConfiguration_ThrowsAndSendsNothing` | A URL naming its own scheme is refused |
+| `HasExplicitScheme_AnswersTheSameOnEveryPlatform` | The guard reads a scheme, not absoluteness, so a leading slash means the same on Linux and Windows |
+| `ProcessObjectAsync_LeadingSlashPathWithApiConfiguration_IsJoinedNotRejected` | The ordinary way to write a path is joined, not rejected |
+| `ProcessObjectAsync_UndefinedApiConfiguration_ThrowsWithDefaultErrorHandling` | A configuration mistake fails whatever OnHttpError says |
+| `ProcessObjectAsync_FailingStatusWithDefaults_LogsStopsAndDoesNotThrow` | Unchanged failure behaviour without the new properties |
+| `ProcessObjectAsync_RetriesExhaustedWithDefaults_StaysQuiet` | Using the new features does not change what a failure does |
+| `ProcessObjectAsync_FailingStatusWithThrow_Throws` | Opt-in loud failure |
+| `ProcessObjectAsync_ResponseHandlingFails_IsLoggedInBothModes` | Non-HTTP failures keep the original net in both modes |
+| `ProcessObjectAsync_ThrowMode_IsIsolatedByForEachContinueOnError` | Per-item isolation through the real loop node |
+| `ProcessObjectAsync_Paging_*` | Page walk: order, stop rules, cap, retry in place, existing query kept |
+| `PagingDefaults_AreTheDocumentedOnes` | The documented defaults, synchronous because nothing is awaited |
+| `ProcessObjectAsync_PagingNumbersOutOfRange_ThrowsWithDefaultErrorHandling` | Zero or negative page size, page limit and first page refused in preflight |
+| `ProcessObjectAsync_FirstPageNumberZero_IsAccepted` | Zero stays a legitimate first page |
+| `ProcessObjectAsync_TimeoutOutOfRange_ThrowsWithDefaultErrorHandling` | Zero, negative and beyond-timer values refused; only null means unset |
+| `ProcessObjectAsync_AuthHeaderNameUnusable_ThrowsWithoutTheKey` | Blank or non-token header name refused, message without the key |
+| `ProcessObjectAsync_PagingWithFragmentInUrl_Throws` | A fragment plus paging refused rather than worked around |
+| `ProcessObjectAsync_PagingUnusableItemsPath_FailsInsteadOfStopping` | A changed response shape is not zero elements |
+| `ProcessObjectAsync_WithApiConfiguration_NeverLogsTheKey` | Key never reaches the log, including base64 keys the typed header parser rejects |
+| `ProcessObjectAsync_AuthHeaderCollidesWithHeaderParameter_ThrowsWithoutTheKey` | Two sources for one header refused, message without the value |
+| `ProcessObjectAsync_FailingStatusWithDefaults_LogsTheFullResponseBody` | The default path still logs the whole body, not the truncated message |
+| `ProcessObjectAsync_PagingWithSingleResponseOptions_Throws` | Base64 / contentLengthTargetPath alongside paging refused |
+| `ProcessObjectAsync_PagingParameterAlreadyInTheQuery_Throws` | A page parameter already in the URL refused |
+| `ProcessObjectAsync_FormBodyThat*` | Legacy form-urlencoded behaviour, pinned around the pre-flight body check |
+
+**`HttpRequestSenderTests`** covers one request in isolation: the transient set (5xx, 408, 429,
+`HttpRequestException`, `TaskCanceledException`) against the non-transient one, the exhausted-attempts
+message (status, attempt count, body truncated to 300 characters), the per-attempt timeout against a
+target that never answers, the per-wait cap and the attempt limit, a cancellation that is not this
+node's own timeout, and the backoff sequence 1 s / 2 s / 4 s. Delays are pinned through a
+`FakeTimeProvider` subclass that records the delays asked for, not through the gaps between handler
+calls - the clock is driven by polling, so a continuation reaching the handler a step late would
+report a gap that says nothing about what was waited for.
+
+**`MakeHttpRequestConfigurationDeserializationTests`** drives real pipeline definitions through
+`IPipelineConfigurationSerializer`, which is the only path that produces what a tenant's YAML
+produces: a property initializer applies only when a key is **absent**, so a key that is present and
+null hands the node a value nobody wrote. Assertions are about the behaviour that follows (the
+header actually sent, the first page actually requested, the delay actually waited) rather than
+about the property values, which after resolution would only restate what they are meant to prove.
+
+**`SequencedHttpMessageHandlerTests`** covers the test double itself, because several node tests
+assert through it: a script with no steps is refused rather than reaching for a negative index, and
+a recorded request still answers for its URL and headers after the message it came from has been
+disposed - which the sender does to every request it sends.
 
 **Mocking Requirements**:
 ```csharp

@@ -44,7 +44,7 @@ public static class SftpUploadEncoding
         if (encoding is UnicodeEncoding or UTF32Encoding)
         {
             throw new ArgumentException(
-                $"Encoding '{encodingName}' is not supported: SftpUpload writes no byte-order mark, so multi-byte encodings with byte-order semantics would produce ambiguous files. Use utf-8 or a single-byte code page such as windows-1252.",
+                $"Encoding '{encodingName}' is not supported: the SFTP nodes never write a byte-order mark and never read one to pick a byte order, so a multi-byte encoding with byte-order semantics would be ambiguous in both directions. Use utf-8 or a single-byte code page such as windows-1252.",
                 nameof(encodingName));
         }
 

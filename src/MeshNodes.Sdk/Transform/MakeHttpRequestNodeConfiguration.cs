@@ -45,11 +45,127 @@ public record HttpPathParameter
     }
 
     /// <summary>
+    /// Page-number paging over a collection endpoint. Absent means a single request. The property
+    /// names are page-number specific so a cursor mode can be added later without renaming.
+    /// </summary>
+    /// <remarks>
+    /// Every optional member is nullable even though it carries an initializer. An initializer
+    /// applies only when the key is absent from the definition; a key that is present and null
+    /// overwrites it, and the reader would get a zero or a null it never wrote. Nullable here plus
+    /// a fallback where the value is read makes "absent" and "present but null" mean the same
+    /// thing. The defaults live in the constants so the initializer and the fallback cannot drift.
+    /// </remarks>
+    public record HttpPagingOptions
+    {
+        /// <summary>The <see cref="PageParameterName" /> an unset property resolves to.</summary>
+        public const string DefaultPageParameterName = "page";
+
+        /// <summary>The <see cref="PageSizeParameterName" /> an unset property resolves to.</summary>
+        public const string DefaultPageSizeParameterName = "pageSize";
+
+        /// <summary>The <see cref="PageSize" /> an unset property resolves to.</summary>
+        public const int DefaultPageSize = 100;
+
+        /// <summary>The <see cref="FirstPageNumber" /> an unset property resolves to.</summary>
+        public const int DefaultFirstPageNumber = 1;
+
+        /// <summary>The <see cref="StopOnShortPage" /> an unset property resolves to.</summary>
+        public const bool DefaultStopOnShortPage = true;
+
+        /// <summary>The <see cref="MaxPages" /> an unset property resolves to.</summary>
+        public const int DefaultMaxPages = 500;
+
+        /// <summary>
+        /// Single-level path of the form "$.name" addressing the array inside one response, for
+        /// example "$.result". Deeper addressing belongs to a downstream transformation. Required
+        /// when paging is configured: a walk with nothing to read cannot report a result.
+        /// </summary>
+        public string ItemsPath { get; set; } = "";
+
+        /// <summary>Query parameter carrying the page number.</summary>
+        public string? PageParameterName { get; set; } = DefaultPageParameterName;
+
+        /// <summary>Query parameter carrying the page size.</summary>
+        public string? PageSizeParameterName { get; set; } = DefaultPageSizeParameterName;
+
+        /// <summary>Elements requested per page.</summary>
+        public int? PageSize { get; set; } = DefaultPageSize;
+
+        /// <summary>Number of the first page; some APIs count from zero.</summary>
+        public int? FirstPageNumber { get; set; } = DefaultFirstPageNumber;
+
+        /// <summary>
+        /// Treat a page holding fewer elements than requested as the last one. Turn it off for an
+        /// API that caps the page size server-side, where every page looks short.
+        /// </summary>
+        public bool? StopOnShortPage { get; set; } = DefaultStopOnShortPage;
+
+        /// <summary>
+        /// Upper bound on pages. Reaching it fails: a target that ignores the page parameter
+        /// answers with the same page forever, and a silent stop would truncate the result.
+        /// </summary>
+        public int? MaxPages { get; set; } = DefaultMaxPages;
+    }
+
+    /// <summary>
+    /// What a failed request does to the pipeline.
+    /// </summary>
+    public enum HttpErrorHandling
+    {
+        /// <summary>Report the failure and stop this branch, leaving the execution successful.</summary>
+        LogAndStop,
+
+        /// <summary>Fail the execution, so a surrounding loop or the run itself reports it.</summary>
+        Throw
+    }
+
+    /// <summary>
+    /// Retry behaviour for one request. Absent means a single attempt, which is what the node did
+    /// before the option existed.
+    /// </summary>
+    /// <remarks>
+    /// Nullable members with constant defaults, for the reason given on
+    /// <see cref="HttpPagingOptions" />.
+    /// </remarks>
+    public record HttpRetryOptions
+    {
+        /// <summary>The <see cref="MaxAttempts" /> an unset property resolves to.</summary>
+        public const int DefaultMaxAttempts = 1;
+
+        /// <summary>The <see cref="BackoffBaseSeconds" /> an unset property resolves to.</summary>
+        public const double DefaultBackoffBaseSeconds = 1;
+
+        /// <summary>
+        /// Upper bound on a single wait. Doubling is unbounded, so a long enough run would reach
+        /// waits of hours and eventually a value the timer refuses outright; capping each wait
+        /// keeps a retrying request inside a pipeline tick.
+        /// </summary>
+        public const int MaxBackoffSeconds = 60;
+
+        /// <summary>
+        /// Upper bound on <see cref="MaxAttempts" />. Ten attempts means nine waits, so with the
+        /// wait cap the worst case is nine minutes of waiting plus the requests themselves; beyond
+        /// that a request is not slow, it is broken, and a pipeline tick should end rather than
+        /// pile up behind it.
+        /// </summary>
+        public const int MaxAllowedAttempts = 10;
+
+        /// <summary>Total attempts per request, so 1 means no retry.</summary>
+        public int? MaxAttempts { get; set; } = DefaultMaxAttempts;
+
+        /// <summary>Delay before attempt n is base * 2^(n-1) seconds; 0 disables waiting.</summary>
+        public double? BackoffBaseSeconds { get; set; } = DefaultBackoffBaseSeconds;
+    }
+
+    /// <summary>
     /// Make a http request
     /// </summary>
     [NodeName("MakeHttpRequest", 1)]
     public record MakeHttpRequestNodeConfiguration : TargetPathNodeConfiguration
     {
+        /// <summary>The <see cref="AuthHeaderName" /> an unset property resolves to.</summary>
+        public const string DefaultAuthHeaderName = "Authorization";
+
         /// <summary>
         /// the HTTP method to use for the request (values: GET, POST, PUT, DELETE)
         /// </summary>
@@ -92,6 +208,79 @@ public record HttpPathParameter
         public List<HttpHeaderParameter> HeaderParameters { get; set; } = new();
 
         /// <summary>
+        /// Name of a GlobalConfiguration entry providing the API base URL and key. When set, the
+        /// request URL is a path relative to that base and the key is sent in
+        /// <see cref="AuthHeaderName" />.
+        /// </summary>
+        [PropertyGroup("Connection", 5)]
+        public string? ApiConfiguration { get; set; }
+
+        /// <summary>
+        /// Header the key from <see cref="ApiConfiguration" /> is sent in. The key is inserted as
+        /// it is; with the default header and no prefix it goes out scheme-less, which suits a
+        /// target expecting a bare token.
+        /// </summary>
+        /// <remarks>
+        /// Redirects: the shared HTTP client follows them automatically, and .NET strips the
+        /// <c>Authorization</c> header when one crosses to another origin but leaves other headers
+        /// in place. A key sent under a custom name would therefore travel to the redirect target.
+        /// The first request always goes to the configured host, so it takes a target answering a
+        /// 30x that points elsewhere; for such a target, prefer the default header.
+        /// </remarks>
+        [PropertyGroup("Connection", 6)]
+        public string? AuthHeaderName { get; set; } = DefaultAuthHeaderName;
+
+        /// <summary>
+        /// Scheme prefix placed before the key, for example "Bearer ". Empty by default.
+        /// </summary>
+        [PropertyGroup("Connection", 7)]
+        public string? AuthHeaderValuePrefix { get; set; } = "";
+
+        /// <summary>
+        /// Retry behaviour for transient failures: 5xx, 408, 429, network errors and timeouts.
+        /// Absent means a single attempt.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A retry re-sends the request as it was. That is safe for a GET, and it is a decision
+        /// for anything that changes state: a POST whose response was lost - a timeout, a dropped
+        /// connection, a 502 from a proxy that had already forwarded it - may well have been
+        /// carried out by the target, and the retry then carries it out again. Enable retries on a
+        /// non-idempotent method only where the target tolerates a repeat, for instance because it
+        /// deduplicates by a key the body carries.
+        /// </para>
+        /// <para>
+        /// Nullable on purpose. A definition carrying an explicit null overwrites a property
+        /// initializer, so a non-nullable property with a default would hand the node a null it
+        /// cannot see coming - the same shape of mistake that a null integer in a settings entry
+        /// once caused. Read it through <c>Retry ?? new HttpRetryOptions()</c> at every use site.
+        /// </para>
+        /// </remarks>
+        [PropertyGroup("Connection", 8)]
+        public HttpRetryOptions? Retry { get; set; }
+
+        /// <summary>
+        /// Timeout in seconds applied to each attempt. Unset leaves the HTTP client's own default
+        /// in place; the client is shared, so its timeout is never changed.
+        /// </summary>
+        /// <remarks>
+        /// It can only shorten an attempt, never lengthen one: the client's own timeout is
+        /// process-wide and applies underneath, so a value above it never takes effect. A failure
+        /// reports which of the two ended the attempt rather than assuming this one did.
+        /// </remarks>
+        [PropertyGroup("Connection", 9)]
+        public int? TimeoutSeconds { get; set; }
+
+        /// <summary>
+        /// How a failed request is answered. The default keeps the behaviour the node had before
+        /// the option existed: the failure is logged and the following nodes are skipped, while
+        /// the execution still succeeds. It governs runtime outcomes only - a configuration
+        /// mistake always fails.
+        /// </summary>
+        [PropertyGroup("Connection", 10)]
+        public HttpErrorHandling OnHttpError { get; set; } = HttpErrorHandling.LogAndStop;
+
+        /// <summary>
         /// The media type of the request body (values: application/json, application/x-www-form-urlencoded).
         /// For application/x-www-form-urlencoded the body must be a JSON object whose properties become the form fields.
         /// </summary>
@@ -112,4 +301,10 @@ public record HttpPathParameter
         /// </summary>
         [PropertyGroup("Data Mapping", 4, "jsonpath")]
         public string? ContentLengthTargetPath { get; set; }
+
+        /// <summary>
+        /// Collects every page of a paged endpoint into one flat array at the target path.
+        /// </summary>
+        [PropertyGroup("Data Mapping", 5)]
+        public HttpPagingOptions? Paging { get; set; }
     }

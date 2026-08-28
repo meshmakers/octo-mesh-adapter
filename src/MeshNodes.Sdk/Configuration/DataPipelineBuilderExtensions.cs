@@ -30,6 +30,8 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetStreamDataNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpListNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpDownloadNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AggregateStreamDataNodeConfiguration>();
 
         // Register load nodes
@@ -65,6 +67,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<RenderDelimitedTextNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MinMaxNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();

@@ -1,13 +1,9 @@
-using System.Collections.Concurrent;
-using System.Text;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
-using Renci.SshNet;
-using Renci.SshNet.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -16,30 +12,15 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// </summary>
 /// <param name="next">Next node in the pipeline</param>
 /// <param name="etlContext">The ETL context</param>
+/// <param name="sessionFactory">Opens the SFTP session, including the concurrency limit and host key check</param>
 [NodeConfiguration(typeof(SftpUploadNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class SftpUploadNode(
     NodeDelegate next,
-    IMeshEtlContext etlContext)
+    IMeshEtlContext etlContext,
+    ISftpSessionFactory sessionFactory)
     : IPipelineNode
 {
-    private const string SftpSemaphoresKey = "SftpUploadNode.Semaphores";
-    private static readonly Lock SemaphoresLock = new();
-
-    // ReSharper disable once ClassNeverInstantiated.Local
-    private record SftpServerConfiguration
-    {
-        // ReSharper disable UnusedAutoPropertyAccessor.Local
-        public required string Host { get; init; }
-        public int Port { get; init; } = 22;
-        public required string Username { get; init; }
-        public string? Password { get; init; }
-        public string? PrivateKey { get; init; }
-        public string? PrivateKeyPassphrase { get; init; }
-        public int MaxConcurrentConnections { get; init; } = 3;
-        // ReSharper restore UnusedAutoPropertyAccessor.Local
-    }
-
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -49,16 +30,8 @@ public class SftpUploadNode(
         {
             ValidateConfiguration(c, nodeContext);
 
-            if (!etlContext.GlobalConfiguration.IsDefined(c.ServerConfiguration))
-            {
-                throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(nodeContext,
-                    nameof(c.ServerConfiguration), c.ServerConfiguration);
-            }
-
-            var serverConfiguration =
-                etlContext.GlobalConfiguration.GetValue<SftpServerConfiguration>(c.ServerConfiguration);
-
-            ValidateAuthConfiguration(serverConfiguration, nodeContext);
+            var serverConfiguration = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration,
+                nodeContext);
 
             // Resolve file name
             var fileName = ResolveFileName(c, dataContext, nodeContext);
@@ -81,33 +54,18 @@ public class SftpUploadNode(
                     encoding = c.Encoding,
                     onEncodingError = c.OnEncodingError.ToString()
                 });
-                await next(dataContext, nodeContext);
-                return;
             }
-
-            var sftpSemaphore = GetOrCreateSemaphore(c.ServerConfiguration, serverConfiguration);
-
-            // Get upload stream
-            await using var uploadStream = await GetUploadStreamAsync(c, dataContext, nodeContext);
-
-            // Connect and upload
-            using var client = CreateSftpClient(serverConfiguration);
-
-            await sftpSemaphore.WaitAsync();
-            try
+            else
             {
-                client.Connect();
-                EnsureRemoteDirectoryExists(client, c.RemoteDirectory);
-                client.UploadFile(uploadStream, remotePath, true);
-            }
-            finally
-            {
-                if (client.IsConnected)
-                {
-                    client.Disconnect();
-                }
+                // Get upload stream
+                await using var uploadStream = await GetUploadStreamAsync(c, dataContext, nodeContext);
 
-                sftpSemaphore.Release();
+                // Connect and upload. The session holds the server's concurrency slot until it
+                // is disposed, so it stays in a using scope.
+                using var session = await sessionFactory.ConnectAsync(serverConfiguration, c.ServerConfiguration,
+                    etlContext, nodeContext);
+                session.EnsureDirectory(c.RemoteDirectory);
+                session.Upload(uploadStream, remotePath);
             }
         }
         catch (MeshAdapterPipelineExecutionException)
@@ -119,6 +77,10 @@ public class SftpUploadNode(
             throw MeshAdapterPipelineExecutionException.CannotUploadViaSftp(nodeContext, e);
         }
 
+        // Outside the try, and reached from both branches: the catch above speaks for the
+        // upload, so a failure further down the chain must not come back as "Cannot upload
+        // file via SFTP". A dry run took the other branch and wrote nothing, but the chain
+        // still has to see the run through.
         await next(dataContext, nodeContext);
     }
 
@@ -141,16 +103,6 @@ public class SftpUploadNode(
                 throw MeshAdapterPipelineExecutionException.AmbiguousFileSource(nodeContext);
             case false when !hasStringSource:
                 throw MeshAdapterPipelineExecutionException.NoFileSourceSpecified(nodeContext);
-        }
-    }
-
-    private static void ValidateAuthConfiguration(SftpServerConfiguration serverConfiguration,
-        INodeContext nodeContext)
-    {
-        if (string.IsNullOrWhiteSpace(serverConfiguration.PrivateKey) &&
-            string.IsNullOrWhiteSpace(serverConfiguration.Password))
-        {
-            throw MeshAdapterPipelineExecutionException.SftpAuthNotConfigured(nodeContext);
         }
     }
 
@@ -190,35 +142,6 @@ public class SftpUploadNode(
         return SanitizeFileName(fileName, nodeContext);
     }
 
-    private SemaphoreSlim GetOrCreateSemaphore(string serverConfigurationName,
-        SftpServerConfiguration serverConfiguration)
-    {
-        lock (SemaphoresLock)
-        {
-            if (!etlContext.Properties.TryGetValue(SftpSemaphoresKey, out var semaphoresObj) ||
-                semaphoresObj is not ConcurrentDictionary<string, SemaphoreSlim> semaphores)
-            {
-                semaphores = new ConcurrentDictionary<string, SemaphoreSlim>();
-                etlContext.Properties[SftpSemaphoresKey] = semaphores;
-            }
-
-            return semaphores.GetOrAdd(serverConfigurationName,
-                _ =>
-                {
-                    if (serverConfiguration.MaxConcurrentConnections <= 0)
-                    {
-                        throw MeshAdapterPipelineExecutionException.InvalidMaxConcurrentConnections(
-                            serverConfigurationName, serverConfiguration.MaxConcurrentConnections);
-                    }
-
-                    return new SemaphoreSlim(
-                        serverConfiguration.MaxConcurrentConnections,
-                        serverConfiguration.MaxConcurrentConnections);
-                });
-        }
-    }
-
-    // Internal; tests access via InternalsVisibleTo.
     internal async Task<Stream> GetUploadStreamAsync(
         SftpUploadNodeConfiguration configuration,
         IDataContext dataContext,
@@ -276,40 +199,4 @@ public class SftpUploadNode(
             configuration.OnEncodingError, nodeContext));
     }
 
-    private static SftpClient CreateSftpClient(SftpServerConfiguration serverConfiguration)
-    {
-        if (!string.IsNullOrWhiteSpace(serverConfiguration.PrivateKey))
-        {
-            var keyStream = new MemoryStream(Encoding.UTF8.GetBytes(serverConfiguration.PrivateKey));
-            var privateKeyFile = string.IsNullOrWhiteSpace(serverConfiguration.PrivateKeyPassphrase)
-                ? new PrivateKeyFile(keyStream)
-                : new PrivateKeyFile(keyStream, serverConfiguration.PrivateKeyPassphrase);
-
-            return new SftpClient(serverConfiguration.Host, serverConfiguration.Port,
-                serverConfiguration.Username, [privateKeyFile]);
-        }
-
-        return new SftpClient(serverConfiguration.Host, serverConfiguration.Port,
-            serverConfiguration.Username, serverConfiguration.Password ?? string.Empty);
-    }
-
-    private static void EnsureRemoteDirectoryExists(SftpClient client, string remotePath)
-    {
-        var isAbsolute = remotePath.StartsWith('/');
-        var parts = remotePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var currentPath = isAbsolute ? "" : ".";
-
-        foreach (var part in parts)
-        {
-            currentPath += "/" + part;
-            try
-            {
-                client.GetAttributes(currentPath);
-            }
-            catch (SftpPathNotFoundException)
-            {
-                client.CreateDirectory(currentPath);
-            }
-        }
-    }
 }

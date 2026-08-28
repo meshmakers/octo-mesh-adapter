@@ -20,9 +20,141 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
     }
 
+    /// <summary>
+    /// The untruncated response body of a failed HTTP request, where the failure carries one. The
+    /// message keeps only the first few hundred characters so a thrown failure stays readable; a
+    /// caller that reports rather than throws restores the full text from here.
+    /// </summary>
+    public string? ResponseBody { get; private init; }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
+    }
+
+    public static Exception DelimitedValueNotScalar(INodeContext nodeContext, int recordIndex,
+        int columnIndex, string valuePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: " +
+            $"'{valuePath}' resolves to an object or array, which cannot be a column value.");
+    }
+
+    public static Exception DelimitedSourceNotAnArray(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' must resolve to an array of records.");
+    }
+
+    public static Exception DelimitedDelimiterUnusable(INodeContext nodeContext, string? delimiter)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: delimiter '{delimiter}' must be exactly one character " +
+            "and must not be a line break.");
+    }
+
+    public static Exception DelimitedReplacementUnusable(INodeContext nodeContext, string replacement)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: replacement '{replacement}' contains the delimiter or a " +
+            "line break, which would only move the problem.");
+    }
+
+    public static Exception DelimitedValueBreaksStructure(INodeContext nodeContext, int recordIndex,
+        int columnIndex, string value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: the value " +
+            $"'{Truncate(value)}' contains the delimiter or a line break and would shift every " +
+            "column after it.");
+    }
+
+    public static Exception DelimitedRequiredColumnEmpty(INodeContext nodeContext, int recordIndex,
+        int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex} is required but " +
+            "rendered empty.");
+    }
+
+    public static Exception DelimitedPathNotSet(INodeContext nodeContext, string property)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{property}' must be a JSONPath; an empty one would " +
+            "address the document root.");
+    }
+
+    public static Exception DelimitedOptionUndefined(INodeContext nodeContext, string property,
+        int value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{property}' has the undefined value {value}.");
+    }
+
+    public static Exception DelimitedRecordNotAnObject(INodeContext nodeContext, int recordIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex} is not an object, so no column value " +
+            "can be read from it.");
+    }
+
+    public static Exception DelimitedSourceDisagrees(INodeContext nodeContext, string path,
+        int length)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' reports {length} record(s) but none could be " +
+            "iterated; refusing to write an empty document.");
+    }
+
+    public static Exception DelimitedPathUnparsable(INodeContext nodeContext, string location,
+        string path, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {location}: '{path}' is not a valid JSONPath.", inner);
+    }
+
+    public static Exception DelimitedPathSelectsASet(INodeContext nodeContext, string location,
+        string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {location}: '{path}' selects a set of values; a column " +
+            "holds exactly one, so wildcard, filter and recursive descent are not accepted.");
+    }
+
+    /// <summary>
+    /// Keeps a sample of an offending value out of an unbounded message: it travels into logs and
+    /// execution results, and the values this is used for are exactly the ones that can be large.
+    /// </summary>
+    private static string Truncate(string value)
+    {
+        // Escaped before it is shortened, not after: this sample is taken from values that
+        // are here BECAUSE they carry a delimiter or a line break, so a raw one would split
+        // the message across several lines in the log and the execution result - one failure
+        // has to stay one entry, and record data must not be able to forge a second one.
+        var escaped = value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+
+        return escaped.Length <= 200 ? escaped : escaped[..200] + "...";
+    }
+
+    public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: columns must list at least one column.");
+    }
+
+    public static Exception DelimitedColumnNull(INodeContext nodeContext, int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: column {columnIndex} is null.");
+    }
+
+    public static Exception DelimitedColumnAmbiguous(INodeContext nodeContext, int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: column {columnIndex} sets both value and valuePath.");
     }
 
     public static Exception InvalidValue(object? value)
@@ -101,12 +233,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Origin RtIds are not set. Please set originRtId or originRtIdPath.");
     }
-    
+
     public static Exception OriginRtIdNotFound(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: originRtId and originRtIdPath is not set.");
     }
-    
+
     public static Exception OriginRtIdValueNull(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Value of origin RtId is null.");
@@ -116,7 +248,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: CkTypeId is not set. Please set ckTypeId or ckTypeIdPath.");
     }
-    
+
     public static Exception CkTypeIdValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: No CkTypeId found at path '{path}'.");
@@ -195,10 +327,104 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: No SFTP authentication configured. Set either Password or PrivateKey in the server configuration.");
     }
 
-    public static Exception InvalidMaxConcurrentConnections(string serverConfigurationName, int value)
+    public static Exception InvalidMaxConcurrentConnections(INodeContext nodeContext, string serverConfigurationName,
+        int value)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}': MaxConcurrentConnections must be greater than zero, but was {value}.");
+    }
+
+    public static Exception CannotDecodeContent(INodeContext nodeContext, string encodingName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Downloaded content is not valid '{encodingName}'. Set the correct encoding, or switch OnEncodingError to Replace to accept a lossy read.");
+    }
+
+    public static Exception NoRemotePathSpecified(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No remote path specified. Set either 'remotePath' or 'remotePathPath'.");
+    }
+
+    public static Exception FilePatternNotConfigured(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: File pattern is not configured. Set 'filePattern', for example \"AR*TXT\".");
+    }
+
+    public static Exception RemoteDirectoryNotConfigured(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote directory is not configured. Set 'remoteDirectory', for example \"/out\".");
+    }
+
+    public static Exception SftpSlotWaitTimedOut(INodeContext nodeContext, string serverConfigurationName,
+        int waitSeconds)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}': no free connection slot after {waitSeconds}s. Either transfers are stalling or MaxConcurrentConnections is too low for the pipeline.");
+    }
+
+    public static Exception NegativeSftpTimeout(INodeContext nodeContext, string serverConfigurationName,
+        string propertyName, int value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has {propertyName} = {value}. Use zero to keep the default or a positive number of seconds.");
+    }
+
+    public static Exception SftpTimeoutTooLarge(INodeContext nodeContext, string serverConfigurationName,
+        string propertyName, int value, int maximumSeconds)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has {propertyName} = {value}, which is beyond the {maximumSeconds}s the underlying timers accept. Use zero to keep the default or a smaller number of seconds.");
+    }
+
+    public static Exception InvalidSftpServerConfiguration(INodeContext nodeContext, string serverConfigurationName,
+        Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' cannot be read: {exception.Message}", exception);
+    }
+
+    public static Exception SftpFileTooLarge(INodeContext nodeContext, string remotePath, long? size, long maxBytes)
+    {
+        var reported = size is null
+            ? "outgrew that while it was being read"
+            : $"is {size} byte(s)";
+
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote file '{remotePath}' {reported}, and MaxFileSizeBytes allows {maxBytes}. The whole file is held in memory and decoded to a string, so raise MaxFileSizeBytes only as far as this adapter can afford.");
+    }
+
+    public static Exception InvalidMaxFileSizeBytes(INodeContext nodeContext, long value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: MaxFileSizeBytes must be greater than zero, but was {value}. There is no unlimited setting: the content is read into memory and decoded to a string, so an unbounded read would decide this adapter's memory from the remote side.");
+    }
+
+    public static Exception CannotListViaSftp(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot list directory via SFTP: {exception.Message}", exception);
+    }
+
+    public static Exception CannotDownloadViaSftp(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot download file via SFTP: {exception.Message}", exception);
+    }
+
+    public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: SFTP server configuration '{serverConfigurationName}' has a blank HostKeyFingerprint. Remove the property to connect without host key verification, or set the SHA-256 fingerprint of the expected key.");
+    }
+
+    public static Exception SftpHostKeyMismatch(INodeContext nodeContext, string host, string expectedFingerprint,
+        string presentedFingerprint)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Host key of '{host}' does not match the configured fingerprint. Expected '{expectedFingerprint}', server presented '{presentedFingerprint}'. Update HostKeyFingerprint in the server configuration if the key was rotated deliberately.");
     }
 
     public static Exception BinaryNotFound(INodeContext nodeContext, string rtId)
@@ -750,6 +976,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: a per-execution scratch space is required ({reason}).");
     }
+
     /// <summary>
     /// A template names placeholders whose source this send path never supplied - a billing
     /// token on a path carrying no bill, or a customer token for an address that matched no
@@ -772,5 +999,126 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: attachment binary '{binaryId}' was not found in the binary store.",
             inner);
+    }
+
+    public static Exception InvalidHttpApiConfiguration(INodeContext nodeContext, string configurationName,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' cannot be read as HTTP API settings.",
+            inner);
+    }
+
+    public static Exception IncompleteHttpApiConfiguration(INodeContext nodeContext, string configurationName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' must provide both 'baseUrl' and 'apiKey'.");
+    }
+
+    public static Exception HttpPagingItemsPathUnusable(INodeContext nodeContext, string itemsPath,
+        int page)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The response for page {page} carries no array at '{itemsPath}'. " +
+            "An empty array ends the walk; a missing or non-array value means the response shape changed.");
+    }
+
+    public static Exception HttpPagingCapReached(INodeContext nodeContext, int maxPages)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The paged request reached its limit of {maxPages} pages. " +
+            "Raise maxPages if the collection really is that large, or check that the target honours " +
+            "the page parameter - the result would otherwise be truncated silently.");
+    }
+
+    public static Exception HttpPagingConflictsWithOption(INodeContext nodeContext, string option)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {option} describes a single response and cannot be combined " +
+            "with paging, which writes the collected elements of every page.");
+    }
+
+    public static Exception HttpPagingParameterAlreadyInQuery(INodeContext nodeContext,
+        string parameterName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The URL already carries a '{parameterName}' query parameter, " +
+            "which the page walk also appends. Remove it from the URL, or name the paging parameter " +
+            "differently.");
+    }
+
+    public static Exception HttpPagingItemsPathNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Paging needs an itemsPath naming the array inside one response.");
+    }
+
+    public static Exception HttpRequestFailed(INodeContext nodeContext, string url, int? statusCode,
+        int attempts, string detail, string? responseBody = null)
+    {
+        var status = statusCode is null ? "no response" : $"HTTP {statusCode}";
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Request to '{url}' failed after {attempts} attempts ({status}): {detail}")
+        {
+            ResponseBody = responseBody
+        };
+    }
+
+    public static Exception InvalidHttpNodeOption(INodeContext nodeContext, string detail)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");
+    }
+
+    public static Exception UnusableAuthHeaderName(INodeContext nodeContext, string headerName)
+    {
+        // The value is deliberately absent from the message: it is the API key.
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: authHeaderName '{headerName}' is not a usable HTTP header name. " +
+            "A header name is a token: letters, digits and !#$%&'*+-.^_`|~, with no spaces.");
+    }
+
+    public static Exception HttpPagingUrlHasFragment(INodeContext nodeContext, string url)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: URL '{url}' carries a fragment while paging is configured. " +
+            "A fragment is never sent to the server, so the page parameters appended after it would " +
+            "never reach the target and the walk would run to its limit against the first page. " +
+            "Remove the fragment from the URL.");
+    }
+
+    public static Exception InvalidHttpRetryOptions(INodeContext nodeContext, string detail)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {detail}");
+    }
+
+    public static Exception HttpApiBaseUrlNotAbsolute(INodeContext nodeContext, string configurationName,
+        string baseUrl)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Global configuration '{configurationName}' has baseUrl '{baseUrl}', " +
+            "which is not an absolute http or https URL.");
+    }
+
+    public static Exception AuthHeaderCollision(INodeContext nodeContext, string headerName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Header '{headerName}' is both the auth header of the configured " +
+            "API and a header parameter, so the request would carry two values for it. Rename one of " +
+            "them, or drop the ApiConfiguration and supply the header yourself.");
+    }
+
+    public static Exception AuthHeaderNotAccepted(INodeContext nodeContext, string headerName)
+    {
+        // The value is deliberately absent from the message: it is the API key.
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Header name '{headerName}' is not a valid HTTP header name.");
+    }
+
+    public static Exception SchemeQualifiedUrlWithHttpApiConfiguration(INodeContext nodeContext, string url)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: URL '{url}' names its own scheme while an ApiConfiguration is " +
+            "set, which configures the host to talk to. Configure a path relative to the configured " +
+            "base URL, or drop the ApiConfiguration and supply the header yourself.");
     }
 }

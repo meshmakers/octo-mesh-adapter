@@ -2,9 +2,11 @@
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -13,9 +15,40 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 /// <param name="next"></param>
 /// <param name="httpClient"></param>
+/// <param name="etlContext">Carries the tenant global configuration an ApiConfiguration is read from</param>
+/// <param name="timeProvider">Clock behind the retry backoff and the per-attempt timeout; the system clock unless a test supplies one</param>
 [NodeConfiguration(typeof(MakeHttpRequestNodeConfiguration))]
-public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPipelineNode
+public class MakeHttpRequestNode(
+    NodeDelegate next,
+    HttpClient httpClient,
+    IMeshEtlContext etlContext,
+    TimeProvider? timeProvider = null) : IPipelineNode
 {
+    /// <summary>
+    /// A scheme followed by an authority, which is what it takes for a URL to name a target of its
+    /// own. Anything without one is a path, however many separators it starts with.
+    /// </summary>
+    private static readonly Regex SchemeQualified =
+        new("^[A-Za-z][A-Za-z0-9+.-]*://", RegexOptions.Compiled);
+
+    /// <summary>
+    /// An HTTP header name, which RFC 9110 defines as a token. Checked before the request is built
+    /// so an unusable name is a configuration error rather than something the header collection
+    /// refuses later, from inside the block that answers failures with a log entry.
+    /// </summary>
+    private static readonly Regex HeaderToken =
+        new(@"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// The largest timeout the underlying timers accept: they take a millisecond count in an
+    /// Int32. The value is deliberately not an operational limit - the HTTP client's own timeout
+    /// applies underneath in any case, so a long value is ineffective rather than dangerous, and
+    /// how long a target may take is not this node's policy to make.
+    /// </summary>
+    private const int MaxTimeoutSeconds = int.MaxValue / 1000;
+
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     /// <summary>
     /// run the HTTP request
     /// </summary>
@@ -31,112 +64,450 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
             return;
         }
 
-        try
+        var url = GetUrl(dataContext, c);
+        if (string.IsNullOrWhiteSpace(url))
         {
-            // Get the URL
-            var url = GetUrl(dataContext, c);
-            if (string.IsNullOrWhiteSpace(url))
+            nodeContext.Error("URL is not set. Please provide a Url or UrlPath");
+            return;
+        }
+
+        HttpApiSettings? apiSettings = null;
+        if (!string.IsNullOrWhiteSpace(c.ApiConfiguration))
+        {
+            // Outside the try below on purpose: a configuration mistake is not a runtime outcome
+            // and must not be answered with a log line.
+            apiSettings = HttpApiSettingsResolver.Resolve(etlContext, c.ApiConfiguration, nodeContext);
+
+            if (HasExplicitScheme(url))
             {
-                nodeContext.Error("URL is not set. Please provide a Url or UrlPath");
-                return;
+                throw MeshAdapterPipelineExecutionException.SchemeQualifiedUrlWithHttpApiConfiguration(
+                    nodeContext, url);
             }
 
+            url = CombineUrl(apiSettings.BaseUrl, url);
+
+            var authHeaderName = ResolveAuthHeaderName(c);
+            if (!HeaderToken.IsMatch(authHeaderName))
+            {
+                throw MeshAdapterPipelineExecutionException.UnusableAuthHeaderName(
+                    nodeContext, authHeaderName);
+            }
+
+            if (c.HeaderParameters.Any(h =>
+                    string.Equals(h.Name, authHeaderName, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw MeshAdapterPipelineExecutionException.AuthHeaderCollision(nodeContext, authHeaderName);
+            }
+        }
+
+        // Checked here rather than where the request is sent: that is inside the block below,
+        // whose catch answers a failure with a log entry under the default error handling, and a
+        // configuration mistake must fail whatever that setting says.
+        HttpRequestSender.ValidateRetryOptions(c.Retry ?? new HttpRetryOptions(), nodeContext);
+        ValidateTimeout(c, nodeContext);
+
+        if (c.Paging is { } pagingOptions)
+        {
+            // Configuration mistakes, so they fail whatever OnHttpError says - each of them would
+            // otherwise let a run report success while doing nothing of what was configured.
+            if (string.IsNullOrWhiteSpace(pagingOptions.ItemsPath))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathNotSet(nodeContext);
+            }
+
+            ValidatePagingNumbers(pagingOptions, nodeContext);
+
+            // A fragment never reaches the server, so page parameters appended behind one would be
+            // dropped from every request and the walk would run to its limit against page one.
+            if (url.Contains('#', StringComparison.Ordinal))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingUrlHasFragment(nodeContext, url);
+            }
+
+            // Both describe a single response body. The walk writes the collected array and never
+            // a body or a byte count, so either one set alongside paging is silently ignored.
+            if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingConflictsWithOption(
+                    nodeContext, "responseFormat: Base64");
+            }
+
+            if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
+            {
+                throw MeshAdapterPipelineExecutionException.HttpPagingConflictsWithOption(
+                    nodeContext, "contentLengthTargetPath");
+            }
+
+            // The walk appends its own page parameters. A URL that already carries one leaves the
+            // target to choose between two values; choosing the first makes every page identical,
+            // and the run ends on a page cap it never really reached.
+            foreach (var parameterName in new[]
+                     {
+                         pagingOptions.PageParameterName ?? HttpPagingOptions.DefaultPageParameterName,
+                         pagingOptions.PageSizeParameterName ?? HttpPagingOptions.DefaultPageSizeParameterName
+                     })
+            {
+                if (QueryContainsParameter(url, parameterName))
+                {
+                    throw MeshAdapterPipelineExecutionException.HttpPagingParameterAlreadyInQuery(
+                        nodeContext, parameterName);
+                }
+            }
+        }
+
+        try
+        {
             // Replace path parameters in URL
             url = ReplacePathParameters(dataContext, nodeContext, url, c.PathParameters);
 
             nodeContext.Debug("Making HTTP {0} request to {1}", c.Method, url);
 
-            // Create HTTP request message
-            using var request = new HttpRequestMessage(new(c.Method), url);
-
-            // Add headers
-            AddHeaders(dataContext, nodeContext, request, c.HeaderParameters);
-
-            // Add body for non-GET requests
+            // The body is identical for every attempt, so it is resolved and checked once, while
+            // the content itself is built per attempt because a sent message cannot be sent again.
+            // The check reads the body rather than building a throwaway content: a body the
+            // configured content type cannot carry stops the branch before any request goes out.
+            string? body = null;
             if (!string.Equals(c.Method, "GET", StringComparison.OrdinalIgnoreCase))
             {
-                var body = GetBody(dataContext, c);
-                if (!string.IsNullOrEmpty(body))
+                body = GetBody(dataContext, c);
+                if (!string.IsNullOrEmpty(body) && !IsBodyUsable(body, c, nodeContext))
                 {
-                    request.Content = CreateContent(body, c, nodeContext);
-                    if (request.Content == null)
-                    {
-                        return;
-                    }
+                    return;
                 }
             }
 
-            // Send the request
-            using var response = await httpClient.SendAsync(request);
-
-            if (!response.IsSuccessStatusCode)
+            if (c.Paging is { } paging)
             {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                nodeContext.Error("HTTP request failed. Status: {0}, Response: {1}",
-                    response.StatusCode, errorContent);
-                return;
-            }
-
-            if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
-            {
-                var responseBytes = await response.Content.ReadAsByteArrayAsync();
-                nodeContext.Debug("HTTP request successful. Status: {0}, {1} bytes stored base64-encoded",
-                    response.StatusCode, responseBytes.Length);
-                dataContext.Set(c.TargetPath, Convert.ToBase64String(responseBytes), c.DocumentMode,
-                    c.TargetValueKind, c.TargetValueWriteMode);
-                if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
-                {
-                    dataContext.Set(c.ContentLengthTargetPath, (long)responseBytes.Length);
-                }
+                await FetchAllPagesAsync(dataContext, nodeContext, c, paging, url, apiSettings, body);
             }
             else
             {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
-                    response.StatusCode, responseContent);
+                using var response = await HttpRequestSender.SendAsync(httpClient,
+                    () => BuildRequest(dataContext, nodeContext, c, url, apiSettings, body),
+                    c.Retry ?? new HttpRetryOptions(), c.TimeoutSeconds, _timeProvider, nodeContext);
 
-                JsonNode? responseJson = null;
-
-                if (!string.Equals(c.ResponseFormat, "Text", StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        // Only treat the response as JSON when it parses to an object. The
-                        // legacy JObject.Parse threw for scalars and arrays, falling through
-                        // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
-                        // (scalars, arrays, objects) -- without the JsonObject filter, a
-                        // body like "42" or "[1,2,3]" would be silently stored as a typed
-                        // JSON value, and a downstream Get<string>(targetPath) couldn't
-                        // recover the original wire text. Pre-migration parity:
-                        // objects-as-JSON, everything else as text.
-                        responseJson = JsonNode.Parse(responseContent) as JsonObject;
-                    }
-                    catch (Exception)
-                    {
-                        // this is fine, the response is not json
-                    }
-                }
-
-                // Store response in data context at the configured path
-                if (responseJson != null)
-                {
-                    dataContext.Set(c.TargetPath, responseJson, c.DocumentMode, c.TargetValueKind,
-                        c.TargetValueWriteMode);
-                }
-                else
-                {
-                    dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
-                        c.TargetValueWriteMode);
-                }
+                await StoreResponseAsync(dataContext, nodeContext, c, response);
             }
         }
-        catch (Exception ex)
+        catch (MeshAdapterPipelineExecutionException e) when (c.OnHttpError == HttpErrorHandling.LogAndStop)
         {
-            nodeContext.Error(ex, "Error making HTTP request");
+            // Before this node could throw, a failed request was reported with its status and its
+            // WHOLE response body. The exception message truncates that body so a thrown failure
+            // stays readable, so the untruncated text travels on the exception and is restored
+            // here: the default path must not quietly log less than it used to.
+            if (e.ResponseBody is not null)
+            {
+                nodeContext.Error(e, "Error making HTTP request. Response: {0}", e.ResponseBody);
+            }
+            else
+            {
+                nodeContext.Error(e, "Error making HTTP request");
+            }
+
+            return;
+        }
+        catch (Exception e) when (e is not MeshAdapterPipelineExecutionException)
+        {
+            // The net the node has always had, kept in every mode. Throw widens what fails the
+            // execution to HTTP outcomes and to nothing else: a malformed response body or a header
+            // the target refuses would otherwise start escaping from a node whose owner only
+            // enabled paging.
+            nodeContext.Error(e, "Error making HTTP request");
             return;
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Walks the pages of a paged endpoint and writes the elements of every page as one flat array
+    /// at the target path. The write happens once the walk is complete, so a run that fails part
+    /// way through leaves no half-filled array behind.
+    /// </summary>
+    private async Task FetchAllPagesAsync(IDataContext dataContext, INodeContext nodeContext,
+        MakeHttpRequestNodeConfiguration c, HttpPagingOptions paging, string url,
+        HttpApiSettings? apiSettings, string? body)
+    {
+        // A definition can present any of these as an explicit null, which overwrites the property
+        // initializer, so they are resolved here rather than read straight off the configuration.
+        var pageParameterName = paging.PageParameterName ?? HttpPagingOptions.DefaultPageParameterName;
+        var pageSizeParameterName =
+            paging.PageSizeParameterName ?? HttpPagingOptions.DefaultPageSizeParameterName;
+        var pageSize = paging.PageSize ?? HttpPagingOptions.DefaultPageSize;
+        var stopOnShortPage = paging.StopOnShortPage ?? HttpPagingOptions.DefaultStopOnShortPage;
+        var maxPages = paging.MaxPages ?? HttpPagingOptions.DefaultMaxPages;
+
+        var collected = new JsonArray();
+        var page = paging.FirstPageNumber ?? HttpPagingOptions.DefaultFirstPageNumber;
+
+        for (var walked = 0; walked < maxPages; walked++)
+        {
+            var pageUrl = AppendQuery(url,
+                $"{pageParameterName}={page}&{pageSizeParameterName}={pageSize}");
+
+            // Retries belong to the page that failed: a page that runs out of attempts ends the
+            // whole walk, and one that succeeds moves it on without refetching what came before.
+            using var pageResponse = await HttpRequestSender.SendAsync(httpClient,
+                () => BuildRequest(dataContext, nodeContext, c, pageUrl, apiSettings, body),
+                c.Retry ?? new HttpRetryOptions(), c.TimeoutSeconds, _timeProvider, nodeContext);
+
+            var pageBody = await pageResponse.Content.ReadAsStringAsync();
+            var items = ReadItems(pageBody, paging.ItemsPath)
+                        ?? throw MeshAdapterPipelineExecutionException.HttpPagingItemsPathUnusable(
+                            nodeContext, paging.ItemsPath, page);
+
+            nodeContext.Debug("Page {0} carried {1} element(s)", page, items.Count);
+
+            foreach (var item in items)
+            {
+                collected.Add(item?.DeepClone());
+            }
+
+            if (items.Count == 0 || (stopOnShortPage && items.Count < pageSize))
+            {
+                // Written as a JsonNode, the same overload a single response takes: the value is
+                // deep-cloned either way, and one call shape keeps consumers and tests honest.
+                dataContext.Set<JsonNode>(c.TargetPath, collected, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
+                return;
+            }
+
+            page++;
+        }
+
+        throw MeshAdapterPipelineExecutionException.HttpPagingCapReached(nodeContext, maxPages);
+    }
+
+    private static string AppendQuery(string url, string query)
+    {
+        return url.Contains('?') ? $"{url}&{query}" : $"{url}?{query}";
+    }
+
+    /// <summary>
+    /// Whether the URL's query already carries a parameter of that name. Compared per parameter
+    /// rather than by substring, so a "page" does not match a "pageSize" or a "rampage".
+    /// </summary>
+    private static bool QueryContainsParameter(string url, string parameterName)
+    {
+        var separator = url.IndexOf('?');
+        if (separator < 0)
+        {
+            return false;
+        }
+
+        return url[(separator + 1)..]
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(pair => pair.Split('=', 2)[0])
+            .Any(name => string.Equals(name, parameterName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Reads the array one page carries, or null when the response holds no array there - which is
+    /// a changed response shape rather than the end of the walk.
+    /// </summary>
+    private static JsonArray? ReadItems(string body, string itemsPath)
+    {
+        JsonNode? parsed;
+        try
+        {
+            parsed = JsonNode.Parse(body);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        // The path is the flat "$.name" form the pipeline uses for a response envelope; anything
+        // deeper belongs to a downstream transformation rather than to the page walk.
+        var name = itemsPath.StartsWith("$.", StringComparison.Ordinal) ? itemsPath[2..] : itemsPath;
+        return (parsed as JsonObject)?[name] as JsonArray;
+    }
+
+    /// <summary>
+    /// Builds one request message. Called once per attempt, because a message that has been sent
+    /// cannot be sent again, and neither can the content it carries.
+    /// </summary>
+    private static HttpRequestMessage BuildRequest(IDataContext dataContext, INodeContext nodeContext,
+        MakeHttpRequestNodeConfiguration c, string url, HttpApiSettings? apiSettings, string? body)
+    {
+        var request = new HttpRequestMessage(new(c.Method), url);
+
+        // Add headers
+        AddHeaders(dataContext, nodeContext, request, c.HeaderParameters);
+
+        if (apiSettings is not null)
+        {
+            // Added without validation on purpose. A key is an opaque token, and the strongly
+            // typed parsers reject shapes that are perfectly good keys - a base64 key with '='
+            // padding under the default Authorization header is rejected as a malformed scheme.
+            // Worse, the parser puts the offending value into its exception message, so a
+            // validating Add would turn the key into log content by way of the node's own net.
+            var authHeaderName = ResolveAuthHeaderName(c);
+            if (!request.Headers.TryAddWithoutValidation(authHeaderName,
+                    (c.AuthHeaderValuePrefix ?? "") + apiSettings.ApiKey))
+            {
+                throw MeshAdapterPipelineExecutionException.AuthHeaderNotAccepted(nodeContext, authHeaderName);
+            }
+        }
+
+        if (!string.IsNullOrEmpty(body))
+        {
+            request.Content = CreateContent(body, c, nodeContext);
+        }
+
+        return request;
+    }
+
+    /// <summary>
+    /// Stores a successful response at the configured target path, in the configured format.
+    /// </summary>
+    private static async Task StoreResponseAsync(IDataContext dataContext, INodeContext nodeContext,
+        MakeHttpRequestNodeConfiguration c, HttpResponseMessage response)
+    {
+        if (string.Equals(c.ResponseFormat, "Base64", StringComparison.OrdinalIgnoreCase))
+        {
+            var responseBytes = await response.Content.ReadAsByteArrayAsync();
+            nodeContext.Debug("HTTP request successful. Status: {0}, {1} bytes stored base64-encoded",
+                response.StatusCode, responseBytes.Length);
+            dataContext.Set(c.TargetPath, Convert.ToBase64String(responseBytes), c.DocumentMode,
+                c.TargetValueKind, c.TargetValueWriteMode);
+            if (!string.IsNullOrWhiteSpace(c.ContentLengthTargetPath))
+            {
+                dataContext.Set(c.ContentLengthTargetPath, (long)responseBytes.Length);
+            }
+        }
+        else
+        {
+            var responseContent = await response.Content.ReadAsStringAsync();
+            nodeContext.Debug("HTTP request successful. Status: {0}, Response: {1}",
+                response.StatusCode, responseContent);
+
+            JsonNode? responseJson = null;
+
+            if (!string.Equals(c.ResponseFormat, "Text", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    // Only treat the response as JSON when it parses to an object. The
+                    // legacy JObject.Parse threw for scalars and arrays, falling through
+                    // to the text branch. STJ's JsonNode.Parse accepts all JSON forms
+                    // (scalars, arrays, objects) -- without the JsonObject filter, a
+                    // body like "42" or "[1,2,3]" would be silently stored as a typed
+                    // JSON value, and a downstream Get<string>(targetPath) couldn't
+                    // recover the original wire text. Pre-migration parity:
+                    // objects-as-JSON, everything else as text.
+                    responseJson = JsonNode.Parse(responseContent) as JsonObject;
+                }
+                catch (Exception)
+                {
+                    // this is fine, the response is not json
+                }
+            }
+
+            // Store response in data context at the configured path
+            if (responseJson != null)
+            {
+                dataContext.Set(c.TargetPath, responseJson, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
+            }
+            else
+            {
+                dataContext.Set(c.TargetPath, responseContent, c.DocumentMode, c.TargetValueKind,
+                    c.TargetValueWriteMode);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the URL names its own scheme, and with it a target of its own.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="Uri.TryCreate(string, UriKind, out Uri)" /> with
+    /// <see cref="UriKind.Absolute" />: on Unix a leading slash makes that succeed with an implicit
+    /// file scheme, so "/article" - the ordinary way to write a path, and the way every source
+    /// pipeline writes one - would count as absolute on a Linux agent and not on a Windows
+    /// developer machine. The question the guard actually asks is whether a scheme is spelled out,
+    /// and that has the same answer everywhere.
+    /// </remarks>
+    internal static bool HasExplicitScheme(string url)
+    {
+        return SchemeQualified.IsMatch(url);
+    }
+
+    /// <summary>
+    /// Joins a configured base URL and a relative path with exactly one separator, whatever
+    /// combination of trailing and leading slashes the two carry.
+    /// </summary>
+    internal static string CombineUrl(string baseUrl, string relativeUrl)
+    {
+        return $"{baseUrl.TrimEnd('/')}/{relativeUrl.TrimStart('/')}";
+    }
+
+    /// <summary>
+    /// Rejects a timeout the node cannot apply as configured. Only null means "unset": a zero or a
+    /// negative would otherwise pass silently as unset, and a value beyond what the timer can
+    /// represent would throw from inside the runtime block, where it is answered with a log entry
+    /// even in <see cref="HttpErrorHandling.Throw" /> mode.
+    /// </summary>
+    private static void ValidateTimeout(MakeHttpRequestNodeConfiguration config, INodeContext nodeContext)
+    {
+        if (config.TimeoutSeconds is not { } seconds)
+        {
+            return;
+        }
+
+        if (seconds <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"timeoutSeconds is {seconds}. Leave it out to keep the HTTP client's own timeout; " +
+                "a value has to be a positive number of seconds.");
+        }
+
+        if (seconds > MaxTimeoutSeconds)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"timeoutSeconds is {seconds}, which is beyond the {MaxTimeoutSeconds}s the " +
+                "underlying timers accept.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects paging numbers that describe a walk nobody can run. Each of these is reachable only
+    /// from a definition, and each would otherwise surface inside the runtime block: a page size of
+    /// zero asks for nothing and disables the short-page stop, a page limit of zero ends the walk
+    /// before the first request with a limit error, and a negative first page is not a page.
+    /// </summary>
+    private static void ValidatePagingNumbers(HttpPagingOptions paging, INodeContext nodeContext)
+    {
+        var pageSize = paging.PageSize ?? HttpPagingOptions.DefaultPageSize;
+        if (pageSize <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"paging.pageSize is {pageSize}. A page has to hold at least one element.");
+        }
+
+        var maxPages = paging.MaxPages ?? HttpPagingOptions.DefaultMaxPages;
+        if (maxPages <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"paging.maxPages is {maxPages}. The walk has to be allowed at least one page.");
+        }
+
+        var firstPageNumber = paging.FirstPageNumber ?? HttpPagingOptions.DefaultFirstPageNumber;
+        if (firstPageNumber < 0)
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidHttpNodeOption(nodeContext,
+                $"paging.firstPageNumber is {firstPageNumber}. Counting starts at zero or above.");
+        }
+    }
+
+    /// <summary>
+    /// The header the configured key travels in. Resolved rather than read, because a definition
+    /// can carry an explicit null over the property initializer.
+    /// </summary>
+    private static string ResolveAuthHeaderName(MakeHttpRequestNodeConfiguration config)
+    {
+        return config.AuthHeaderName ?? MakeHttpRequestNodeConfiguration.DefaultAuthHeaderName;
     }
 
     private static bool ValidateConfiguration(MakeHttpRequestNodeConfiguration config, INodeContext nodeContext)
@@ -221,26 +592,56 @@ public class MakeHttpRequestNode(NodeDelegate next, HttpClient httpClient) : IPi
         return true;
     }
 
+    private const string FormBodyRequiresJsonObject =
+        "Body content type application/x-www-form-urlencoded requires a JSON object body";
+
+    private static bool IsFormContent(MakeHttpRequestNodeConfiguration config)
+    {
+        return string.Equals(config.BodyContentType, "application/x-www-form-urlencoded",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The body a form-urlencoded request needs: a JSON object whose properties become the fields.
+    /// Null means the body is not one, which is the only way building the content can fail.
+    /// </summary>
+    private static JsonObject? TryParseFormBody(string body)
+    {
+        try
+        {
+            return JsonNode.Parse(body) as JsonObject;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the configured content type can carry this body. Reports the same message the
+    /// content builder used to, so an unusable body still stops the branch with the same text.
+    /// </summary>
+    private static bool IsBodyUsable(string body, MakeHttpRequestNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (!IsFormContent(config) || TryParseFormBody(body) is not null)
+        {
+            return true;
+        }
+
+        nodeContext.Error(FormBodyRequiresJsonObject);
+        return false;
+    }
+
     private static HttpContent? CreateContent(string body, MakeHttpRequestNodeConfiguration config,
         INodeContext nodeContext)
     {
-        if (string.Equals(config.BodyContentType, "application/x-www-form-urlencoded",
-                StringComparison.OrdinalIgnoreCase))
+        if (IsFormContent(config))
         {
-            // The body must be a JSON object; its properties become the form fields.
-            JsonObject? bodyObject;
-            try
-            {
-                bodyObject = JsonNode.Parse(body) as JsonObject;
-            }
-            catch (Exception)
-            {
-                bodyObject = null;
-            }
-
+            var bodyObject = TryParseFormBody(body);
             if (bodyObject == null)
             {
-                nodeContext.Error("Body content type application/x-www-form-urlencoded requires a JSON object body");
+                nodeContext.Error(FormBodyRequiresJsonObject);
                 return null;
             }
 

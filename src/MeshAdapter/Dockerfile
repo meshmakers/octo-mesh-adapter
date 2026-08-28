@@ -74,7 +74,11 @@ RUN case "${TARGETARCH:-amd64}" in \
       arm64) RID=linux-arm64;; \
       *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1;; \
     esac; \
-    dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -r "$RID" --self-contained false -p:PublishReadyToRun=true -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} ${OCTO_VERSION:+-p:OctoVersion=${OCTO_VERSION}} ${OCTO_CORE_LIB_VERSION:+-p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION}} ${OCTO_COMM_VERSION:+-p:OctoCommVersion=${OCTO_COMM_VERSION}} -o /app/publish
+    dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -r "$RID" --self-contained false -p:PublishReadyToRun=true -p:GeneratePipelineSchema=false -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} ${OCTO_VERSION:+-p:OctoVersion=${OCTO_VERSION}} ${OCTO_CORE_LIB_VERSION:+-p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION}} ${OCTO_COMM_VERSION:+-p:OctoCommVersion=${OCTO_COMM_VERSION}} -o /app/publish
+# GeneratePipelineSchema=false above: the schema target execs the freshly built assembly
+# (AfterTargets=Build), which for the cross-arch RID publish is a foreign-arch binary on the
+# build host (exit 134). The schema is a build artifact only (written to $(TargetDir), not the
+# publish output) and already ran in the portable `build` stage.
 
 FROM base AS final
 WORKDIR /app

@@ -82,6 +82,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()
+            .RegisterNode<RenderDelimitedTextNode>()
             .RegisterNode<GenerateAndStoreReportNode>()
             .RegisterNode<PdfOcrExtractionNode>()
             .RegisterNode<AnthropicAiQueryNode>()

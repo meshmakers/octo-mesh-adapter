@@ -69,6 +69,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<CreateAssociationUpdateNode>()
             .RegisterNode<GetNotificationTemplateNode>()
             .RegisterNode<PlaceholderReplaceNode>()
+            .RegisterNode<ResolveNotificationPlaceholdersNode>()
             .RegisterNode<EMailSenderNode>()
             .RegisterNode<EMailSenderNode2>()
             .RegisterNode<SftpUploadNode>()

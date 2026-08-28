@@ -455,6 +455,20 @@ Supplements entities with additional data from MongoDB.
 
 Retrieves notification templates for email and message generation.
 
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `NotificationTemplateName` | string | Well-known name of the template (literal) |
+| `NotificationTemplateNamePath` | string | Path to the well-known name, when it comes from the data |
+| `TargetPath` | string | Where the body template is written |
+| `SubjectTargetPath` | string | Where the subject template is written |
+| `RenderingTypeTargetPath` | string | Optional. Where the template's `RenderingType` (`Plain` / `Html`) is written |
+
+`RenderingTypeTargetPath` exists so a sender can honour what the template says it is. The node
+used to forward subject and body only, which meant the author's choice in the template editor
+reached nobody — pair it with `SendEMail@2`'s `BodyFormatPath`. A pipeline that does not ask for
+it is unaffected. The node also warns when more than one template carries the requested
+well-known name. It still takes the first - only the silence is gone.
+
 ---
 
 ### Transform Nodes
@@ -617,6 +631,34 @@ Creates and persists reports from pipeline data.
 
 Creates file system-based update information for file-based entity tracking.
 
+#### ResolveNotificationPlaceholdersNode (`ResolveNotificationPlaceholders@1`)
+
+Substitutes `${...}` placeholders in a notification template's subject and body from the
+entities a send path supplies, so every send path resolves the same token the same way.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `SubjectPath` / `BodyPath` | string | Where the unresolved subject and body are read |
+| `SubjectTargetPath` / `BodyTargetPath` | string | Where the resolved text is written |
+| `CustomerPath` | string | The customer entity, or a billing document's own contact snapshot |
+| `CommunityConfigPath` | string | The community configuration entity |
+| `BillingDocumentPath` | string | The billing document; omitted by a bulk send, which has none |
+| `RenderingTypePath` | string | The template's rendering type; decides whether an inline image can be produced at all |
+| `LogoContentId` | string | Content id `${community.logo}` refers to (default `community-footer`) |
+
+**The catalog is the contract.** Which tokens exist, which entity each reads from and how the
+raw value becomes text all live in `NotificationPlaceholderCatalog.cs`; a pipeline declares only
+which of the three sources it can supply. Adding a token is a catalog change, not a pipeline
+change.
+
+**Missing values are two different things.** A source that is present with an empty attribute
+substitutes nothing and warns — a private customer has no company name, which is data, not a
+fault. A source that was never supplied fails the node: the resolver cannot tell an absent
+entity from an empty value, and blanking it silently is how a billing token on a bulk path, or a
+customer token for an address matching no customer, reaches a recipient as a gap. `ForEach@1`
+decides the blast radius through `ContinueOnError`; the three EnergyCommunity send pipelines
+leave it unset, so the first refusal aborts the batch.
+
 ---
 
 ### Load Nodes
@@ -682,6 +724,49 @@ Sends emails with optional Markdown-to-HTML conversion.
   backoff is awaited outside the concurrency semaphore. Permanent recipient rejections
   (`SmtpFailedRecipientException`) are not retried. This prevents a single dropped connection
   from failing an entire `ForEach` batch of e-mails when only one message could not be delivered.
+
+#### EMailSenderNode2 (`SendEMail@2`)
+
+Sends an e-mail with any number of attachments, each of which may be linked into the body.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference (literal only, as in v1) |
+| `ToPath` / `CcPath` / `BccPath` | string | Recipient paths |
+| `CcAddresses` / `BccAddresses` | string[] | Literal recipients, used INSTEAD of the paths when non-empty |
+| `SubjectPath` | string | Email subject |
+| `Path` | string | Email body |
+| `BodyFormat` | enum | `Markdown` (default, v1 behaviour), `PlainText`, `Html` |
+| `BodyFormatPath` | string | Path to a template's `RenderingType`; wins over `BodyFormat` |
+| `Attachments` | list | See below |
+| `ReplyToPath` / `ReplyToAddress` | string | Reply-To |
+
+Each attachment entry takes `BinaryId` or `BinaryIdPath`, a required `FileName`, an optional
+`ContentType` (default `application/octet-stream`), `FileNamePath` / `ContentTypePath` to read
+both from the stored binary instead, `ContentId` to make it addressable from the body as
+`cid:<id>`, and `Optional` to send the mail anyway when the binary is absent.
+
+**Why v2 exists**: v1 carries exactly one attachment described by four sibling properties and
+offers no way to reference it from the body, so a billing dispatch spends its only slot on the
+invoice PDF and cannot also show the community logo (AB#2570). An image pointed at by URL is
+refused by the asset service without a bearer token the mail client does not have, and a `data:`
+URI is stripped by Outlook and Gmail — a `cid:` reference backed by a `LinkedResource` is the
+only shape that renders.
+
+**Behaviour worth knowing**:
+- An inline entry is fetched **only when the rendered body addresses its content id**, so a
+  pipeline may attach a logo unconditionally without every mail paying for it. The body is
+  rendered before attachments are resolved for this reason.
+- An optional inline entry that is missing has its `<img>` stripped from the HTML, so the
+  recipient sees nothing rather than a broken image, and a warning is logged.
+- `FileName` / `FileNamePath` apply to **file** attachments only. A linked resource carries no
+  `Content-Disposition` and is identified by its content id alone.
+- A `text/plain` alternative is emitted beside the HTML (v1 sent HTML alone), with `cid:` image
+  markup removed — no text-only reader can resolve it.
+- The Markdig pipeline deliberately drops `GenericAttributesExtension`, which would read a
+  trailing `{...}` as HTML attributes and turn an unfilled `${customer.iban}` into a bare `$`.
+- Retry, backoff and the concurrency semaphore behave as in v1; the retry additionally rewinds
+  linked-resource streams, not just attachment streams.
 
 #### SftpUploadNode
 

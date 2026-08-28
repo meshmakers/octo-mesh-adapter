@@ -148,10 +148,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IContextCreatorService, MeshContextCreatorService>();
         services.AddScoped<IWellKnownNameLoader, WellKnownNameLoader>();
 
-        // AB#4920: eager CK-model warm-up after startup so the first pipeline execution after a
-        // wake from 0 replicas (on-demand lifecycle, AB#4914) does not pay the model load.
-        // Background-only, opt-out via AdapterOptions.EagerCkModelLoad.
-        services.AddHostedService<CkModelWarmupService>();
+        // AB#4920: eager CK-model warm-up so the first pipeline execution after a wake from
+        // 0 replicas (on-demand lifecycle, AB#4914) does not pay the model load. Triggered by
+        // MeshAdapterService.StartupAsync after the configuration was applied — deliberately
+        // not a hosted service, because at process start the system context is not configured
+        // yet. Background-only, opt-out via AdapterOptions.EagerCkModelLoad.
+        services.AddSingleton<ICkModelWarmupService, CkModelWarmupService>();
 
         // We want to ensure that all mesh adapters are using the same security configuration.
         // Whether the scheme is actually usable cannot be decided here - MeshAdapterConfiguration

@@ -3,6 +3,7 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 
 namespace Meshmakers.Octo.MeshAdapter.Services;
 
@@ -10,7 +11,8 @@ internal class MeshAdapterService(
     ILogger<MeshAdapterService> logger,
     IPipelineRegistryService pipelineRegistryService,
     ICkCacheService ckCacheService,
-    IEventHubControl eventHubControl) : IAdapterService
+    IEventHubControl eventHubControl,
+    ICkModelWarmupService ckModelWarmupService) : IAdapterService
 {
     public async Task<bool> StartupAsync(AdapterStartup adapterStartup,
         List<DeploymentUpdateErrorMessageDto> errorMessages,
@@ -41,6 +43,12 @@ internal class MeshAdapterService(
                 logger.LogInformation("Skipping event hub start for tenant: {TenantId} (configuration update)",
                     adapterStartup.TenantId);
             }
+
+            // AB#4920: only now is the adapter configured (Mongo settings arrive with this
+            // startup call), so this is the earliest point an eager CK-model warm-up can
+            // succeed. Fire-and-forget; also covers configuration updates, which unload the
+            // cache above and would otherwise pay the model load on the next execution.
+            ckModelWarmupService.TriggerWarmup(adapterStartup.TenantId);
 
             return success;
         }

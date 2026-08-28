@@ -70,6 +70,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetNotificationTemplateNode>()
             .RegisterNode<PlaceholderReplaceNode>()
             .RegisterNode<EMailSenderNode>()
+            .RegisterNode<EMailSenderNode2>()
             .RegisterNode<SftpUploadNode>()
             .RegisterNode<ToDiscordNode>()
             .RegisterNode<SignalSenderNode>()

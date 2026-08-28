@@ -32,15 +32,32 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync<RtNotificationTemplate>(session, queryOptions);
         await session.CommitTransactionAsync();
         
-        var notificationTemplate = r.Items.FirstOrDefault();
+        var matches = r.Items.ToArray();
+        var notificationTemplate = matches.FirstOrDefault();
         if (notificationTemplate == null)
         {
             throw MeshAdapterPipelineExecutionException.NotificationTemplateNotFound(nodeContext, notificationTemplateName);
         }
 
+        // A well-known name is meant to be unique. Taking the first match keeps this node's
+        // behaviour unchanged, but silently picking one of several is how a tenant ends up
+        // wondering why an edited template made no difference - so say it happened.
+        if (matches.Length > 1)
+        {
+            nodeContext.Warning(
+                "{0} notification templates carry the well-known name '{1}'; the first one was used",
+                matches.Length, notificationTemplateName);
+        }
+
         dataContext.Set(c.SubjectTargetPath, notificationTemplate.SubjectTemplate, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         dataContext.Set(c.TargetPath, notificationTemplate.BodyTemplate, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-        
+
+        if (!string.IsNullOrWhiteSpace(c.RenderingTypeTargetPath))
+        {
+            dataContext.Set(c.RenderingTypeTargetPath, notificationTemplate.RenderingType.ToString(),
+                c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+        }
+
         await next(dataContext, nodeContext);
     }
 

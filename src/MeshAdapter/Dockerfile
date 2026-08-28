@@ -64,7 +64,17 @@ RUN dotnet build "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivat
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} ${OCTO_VERSION:+-p:OctoVersion=${OCTO_VERSION}} ${OCTO_CORE_LIB_VERSION:+-p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION}} ${OCTO_COMM_VERSION:+-p:OctoCommVersion=${OCTO_COMM_VERSION}} -o /app/publish
+ARG TARGETARCH
+# AB#4920: ReadyToRun publish — AOT-precompiles the IL so the adapter's cold start (dominant
+# cost of a wake from 0 replicas, on-demand lifecycle AB#4914) drops from ~13s JIT-bound boot
+# to a few seconds. R2R needs a runtime identifier; crossgen2 cross-compiles on the build
+# platform, so multi-arch builds stay emulation-free. framework-dependent (no self-contained).
+RUN case "${TARGETARCH:-amd64}" in \
+      amd64) RID=linux-x64;; \
+      arm64) RID=linux-arm64;; \
+      *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1;; \
+    esac; \
+    dotnet publish "MeshAdapter.csproj" -c $BUILD_CONFIGURATION -r "$RID" --self-contained false -p:PublishReadyToRun=true -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} ${OCTO_VERSION:+-p:OctoVersion=${OCTO_VERSION}} ${OCTO_CORE_LIB_VERSION:+-p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION}} ${OCTO_COMM_VERSION:+-p:OctoCommVersion=${OCTO_COMM_VERSION}} -o /app/publish
 
 FROM base AS final
 WORKDIR /app

@@ -38,8 +38,29 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
         var recordIndex = 0;
         foreach (var record in dataContext.SelectMatches($"{c.Path}[*]"))
         {
+            // A scalar or nested array is still an element of an array, so the source check above
+            // lets it through, but no value path resolves against one: every read column would
+            // render empty while the constants print, producing structurally valid rows with no
+            // content in them. Empty FIELDS inside an object record stay legal - reserved columns
+            // are what most of a fixed layout consists of.
+            if (record.GetKind("$") != DataKind.Object)
+            {
+                throw MeshAdapterPipelineExecutionException.DelimitedRecordNotAnObject(
+                    nodeContext, recordIndex);
+            }
+
             rows.Add(RenderRow(record, columns, c, nodeContext, recordIndex));
             recordIndex++;
+        }
+
+        // The source says the array has elements but the iteration produced none. That should be
+        // unreachable; if it ever happens the node would otherwise write an empty document and
+        // report success, which is indistinguishable from a legitimately empty batch and loses the
+        // data silently. Cheap to check and it can never fire on a healthy read.
+        if (rows.Count == 0 && dataContext.Length(c.Path) > 0)
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedSourceDisagrees(
+                nodeContext, c.Path, dataContext.Length(c.Path));
         }
 
         // The separator is chosen here, never taken from the operating system: the same definition
@@ -184,7 +205,12 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
             throw MeshAdapterPipelineExecutionException.DelimitedColumnsNotSet(nodeContext);
         }
 
-        if (string.IsNullOrEmpty(c.Delimiter) || ContainsLineBreak(c.Delimiter))
+        // Exactly one character. A longer delimiter cannot be held to the guarantee this node
+        // makes: cleaning a value can compose the delimiter out of the characters it leaves behind,
+        // and the per-value check cannot see one that forms across the join between two columns.
+        // The counterpart reader splits on the first character only, so a longer one would not
+        // round-trip either.
+        if (string.IsNullOrEmpty(c.Delimiter) || c.Delimiter.Length != 1 || ContainsLineBreak(c.Delimiter))
         {
             throw MeshAdapterPipelineExecutionException.DelimitedDelimiterUnusable(nodeContext, c.Delimiter);
         }

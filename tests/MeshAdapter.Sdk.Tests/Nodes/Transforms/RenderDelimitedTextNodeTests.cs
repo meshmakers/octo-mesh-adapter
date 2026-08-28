@@ -255,6 +255,71 @@ public class RenderDelimitedTextNodeTests
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
     }
 
+    /// <summary>
+    /// A multi-character delimiter cannot be held to the guarantee this node makes. Cleaning can
+    /// SYNTHESISE it (removing "ab" from "aabb" leaves "ab"), and the Fail check looks at one value
+    /// at a time, so a delimiter composed across the join boundary is invisible to it. The
+    /// counterpart reader splits on the first character only, so a multi-character delimiter would
+    /// not round-trip either. One character removes the whole class.
+    /// </summary>
+    [Theory]
+    [InlineData("||")]
+    [InlineData("ab")]
+    [InlineData(";;")]
+    public async Task ProcessObjectAsync_MultiCharacterDelimiter_IsRefused(string delimiter)
+    {
+        var config = Config(new DelimitedColumn { Value = "A" });
+        config.Delimiter = delimiter;
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[]}"""));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("delimiter", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An array of scalars is still an array, so the source check passes, but no value path can
+    /// resolve against a scalar record: every read column renders empty while the constants print,
+    /// producing structurally valid and entirely contentless rows. That is the "silently empty"
+    /// outcome this node exists to prevent, so it fails naming the record.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"rows":["a","b"]}""")]
+    [InlineData("""{"rows":[1,2]}""")]
+    [InlineData("""{"rows":[["a"],["b"]]}""")]
+    [InlineData("""{"rows":[null]}""")]
+    public async Task ProcessObjectAsync_RecordIsNotAnObject_Throws(string json)
+    {
+        var config = Config(new DelimitedColumn { Value = "A" },
+            new DelimitedColumn { ValuePath = "$.id" });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse(json));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("record 0", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// If the source ever reports records that the iteration does not yield, the node must not
+    /// answer with an empty document and a green run - that is indistinguishable from a
+    /// legitimately empty batch and would lose the records without a trace. The divergence is
+    /// simulated here rather than provoked, because a healthy context never produces it.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_SourceReportsRecordsButIterationYieldsNone_Throws()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.id" });
+        var (dataContext, nodeContext, next) =
+            PrepareTest(config, JsonNode.Parse("""{"rows":[{"id":"1"},{"id":"2"}]}"""));
+
+        A.CallTo(() => dataContext.SelectMatches("$.rows[*]")).Returns([]);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("2 record(s)", ex.Message, StringComparison.Ordinal);
+        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+    }
+
     /// <summary>A constant is checked too - a layout can misconfigure one just as easily.</summary>
     [Fact]
     public async Task ProcessObjectAsync_ConstantCarriesTheDelimiter_FailsByDefault()

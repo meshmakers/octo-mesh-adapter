@@ -49,7 +49,8 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     public static Exception DelimitedDelimiterUnusable(INodeContext nodeContext, string? delimiter)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: delimiter '{delimiter}' is empty or contains a line break.");
+            $"[{nodeContext.NodePath}]: delimiter '{delimiter}' must be exactly one character " +
+            "and must not be a line break.");
     }
 
     public static Exception DelimitedReplacementUnusable(INodeContext nodeContext, string replacement)
@@ -87,6 +88,21 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: '{property}' has the undefined value {value}.");
+    }
+
+    public static Exception DelimitedRecordNotAnObject(INodeContext nodeContext, int recordIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex} is not an object, so no column value " +
+            "can be read from it.");
+    }
+
+    public static Exception DelimitedSourceDisagrees(INodeContext nodeContext, string path,
+        int length)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' reports {length} record(s) but none could be " +
+            "iterated; refusing to write an empty document.");
     }
 
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)

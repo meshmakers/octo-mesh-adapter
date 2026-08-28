@@ -4,6 +4,11 @@
 
 replicaCount: 1
 
+# Pod termination grace period in seconds. The adapter SDK's graceful shutdown
+# (draining running pipeline executions) may need up to a few minutes; the k8s
+# default of 30s would SIGKILL mid-drain (AB#4917, on-demand lifecycle).
+terminationGracePeriodSeconds: 180
+
 # Tenant id the adapter is executing
 tenantId: ""
 

@@ -737,14 +737,14 @@ column per configured entry.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `Path` | string | JSONPath of the source **array**; each element is one record |
+| `Path` | string | JSONPath of the source **array**; each element must be an object |
 | `TargetPath` | string | Receives the rendered document as a single string |
-| `Delimiter` | string | Text between columns (default `\|`); must be non-empty and free of CR/LF |
-| `LineEnding` | enum | `Lf` (default) or `CrLf` - never taken from the operating system |
-| `TrailingNewLine` | bool | Append a final record separator (default `true`) |
-| `OnDelimiterInValue` | enum | `Fail` (default), `Replace` or `Strip` |
+| `Delimiter` | string | Text between columns (default `\|`); exactly one character, never a line break |
+| `LineEnding` | enum? | `Lf` when unset, or `CrLf` - never taken from the operating system |
+| `TrailingNewLine` | bool? | Append a final record separator; true when unset |
+| `OnDelimiterInValue` | enum? | `Fail` when unset, or `Replace` / `Strip` |
 | `Replacement` | string | Substitute used by `Replace`; defaults to empty, which equals `Strip` |
-| `Columns` | ICollection | Output columns in order: `Value` (constant), `ValuePath` (relative JSONPath), `Required` |
+| `Columns` | ICollection | Output columns in order: `Value` (constant), `ValuePath` (relative, single-valued JSONPath), `Required` |
 
 A column entry with neither `Value` nor `ValuePath` renders **empty** - that is how a fixed
 layout expresses a reserved field, and such layouts are mostly reserved fields. Setting both is a
@@ -765,6 +765,9 @@ as indented multi-line JSON and silently destroy the record structure.
 > itself contains the delimiter or a line break is rejected up front, since it would only move
 > the problem.
 
+> **A record that is not an object is refused**, because every read column would render empty
+> while the constants print - structurally valid rows with no content in them.
+
 > **An empty input array writes an empty string - it never skips the write.** This matters when
 > a downstream guard decides whether to deliver: a typical `If@1` compares the rendered text
 > against `""`, and with the path absent that comparison reads `null`, making "not empty" TRUE
@@ -773,7 +776,7 @@ as indented multi-line JSON and silently destroy the record structure.
 
 **Configuration errors fail before any work**: an empty or null `Columns` list, a null entry in
 it, a column setting both `Value` and `ValuePath`, an unusable `Delimiter` or `Replacement`, and
-a blank `Path`/`TargetPath`. Nothing is written and the chain does not continue in those cases.
+a blank `Path`/`TargetPath`, a `Delimiter` that is not exactly one character, an undefined `LineEnding`/`OnDelimiterInValue`, and any `Path`/`ValuePath` that does not parse or that selects a set. Nothing is written and the chain does not continue in those cases.
 
 #### QueryResultToMarkdownTableNode
 

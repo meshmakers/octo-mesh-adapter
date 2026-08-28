@@ -244,10 +244,20 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_RequiredColumnWithValue_Renders` | `Required` satisfied |
 | `ProcessObjectAsync_ColumnWithoutRequired_KeepsAnEmptyValue` | Optional column stays empty |
 | `ProcessObjectAsync_FixedThirtyFourColumnLayout_ProducesTheExactDocument` | Byte-exact 34-column layout, mutation-proven |
+| `ProcessObjectAsync_BlankPathOrTargetPath_ThrowsAndWritesNothing` | Blank path or target path (an empty target path would write the document root) |
+| `ProcessObjectAsync_MultiCharacterDelimiter_IsRefused` | Delimiter must be exactly one character |
+| `ProcessObjectAsync_RecordIsNotAnObject_Throws` | Scalar, nested-array and null records |
+| `ProcessObjectAsync_SourceReportsRecordsButIterationYieldsNone_Throws` | Source and iteration disagree |
+| `ProcessObjectAsync_MalformedValuePath_IsAConfigurationError` | Unparsable value path, named by column |
+| `ProcessObjectAsync_MalformedSourcePath_IsAConfigurationError` | Unparsable source path |
+| `ProcessObjectAsync_MultiValuedValuePath_IsRefused` | Wildcard, filter and recursive descent |
+| `ProcessObjectAsync_SimpleValuePath_IsAccepted` | Dotted and indexed paths stay legal |
+| `ProcessObjectAsync_StructureBreakingValueIsHuge_MessageStaysBounded` | Offending value is sampled, not quoted whole |
 
 `RenderDelimitedTextConfigurationDeserializationTests` covers what a pipeline definition can
 produce and a C# object initializer cannot: documented defaults when options are omitted, and
-explicit `null` for `delimiter`, `columns` and a column `value`. It also pins that a failed
+explicit `null` for `delimiter`, `columns`, a column `value`, `trailingNewLine`, `lineEnding`
+and `onDelimiterInValue`, plus undefined enum values for the latter two. It also pins that a failed
 preflight writes nothing and does not continue the chain.
 
 #### MakeHttpRequestNode

@@ -4,6 +4,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -222,6 +223,8 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
             throw MeshAdapterPipelineExecutionException.DelimitedReplacementUnusable(nodeContext, replacement);
         }
 
+        ValidateSinglePath(c.Path, "path", nodeContext);
+
         var index = 0;
         foreach (var column in c.Columns)
         {
@@ -235,7 +238,41 @@ public class RenderDelimitedTextNode(NodeDelegate next) : IPipelineNode
                 throw MeshAdapterPipelineExecutionException.DelimitedColumnAmbiguous(nodeContext, index);
             }
 
+            if (!string.IsNullOrEmpty(column.ValuePath))
+            {
+                ValidateSinglePath(JsonNodePath.NormalizePathOrRelative(column.ValuePath),
+                    $"column {index}", nodeContext);
+            }
+
             index++;
+        }
+    }
+
+    /// <summary>
+    /// Parsed once here rather than per record: a malformed path would otherwise surface from deep
+    /// inside the walk as a raw parser failure naming neither the node nor the column. Paths that
+    /// select a SET are refused rather than resolved to whichever member happens to come first -
+    /// a column holds one value, and the same multi-valued path can resolve against one backing
+    /// store and render empty against another, which is a difference nobody would see in a file.
+    /// </summary>
+    private static void ValidateSinglePath(string path, string location, INodeContext nodeContext)
+    {
+        JsonPathExpression expression;
+        try
+        {
+            expression = JsonPathParser.Parse(path);
+        }
+        catch (Exception ex) when (ex is not PipelineExecutionException)
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedPathUnparsable(
+                nodeContext, location, path, ex);
+        }
+
+        if (expression.Segments.Any(s =>
+                s is WildcardSegment or RecursiveDescentSegment or FilterSegment))
+        {
+            throw MeshAdapterPipelineExecutionException.DelimitedPathSelectsASet(
+                nodeContext, location, path);
         }
     }
 }

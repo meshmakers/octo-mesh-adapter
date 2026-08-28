@@ -65,7 +65,8 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: the value " +
-            $"'{value}' contains the delimiter or a line break and would shift every column after it.");
+            $"'{Truncate(value)}' contains the delimiter or a line break and would shift every " +
+            "column after it.");
     }
 
     public static Exception DelimitedRequiredColumnEmpty(INodeContext nodeContext, int recordIndex,
@@ -104,6 +105,28 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: '{path}' reports {length} record(s) but none could be " +
             "iterated; refusing to write an empty document.");
     }
+
+    public static Exception DelimitedPathUnparsable(INodeContext nodeContext, string location,
+        string path, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {location}: '{path}' is not a valid JSONPath.", inner);
+    }
+
+    public static Exception DelimitedPathSelectsASet(INodeContext nodeContext, string location,
+        string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {location}: '{path}' selects a set of values; a column " +
+            "holds exactly one, so wildcard, filter and recursive descent are not accepted.");
+    }
+
+    /// <summary>
+    /// Keeps a sample of an offending value out of an unbounded message: it travels into logs and
+    /// execution results, and the values this is used for are exactly the ones that can be large.
+    /// </summary>
+    private static string Truncate(string value) =>
+        value.Length <= 200 ? value : value[..200] + "...";
 
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {

@@ -142,20 +142,15 @@ public class RenderDelimitedTextNodeTests
         var config = Config(new DelimitedColumn { ValuePath = "$.id" });
         var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[]}"""));
 
-        var writes = 0;
-        string? written = null;
-        A.CallTo(() => dataContext.Set(config.TargetPath, A<string>._, A<DocumentModes>._,
-                A<ValueKinds>._, A<TargetValueWriteModes>._))
-            .Invokes((string _, string? v, DocumentModes _, ValueKinds _, TargetValueWriteModes _) =>
-            {
-                writes++;
-                written = v;
-            });
+        var written = CaptureWrite(dataContext, config);
 
         await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        Assert.Equal(1, writes);
-        Assert.Equal(string.Empty, written);
+        // Exactly one write, and it carries the empty document - not "no write happened".
+        A.CallTo(() => dataContext.Set(config.TargetPath, A<string>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .MustHaveHappenedOnceExactly();
+        Assert.Equal(string.Empty, written());
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 
@@ -320,6 +315,99 @@ public class RenderDelimitedTextNodeTests
         A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
     }
 
+    /// <summary>
+    /// A malformed path escapes as a raw path-parser failure that names neither the node nor the
+    /// column, so it is parsed once up front instead - the sibling that formats from paths wraps
+    /// the same failure the same way.
+    /// </summary>
+    [Theory]
+    [InlineData("$.items[")]
+    [InlineData("$.items[?(@.x")]
+    [InlineData("$[")]
+    public async Task ProcessObjectAsync_MalformedValuePath_IsAConfigurationError(string valuePath)
+    {
+        var config = Config(new DelimitedColumn { Value = "A" },
+            new DelimitedColumn { ValuePath = valuePath });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[{}]}"""));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("column 1", ex.Message, StringComparison.Ordinal);
+        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_MalformedSourcePath_IsAConfigurationError()
+    {
+        var config = Config(new DelimitedColumn { Value = "A" });
+        config.Path = "$.rows[";
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[{}]}"""));
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    /// <summary>
+    /// A column value is one value. A wildcard, filter or recursive-descent path selects a set,
+    /// and which member of it lands in the column would depend on the record shape - worse, the
+    /// same path can resolve on one backing store and silently render empty on another. Refused
+    /// rather than guessed.
+    /// </summary>
+    [Theory]
+    [InlineData("$.items[*].name")]
+    [InlineData("$..name")]
+    [InlineData("$.items[?(@.id=='1')].name")]
+    [InlineData("$.*")]
+    public async Task ProcessObjectAsync_MultiValuedValuePath_IsRefused(string valuePath)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = valuePath });
+        var (dataContext, nodeContext, next) = PrepareTest(config, JsonNode.Parse("""{"rows":[{}]}"""));
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("column 0", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Ordinary dotted and indexed paths stay legal - that is what layouts use.</summary>
+    [Theory]
+    [InlineData("$.id")]
+    [InlineData("id")]
+    [InlineData("$.nested.id")]
+    [InlineData("$.list[0]")]
+    public async Task ProcessObjectAsync_SimpleValuePath_IsAccepted(string valuePath)
+    {
+        var config = Config(new DelimitedColumn { ValuePath = valuePath });
+        config.TrailingNewLine = false;
+        var (dataContext, nodeContext, next) = PrepareTest(config,
+            JsonNode.Parse("""{"rows":[{"id":"1","nested":{"id":"2"},"list":["3"]}]}"""));
+        var written = CaptureWrite(dataContext, config);
+
+        await new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(written());
+    }
+
+    /// <summary>
+    /// The one value guaranteed to carry structural characters is also the one that can be
+    /// arbitrarily long, and the message travels into logs and execution results. Record and column
+    /// index are what diagnosis needs; the value is kept only as a sample.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_StructureBreakingValueIsHuge_MessageStaysBounded()
+    {
+        var config = Config(new DelimitedColumn { ValuePath = "$.v" });
+        var huge = new string('x', 5000) + "|" + new string('y', 5000);
+        var data = new JsonObject { ["rows"] = new JsonArray(new JsonObject { ["v"] = huge }) };
+        var (dataContext, nodeContext, next) = PrepareTest(config, data);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.True(ex.Message.Length < 600, $"message was {ex.Message.Length} characters");
+        Assert.Contains("record 0", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("column 0", ex.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>A constant is checked too - a layout can misconfigure one just as easily.</summary>
     [Fact]
     public async Task ProcessObjectAsync_ConstantCarriesTheDelimiter_FailsByDefault()
@@ -375,7 +463,7 @@ public class RenderDelimitedTextNodeTests
     }
 
     /// <summary>
-    /// A fixed 34-column layout of the kind this node exists for: two constants, five value columns
+    /// A fixed 34-column layout of the kind this node exists for: two constants, six value columns
     /// and 26 reserved columns that always render empty. Pins the exact bytes, including the
     /// trailing line feed, and that an absent optional value leaves an empty column rather than
     /// swallowing one.

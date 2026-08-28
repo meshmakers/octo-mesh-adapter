@@ -39,6 +39,12 @@ public static class DelimitedTextTestContext
     /// node ran; it stays null when the node wrote nothing at all, which is a different outcome
     /// from writing an empty document and has to stay distinguishable.
     /// </summary>
+    /// <remarks>
+    /// <c>CallsWrappedMethod</c> is what makes the observation non-invasive: configuring a call on
+    /// a wrapping fake REPLACES the delegation to the wrapped instance, so without it the write
+    /// would be recorded here and never reach the real data context - the helper would be watching
+    /// a write it had itself cancelled.
+    /// </remarks>
     public static Func<string?> CaptureWrite(IDataContext dataContext,
         RenderDelimitedTextNodeConfiguration config)
     {
@@ -46,7 +52,17 @@ public static class DelimitedTextTestContext
         A.CallTo(() => dataContext.Set(config.TargetPath, A<string>._, A<DocumentModes>._,
                 A<ValueKinds>._, A<TargetValueWriteModes>._))
             .Invokes((string _, string? value, DocumentModes _, ValueKinds _, TargetValueWriteModes _) =>
-                written = value);
+                written = value)
+            .CallsWrappedMethod();
         return () => written;
     }
+
+    /// <summary>
+    /// Asserts that the node wrote nothing at all. Matched by method name rather than by one closed
+    /// generic: binding <c>Set&lt;string&gt;</c> with five arguments would let a write through any
+    /// other instantiation or the two-argument overload pass unnoticed.
+    /// </summary>
+    public static void AssertNothingWritten(IDataContext dataContext) =>
+        A.CallTo(dataContext).Where(call => call.Method.Name == nameof(IDataContext.Set))
+            .MustNotHaveHappened();
 }

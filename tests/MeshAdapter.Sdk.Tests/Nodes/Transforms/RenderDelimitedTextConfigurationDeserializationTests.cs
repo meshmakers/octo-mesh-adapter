@@ -16,7 +16,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 /// initializer applies only when the key is <em>absent</em>, so a definition carrying an explicit
 /// null hands the node a value nobody wrote.
 /// </summary>
-public class RenderDelimitedTextConfigurationDeserializationTests : NodeTestBase
+public class RenderDelimitedTextConfigurationDeserializationTests
 {
     private static async Task<RenderDelimitedTextNodeConfiguration> DeserializeAsync(string yaml)
     {
@@ -164,7 +164,7 @@ public class RenderDelimitedTextConfigurationDeserializationTests : NodeTestBase
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
 
-        AssertNothingWritten(dataContext);
+        DelimitedTextTestContext.AssertNothingWritten(dataContext);
         A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
     }
 
@@ -241,7 +241,7 @@ public class RenderDelimitedTextConfigurationDeserializationTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains("onDelimiterInValue", ex.Message, StringComparison.Ordinal);
-        AssertNothingWritten(dataContext);
+        DelimitedTextTestContext.AssertNothingWritten(dataContext);
     }
 
     [Fact]
@@ -262,12 +262,8 @@ public class RenderDelimitedTextConfigurationDeserializationTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains("lineEnding", ex.Message, StringComparison.Ordinal);
-        AssertNothingWritten(dataContext);
+        DelimitedTextTestContext.AssertNothingWritten(dataContext);
     }
-
-    private static void AssertNothingWritten(IDataContext dataContext) =>
-        A.CallTo(dataContext).Where(call => call.Method.Name == nameof(IDataContext.Set))
-            .MustNotHaveHappened();
 
     /// <summary>
     /// An empty or blank target path is not a harmless mistake: the data context treats an empty
@@ -300,7 +296,7 @@ public class RenderDelimitedTextConfigurationDeserializationTests : NodeTestBase
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => new RenderDelimitedTextNode(next).ProcessObjectAsync(dataContext, nodeContext));
 
-        AssertNothingWritten(dataContext);
+        DelimitedTextTestContext.AssertNothingWritten(dataContext);
         A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
     }
 }

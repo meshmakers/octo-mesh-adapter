@@ -11,6 +11,17 @@
 {{- define "octo-mesh.system-env" -}}
 - name: OCTO_SYSTEM__DATABASEHOST
   value: {{ .Values.clusterDependencies.mongodbHost | quote }}
+{{- if .Values.clusterDependencies.systemDatabaseName }}
+{{/*
+  Instance isolation (Epic AB#4944): the tenant registry lives in this database, and
+  the adapter resolves its own tenant through it on every CK-model load. It must match
+  the core services' serviceDefaults.systemDatabaseName; an instance on a non-default
+  system database otherwise fails with "Tenant '<id>' does not exist". Omitted when
+  unset, so a single-instance cluster keeps the adapter's compiled-in default.
+*/}}
+- name: OCTO_SYSTEM__SYSTEMDATABASENAME
+  value: {{ .Values.clusterDependencies.systemDatabaseName | quote }}
+{{- end }}
 {{- if .Values.clusterDependencies.mongodbReplicaSet }}
 - name: OCTO_SYSTEM__REPLICASETNAME
   value: {{ .Values.clusterDependencies.mongodbReplicaSet | quote }}
@@ -34,6 +45,16 @@
 # the feature is opt-in per cluster.
 - name: OCTO_STREAMDATA__ENABLED
   value: {{ .global.Values.clusterDependencies.streamDataEnabled | quote }}
+{{- if .global.Values.clusterDependencies.streamDataSchemaInstancePrefix }}
+{{/*
+  AB#4946 / Epic AB#4944: prefixes the tenant's CrateDB schema so a second instance
+  does not read and write the first one's data. Same root "StreamData" config section
+  as the kill switch above, hence no service prefix. Omitted when unset — the legacy,
+  unprefixed schema names stay byte-identical.
+*/}}
+- name: OCTO_STREAMDATA__SCHEMAINSTANCEPREFIX
+  value: {{ .global.Values.clusterDependencies.streamDataSchemaInstancePrefix | quote }}
+{{- end }}
 - name: {{ printf "%s__STREAMDATAHOST" (upper .name) }}
   value: {{ .global.Values.clusterDependencies.streamDataHost | quote }}
 - name: {{ printf "%s__STREAMDATAUSER" (upper .name) }}

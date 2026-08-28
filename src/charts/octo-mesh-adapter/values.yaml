@@ -49,6 +49,14 @@ clusterDependencies:
   # true in clusters that run CrateDB and want adapter nodes such as
   # SaveStreamDataInArchive to be functional.
   streamDataEnabled: false
+  # Instance isolation (Epic AB#4944), both supplied by the communication operator from
+  # its own OperatorOptions.ClusterDependencies. Empty = single-instance cluster: the
+  # adapter keeps its compiled-in system database ("OctoSystem") and the unprefixed
+  # CrateDB schema names, so existing installations render byte-identically.
+  # Set them together with the core services' serviceDefaults.systemDatabaseName /
+  # clusterDependencies.streamDataSchemaInstancePrefix when running a second instance.
+  systemDatabaseName: ""
+  streamDataSchemaInstancePrefix: ""
 
 image:
   repository: meshmakers/octo-mesh-adapter

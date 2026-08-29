@@ -144,6 +144,37 @@ The build automatically generates a `pipeline-schema.json` file in the build out
 - **Incremental**: Only regenerates when the binary changes
 - **Opt-out**: Set MSBuild property `GeneratePipelineSchema=false` to disable
 
+## Helm chart publishing (AB#4948)
+
+`src/charts/octo-mesh-adapter` is packaged on every build and published to two
+places, plus a third for long-lived branch lines:
+
+| Branch | Channel | Chart version |
+|---|---|---|
+| `main` | dev bucket (`meshmakers.github.io/helm-chart-build/`) | `0.1.<yyMMDDxxx>` |
+| `r*` tag | release (`meshmakers.github.io/charts/`) | `<MAJOR>.<MINOR>.<PATCH>` |
+| `test/*` | **same** dev bucket | `0.2.<yyMMDDxxx>-test-0-2-dev` — a SemVer **prerelease** |
+
+The test line has to publish at all because the communication operator resolves
+a workload's chart from a repo URL at deploy time — unlike the core services,
+whose charts the deploy lane packages from a local checkout, there is no
+pipeline in that path.
+
+It shares the dev bucket with main, which is only safe because of the
+prerelease tag: a workload with an **empty** `ChartVersion` means "newest in the
+repo", and that is exactly what the `System.Communication.MainLatest` blueprint
+seeds on every dev/test tenant. A stable `0.2.x` chart would out-sort every
+`0.1.x` and move the whole dev/test fleet onto branch charts. Helm ignores
+prereleases unless the caller pins one, so an unpinned resolve keeps returning
+main's newest stable chart — and that holds even when the prerelease carries the
+higher number. A 0.2 instance therefore pins `ChartVersion` explicitly
+(runtime-state, so the pin survives a blueprint re-apply).
+
+The version itself is derived centrally by
+`ci-templates/derive-chart-version.yml` in `meshmakers/helm-chart-build`; the
+prerelease tag is derived from the branch so two test lines can coexist in one
+index.
+
 ## Development Notes
 
 - All projects have nullable reference types enabled

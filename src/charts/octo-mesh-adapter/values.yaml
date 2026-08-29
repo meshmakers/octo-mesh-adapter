@@ -161,7 +161,15 @@ affinity: {}
 ingress:
   enabled: false
   className: ""
-  annotations: {}
+  annotations:
+    # Adapters routinely receive document uploads, and ingress-nginx's 1m default body
+    # limit rejects a 2 MB invoice with a 413 that carries no CORS headers - a browser
+    # can only report that as a bare network error, which misdirects every diagnosis
+    # (AB#4967). 25m is the value the operator documentation already uses as its
+    # example. Override per workload or cluster-wide via the operator's ingress
+    # annotation projection; the key merges with (and is overridden by) same-key
+    # values from either layer.
+    nginx.ingress.kubernetes.io/proxy-body-size: 25m
     # kubernetes.io/ingress.class: nginx
   # kubernetes.io/tls-acme: "true"
   tls: false

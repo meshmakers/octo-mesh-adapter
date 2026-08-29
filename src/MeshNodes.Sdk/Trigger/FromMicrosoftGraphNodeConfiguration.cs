@@ -6,6 +6,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// Configuration for polling Microsoft Teams channels via Microsoft Graph API
 /// </summary>
 [NodeName("FromMicrosoftGraph", 1)]
+[NodeRequiresRunningProcess]
 public record FromMicrosoftGraphNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>

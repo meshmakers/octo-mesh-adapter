@@ -9,6 +9,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// different folder.
 /// </summary>
 [NodeName("FromMicrosoftGraphEmail", 1)]
+[NodeRequiresRunningProcess]
 public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>

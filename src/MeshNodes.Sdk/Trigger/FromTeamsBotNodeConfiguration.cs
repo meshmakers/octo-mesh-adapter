@@ -19,6 +19,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// pre-authenticated download URL.
 /// </remarks>
 [NodeName("FromTeamsBot", 1)]
+[NodeRequiresRunningProcess]
 public record FromTeamsBotNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>

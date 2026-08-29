@@ -9,6 +9,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// Inbound counterpart of <c>SignalSender@1</c>. Prototype context: AB#4406 (Epic AB#3295).
 /// </summary>
 [NodeName("FromSignal", 1)]
+[NodeRequiresRunningProcess]
 public record FromSignalNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>

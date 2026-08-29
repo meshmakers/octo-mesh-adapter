@@ -6,6 +6,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// Configuration for node FromEmail
 /// </summary>
 [NodeName("FromEmail", 1)]
+[NodeRequiresRunningProcess]
 public record FromEmailNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>

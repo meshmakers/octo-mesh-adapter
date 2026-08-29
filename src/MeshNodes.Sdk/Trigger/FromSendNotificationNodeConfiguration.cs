@@ -7,4 +7,5 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// needs to send a notification.
 /// </summary>
 [NodeName("FromSendNotification", 1)]
+[NodeRequiresRunningProcess]
 public record FromSendNotificationNodeConfiguration : TriggerNodeConfiguration;

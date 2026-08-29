@@ -8,6 +8,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// Configuration for node FromPipelineTriggerEvent
 /// </summary>
 [NodeName("FromWatchRtEntity", 1)]
+[NodeRequiresRunningProcess]
 // ReSharper disable once ClassNeverInstantiated.Global
 public record FromWatchRtEntityNodeConfiguration : TriggerNodeConfiguration
 {

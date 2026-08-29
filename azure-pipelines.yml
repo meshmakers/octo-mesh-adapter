@@ -204,6 +204,23 @@ stages:
               githubTokenVariable: HelmChartBuildGhToken
               condition: and(succeeded(), eq(variables.isMain, true))
 
+          # Test-line publish (AB#4948) — a long-lived branch line (test/0.2-dev)
+          # needs its charts reachable by the communication operator, which
+          # resolves them from a repo URL at deploy time and has no pipeline in
+          # the loop. It lands in the SAME dev bucket as main, but
+          # derive-chart-version tags it as a SemVer prerelease
+          # (0.2.<yyMMDDxxx>-test-0-2-dev), which Helm hides from every "newest
+          # chart" resolution — so a dev/test tenant with an empty ChartVersion
+          # keeps getting main's charts. The 0.2 instance pins the version.
+          - template: ci-templates/publish-helm-chart.yml@helmChartBuild
+            parameters:
+              channel: dev
+              chartName: octo-mesh-adapter
+              chartVersion: $(ChartVersion)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
+              githubTokenVariable: HelmChartBuildGhToken
+              condition: and(succeeded(), eq(variables.isTest, true))
+
           # Release publish — only on r* tag, lands in
           # meshmakers.github.io/charts/ under the adapter category.
           - template: ci-templates/publish-helm-chart.yml@helmChartBuild

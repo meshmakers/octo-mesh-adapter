@@ -1,6 +1,7 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -84,7 +85,14 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                     count++;
                     try
                     {
-                        var session = await etlContext.TenantRepository.GetSessionAsync();
+                        // AB#4975: a trigger-verified caller makes the write caller-scoped — the
+                        // engine stamps RtCreatedBy and enforces data permissions. Triggers without
+                        // a principal keep the system session (F5 v1 behavior).
+                        var verifiedPrincipal = etlContext.VerifiedPrincipal;
+                        var session = verifiedPrincipal == null
+                            ? await etlContext.TenantRepository.GetSessionAsync()
+                            : await etlContext.TenantRepository.GetSessionAsync(
+                                RtSecurityContext.ForUser(verifiedPrincipal.SubjectId, verifiedPrincipal.Roles));
                         session.StartTransaction();
 
                         OperationResult operationResult = new();

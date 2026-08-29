@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+
+using Meshmakers.Octo.Sdk.Common.Services;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
@@ -6,7 +8,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 internal class HttpRequestOptions(
     string route,
     HttpMethod method,
-    Func<JsonNode, Task<JsonNode?>> executeFunc,
+    Func<JsonNode, VerifiedPrincipal?, Task<JsonNode?>> executeFunc,
     bool allowAnonymous,
     string[] requiredRoles,
     bool receivesCredentialHeaders = false)
@@ -14,7 +16,7 @@ internal class HttpRequestOptions(
     public string Route { get; } = route;
     public HttpMethod Method { get; } = method;
 
-    public Func<JsonNode, Task<JsonNode?>> ExecuteFunc { get; } = executeFunc;
+    public Func<JsonNode, VerifiedPrincipal?, Task<JsonNode?>> ExecuteFunc { get; } = executeFunc;
 
     public bool AllowAnonymous { get; } = allowAnonymous;
 

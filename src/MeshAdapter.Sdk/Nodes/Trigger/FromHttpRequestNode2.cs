@@ -26,11 +26,12 @@ internal class FromHttpRequestNode2(
     {
         var c = context.NodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration2>();
 
-        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async input =>
+        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async (input, verifiedPrincipal) =>
         {
             try
             {
-                var result = await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), input);
+                var result = await context.ExecuteAsync(
+                    new ExecutePipelineOptions(DateTime.UtcNow) { VerifiedPrincipal = verifiedPrincipal }, input);
                 if (result == null)
                 {
                     return null;

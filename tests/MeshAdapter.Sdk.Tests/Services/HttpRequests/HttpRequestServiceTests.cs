@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Sdk.Common.Services;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -678,8 +679,58 @@ public class HttpRequestServiceTests
         string[]? requiredRoles = null, bool receivesCredentialHeaders = false)
     {
         executeFunc ??= _ => Task.FromResult<JsonNode?>(null);
-        return new HttpRequestOptions(route, method, executeFunc, allowAnonymous, requiredRoles ?? [],
+        return new HttpRequestOptions(route, method, (input, _) => executeFunc(input), allowAnonymous,
+            requiredRoles ?? [],
             receivesCredentialHeaders);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_AuthenticatedCaller_PassesVerifiedPrincipalAndDataRootSubset()
+    {
+        // AB#4975: the verified caller reaches the pipeline twice — as VerifiedPrincipal on the
+        // ExecuteFunc (server-side stamp) and as the safe $.principal subset in the data root.
+        VerifiedPrincipal? capturedPrincipal = null;
+        JsonNode? capturedInput = null;
+        _service.CreateRoute(new HttpRequestOptions("/upload", HttpMethod.Post, (input, principal) =>
+        {
+            capturedPrincipal = principal;
+            capturedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, []));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/upload");
+        context.User = CreateAuthenticatedUser("AccountingEmployee", "AccountingManagement");
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        Assert.NotNull(capturedPrincipal);
+        Assert.Equal("660000000000000000000042", capturedPrincipal!.SubjectId);
+        Assert.Equal(TenantId, capturedPrincipal.TenantId);
+        Assert.Equal(["AccountingEmployee", "AccountingManagement"], capturedPrincipal.Roles);
+
+        var principalNode = capturedInput?["principal"];
+        Assert.NotNull(principalNode);
+        Assert.Equal("660000000000000000000042", principalNode!["subjectId"]!.GetValue<string>());
+        Assert.Equal(2, principalNode["roles"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_AnonymousRoute_NoPrincipal()
+    {
+        VerifiedPrincipal? capturedPrincipal = new("sentinel", null, null, null, []);
+        JsonNode? capturedInput = null;
+        _service.CreateRoute(new HttpRequestOptions("/open", HttpMethod.Post, (input, principal) =>
+        {
+            capturedPrincipal = principal;
+            capturedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: true, []));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/open");
+
+        Assert.True(await _service.SendRequestAsync(context));
+        Assert.Null(capturedPrincipal);
+        Assert.Null(capturedInput?["principal"]);
     }
 
     private static ClaimsPrincipal CreateAuthenticatedUser(params string[] roles)

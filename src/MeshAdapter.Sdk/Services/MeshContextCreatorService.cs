@@ -31,7 +31,7 @@ internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCa
             pipelineExecutionId,
             pipelineRegistration.PipelineRtEntityId, executePipelineOptions.TransactionStartedDateTime,
             executePipelineOptions.ExternalReceivedDateTime, pipelineRegistration.GlobalConfiguration,
-            pipelineRegistration.Dictionary);
+            pipelineRegistration.Dictionary, executePipelineOptions.VerifiedPrincipal);
 
 
         var etlContext = context as TContext;

@@ -22,10 +22,12 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// <param name="externalReceivedDateTime">Date and time when the value was received by an optional external system</param>
     /// <param name="globalConfiguration">Global configuration for the pipeline</param>
     /// <param name="properties">properties that are shared between the different stages of the ETL process and different runs of the pipeline</param>
+    /// <param name="verifiedPrincipal">Authenticated caller of the trigger, if any (AB#4975)</param>
     public MeshEtlContext(string tenantId, ITenantRepository tenantRepository,
         OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
-        IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties)
-        : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties)
+        IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties,
+        Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? verifiedPrincipal = null)
+        : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal)
     {
         TenantRepository = tenantRepository;
     }

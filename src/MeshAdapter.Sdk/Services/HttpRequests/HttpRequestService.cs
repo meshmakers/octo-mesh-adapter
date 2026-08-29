@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Sdk.Common.Services;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
@@ -79,6 +80,37 @@ internal class HttpRequestService(
             ["path"] = path.ToLower(),
             ["method"] = route.Method.ToString().ToUpper()
         };
+
+        // The verified caller (AB#4975): a safe subset only — the data root is echoed in the HTTP
+        // response and persistable, so no token material may ever travel with it. Exposed to
+        // pipeline authors as $.principal (inside ForEach bodies: $.full.principal).
+        VerifiedPrincipal? verifiedPrincipal = null;
+        if (context.User.Identity?.IsAuthenticated == true)
+        {
+            var principalRoles = context.User.FindAll(JwtClaimTypes.Role).Select(c => c.Value).ToArray();
+            verifiedPrincipal = new VerifiedPrincipal(
+                context.User.FindFirstValue(JwtClaimTypes.Subject) ?? context.User.FindFirstValue("client_id"),
+                context.User.FindFirstValue(TenantIdClaim),
+                context.User.FindFirstValue(JwtClaimTypes.Email),
+                context.User.FindFirstValue(JwtClaimTypes.Name) ??
+                context.User.FindFirstValue(JwtClaimTypes.PreferredUserName),
+                principalRoles);
+
+            var rolesArray = new JsonArray();
+            foreach (var role in principalRoles)
+            {
+                rolesArray.Add(role);
+            }
+
+            input["principal"] = new JsonObject
+            {
+                ["subjectId"] = verifiedPrincipal.SubjectId,
+                ["tenantId"] = verifiedPrincipal.TenantId,
+                ["email"] = verifiedPrincipal.Email,
+                ["name"] = verifiedPrincipal.Name,
+                ["roles"] = rolesArray
+            };
+        }
 
         // Expose request headers so trigger nodes can authenticate the caller
         // (e.g. FromTeamsBot validates the Bot Framework JWT in the Authorization
@@ -219,7 +251,7 @@ internal class HttpRequestService(
             input["query"] = query;
         }
 
-        var r = await route.ExecuteFunc(input);
+        var r = await route.ExecuteFunc(input, verifiedPrincipal);
         if (r != null)
         {
             context.Response.ContentType = MimeTypes.MimeTypeJson;

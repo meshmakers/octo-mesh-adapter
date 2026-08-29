@@ -56,7 +56,7 @@ internal class FromTeamsBotNode(
         var cfg = context.GlobalConfiguration.GetValue<GraphBotConfiguration>(c.ServerConfiguration);
         var expectedAudience = string.IsNullOrWhiteSpace(c.BotAppId) ? cfg.ClientId : c.BotAppId!;
 
-        var requestOptions = new HttpRequestOptions(c.Route, HttpMethod.Post, async input =>
+        var requestOptions = new HttpRequestOptions(c.Route, HttpMethod.Post, async (input, _) =>
         {
             try
             {

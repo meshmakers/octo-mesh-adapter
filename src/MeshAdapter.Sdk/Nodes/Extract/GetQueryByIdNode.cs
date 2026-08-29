@@ -167,7 +167,8 @@ public class GetQueryByIdNode(
         {
             foreach (var fieldFilter in simpleQuery.FieldFilter)
             {
-                queryOptions.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator)fieldFilter.Operator,
+                queryOptions.AddFieldFilter(fieldFilter.AttributePath,
+                    FieldFilterOperatorDtoExtensions.FromCkModelEnum(fieldFilter.Operator),
                     fieldFilter.ComparisonValue);
             }
         }
@@ -199,7 +200,8 @@ public class GetQueryByIdNode(
         {
             foreach (var fieldFilter in aggregationQuery.FieldFilter)
             {
-                queryOptions.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator)fieldFilter.Operator,
+                queryOptions.AddFieldFilter(fieldFilter.AttributePath,
+                    FieldFilterOperatorDtoExtensions.FromCkModelEnum(fieldFilter.Operator),
                     fieldFilter.ComparisonValue);
             }
         }
@@ -219,7 +221,8 @@ public class GetQueryByIdNode(
         {
             foreach (var fieldFilter in groupedQuery.FieldFilter)
             {
-                queryOptions.AddFieldFilter(fieldFilter.AttributePath, (FieldFilterOperator)fieldFilter.Operator,
+                queryOptions.AddFieldFilter(fieldFilter.AttributePath,
+                    FieldFilterOperatorDtoExtensions.FromCkModelEnum(fieldFilter.Operator),
                     fieldFilter.ComparisonValue);
             }
         }
@@ -882,7 +885,8 @@ public class GetQueryByIdNode(
         if (persistedFilters != null)
         {
             filters.AddRange(persistedFilters.Select(f =>
-                new FieldFilter(f.AttributePath, (FieldFilterOperator)(int)f.Operator, f.ComparisonValue)));
+                new FieldFilter(f.AttributePath, FieldFilterOperatorDtoExtensions.FromCkModelEnum(f.Operator),
+                    f.ComparisonValue)));
         }
 
         if (c.FieldFilters is { Count: > 0 })

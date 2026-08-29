@@ -32,6 +32,131 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
     }
 
+    public static Exception DelimitedValueNotScalar(INodeContext nodeContext, int recordIndex,
+        int columnIndex, string valuePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: " +
+            $"'{valuePath}' resolves to an object or array, which cannot be a column value.");
+    }
+
+    public static Exception DelimitedSourceNotAnArray(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' must resolve to an array of records.");
+    }
+
+    public static Exception DelimitedDelimiterUnusable(INodeContext nodeContext, string? delimiter)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: delimiter '{delimiter}' must be exactly one character " +
+            "and must not be a line break.");
+    }
+
+    public static Exception DelimitedReplacementUnusable(INodeContext nodeContext, string replacement)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: replacement '{replacement}' contains the delimiter or a " +
+            "line break, which would only move the problem.");
+    }
+
+    public static Exception DelimitedValueBreaksStructure(INodeContext nodeContext, int recordIndex,
+        int columnIndex, string value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: the value " +
+            $"'{Truncate(value)}' contains the delimiter or a line break and would shift every " +
+            "column after it.");
+    }
+
+    public static Exception DelimitedRequiredColumnEmpty(INodeContext nodeContext, int recordIndex,
+        int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex} is required but " +
+            "rendered empty.");
+    }
+
+    public static Exception DelimitedPathNotSet(INodeContext nodeContext, string property)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{property}' must be a JSONPath; an empty one would " +
+            "address the document root.");
+    }
+
+    public static Exception DelimitedOptionUndefined(INodeContext nodeContext, string property,
+        int value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{property}' has the undefined value {value}.");
+    }
+
+    public static Exception DelimitedRecordNotAnObject(INodeContext nodeContext, int recordIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex} is not an object, so no column value " +
+            "can be read from it.");
+    }
+
+    public static Exception DelimitedSourceDisagrees(INodeContext nodeContext, string path,
+        int length)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' reports {length} record(s) but none could be " +
+            "iterated; refusing to write an empty document.");
+    }
+
+    public static Exception DelimitedPathUnparsable(INodeContext nodeContext, string location,
+        string path, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {location}: '{path}' is not a valid JSONPath.", inner);
+    }
+
+    public static Exception DelimitedPathSelectsASet(INodeContext nodeContext, string location,
+        string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {location}: '{path}' selects a set of values; a column " +
+            "holds exactly one, so wildcard, filter and recursive descent are not accepted.");
+    }
+
+    /// <summary>
+    /// Keeps a sample of an offending value out of an unbounded message: it travels into logs and
+    /// execution results, and the values this is used for are exactly the ones that can be large.
+    /// </summary>
+    private static string Truncate(string value)
+    {
+        // Escaped before it is shortened, not after: this sample is taken from values that
+        // are here BECAUSE they carry a delimiter or a line break, so a raw one would split
+        // the message across several lines in the log and the execution result - one failure
+        // has to stay one entry, and record data must not be able to forge a second one.
+        var escaped = value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+
+        return escaped.Length <= 200 ? escaped : escaped[..200] + "...";
+    }
+
+    public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: columns must list at least one column.");
+    }
+
+    public static Exception DelimitedColumnNull(INodeContext nodeContext, int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: column {columnIndex} is null.");
+    }
+
+    public static Exception DelimitedColumnAmbiguous(INodeContext nodeContext, int columnIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: column {columnIndex} sets both value and valuePath.");
+    }
+
     public static Exception InvalidValue(object? value)
     {
         return new MeshAdapterPipelineExecutionException($"Invalid value: {value}");

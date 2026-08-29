@@ -730,6 +730,54 @@ Filters to keep only the latest updates per entity, avoiding duplicate updates.
 
 String template substitution with variable replacement for dynamic string generation.
 
+#### RenderDelimitedTextNode
+
+Renders an array of records into ONE delimited-text document: one row per array element, one
+column per configured entry.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Path` | string | JSONPath of the source **array**; each element must be an object |
+| `TargetPath` | string | Receives the rendered document as a single string |
+| `Delimiter` | string | Text between columns (default `\|`); exactly one character, never a line break |
+| `LineEnding` | enum? | `Lf` when unset, or `CrLf` - never taken from the operating system |
+| `TrailingNewLine` | bool? | Append a final record separator; true when unset |
+| `OnDelimiterInValue` | enum? | `Fail` when unset, or `Replace` / `Strip` |
+| `Replacement` | string | Substitute used by `Replace`; defaults to empty, which equals `Strip` |
+| `Columns` | ICollection | Output columns in order: `Value` (constant), `ValuePath` (relative, single-valued JSONPath), `Required` |
+
+A column entry with neither `Value` nor `ValuePath` renders **empty** - that is how a fixed
+layout expresses a reserved field, and such layouts are mostly reserved fields. Setting both is a
+configuration error. `Required` turns an empty rendered value into a failure naming the record
+and the column; left unset a column is optional, which is the normal case.
+
+**Value to text**: a string emits its value; a number emits its **raw JSON token**, so `1.62`
+stays `1.62` and `0.00` stays `0.00` and no culture can reshape it; a boolean emits
+`True`/`False` (the convention `Concat@1` and `FormatString@1` already use); an absent or null
+value emits nothing. An object or array at a `ValuePath` is **refused** - it would be serialised
+as indented multi-line JSON and silently destroy the record structure.
+
+> **No quoting, by design.** Fixed-layout delimited formats generally have no escaping
+> convention, so emitting quotes would send them onward as payload. A value carrying the
+> delimiter, CR or LF is therefore refused (`Fail`) or rewritten (`Replace` / `Strip`, both
+> logged) - never passed through, because it would shift every column after it and the receiving
+> side cannot tell the difference. Constants are checked the same way. A `Replacement` that
+> itself contains the delimiter or a line break is rejected up front, since it would only move
+> the problem.
+
+> **A record that is not an object is refused**, because every read column would render empty
+> while the constants print - structurally valid rows with no content in them.
+
+> **An empty input array writes an empty string - it never skips the write.** This matters when
+> a downstream guard decides whether to deliver: a typical `If@1` compares the rendered text
+> against `""`, and with the path absent that comparison reads `null`, making "not empty" TRUE
+> and letting the empty delivery through. Writing the empty string keeps the guard meaningful.
+> A `Path` that is not an array is a wiring mistake and fails instead.
+
+**Configuration errors fail before any work**: an empty or null `Columns` list, a null entry in
+it, a column setting both `Value` and `ValuePath`, an unusable `Delimiter` or `Replacement`, and
+a blank `Path`/`TargetPath`, a `Delimiter` that is not exactly one character, an undefined `LineEnding`/`OnDelimiterInValue`, and any `Path`/`ValuePath` that does not parse or that selects a set. Nothing is written and the chain does not continue in those cases.
+
 #### QueryResultToMarkdownTableNode
 
 Formats query results as Markdown tables for report generation.

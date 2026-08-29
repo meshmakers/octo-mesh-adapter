@@ -68,22 +68,12 @@ internal static class FieldFilterExtensions
         return result;
     }
 
+    /// <summary>
+    /// AB#4956: converts through the shared mapping next to the DTO. This used to be a local switch that omitted
+    /// AnyLike/Between/IsNull/IsNotNull, so those operators failed on this path instead of being applied.
+    /// </summary>
     private static FieldFilterOperator GetOperator(FieldFilterOperatorDto f)
     {
-        return f switch
-        {
-            FieldFilterOperatorDto.Equals => FieldFilterOperator.Equals,
-            FieldFilterOperatorDto.NotEquals => FieldFilterOperator.NotEquals,
-            FieldFilterOperatorDto.LessThan => FieldFilterOperator.LessThan,
-            FieldFilterOperatorDto.LessEqualThan => FieldFilterOperator.LessEqualThan,
-            FieldFilterOperatorDto.GreaterThan => FieldFilterOperator.GreaterThan,
-            FieldFilterOperatorDto.GreaterEqualThan => FieldFilterOperator.GreaterEqualThan,
-            FieldFilterOperatorDto.In => FieldFilterOperator.In,
-            FieldFilterOperatorDto.NotIn => FieldFilterOperator.NotIn,
-            FieldFilterOperatorDto.Like => FieldFilterOperator.Like,
-            FieldFilterOperatorDto.MatchRegEx => FieldFilterOperator.MatchRegEx,
-            FieldFilterOperatorDto.AnyEq => FieldFilterOperator.AnyEq,
-            _ => throw new ArgumentOutOfRangeException(nameof(f), f, null)
-        };
+        return f.ToFieldFilterOperator();
     }
 }

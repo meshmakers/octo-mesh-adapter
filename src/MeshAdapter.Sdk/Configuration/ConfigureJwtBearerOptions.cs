@@ -60,6 +60,21 @@ internal class ConfigureJwtBearerOptions(
         // restarting. Signing keys are still resolved from the discovery metadata, so this
         // does not make validation work without it - it removes one reason for it to fail.
         options.TokenValidationParameters.ValidIssuer = authorityUrl;
+
+        // Split-horizon: when the adapter reaches the identity service under an internal name
+        // while callers' tokens carry the public issuer, the configured extra issuers are
+        // accepted too. Entries are normalized with a trailing slash exactly like the
+        // authority above — the identity service emits its issuer with one, and the ordinal
+        // comparison would turn a missing slash in configuration into a silent deny.
+        if (meshAdapterConfiguration.Value.AdditionalValidIssuers is { Length: > 0 } additionalIssuers)
+        {
+            options.TokenValidationParameters.ValidIssuers = additionalIssuers
+                .Where(i => !string.IsNullOrWhiteSpace(i))
+                .Select(i => i.EnsureEndsWith("/"))
+                .Append(authorityUrl)
+                .Distinct()
+                .ToArray();
+        }
         options.TokenValidationParameters.NameClaimType = JwtClaimTypes.Name;
         options.TokenValidationParameters.RoleClaimType = JwtClaimTypes.Role;
 

@@ -52,6 +52,43 @@ public class ConfigureJwtBearerOptionsTests
         Assert.Equal(CommonConstants.OctoApi, options.Audience);
     }
 
+    /// <remarks>
+    /// The list must stay unset when nothing is configured: the JWT handler treats an empty
+    /// <c>ValidIssuers</c> collection as "no issuer is valid" territory only via the single
+    /// <c>ValidIssuer</c>, and leaving the property null keeps this change inert for every
+    /// deployment that does not opt in.
+    /// </remarks>
+    [Fact]
+    public void Configure_LeavesValidIssuersUnsetWithoutAdditionalIssuers()
+    {
+        Assert.Null(Configure().TokenValidationParameters.ValidIssuers);
+    }
+
+    /// <remarks>
+    /// Split-horizon setups (in-cluster adapter reaching identity via an internal name while
+    /// browser tokens carry the public issuer) configure the public issuer as an additional
+    /// valid issuer. The authority stays accepted, and each entry is normalized with a
+    /// trailing slash exactly like the authority — the identity service emits its issuer with
+    /// one, and the ordinal comparison would turn a missing slash in configuration into a
+    /// silent deny.
+    /// </remarks>
+    [Fact]
+    public void Configure_AcceptsConfiguredAdditionalIssuersNextToTheAuthority()
+    {
+        var configuration = Options.Create(new MeshAdapterConfiguration
+        {
+            AuthorityUrl = AuthorityUrl,
+            AdditionalValidIssuers = ["https://localhost:5003"],
+        });
+        var options = new JwtBearerOptions();
+        new ConfigureJwtBearerOptions(configuration, Environment()).Configure(options);
+
+        var issuers = options.TokenValidationParameters.ValidIssuers?.ToArray();
+        Assert.NotNull(issuers);
+        Assert.Equal([$"https://localhost:5003/", $"{AuthorityUrl}/"], issuers);
+        Assert.Equal($"{AuthorityUrl}/", options.TokenValidationParameters.ValidIssuer);
+    }
+
     [Fact]
     public void Configure_KeepsJwtClaimTypesUnmapped()
     {

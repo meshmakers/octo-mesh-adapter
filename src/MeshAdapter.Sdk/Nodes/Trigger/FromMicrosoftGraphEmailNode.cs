@@ -91,7 +91,7 @@ internal class FromMicrosoftGraphEmailNode(
     /// missing falls back to the node property. The node stays domain-agnostic: which
     /// attributes to read is given by the *Attribute node properties.
     /// </summary>
-    private static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
+    internal static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
         IGlobalConfiguration globalConfiguration, FromMicrosoftGraphEmailNodeConfiguration c)
     {
         if (string.IsNullOrWhiteSpace(c.SettingsConfiguration) ||

@@ -6,6 +6,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using MimeKit;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 
@@ -47,12 +48,154 @@ internal class FromMicrosoftGraphEmailNode(
 
         var graphConfig = context.GlobalConfiguration.GetValue<GraphConfiguration>(c.ServerConfiguration);
 
+        // Mailbox / folders may live in a configuration entity instead of the pipeline
+        // definition (see SettingsConfiguration) so a redeploy never overwrites what an
+        // operator configured and nothing tenant-specific leaks into the seed. A value
+        // found in the settings configuration takes precedence over the node property.
+        var effectiveConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, c);
+
+        if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
+        {
+            logger.LogInformation(
+                "FromMicrosoftGraphEmail: resolved mailbox/folders from settings configuration '{Settings}' (folder='{Folder}', moveTo='{MoveTo}')",
+                c.SettingsConfiguration, effectiveConfig.FolderPath, effectiveConfig.MoveToFolderPathOnSuccess);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveConfig.Mailbox))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.Mailbox),
+                c.SettingsConfiguration ?? c.ServerConfiguration);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveConfig.FolderPath))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.FolderPath),
+                c.SettingsConfiguration ?? c.ServerConfiguration);
+        }
+
         _cancellationTokenSource = new CancellationTokenSource();
         _pollingTask = Task.Run(
-            async () => await PollForMessagesAsync(context, graphConfig, c),
+            async () => await PollForMessagesAsync(context, graphConfig, effectiveConfig),
             _cancellationTokenSource.Token);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="c"/> with Mailbox / FolderPath /
+    /// MoveToFolderPathOnSuccess / PollingIntervalSeconds resolved from the optional
+    /// settings configuration (well-known name <see cref="FromMicrosoftGraphEmailNodeConfiguration.SettingsConfiguration"/>).
+    /// A non-empty settings value overrides the corresponding node property; anything
+    /// missing falls back to the node property. The node stays domain-agnostic: which
+    /// attributes to read is given by the *Attribute node properties.
+    /// </summary>
+    private static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
+        IGlobalConfiguration globalConfiguration, FromMicrosoftGraphEmailNodeConfiguration c)
+    {
+        if (string.IsNullOrWhiteSpace(c.SettingsConfiguration) ||
+            !globalConfiguration.IsDefined(c.SettingsConfiguration))
+        {
+            return c;
+        }
+
+        JsonElement settings;
+        try
+        {
+            using var doc = JsonDocument.Parse(globalConfiguration.GetRawJson(c.SettingsConfiguration));
+            settings = doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            // A malformed settings payload must not take the trigger down — fall back to
+            // whatever the node properties carry (validated by the caller).
+            return c;
+        }
+
+        // The serialized configuration is the full runtime entity; its CK attributes live
+        // in a nested "attributes" object (e.g. { "attributes": { "EmailImportMailbox": … } }).
+        // Read from there, falling back to the root for any flatter serialization.
+        var settingsAttributes = settings;
+        if (settings.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in settings.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "attributes", StringComparison.OrdinalIgnoreCase) &&
+                    property.Value.ValueKind == JsonValueKind.Object)
+                {
+                    settingsAttributes = property.Value;
+                    break;
+                }
+            }
+        }
+
+        var mailbox = ReadStringAttribute(settingsAttributes, c.MailboxAttribute) ?? c.Mailbox;
+        var folderPath = ReadStringAttribute(settingsAttributes, c.SourceFolderAttribute) ?? c.FolderPath;
+        var moveTo = ReadStringAttribute(settingsAttributes, c.DoneFolderAttribute) ?? c.MoveToFolderPathOnSuccess;
+        var polling = ReadPositiveIntAttribute(settingsAttributes, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds;
+
+        return c with
+        {
+            Mailbox = mailbox,
+            FolderPath = folderPath,
+            MoveToFolderPathOnSuccess = moveTo,
+            PollingIntervalSeconds = polling,
+        };
+    }
+
+    /// <summary>Case-insensitive read of a non-empty string attribute; null when absent/blank/non-string.</summary>
+    private static string? ReadStringAttribute(JsonElement settings, string? attributeName)
+    {
+        if (string.IsNullOrWhiteSpace(attributeName) || settings.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var property in settings.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, attributeName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (property.Value.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            var value = property.Value.GetString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        return null;
+    }
+
+    /// <summary>Case-insensitive read of a positive integer attribute (accepts a numeric or numeric-string value); null otherwise.</summary>
+    private static int? ReadPositiveIntAttribute(JsonElement settings, string? attributeName)
+    {
+        if (string.IsNullOrWhiteSpace(attributeName) || settings.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var property in settings.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, attributeName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = property.Value.ValueKind switch
+            {
+                JsonValueKind.Number when property.Value.TryGetInt32(out var n) => n,
+                JsonValueKind.String when int.TryParse(property.Value.GetString(), out var n) => n,
+                _ => 0,
+            };
+            return value > 0 ? value : null;
+        }
+
+        return null;
     }
 
     public async Task StopAsync(ITriggerContext context)

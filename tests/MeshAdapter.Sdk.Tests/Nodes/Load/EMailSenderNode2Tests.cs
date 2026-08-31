@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Xunit;
@@ -208,6 +209,47 @@ public class EMailSenderNode2AttachmentMetadataTests
     public void The_configured_value_is_returned_verbatim_including_its_own_blanks()
     {
         Assert.Equal("logo.png", EMailSenderNode2.PreferResolved(null, "logo.png"));
+    }
+}
+
+/// <summary>
+/// A body carrying unclosed `&lt;img` text used to take the inline-image scan quadratic, because
+/// its runs were `[^&gt;]` and could therefore scan past the next tag: 540 ms at 6 KB, 43 s at
+/// 27 KB, 263 s at 54 KB - on the path every send takes, with no cancellation. An operator
+/// writing about embedding, or pasting truncated HTML, produces exactly that shape.
+/// </summary>
+public class EMailSenderNode2InlineScanCostTests
+{
+    private static string UnclosedImgRuns(int count) =>
+        string.Concat(Enumerable.Repeat("""<img src="cid:""", count));
+
+    /// <summary>
+    /// A wall-clock assertion is a blunt instrument, but the defect was three orders of magnitude
+    /// over this bound, so the margin is enormous and the test is not timing-sensitive. Both
+    /// entry points are covered: one scans, the other rewrites.
+    /// </summary>
+    [Fact]
+    public void An_unclosed_img_run_does_not_make_the_scan_superlinear()
+    {
+        var body = UnclosedImgRuns(4000);
+
+        // Warm the compiled regexes so the measurement is not the JIT.
+        EMailSenderNode2.IsInlineReferenceUsed("<p>warm</p>", "community-footer");
+        EMailSenderNode2.StripInlineImageMarkup("<p>warm</p>");
+
+        var started = Stopwatch.StartNew();
+        EMailSenderNode2.IsInlineReferenceUsed(body, "community-footer");
+        EMailSenderNode2.StripInlineImageMarkup(body);
+        started.Stop();
+
+        Assert.True(started.ElapsedMilliseconds < 2000,
+            $"scanning {body.Length} characters took {started.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
+    public void An_unclosed_img_run_carries_no_reference()
+    {
+        Assert.False(EMailSenderNode2.IsInlineReferenceUsed(UnclosedImgRuns(50), "community-footer"));
     }
 }
 

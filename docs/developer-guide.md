@@ -832,6 +832,15 @@ customer token for an address matching no customer, reaches a recipient as a gap
 decides the blast radius through `ContinueOnError`; the three EnergyCommunity send pipelines
 leave it unset, so the first refusal aborts the batch.
 
+**The line is drawn at the configured path, and only there.** Presence is decided by whether an
+object sits at `CustomerPath` / `CommunityConfigPath` / `BillingDocumentPath` — not by whether
+the attribute under it exists. An attribute path descends several levels
+(`Contact.Attributes.Address.Attributes.Phone.Attributes.Number`), and a customer supplied
+*without* its `Contact` sub-entity is indistinguishable from one whose fields are empty: fifteen
+tokens blank, a warning, and the mail goes. That is deliberate — moving the line to the
+attribute would turn every genuinely empty optional field into a failed batch — but it means the
+guarantee is "this pipeline handed me the entity", not "this token has a value".
+
 ---
 
 ### Load Nodes

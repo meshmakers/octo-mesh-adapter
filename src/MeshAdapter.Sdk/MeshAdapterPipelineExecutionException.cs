@@ -983,11 +983,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     /// customer. The resolver cannot tell such a token from one whose value happens to be empty,
     /// so it refuses rather than guessing which of the two a blank would mean.
     /// </summary>
-    public static Exception PlaceholderSourceMissing(INodeContext nodeContext, IEnumerable<string> tokens)
+    public static Exception PlaceholderSourceMissing(
+        INodeContext nodeContext, IEnumerable<string> tokens, string sources)
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: the template uses placeholder(s) {string.Join(", ", tokens)} " +
-            "whose source this send path does not provide.");
+            $"whose source this send path does not provide ({sources}).");
     }
 
     /// <summary>

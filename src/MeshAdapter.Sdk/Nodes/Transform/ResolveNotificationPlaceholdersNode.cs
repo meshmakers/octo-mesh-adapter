@@ -68,7 +68,12 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
             // be a guess - the resolver cannot tell an absent entity from an empty value, and
             // nothing downstream would report either. ForEach@1.ContinueOnError decides whether
             // one bad recipient stops a batch; the refusal itself is never swallowed.
-            throw MeshAdapterPipelineExecutionException.PlaceholderSourceMissing(nodeContext, missing);
+            //
+            // The message names the paths that came back empty, not only the tokens: a mistyped
+            // customerPath otherwise produces a list of fifteen customer tokens and no hint which
+            // of four configured paths was the wrong one.
+            throw MeshAdapterPipelineExecutionException.PlaceholderSourceMissing(
+                nodeContext, missing, DescribeMissingSources(c, sources, missing));
         }
 
         var blanks = subject.EmptyByData.Concat(body.EmptyByData)
@@ -123,6 +128,53 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
         };
     }
 
+    /// <summary>
+    /// Which sources the refused tokens needed, and what each one was configured to read, so the
+    /// message names the thing an operator has to change.
+    /// </summary>
+    private static string DescribeMissingSources(
+        ResolveNotificationPlaceholdersNodeConfiguration c,
+        IReadOnlyDictionary<PlaceholderSource, string?> sources,
+        IEnumerable<string> missingTokens)
+    {
+        var needed = missingTokens
+            .Select(token => NotificationPlaceholderCatalog.Definitions
+                .FirstOrDefault(d => string.Equals(d.Token, token, StringComparison.OrdinalIgnoreCase)))
+            .Where(definition => definition != null)
+            .Select(definition => definition!.Source)
+            .Distinct()
+            .OrderBy(source => source.ToString(), StringComparer.Ordinal);
+
+        return string.Join(", ", needed.Select(source =>
+        {
+            var configured = ConfiguredPath(c, source);
+            return configured == null
+                ? $"{source} (no path configured)"
+                : $"{source} ('{configured}' held no entity)";
+        }));
+    }
+
+    private static string? ConfiguredPath(
+        ResolveNotificationPlaceholdersNodeConfiguration c, PlaceholderSource source) => source switch
+    {
+        PlaceholderSource.Customer => Blank(c.CustomerPath),
+        PlaceholderSource.Community => Blank(c.CommunityConfigPath),
+        PlaceholderSource.BillingDocument => Blank(c.BillingDocumentPath),
+        _ => null
+    };
+
+    private static string? Blank(string? path) => string.IsNullOrWhiteSpace(path) ? null : path;
+
+    /// <summary>
+    /// Present means "there is an object at that path".
+    ///
+    /// This used to probe <c>path + ".RtId"</c>, which assumes every supplied entity serialises an
+    /// RtId string at its root - true of the three send pipelines, but an assumption about their
+    /// projection rather than about the model, so an entity reached through a node that projects
+    /// attributes would have been refused although it was there. <c>Exists</c> alone is not the
+    /// answer either: it reports a path holding JSON null as present, which is the one shape that
+    /// must refuse. <c>GetKind</c> separates all three - missing, null, and an actual entity.
+    /// </summary>
     private static string? BaseOrNull(IDataContext dataContext, string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -130,7 +182,7 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
             return null;
         }
 
-        return string.IsNullOrEmpty(dataContext.Get<string>(path + ".RtId")) ? null : path;
+        return dataContext.GetKind(path) == DataKind.Object ? path : null;
     }
 
     /// <summary>

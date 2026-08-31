@@ -76,9 +76,18 @@ public class EMailSenderNode2(
     /// Matches an img element whose src is a cid reference, capturing the id. Deliberately narrow:
     /// only the element that carries the reference is removed, never the text around it.
     /// </summary>
+    /// <summary>
+    /// Every run here is <c>[^&lt;&gt;]</c> rather than <c>[^&gt;]</c> so a start position can never
+    /// scan past the next tag. With <c>[^&gt;]</c> a body carrying unclosed <c>&lt;img</c> text -
+    /// an operator writing about embedding, or a truncated paste - made each of n start positions
+    /// rescan the whole document: measured 540 ms at 6 KB, 43 s at 27 KB and 263 s at 54 KB, on
+    /// the path every send takes. The timeout is belt and braces; the character class is the fix.
+    /// </summary>
+    private static readonly TimeSpan InlineImageMatchTimeout = TimeSpan.FromSeconds(1);
+
     private static readonly Regex InlineImageReference = new(
-        """<img\b[^>]*?\bsrc\s*=\s*(?:"cid:(?<id>[^"]*)"|'cid:(?<id>[^']*)')[^>]*?/?>""",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        """<img\b[^<>]*?\bsrc\s*=\s*(?:"cid:(?<id>[^"<>]*)"|'cid:(?<id>[^'<>]*)')[^<>]*?/?>""",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, InlineImageMatchTimeout);
 
     /// <summary>
     /// The Markdown an author writes for the same thing, matched on the plain-text side where no
@@ -86,15 +95,15 @@ public class EMailSenderNode2(
     /// </summary>
     private static readonly Regex InlineImageMarkdown = new(
         """!\[(?<alt>[^\]]*)\]\(\s*cid:[^)\s]*\s*\)""",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, InlineImageMatchTimeout);
 
     /// <summary>
     /// The same reference as an element, which is what a placeholder resolving to
     /// <c>${community.logo}</c> puts in the body. Keeps the alt text, as the Markdown form does.
     /// </summary>
     private static readonly Regex InlineImageElement = new(
-        """<img\b(?=[^>]*?\bsrc\s*=\s*(?:"cid:|'cid:))[^>]*?\balt\s*=\s*(?:"(?<alt>[^"]*)"|'(?<alt>[^']*)')[^>]*?/?>|<img\b(?=[^>]*?\bsrc\s*=\s*(?:"cid:|'cid:))[^>]*?/?>""",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        """<img\b(?=[^<>]*?\bsrc\s*=\s*(?:"cid:|'cid:))[^<>]*?\balt\s*=\s*(?:"(?<alt>[^"<>]*)"|'(?<alt>[^'<>]*)')[^<>]*?/?>|<img\b(?=[^<>]*?\bsrc\s*=\s*(?:"cid:|'cid:))[^<>]*?/?>""",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, InlineImageMatchTimeout);
 
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)

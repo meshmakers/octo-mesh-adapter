@@ -263,19 +263,28 @@ public class EMailSenderNode2(
     /// The text/plain part to offer beside the HTML, or null when none can be derived honestly.
     /// Markdown and plain text are already readable as they stand; HTML is not, and inventing a
     /// stripped-down version would ship something the author never reviewed.
+    ///
+    /// Only a Markdown body is stripped. There <c>![](cid:...)</c> is markup: it becomes an image
+    /// in the HTML part, so leaving it in the text part would show punctuation for something the
+    /// other reader sees as a picture. A plain body is literal text - the same characters appear
+    /// HTML-escaped in the other part - so stripping it here would make the two alternatives of
+    /// one mail disagree, and clients render the HTML one.
     /// </summary>
-    public static string? PlainTextAlternative(string body, BodyFormats format)
+    public static string? PlainTextAlternative(string body, BodyFormats format) => format switch
     {
-        return format == BodyFormats.Html ? null : StripInlineImageMarkup(body);
-    }
+        BodyFormats.Html => null,
+        BodyFormats.PlainText => body,
+        _ => StripInlineImageMarkup(body)
+    };
 
     /// <summary>
     /// Removes Markdown image references that point at a <c>cid:</c>, keeping their alt text.
     ///
-    /// The plain alternative is the author's source, so it carried <c>![](cid:community-footer)</c>
-    /// verbatim - punctuation to a text-only reader, whether or not the image was attached. Only
-    /// <c>cid:</c> targets are touched: an image with an http target is still unreachable in plain
-    /// text, but it at least names somewhere the reader could go.
+    /// A Markdown body's plain alternative is the author's source, so it carried
+    /// <c>![](cid:community-footer)</c> verbatim - punctuation to a text-only reader, whether or
+    /// not the image was attached. Only <c>cid:</c> targets are touched: an image with an http
+    /// target is still unreachable in plain text, but it at least names somewhere the reader
+    /// could go.
     /// </summary>
     public static string StripInlineImageMarkup(string body)
     {

@@ -112,8 +112,8 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
     /// <summary>
     /// Which sources this send path supplied, as the base path to read attributes under.
     ///
-    /// A source counts as present when its entity is there, probed by <c>RtId</c> - every
-    /// runtime entity carries one. That is what keeps an entity whose attributes happen to be
+    /// A source counts as present when there is an object at its path, decided by
+    /// <see cref="BaseOrNull"/>. That is what keeps an entity whose attributes happen to be
     /// empty distinguishable from one that was never looked up, which is the whole basis of the
     /// empty-versus-refuse decision.
     /// </summary>

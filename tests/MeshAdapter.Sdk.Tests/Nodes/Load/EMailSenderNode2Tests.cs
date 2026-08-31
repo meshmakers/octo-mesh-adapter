@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Xunit;
@@ -146,6 +147,47 @@ public class EMailSenderNode2BodyFormatTests
     public void No_plain_text_alternative_is_invented_for_an_html_body()
     {
         Assert.Null(EMailSenderNode2.PlainTextAlternative("<p>x</p>", BodyFormats.Html));
+    }
+
+    [Fact]
+    public void A_markdown_image_is_dropped_from_the_plain_alternative()
+    {
+        Assert.Equal(
+            "davor Logo danach",
+            EMailSenderNode2.PlainTextAlternative("davor ![Logo](cid:community-footer) danach", BodyFormats.Markdown));
+    }
+
+    /// <summary>
+    /// A plain body is literal text, so nothing in it is an image reference to remove. Stripping
+    /// it would delete characters the author typed - and only from the text part, since the HTML
+    /// part shows them escaped, which is the shape observed on a live send: the reader saw the
+    /// raw <c>![Logo](cid:...)</c> while the text alternative beside it said "Logo".
+    /// </summary>
+    [Theory]
+    [InlineData("davor ![Logo](cid:community-footer) danach")]
+    [InlineData("""davor <img src="cid:community-footer" alt="Logo" /> danach""")]
+    public void Image_markup_typed_into_a_plain_body_stays_as_the_author_wrote_it(string body)
+    {
+        Assert.Equal(body, EMailSenderNode2.PlainTextAlternative(body, BodyFormats.PlainText));
+    }
+
+    /// <summary>
+    /// The two alternatives of one mail must say the same words. For a plain body the HTML part
+    /// is the escaped source, so decoding it back has to yield the text part unchanged.
+    /// </summary>
+    [Theory]
+    [InlineData("davor ![Logo](cid:community-footer) danach")]
+    [InlineData("""<img src="cid:community-footer" alt="Logo" />""")]
+    [InlineData("erste Zeile\nzweite Zeile")]
+    public void Both_alternatives_of_a_plain_body_carry_the_same_text(string body)
+    {
+        var html = EMailSenderNode2.RenderBody(body, BodyFormats.PlainText);
+        var plain = EMailSenderNode2.PlainTextAlternative(body, BodyFormats.PlainText);
+
+        var htmlAsText = WebUtility.HtmlDecode(
+            html.Replace("<br />" + Environment.NewLine, "\n"));
+
+        Assert.Equal(plain, htmlAsText);
     }
 }
 

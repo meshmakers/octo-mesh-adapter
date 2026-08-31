@@ -77,6 +77,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MachineLearningAnomalyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SimulateEnergyMeasurementsNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ValidateDataPointCoverageNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationPlaceholdersNodeConfiguration>();
 
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();

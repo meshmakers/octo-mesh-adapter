@@ -107,9 +107,12 @@ internal class FromTeamsBotNode(
         if (c.ValidateInboundToken)
         {
             var authHeader = input["headers"]?["Authorization"]?.GetValue<string>();
-            if (!IsInboundTokenAcceptable(authHeader, expectedAudience))
+            var outcome = await TokenValidator.ValidateAsync(authHeader, expectedAudience,
+                c.OpenIdMetadataUrl, c.ValidTokenIssuers, CancellationToken.None);
+            if (!outcome.IsValid)
             {
-                logger.LogWarning("FromTeamsBot: rejected inbound activity (token check failed)");
+                logger.LogWarning("FromTeamsBot: rejected inbound activity ({Reason})",
+                    outcome.Reason);
                 return null;
             }
         }
@@ -287,65 +290,10 @@ internal class FromTeamsBotNode(
     }
 
     /// <summary>
-    /// Best-effort inbound-token check: verifies audience and expiry from the JWT payload.
-    /// NOTE: does NOT verify the cryptographic signature (see
-    /// <see cref="FromTeamsBotNodeConfiguration.ValidateInboundToken"/> remarks). Harden before
-    /// exposing publicly.
+    /// Full inbound-token validation incl. the cryptographic signature (AB#5010); shared
+    /// across activities so the signing-key metadata cache is reused.
     /// </summary>
-    private bool IsInboundTokenAcceptable(string? authHeader, string expectedAudience)
-    {
-        if (string.IsNullOrWhiteSpace(authHeader) ||
-            !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var token = authHeader["Bearer ".Length..].Trim();
-        var parts = token.Split('.');
-        if (parts.Length != 3)
-        {
-            return false;
-        }
-
-        try
-        {
-            var payloadJson = Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));
-            using var doc = JsonDocument.Parse(payloadJson);
-            var root = doc.RootElement;
-
-            var aud = root.TryGetProperty("aud", out var audEl) ? audEl.GetString() : null;
-            if (!string.Equals(aud, expectedAudience, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (root.TryGetProperty("exp", out var expEl) && expEl.TryGetInt64(out var exp))
-            {
-                var expiresAt = DateTimeOffset.FromUnixTimeSeconds(exp);
-                if (expiresAt < DateTimeOffset.UtcNow.AddMinutes(-5))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static byte[] Base64UrlDecode(string input)
-    {
-        var s = input.Replace('-', '+').Replace('_', '/');
-        switch (s.Length % 4)
-        {
-            case 2: s += "=="; break;
-            case 3: s += "="; break;
-        }
-        return Convert.FromBase64String(s);
-    }
+    private static readonly TeamsBotTokenValidator TokenValidator = new();
 
     private static string? StripHtml(string? html)
     {

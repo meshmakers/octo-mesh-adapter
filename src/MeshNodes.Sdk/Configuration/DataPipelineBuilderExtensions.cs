@@ -38,6 +38,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ApplyChangesNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SignalSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
@@ -76,6 +77,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MachineLearningAnomalyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SimulateEnergyMeasurementsNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ValidateDataPointCoverageNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationPlaceholdersNodeConfiguration>();
 
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();

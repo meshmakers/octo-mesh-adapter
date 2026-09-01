@@ -65,7 +65,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             throw MeshAdapterPipelineExecutionException.RootFolderWellKnownNameNotSet(nodeContext);
         }
 
-        var folder = await GetFolderRootAsync(etlContext.TenantRepository, c.RootFolderWellKnownName);
+        var folder = await GetFolderRootAsync(etlContext, c.RootFolderWellKnownName);
 
         var rtFileSystemItem =
             await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(RtCkTypeIdFileSystemItem);
@@ -103,7 +103,10 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             AssociationUpdateInfo.CreateInsert(rtFileSystemItem.ToRtEntityId(), folder.ToRtEntityId(),
                 SystemCkIds.RtCkParentChildRoleId));
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — scoped: the file system item is a real user artefact, so it is created under the
+        // execution's identity and carries its creator stamp. Note the deliberate split inside this
+        // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
+        var session = await etlContext.GetScopedSessionAsync();
         session.StartTransaction();
         OperationResult operationResult = new();
         await etlContext.TenantRepository.ApplyChangesAsync(session, entityUpdateInfoList, assocUpdateInfoList,
@@ -222,19 +225,28 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
         return dataContext.Get<string?>(config.RtWellKnownNamePath);
     }
 
-    private static async Task<RtEntity> GetFolderRootAsync(ITenantRepository tenantRepository,
+    /// <summary>
+    ///     Resolves the <c>System.Reporting/FolderRoot</c> the new item is filed under.
+    /// </summary>
+    /// <remarks>
+    ///     AB#5028 — SYSTEM by decision, deliberately different from the write above: a FolderRoot is
+    ///     platform configuration that every pipeline must be able to file into. Scoped, a root the
+    ///     identity may not read is indistinguishable from a missing one and the node fails with
+    ///     RootFolderNotFound — the item would never be written at all.
+    /// </remarks>
+    private static async Task<RtEntity> GetFolderRootAsync(IMeshEtlContext etlContext,
         string rootFolderWellKnownName)
     {
         try
         {
-            var session = await tenantRepository.GetSessionAsync();
+            var session = await etlContext.GetSystemSessionAsync();
             session.StartTransaction();
 
             var queryOptions = RtEntityQueryOptions.Create()
                 .FieldEquals(nameof(RtEntity.RtWellKnownName), rootFolderWellKnownName);
 
-            var r = await tenantRepository.GetRtEntitiesByTypeAsync(session, "System.Reporting/FolderRoot",
-                queryOptions);
+            var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
+                "System.Reporting/FolderRoot", queryOptions);
 
             await session.CommitTransactionAsync();
             if (r.Items.Count() == 1)

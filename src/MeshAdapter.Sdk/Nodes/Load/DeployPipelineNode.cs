@@ -62,7 +62,11 @@ internal class DeployPipelineNode(
             return;
         }
 
-        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: the node reads pure platform types (Pipeline, DataFlow,
+        // ServiceAccountConfiguration) and then calls the communication controller as the ADAPTER's
+        // service identity. It is a service-identity node by construction; a data filter over
+        // platform entities has no meaning here.
+        using var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
 
         // Load the target pipeline entity

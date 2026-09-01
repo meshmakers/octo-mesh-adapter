@@ -13,7 +13,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class ExportDataPointMappingsNodeTests : NodeTestBase
+public class ExportDataPointMappingsNodeTests : SessionNodeTestBase
 {
     private static readonly RtCkId<CkTypeId> MappingType = new("System.Communication/DataPointMapping");
     private static readonly RtCkId<CkTypeId> ControlType = new("Loxone/Control");
@@ -21,14 +21,10 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
     private static readonly RtCkId<CkAssociationRoleId> MapsFrom = new("System.Communication/MapsFrom");
     private static readonly RtCkId<CkAssociationRoleId> MapsTo = new("System.Communication/MapsTo");
 
-    private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
-    private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
-    private readonly IOctoSession _session = A.Fake<IOctoSession>();
 
     public ExportDataPointMappingsNodeTests()
     {
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        GivenSystemSessionIsExpected();
     }
 
     [Fact]
@@ -59,7 +55,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new ExportDataPointMappingsNode(next, _etlContext);
+        var node = new ExportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -101,7 +97,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         var config = new ExportDataPointMappingsNodeConfiguration { TargetPath = "$.export" };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new ExportDataPointMappingsNode(next, _etlContext);
+        var node = new ExportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -132,7 +128,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new ExportDataPointMappingsNode(next, _etlContext);
+        var node = new ExportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -157,7 +153,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new ExportDataPointMappingsNode(next, _etlContext);
+        var node = new ExportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -188,7 +184,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         var resultSet = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => resultSet.Items).Returns(entities.ToList());
         A.CallTo(() => resultSet.TotalCount).Returns(entities.Length);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 ckTypeId,
                 A<RtEntityQueryOptions>._,
@@ -214,7 +210,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         A.CallTo(() => assocSet.Items).Returns(assocs);
         A.CallTo(() => assocSet.TotalCount).Returns(1);
 
-        A.CallTo(() => _tenantRepository.GetRtAssociationsAsync(
+        A.CallTo(() => TenantRepository.GetRtAssociationsAsync(
                 A<IOctoSession>._,
                 A<RtEntityId>.That.Matches(eid => eid.RtId.Equals(mapping.RtId)),
                 A<RtAssociationExtendedQueryOptions>.That.Matches(opts => Equals(opts.RoleId, roleId))))
@@ -223,7 +219,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         var endpointSet = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => endpointSet.Items).Returns(new List<RtEntity> { endpoint });
         A.CallTo(() => endpointSet.TotalCount).Returns(1);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 endpoint.CkTypeId!,
                 A<IReadOnlyList<OctoObjectId>>.That.Matches(ids => ids.Contains(endpoint.RtId)),
@@ -238,7 +234,7 @@ public class ExportDataPointMappingsNodeTests : NodeTestBase
         var assocSet = A.Fake<IResultSet<RtAssociation>>();
         A.CallTo(() => assocSet.Items).Returns(new List<RtAssociation>());
         A.CallTo(() => assocSet.TotalCount).Returns(0);
-        A.CallTo(() => _tenantRepository.GetRtAssociationsAsync(
+        A.CallTo(() => TenantRepository.GetRtAssociationsAsync(
                 A<IOctoSession>._,
                 A<RtEntityId>.That.Matches(eid => eid.RtId.Equals(mapping.RtId)),
                 A<RtAssociationExtendedQueryOptions>.That.Matches(opts => Equals(opts.RoleId, roleId))))

@@ -15,27 +15,19 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetRtEntitiesByTypeNodeTests : NodeTestBase
+public class GetRtEntitiesByTypeNodeTests : SessionNodeTestBase
 {
     private static readonly RtCkId<CkTypeId> TestCkTypeId = new("TestModel/TestType");
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public GetRtEntitiesByTypeNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
     }
 
     private GetRtEntitiesByTypeNode CreateNode(NodeDelegate next)
     {
-        return new GetRtEntitiesByTypeNode(next, _etlContext);
+        return new GetRtEntitiesByTypeNode(next, EtlContext);
     }
 
     private static IResultSet<RtEntity> CreateResultSet(params RtEntity[] entities)
@@ -48,7 +40,7 @@ public class GetRtEntitiesByTypeNodeTests : NodeTestBase
 
     private void SetupGetRtEntitiesByType(IResultSet<RtEntity> resultSet)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
@@ -73,7 +65,7 @@ public class GetRtEntitiesByTypeNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 TestCkTypeId,
                 A<RtEntityQueryOptions>._,
@@ -141,7 +133,7 @@ public class GetRtEntitiesByTypeNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 new RtCkId<CkTypeId>("TestModel/ResolvedType"),
                 A<RtEntityQueryOptions>._,
@@ -182,7 +174,7 @@ public class GetRtEntitiesByTypeNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 TestCkTypeId,
                 A<RtEntityQueryOptions>._,
@@ -206,8 +198,8 @@ public class GetRtEntitiesByTypeNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.StartTransaction()).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.StartTransaction()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
     }
 
     [Fact]

@@ -33,7 +33,8 @@ internal class BuildMappingTargetsNode(NodeDelegate next, IMeshEtlContext etlCon
         var c = nodeContext.GetNodeConfiguration<BuildMappingTargetsNodeConfiguration>();
         var sourceCkTypeId = new RtCkId<CkTypeId>(c.SourceCkTypeId);
 
-        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — scoped: reads the tenant's mappings and their endpoints.
+        using var session = await etlContext.GetScopedSessionAsync();
         session.StartTransaction();
 
         // Load all enabled DataPointMappings

@@ -50,6 +50,37 @@ public interface IServiceAccountTokenService
     /// </remarks>
     Task<string?> AcquireDelegatedTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
         string subjectToken, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Answers <b>who the service account is</b>: the subject and the roles its own
+    ///     client-credentials token carries (AB#5028). Third grant path next to
+    ///     <see cref="EnsureTokenAsync" /> (which stores the token as the adapter's service identity)
+    ///     and <see cref="AcquireDelegatedTokenAsync" /> (which returns a user-bound token).
+    /// </summary>
+    /// <param name="credentials">
+    ///     The account's credentials — projected into the pipeline configuration by the controller
+    ///     (AB#5027), so no repository read is needed to get here.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The identity, or <c>null</c> when no token could be acquired.</returns>
+    /// <remarks>
+    ///     <b>Roles only exist on the token.</b> They are assigned to the client in the identity
+    ///     service and are not part of the <c>ServiceAccountConfiguration</c> entity, so the only way
+    ///     to learn them is to request a token and read its <c>role</c> claims. The token is parsed
+    ///     locally without signature validation — see <see cref="JwtPayloadReader" /> for why that is
+    ///     sound here — and is neither returned nor written into
+    ///     <see cref="IServiceClientAccessToken" />: this call answers an identity question, it does
+    ///     not hand out a credential.
+    ///     <para>
+    ///         Results are cached per <c>(TenantId, ClientId)</c> until shortly before the token's own
+    ///         <c>exp</c>. The cache is deliberately NOT the <c>_tokenExpiresAt</c> field
+    ///         <see cref="EnsureTokenAsync" /> uses: that one is not keyed by configuration and belongs
+    ///         to the adapter's service identity, so sharing it would let one path suppress the other's
+    ///         refresh.
+    ///     </para>
+    /// </remarks>
+    Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(ServiceAccountCredentials credentials,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -71,9 +102,24 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     private static readonly HttpClient SharedTokenHttpClient = new();
 
+    /// <summary>
+    ///     Safety margin subtracted from a token's <c>exp</c> before it is treated as expired, so a
+    ///     cached identity is never handed out for a token that dies in flight.
+    /// </summary>
+    private static readonly TimeSpan IdentityCacheSkew = TimeSpan.FromSeconds(60);
+
     private readonly HttpClient _tokenHttpClient;
     private readonly ILogger<ServiceAccountTokenService> _logger;
     private readonly IServiceClientAccessToken _serviceClientAccessToken;
+
+    /// <summary>
+    ///     Cached service-account identities, keyed by <c>(TenantId, ClientId)</c> — the pair that
+    ///     decides which token would be issued. Process-wide because the answer is too: several
+    ///     pipelines of the same adapter share one account, and the whole point of the cache is that a
+    ///     high-frequency event trigger does not pay a token round trip per execution.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId),
+        ServiceAccountIdentity> _identityCache = new();
 
     private DateTime _tokenExpiresAt = DateTime.MinValue;
 
@@ -276,9 +322,12 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     /// carries the credentials any grant needs. Returns null (after logging) when it is missing or
     /// incomplete — shared by both grant paths so they fail identically on a broken configuration.
     /// </summary>
-    private async Task<ServiceAccountConfiguration?> ReadConfigurationAsync(ITenantRepository tenantRepository,
+    private async Task<ServiceAccountCredentials?> ReadConfigurationAsync(ITenantRepository tenantRepository,
         string wellKnownName)
     {
+        // Deliberately the parameterless SYSTEM session (AB#5028): this read is what ANSWERS the
+        // identity question, so scoping it to the identity it is about would be circular — and the
+        // configuration is platform credential material, not tenant business data.
         using var session = await tenantRepository.GetSessionAsync();
         session.StartTransaction();
 
@@ -310,12 +359,114 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        return new ServiceAccountConfiguration(issuerUri, clientId, clientSecret, tenantId);
+        return new ServiceAccountCredentials(issuerUri, clientId, clientSecret, tenantId);
     }
 
-    private sealed record ServiceAccountConfiguration(
-        string IssuerUri,
-        string ClientId,
-        string? ClientSecret,
-        string? TenantId);
+    /// <inheritdoc />
+    public async Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(
+        ServiceAccountCredentials credentials, CancellationToken cancellationToken = default)
+    {
+        var cacheKey = (credentials.TenantId ?? string.Empty, credentials.ClientId);
+        if (_identityCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
+        {
+            return cached;
+        }
+
+        DiscoveryDocumentResponse disco;
+        try
+        {
+            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(credentials.IssuerUri, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A placeholder IssuerUri left behind by a blueprint re-apply makes discovery THROW
+            // ("Malformed URL") rather than report an error — the AB#4541 shape.
+            _logger.LogError(ex,
+                "OIDC discovery at {IssuerUri} failed while resolving the identity of service account client {ClientId}",
+                credentials.IssuerUri, credentials.ClientId);
+            return null;
+        }
+
+        if (disco.IsError)
+        {
+            _logger.LogError(
+                "Failed to discover token endpoint at {IssuerUri} while resolving the identity of service account client {ClientId}: {Error}",
+                credentials.IssuerUri, credentials.ClientId, disco.Error);
+            return null;
+        }
+
+        var tokenRequest = new ClientCredentialsTokenRequest
+        {
+            Address = disco.TokenEndpoint,
+            ClientId = credentials.ClientId,
+            ClientSecret = credentials.ClientSecret,
+            Scope = CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
+        };
+
+        if (!string.IsNullOrWhiteSpace(credentials.TenantId))
+        {
+            tokenRequest.Parameters.Add("acr_values", $"tenant:{credentials.TenantId}");
+        }
+
+        TokenResponse response;
+        try
+        {
+            response = await _tokenHttpClient.RequestClientCredentialsTokenAsync(tokenRequest, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex,
+                "Token request to {IssuerUri} failed while resolving the identity of service account client {ClientId}",
+                credentials.IssuerUri, credentials.ClientId);
+            return null;
+        }
+
+        if (response.IsError || string.IsNullOrEmpty(response.AccessToken))
+        {
+            _logger.LogError(
+                "Identity service {IssuerUri} refused a token for service account client {ClientId} in tenant '{TenantId}': {Error} ({ErrorDescription})",
+                credentials.IssuerUri, credentials.ClientId, credentials.TenantId,
+                response.Error ?? "no token", response.ErrorDescription ?? "no description");
+            return null;
+        }
+
+        if (!JwtPayloadReader.TryRead(response.AccessToken, out var claims))
+        {
+            // An opaque (reference) token carries no readable claims. Reporting no identity is the
+            // only honest answer — inventing an empty-role one would look like a correctly resolved
+            // account with no permissions, which fails silently everywhere downstream.
+            _logger.LogError(
+                "The token issued for service account client {ClientId} is not a readable JWT; its identity cannot be resolved",
+                credentials.ClientId);
+            return null;
+        }
+
+        // A client-credentials token has no 'sub'; 'client_id' is the subject the engine stamps and
+        // filters on then — the same precedence RuntimeSecurityContextResolver uses in octo-mcp-service.
+        var subjectId = claims.Subject ?? claims.ClientId ?? credentials.ClientId;
+
+        // The token's own exp is the truth; expires_in is the fallback for an issuer that omits it.
+        var expiresAt = (claims.ExpiresAtUtc ?? DateTime.UtcNow.AddSeconds(response.ExpiresIn)) - IdentityCacheSkew;
+
+        var identity = new ServiceAccountIdentity(subjectId, claims.Roles, expiresAt);
+
+        if (identity.Roles.Count == 0)
+        {
+            // Not an error — but an account with no roles produces an empty role set everywhere
+            // downstream, and every role-gated read then returns nothing while every log stays quiet.
+            // See the AB#5027 note in octo-communication-controller-services/CLAUDE.md.
+            _logger.LogWarning(
+                "Service account client {ClientId} in tenant '{TenantId}' carries no roles; pipelines running under it see only data that needs none",
+                credentials.ClientId, credentials.TenantId);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Resolved service account identity for client {ClientId} in tenant '{TenantId}': subject {SubjectId} with {RoleCount} role(s)",
+                credentials.ClientId, credentials.TenantId, subjectId, identity.Roles.Count);
+        }
+
+        _identityCache[cacheKey] = identity;
+        return identity;
+    }
 }

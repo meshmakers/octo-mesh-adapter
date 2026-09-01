@@ -29,26 +29,18 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 /// N-element wildcard expansions to a single origin ID. Same root cause as
 /// finding #5; uses the same <c>EnumerateMatches</c>-based fix.
 /// </summary>
-public class GetAssociationTargetsNodeTests : NodeTestBase
+public class GetAssociationTargetsNodeTests : SessionNodeTestBase
 {
     private const string TestTenantId = "test-tenant";
     private static readonly RtCkId<CkTypeId> TestOriginCkTypeId = new("TestModel/OriginType");
     private static readonly RtCkId<CkTypeId> TestTargetCkTypeId = new("TestModel/TargetType");
     private static readonly RtCkId<CkAssociationRoleId> TestAssociationRoleId = new("TestModel/TestRole");
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public GetAssociationTargetsNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantId).Returns(TestTenantId);
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        A.CallTo(() => EtlContext.TenantId).Returns(TestTenantId);
     }
 
     [Fact]
@@ -72,8 +64,8 @@ public class GetAssociationTargetsNodeTests : NodeTestBase
         A.CallTo(() => emptyResult.GetEnumerator()).Returns(
             new List<KeyValuePair<RtEntityId, IResultSet<RtEntity>>>().GetEnumerator());
 
-        A.CallTo(() => _tenantRepository.GetRtAssociationTargetsAsync(
-                _session,
+        A.CallTo(() => TenantRepository.GetRtAssociationTargetsAsync(
+                Session,
                 A<IEnumerable<OctoObjectId>>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtCkId<CkAssociationRoleId>>._,
@@ -96,7 +88,7 @@ public class GetAssociationTargetsNodeTests : NodeTestBase
             TargetPath = "$.result"
         };
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetAssociationTargets");
-        var node = new GetAssociationTargetsNode(next, _etlContext);
+        var node = new GetAssociationTargetsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -123,8 +115,8 @@ public class GetAssociationTargetsNodeTests : NodeTestBase
         A.CallTo(() => emptyResult.GetEnumerator()).Returns(
             new List<KeyValuePair<RtEntityId, IResultSet<RtEntity>>>().GetEnumerator());
 
-        A.CallTo(() => _tenantRepository.GetRtAssociationTargetsAsync(
-                _session, A<IEnumerable<OctoObjectId>>._, A<RtCkId<CkTypeId>>._,
+        A.CallTo(() => TenantRepository.GetRtAssociationTargetsAsync(
+                Session, A<IEnumerable<OctoObjectId>>._, A<RtCkId<CkTypeId>>._,
                 A<RtCkId<CkAssociationRoleId>>._, A<RtCkId<CkTypeId>>._,
                 A<GraphDirections>._, A<IReadOnlyList<OctoObjectId>?>._,
                 A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
@@ -141,7 +133,7 @@ public class GetAssociationTargetsNodeTests : NodeTestBase
             TargetPath = "$.result"
         };
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetAssociationTargets");
-        var node = new GetAssociationTargetsNode(next, _etlContext);
+        var node = new GetAssociationTargetsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

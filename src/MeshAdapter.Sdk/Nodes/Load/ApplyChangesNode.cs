@@ -62,7 +62,12 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
                     count++;
                     try
                     {
-                        var session = await etlContext.TenantRepository.GetSessionAsync();
+                        // AB#5028 — SYSTEM by decision, and frozen that way: this is the deprecated
+                        // @1 twin of ApplyChanges@2. Its whole contract is "behaves as it always
+                        // did"; the caller-scoped write lives in @2, and pipelines still on @1 must
+                        // not start stamping or filtering because the adapter was upgraded. Migrate
+                        // to ApplyChanges@2 to get an identity.
+                        var session = await etlContext.GetSystemSessionAsync();
                         session.StartTransaction();
 
                         OperationResult operationResult = new();

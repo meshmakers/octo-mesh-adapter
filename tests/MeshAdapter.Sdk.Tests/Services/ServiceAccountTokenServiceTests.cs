@@ -213,6 +213,180 @@ public class ServiceAccountTokenServiceTests
         Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // AcquireServiceAccountIdentityAsync (AB#5028): who the service account IS. Roles are not on the
+    // ServiceAccountConfiguration entity — the only place they exist is the issued token's claims.
+    // ---------------------------------------------------------------------------------------------
+
+    private static readonly ServiceAccountCredentials Credentials =
+        new(Issuer, ClientId, ClientSecret, TenantId);
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_ReadsSubjectAndRolesOutOfTheIssuedToken()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId,
+                roles: ["CommunicationManagement", "Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials);
+
+        Assert.NotNull(identity);
+        // A client-credentials token carries no 'sub'; client_id is the subject the engine stamps and
+        // filters on — the same precedence the MCP server's resolver uses.
+        Assert.Equal(ClientId, identity!.SubjectId);
+        Assert.Equal(["CommunicationManagement", "Accounting"], identity.Roles);
+        Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
+        Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm["acr_values"]);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_ASingleRoleIsNotAnArray()
+    {
+        // A JWT emits one role as a bare string and several as an array. Reading only the array shape
+        // would make an account with exactly one role look role-less — which fails silently.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+
+        var identity = await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials);
+
+        Assert.Equal(["Accounting"], identity!.Roles);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_ASubjectClaimWins()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: "sub-42", clientId: ClientId, roles: [], expiresInSeconds: 3600),
+            expiresIn: 3600));
+
+        var identity = await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials);
+
+        Assert.Equal("sub-42", identity!.SubjectId);
+        Assert.Empty(identity.Roles);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_SecondCallIsAnsweredFromTheCache()
+    {
+        // Every scoped session of every execution asks for this. A round trip per pipeline run would
+        // be paid by exactly the high-frequency event triggers the lazy resolution exists to protect.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var first = await service.AcquireServiceAccountIdentityAsync(Credentials);
+        var second = await service.AcquireServiceAccountIdentityAsync(Credentials);
+
+        Assert.Equal(first!.SubjectId, second!.SubjectId);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_ADifferentClientIsNotServedFromAnotherCacheEntry()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler);
+
+        await service.AcquireServiceAccountIdentityAsync(Credentials);
+        await service.AcquireServiceAccountIdentityAsync(Credentials with { ClientId = "another-client" });
+
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_AnAlmostExpiredTokenIsNotCached()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 1),
+            expiresIn: 1));
+        var service = CreateService(handler);
+
+        await service.AcquireServiceAccountIdentityAsync(Credentials);
+        await service.AcquireServiceAccountIdentityAsync(Credentials);
+
+        // The cached entry expires a minute before the token does, so a one-second token is never reused.
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_AnOpaqueTokenYieldsNoIdentity()
+    {
+        // Inventing an empty-role identity would look like a correctly resolved account with no
+        // permissions — the failure mode that goes unnoticed everywhere downstream.
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("an-opaque-reference-token", expiresIn: 3600));
+
+        Assert.Null(await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials));
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_IdentityRefusesTheClient_ReturnsNull()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenError(
+            HttpStatusCode.BadRequest, """{"error":"invalid_client"}"""));
+
+        Assert.Null(await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials));
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_NeverTouchesTheProcessWideServiceIdentity()
+    {
+        // This call answers an identity question; it does not hand out a credential, and it must not
+        // overwrite the adapter's own service token towards the communication controller.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+
+        await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials);
+
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+    }
+
+    /// <summary>Builds the compact-serialisation JWTs the identity stub hands out.</summary>
+    private static class TestJwt
+    {
+        public static string Create(string? subject, string? clientId, string[] roles, int expiresInSeconds)
+        {
+            var claims = new List<string>
+            {
+                $"\"exp\":{DateTimeOffset.UtcNow.AddSeconds(expiresInSeconds).ToUnixTimeSeconds()}"
+            };
+
+            if (subject != null)
+            {
+                claims.Add($"\"sub\":\"{subject}\"");
+            }
+
+            if (clientId != null)
+            {
+                claims.Add($"\"client_id\":\"{clientId}\"");
+            }
+
+            if (roles.Length == 1)
+            {
+                claims.Add($"\"role\":\"{roles[0]}\"");
+            }
+            else if (roles.Length > 1)
+            {
+                claims.Add($"\"role\":[{string.Join(",", roles.Select(r => $"\"{r}\""))}]");
+            }
+
+            return $"{Segment("{\"alg\":\"RS256\",\"typ\":\"JWT\"}")}."
+                   + $"{Segment("{" + string.Join(",", claims) + "}")}.signature-not-verified";
+        }
+
+        private static string Segment(string json)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        }
+    }
     /// <summary>
     /// Asserts that the request carried the service account's own client credentials, whichever of
     /// the two OAuth-sanctioned places IdentityModel put them in (Basic header or post body).

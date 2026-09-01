@@ -120,6 +120,123 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
   own token.
 - **AdapterEventService**: Writes `System.Notification/Event` entries tagged with the `MeshAdapter` source into the tenant's event log, the audit trail Studio shows under Repository → Events. Used to record authorization decisions on secured trigger routes; failures degrade to a log warning so auditing can never fail a request
 
+## Pipeline execution identity — every session is classified (AB#5028)
+
+Pipeline execution runs under a real identity instead of anonymous, parameterless system sessions.
+The mechanism is a single resolution point, two methods on the context, and a classification that is
+written down at every call site.
+
+### Resolution — once per execution, lazily
+
+`MeshContextCreatorService.CreateEtlContext` is the one point every execution flows through, so it
+builds one `PipelineIdentityResolver` per execution and hands it to `MeshEtlContext`. Precedence:
+
+1. **`ExecutePipelineOptions.VerifiedPrincipal`** (AB#4975) → `RtSecurityContext.ForUser(sub, roles)`.
+   Free: it is already on the options.
+2. **The adapter's / pipeline's service account** (AB#5027). The communication controller projects
+   the `ServiceAccountConfiguration` into the pipeline's configuration list, so the credentials come
+   out of `IGlobalConfiguration.GetAllRawJsonByCkTypeId("System.Communication/ServiceAccountConfiguration")`
+   with no repository read. The **roles** are the expensive half — they are not on the entity, only
+   as `role` claims on the issued token — so `IServiceAccountTokenService.AcquireServiceAccountIdentityAsync`
+   requests a client-credentials token, parses it locally (`JwtPayloadReader`, no signature check:
+   the token is the answer to our own request over TLS and never passed through a caller) and caches
+   the result per `(TenantId, ClientId)` until shortly before the token's own `exp`.
+3. Otherwise `RtSecurityContext.System`.
+
+Resolution is **lazy and memoised**: many executions never open a session at all (high-frequency
+event triggers), and they must not pay a token round trip. The identity cache is deliberately NOT the
+`_tokenExpiresAt` field `EnsureTokenAsync` uses — that one is not keyed by configuration and belongs
+to the adapter's own service identity, so sharing it would let one path suppress the other's refresh.
+
+🔴 **Fail-closed once an account is configured.** A failed acquisition throws
+(`MeshAdapterPipelineExecutionException.ServiceAccountIdentityUnavailable`) instead of falling back to
+the system context. The system context bypasses data-level permissions entirely (AB#4969), so a
+fallback would fail *open*: an identity-service outage would silently widen every read and leave every
+write unstamped, indistinguishable from a correctly restricted run. The System path survives only
+where **nothing** is configured — the pre-AB#5027 fleet and every tenant until provisioning has run —
+because changing behaviour there would take the whole fleet down.
+
+⚠️ **Two caveats.** `GetAllRawJsonByCkTypeId` matches `ConfigurationTypeId.SemanticVersionedFullName`,
+which appends `-N` as soon as the CK **type** version passes 1: a type bump makes the match go quiet
+and every pipeline fall back to the system context, and that failure looks like "nothing happened",
+not like an error — a bump has to be paired with a change to
+`PipelineIdentityResolver.ServiceAccountConfigurationCkTypeId`. And the adapter caches
+`GlobalConfiguration` at pipeline **registration**, so changing the linked service account only takes
+effect after the pipeline / data flow is redeployed.
+
+### Distribution — `IMeshEtlContext`
+
+| Method | Meaning |
+|---|---|
+| `GetScopedSessionAsync()` / `GetScopedSession()` | The effective identity. Stamps `RtCreatedBy`, subject to data permissions. |
+| `GetSystemSessionAsync()` / `GetSystemSession()` | **Explicitly** `RtSecurityContext.System`. |
+
+The second is the more important one. Its existence is what turns "which identity does this node use"
+from an accident of who last touched the call site into a decision written down in the code: a node
+either says scoped or it says system, and a new node has to choose. **No node calls
+`TenantRepository.GetSessionAsync()` any more** — `TenantRepositorySecurityExtensions` degrades into
+that overload *silently* for a repository without `ISecureSessionFactory`, which is exactly the trap
+this closes. The only remaining parameterless system session in the SDK is
+`ServiceAccountTokenService.ReadConfigurationAsync`, which is circular by nature: it is the read that
+*answers* the identity question.
+
+### Classification (32 call sites: 15 scoped, 17 system)
+
+**System by decision** — each carries a code comment saying what breaks if it were scoped:
+
+| Node | Why system |
+|---|---|
+| `ImportFromExcel@1` (sync) + its `WellKnownNameLoader` (sync) | An import is a bulk load belonging to the tenant; a creator stamp makes every imported row invisible to an OwnedOnly reader, and a filtered name lookup re-creates existing entities as duplicates. |
+| `ImportDataPointMappings@1` / `ExportDataPointMappings@1` | Backup/restore pair. A read filter writes a *shorter* export file that looks complete, and the loss only surfaces on restore. |
+| `DeployPipeline@1` | Reads pure platform types and calls the controller as the adapter's service identity — a service-identity node by construction. |
+| `GetNotificationTemplate@1` | Platform configuration; a filter turns "may not see" into the same hard `TemplateNotFound` as "does not exist". |
+| `CheckDuplicate@1` | Must see other people's documents, or it reports "no duplicate" and the record is created twice — silently, in exactly the case the node exists to prevent. |
+| `BackfillFromRtEntity@1` | Would not find the entity and backfill nothing, with a green execution. |
+| `SaveTimeRangeStreamDataInArchive@1` | The read is an orphan guard; a filter turns it into a hard "refusing to insert". |
+| `GetFileSystemContent@1`, `SendEMail@1`, `SftpUpload@1`, `ToDiscord@1` (×2) | Binary download for outgoing channels: attachments regularly belong to somebody else, and a filter does not fail the node — the message goes out without its attachment. |
+| `ApplyChanges@1` | Frozen: the deprecated twin of `@2`. A pipeline still on `@1` must not start stamping or filtering because the adapter was upgraded. Migrate to `@2` to get an identity. |
+| `CreateZipArchive@1` / `CreateFileSystemUpdate@1` — their `GetFolderRootAsync` helpers | `System.Reporting/FolderRoot` is platform configuration; a filtered root reads as missing and the artefact is never written at all. |
+
+**Two identities in one node:** `CreateZipArchive@1` and `CreateFileSystemUpdate@1` write real user
+artefacts (scoped, stamped) but resolve their FolderRoot as system. Keep the split.
+
+**Everything else is scoped**, including `ApplyChanges@2` (its AB#4975 branch no longer falls back to
+a system session when there is no verified caller — the fallback is now the service account) and
+`UpdateRtEntityIfNewer@1`. Two of them carry a warning in the comment: `ValidateDataPointCoverage@1`
+produces **false positives** ("coverage missing") under a narrow identity, and
+`GenerateDataPointMappings@1` can propose duplicates of mappings it cannot see.
+
+**Not touched:** the session-less CrateDB / stream-data paths (`SaveStreamDataInArchive@1`,
+`GetStreamData@1`, `AggregateStreamData@1` — they go through `IStreamDataRepository`, which opens its
+own sessions internally) and `AdapterEventService`. No session is in play there.
+
+### The test guard
+
+`SessionNodeTestBase` (unit tests) is the reason this stays true. It fakes the repository as
+`A.Fake<ITenantRepository>(o => o.Implements<ISecureSessionFactory>())` — without that face the
+security-context extension falls back to the parameterless system session **in silence**, which is
+why the caller-scoped branch AB#4975 added to `ApplyChanges@2` was green for months without ever
+enforcing anything. Two guards are armed: the parameterless overloads throw, and a system session
+throws until a test declares `GivenSystemSessionIsExpected()`. After every test, any caller-scoped
+session is checked to have carried the full identity (subject *and* roles) — a `ForUser(null, [])`
+context is not the system context and would otherwise sail through.
+
+`SessionIdentityClassificationTests` scans `src/MeshAdapter.Sdk/Nodes` (located via
+`[CallerFilePath]`) and pins the table above file by file, that no node reaches the repository
+directly, that every call site carries its `AB#5028` reasoning, and that exactly the two known
+synchronous sites are synchronous. `SessionIdentityBehaviourTests` drives the nodes that had no suite
+of their own. `SessionIdentityIntegrationTests` verifies the same contract against the **real**
+`TenantRepository`, where `session.GetSecurityContext()` is the truth.
+
+### Known gap — identity does not survive a pipeline chain
+
+`FromPipelineDataEvent@1` (in `octo-communication-sdk`) builds its `ExecutePipelineOptions` without a
+`VerifiedPrincipal` or a caller token, so an HTTP-triggered pipeline that chains to a second one via
+`ToPipelineDataEvent@1` loses the principal there; the second pipeline resolves the service account
+instead. Deliberately **not** fixed here — forwarding a caller identity across an asynchronous bus hop
+has its own security implications (who may enqueue into that data flow, and for how long the identity
+stays valid) and needs its own work item.
+
 ### JSON / Serialization (System.Text.Json)
 
 The adapter and all ~35 nodes are System.Text.Json-only on the pipeline data path. Newtonsoft is no longer used for pipeline data flow (it may still appear in unrelated transports such as SignalR contracts).

@@ -53,7 +53,8 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
         var queryOptions = RtEntityQueryOptions.Create()
             .FieldIn(nameof(RtEntity.RtWellKnownName), names);
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — scoped: an ordinary read of tenant business data.
+        var session = await etlContext.GetScopedSessionAsync();
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip,
             c.Take);

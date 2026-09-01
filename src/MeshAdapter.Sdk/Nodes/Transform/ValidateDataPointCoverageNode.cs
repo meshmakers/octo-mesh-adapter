@@ -66,7 +66,12 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
             .Where(r => !string.IsNullOrWhiteSpace(r.CkTypeId))
             .ToDictionary(r => r.CkTypeId, r => r, StringComparer.OrdinalIgnoreCase);
 
-        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — scoped: validates coverage over tenant business data.
+        // ⚠️ The verdict is only as complete as the identity's view: a mapping the execution may not
+        // read is indistinguishable from a mapping that does not exist, so a narrowly scoped identity
+        // produces FALSE POSITIVES ("coverage missing") rather than false negatives. That direction is
+        // the safe one for a validator, but the report has to be read with the identity in mind.
+        using var session = await etlContext.GetScopedSessionAsync();
         session.StartTransaction();
 
         // Load root entity

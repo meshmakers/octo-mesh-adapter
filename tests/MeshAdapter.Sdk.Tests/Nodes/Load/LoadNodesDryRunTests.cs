@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MeshAdapter.Sdk.Tests.Helpers;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
@@ -30,7 +31,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 /// from each cluster (MongoDB / CrateDB) is exercised; the catalog pin
 /// guards the rest.
 /// </summary>
-public class LoadNodesDryRunTests
+public class LoadNodesDryRunTests : SessionNodeTestBase
 {
     private static readonly IPipelineExecutionMode DryRunOn =
         new DefaultPipelineExecutionMode { IsDryRun = true };
@@ -40,10 +41,6 @@ public class LoadNodesDryRunTests
     {
         const string dataPath = "$.updateInfos";
         var recorder = new RecordingDebugger();
-        var etlContext = A.Fake<IMeshEtlContext>();
-        var tenantRepo = A.Fake<ITenantRepository>();
-        A.CallTo(() => etlContext.TenantRepository).Returns(tenantRepo);
-
         var config = new ApplyChangesNodeConfiguration { Path = dataPath };
         var (dataContext, nodeContext, next) = BuildContext(config, recorder);
 
@@ -55,10 +52,10 @@ public class LoadNodesDryRunTests
         };
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(dataPath)).Returns(data);
 
-        var node = new ApplyChangesNode(next, etlContext);
+        var node = new ApplyChangesNode(next, EtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => tenantRepo.GetSessionAsync()).MustNotHaveHappened();
+        AssertNoSessionOpened();
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
 
         var intent = Assert.Single(recorder.Intents,
@@ -74,7 +71,6 @@ public class LoadNodesDryRunTests
         const string dataPath = "$.data";
         const string archiveRtId = "000000000000000000000099";
         var recorder = new RecordingDebugger();
-        var etlContext = A.Fake<IMeshEtlContext>();
         // ISystemContext must never be touched on the dry-run short-circuit; FakeItEasy
         // throws on any unconfigured call, so a non-configured fake catches it.
         var systemContext = A.Fake<ISystemContext>();
@@ -91,7 +87,7 @@ public class LoadNodesDryRunTests
 
         var nodeType = typeof(SaveStreamDataInArchiveNode);
         var ctor = nodeType.GetConstructors().Single();
-        var node = (IPipelineNode)ctor.Invoke(new object[] { next, etlContext, systemContext });
+        var node = (IPipelineNode)ctor.Invoke(new object[] { next, EtlContext, systemContext });
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => systemContext.FindTenantContextAsync(A<string>._)).MustNotHaveHappened();
@@ -108,11 +104,8 @@ public class LoadNodesDryRunTests
     {
         const string dataPath = "$.updateInfos";
 
-        var etlContext = A.Fake<IMeshEtlContext>();
-        var tenantRepo = A.Fake<ITenantRepository>();
-        var session = A.Fake<IOctoSession>();
-        A.CallTo(() => etlContext.TenantRepository).Returns(tenantRepo);
-        A.CallTo(() => tenantRepo.GetSessionAsync()).Returns(Task.FromResult(session));
+        // AB#5028 — ApplyChanges@1 stays SYSTEM: it is the frozen, deprecated twin of @2.
+        GivenSystemSessionIsExpected();
 
         var config = new ApplyChangesNodeConfiguration { Path = dataPath };
         var (dataContext, nodeContext, next) = BuildContext(config, debugger: null, executionMode: null);
@@ -125,11 +118,11 @@ public class LoadNodesDryRunTests
         };
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(dataPath)).Returns(data);
 
-        var node = new ApplyChangesNode(next, etlContext);
+        var node = new ApplyChangesNode(next, EtlContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => tenantRepo.GetSessionAsync()).MustHaveHappenedOnceOrMore();
-        A.CallTo(() => session.StartTransaction()).MustHaveHappenedOnceOrMore();
+        AssertSystemSessionOpened();
+        A.CallTo(() => Session.StartTransaction()).MustHaveHappenedOnceOrMore();
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 

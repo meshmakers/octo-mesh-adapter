@@ -294,7 +294,9 @@ public class ToDiscordNode(
 
         EntityBinaryInfo? content;
         string? entityName;
-        using (var session = await tenantRepository.GetSessionAsync().ConfigureAwait(false))
+        // AB#5028 — SYSTEM by decision: attachment lookup for an outgoing channel, same rule as
+        // SendEMail@1 / SftpUpload@1 — the file being shipped is regularly somebody else's.
+        using (var session = await etlContext.GetSystemSessionAsync().ConfigureAwait(false))
         {
             session.StartTransaction();
             var result = await tenantRepository.GetRtEntitiesByIdAsync(
@@ -326,7 +328,9 @@ public class ToDiscordNode(
         var filename = FirstNonBlank(filenameOverride, entityName, content.Filename)
                        ?? "attachment";
 
-        using var downloadSession = await tenantRepository.GetSessionAsync().ConfigureAwait(false);
+        // AB#5028 — SYSTEM by decision: see the lookup above; the binary must follow the same rule as
+        // the entity it hangs on, or the node would find the item and fail on its content.
+        using var downloadSession = await etlContext.GetSystemSessionAsync().ConfigureAwait(false);
         downloadSession.StartTransaction();
         var handler = await tenantRepository.DownloadLargeBinaryAsync(
             downloadSession, content.BinaryId.Value, CancellationToken.None);

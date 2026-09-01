@@ -17,7 +17,11 @@ internal class WellKnownNameLoader(IMeshEtlContext etlContext) : IWellKnownNameL
         var queryOptions = RtEntityQueryOptions.Create()
             .FieldIn(nameof(RtEntity.RtWellKnownName), wellKnownNames);
 
-        using var session = etlContext.TenantRepository.GetSession();
+        // AB#5028 — SYSTEM by decision, and SYNCHRONOUS (the second of only two such call sites):
+        // this is ImportFromExcel@1's lookup of the entities the import links against, so it must
+        // resolve the same set the import writes. Scoped, an existing entity the identity cannot see
+        // would be re-created as a duplicate instead of being reused.
+        using var session = etlContext.GetSystemSession();
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
             rtCkTypeId, queryOptions);

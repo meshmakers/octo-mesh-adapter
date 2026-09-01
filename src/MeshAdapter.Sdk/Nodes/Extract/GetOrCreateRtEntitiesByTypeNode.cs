@@ -34,7 +34,8 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
 
         try
         {
-            session = await etlContext.TenantRepository.GetSessionAsync();
+            // AB#5028 — scoped: reads and then creates tenant business data.
+            session = await etlContext.GetScopedSessionAsync();
             session.StartTransaction();
 
             var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId,

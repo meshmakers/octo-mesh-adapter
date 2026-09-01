@@ -172,7 +172,9 @@ public class SftpUploadNode(
             }
 
             var tenantRepository = etlContext.TenantRepository;
-            using var session = await tenantRepository.GetSessionAsync().ConfigureAwait(false);
+            // AB#5028 — SYSTEM by decision: binary download for an outgoing channel, same rule as
+            // SendEMail@1 / ToDiscord@1 — the file being shipped is regularly somebody else's.
+            using var session = await etlContext.GetSystemSessionAsync().ConfigureAwait(false);
             session.StartTransaction();
 
             var streamHandler = await tenantRepository.DownloadLargeBinaryAsync(session,

@@ -85,14 +85,12 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                     count++;
                     try
                     {
-                        // AB#4975: a trigger-verified caller makes the write caller-scoped — the
-                        // engine stamps RtCreatedBy and enforces data permissions. Triggers without
-                        // a principal keep the system session (F5 v1 behavior).
-                        var verifiedPrincipal = etlContext.VerifiedPrincipal;
-                        var session = verifiedPrincipal == null
-                            ? await etlContext.TenantRepository.GetSessionAsync()
-                            : await etlContext.TenantRepository.GetSessionAsync(
-                                RtSecurityContext.ForUser(verifiedPrincipal.SubjectId, verifiedPrincipal.Roles));
+                        // AB#4975 / AB#5028 — scoped: the engine stamps RtCreatedBy and enforces data
+                        // permissions for whoever the execution acts as. The AB#4975 branch that fell
+                        // back to a system session without a verified caller is gone: the fallback is
+                        // now the adapter's service account and only then the system context, decided
+                        // once per execution rather than here (AB#5027 / AB#5028).
+                        var session = await etlContext.GetScopedSessionAsync();
                         session.StartTransaction();
 
                         OperationResult operationResult = new();

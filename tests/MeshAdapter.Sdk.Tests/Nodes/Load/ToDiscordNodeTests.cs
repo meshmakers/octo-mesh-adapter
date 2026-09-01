@@ -19,29 +19,24 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class ToDiscordNodeTests : NodeTestBase
+public class ToDiscordNodeTests : SessionNodeTestBase
 {
     private const string ServerConfig = "discord-1";
     private const string BotToken = "bot-token-xyz";
     private const string ChannelId = "123456789012345678";
 
-    private readonly IMeshEtlContext _etlContext;
     private readonly IGlobalConfiguration _globalConfiguration;
-    private readonly ITenantRepository _tenantRepository;
     private readonly Dictionary<string, object?> _properties;
     private readonly RecordingHandler _handler;
     private readonly IHttpClientFactory _httpClientFactory;
 
     public ToDiscordNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
         _globalConfiguration = A.Fake<IGlobalConfiguration>();
-        _tenantRepository = A.Fake<ITenantRepository>();
         _properties = new Dictionary<string, object?>();
 
-        A.CallTo(() => _etlContext.GlobalConfiguration).Returns(_globalConfiguration);
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _etlContext.Properties).Returns(_properties);
+        A.CallTo(() => EtlContext.GlobalConfiguration).Returns(_globalConfiguration);
+        A.CallTo(() => EtlContext.Properties).Returns(_properties);
 
         _handler = new RecordingHandler(HttpStatusCode.OK,
             """{"id":"111","channel_id":"123456789012345678","content":"hi"}""");
@@ -55,7 +50,7 @@ public class ToDiscordNodeTests : NodeTestBase
     }
 
     private ToDiscordNode CreateNode(NodeDelegate next) =>
-        new ToDiscordNode(next, _etlContext, _httpClientFactory);
+        new ToDiscordNode(next, EtlContext, _httpClientFactory);
 
     [Fact]
     public async Task ProcessObjectAsync_ContentOnly_PostsCorrectMessage()
@@ -344,7 +339,7 @@ public class ToDiscordNodeTests : NodeTestBase
         byte[] bytes)
     {
         var session = A.Fake<IOctoSession>();
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
+        GivenSystemSessionIsExpected(session);
 
         var fsItem = new RtEntity(FileSystemItemCkTypeId, new OctoObjectId(fsItemRtId));
         fsItem.SetAttributeValue("Content", AttributeValueTypesDto.BinaryLinked, new EntityBinaryInfo
@@ -363,7 +358,7 @@ public class ToDiscordNodeTests : NodeTestBase
         A.CallTo(() => resultSet.Items).Returns(new[] { fsItem });
         A.CallTo(() => resultSet.TotalCount).Returns(1);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 FileSystemItemCkTypeId,
                 A<IReadOnlyList<OctoObjectId>>.That.Matches(ids =>
@@ -378,7 +373,7 @@ public class ToDiscordNodeTests : NodeTestBase
         A.CallTo(() => downloadHandler.Filename).Returns(contentFilename!);
         A.CallTo(() => downloadHandler.ContentType).Returns(contentType);
 
-        A.CallTo(() => _tenantRepository.DownloadLargeBinaryAsync(
+        A.CallTo(() => TenantRepository.DownloadLargeBinaryAsync(
                 A<IOctoSession>._,
                 A<OctoObjectId>.That.Matches(id => id.ToString() == binaryRtId),
                 A<CancellationToken>._))
@@ -501,12 +496,12 @@ public class ToDiscordNodeTests : NodeTestBase
     {
         const string fsItemRtId = "000000000000000000000042";
         var session = A.Fake<IOctoSession>();
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
+        GivenSystemSessionIsExpected(session);
 
         var emptyResult = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => emptyResult.Items).Returns(Array.Empty<RtEntity>());
         A.CallTo(() => emptyResult.TotalCount).Returns(0);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<IReadOnlyList<OctoObjectId>>._,
                 A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
             .Returns(Task.FromResult<IResultSet<RtEntity>>(emptyResult));
@@ -532,7 +527,7 @@ public class ToDiscordNodeTests : NodeTestBase
     {
         const string fsItemRtId = "000000000000000000000042";
         var session = A.Fake<IOctoSession>();
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(session));
+        GivenSystemSessionIsExpected(session);
 
         var fsItem = new RtEntity(FileSystemItemCkTypeId, new OctoObjectId(fsItemRtId));
         fsItem.SetAttributeValue("Name", AttributeValueTypesDto.String, "orphan.pdf");
@@ -540,7 +535,7 @@ public class ToDiscordNodeTests : NodeTestBase
         var result = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => result.Items).Returns(new[] { fsItem });
         A.CallTo(() => result.TotalCount).Returns(1);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<IReadOnlyList<OctoObjectId>>._,
                 A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
             .Returns(Task.FromResult<IResultSet<RtEntity>>(result));

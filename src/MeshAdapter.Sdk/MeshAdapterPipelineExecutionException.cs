@@ -1097,4 +1097,19 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "set, which configures the host to talk to. Configure a path relative to the configured " +
             "base URL, or drop the ApiConfiguration and supply the header yourself.");
     }
+
+    /// <summary>
+    ///     The pipeline has a service account but its identity could not be established (AB#5028).
+    ///     Deliberately fatal: falling back to the system context would run the pipeline with MORE
+    ///     rights than the operator granted, and nothing downstream could tell that apart from a
+    ///     correctly restricted run.
+    /// </summary>
+    public static Exception ServiceAccountIdentityUnavailable(string tenantId, string clientId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{tenantId}]: The pipeline runs under service account client '{clientId}', but no token " +
+            "could be acquired for it, so its identity is unknown. The execution is refused rather " +
+            "than continued as the system context, which would bypass data permissions. Check the " +
+            "ServiceAccountConfiguration (issuer, client id, client secret) and the identity service.");
+    }
 }

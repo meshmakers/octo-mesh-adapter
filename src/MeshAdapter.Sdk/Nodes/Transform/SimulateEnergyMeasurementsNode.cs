@@ -42,7 +42,8 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
         var roleId = new RtCkId<CkAssociationRoleId>(c.ParentAssociationRoleId);
         var slotDuration = TimeSpan.FromMinutes(15);
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — scoped: reads and writes tenant business data (energy measurements).
+        var session = await etlContext.GetScopedSessionAsync();
         session.StartTransaction();
 
         // 1. Load ALL existing EnergyMeasurement entities of the configured type.

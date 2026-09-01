@@ -262,7 +262,10 @@ public class EMailSenderNode(
         {
             var tenantRepository = etlContext.TenantRepository;
 
-            using var session = await tenantRepository.GetSessionAsync().ConfigureAwait(false);
+            // AB#5028 — SYSTEM by decision: binary download for an outgoing channel. Attachments
+            // regularly belong to somebody else than whoever triggered the run, and a read filter
+            // does not fail the node — the mail goes out without its attachment.
+            using var session = await etlContext.GetSystemSessionAsync().ConfigureAwait(false);
             session.StartTransaction();
 
             var streamHandler = await tenantRepository.DownloadLargeBinaryAsync(session,

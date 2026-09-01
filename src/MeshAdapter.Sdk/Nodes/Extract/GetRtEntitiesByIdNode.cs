@@ -42,7 +42,8 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
         var queryOptions = RtEntityQueryOptions.Create();
         c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — scoped: an ordinary read of tenant business data.
+        var session = await etlContext.GetScopedSessionAsync();
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, ckTypeId, rtIds,
             queryOptions, c.Skip, c.Take);

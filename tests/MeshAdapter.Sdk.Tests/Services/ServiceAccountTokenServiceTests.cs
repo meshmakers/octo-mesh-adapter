@@ -348,6 +348,80 @@ public class ServiceAccountTokenServiceTests
         A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // AB#5029: the semantics of the SA ∩ user intersection, on the adapter side of the delegation
+    // grant. The intersection itself is computed by the identity service (AB#5026); what the adapter
+    // owns is how it reacts to the result — and the load-bearing part of that is the degenerate case.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AcquireDelegatedTokenAsync_AnEmptyRoleIntersectionIsASuccess_TheTokenSimplyCarriesNoRoles()
+    {
+        // 🔴 THE property this test exists to protect. An empty intersection — a caller and a service
+        // account with no role in common — is not an error condition anywhere: the identity service
+        // issues a perfectly valid token that happens to carry no role claims, and the only symptom is
+        // that the delegated call returns nothing. That IS the fail-closed behaviour, and it is what
+        // makes the mode safe.
+        //
+        // The tempting "repair" is to notice the empty role set here and treat it as a failed
+        // acquisition. That must never happen: AnthropicAiQueryNode turns a null token into a hard
+        // failure (AnthropicAiQueryNodeDelegationTests), so rejecting a role-less token would turn a
+        // correctly restricted answer ("you may not see anything") into an outage ("the assistant is
+        // broken") — and the pressure to then relax it back towards the service account's own reach
+        // is exactly how a delegation feature loses its point.
+        var roleless = TestJwt.Create(subject: "user-42", clientId: null, roles: [], expiresInSeconds: 300);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse(roleless, expiresIn: 300));
+        var service = CreateService(handler);
+
+        var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken);
+
+        Assert.Equal(roleless, token);
+
+        // And it is handed back verbatim — no substitution, no enrichment from the service account.
+        Assert.True(JwtPayloadReader.TryRead(token, out var claims));
+        Assert.Empty(claims.Roles);
+    }
+
+    [Fact]
+    public async Task AcquireDelegatedTokenAsync_TheSubjectStaysTheCaller_NotTheServiceAccount()
+    {
+        // AB#5029, rule 2: the issued token runs on the CALLER's sub. Owner-scoped checks downstream
+        // (RtCreatedBy, ownerAttributePath — AB#4978) therefore ask about the human, not about the
+        // account acting for them. The adapter must not rewrite that, and it must not fall back to
+        // its own client id when the token has one.
+        var delegated = TestJwt.Create(subject: "user-42", clientId: ClientId,
+            roles: ["Accounting"], expiresInSeconds: 300);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse(delegated, expiresIn: 300));
+
+        var token = await CreateService(handler).AcquireDelegatedTokenAsync(
+            _tenantRepository, WellKnownName, SubjectToken);
+
+        Assert.True(JwtPayloadReader.TryRead(token, out var claims));
+        Assert.Equal("user-42", claims.Subject);
+        Assert.NotEqual(ClientId, claims.Subject);
+        Assert.Equal(["Accounting"], claims.Roles);
+
+        // The caller's own token went out as subject_token — the intersection is over the two
+        // parties the grant names, and the caller is one of them by presenting exactly this.
+        Assert.Equal(SubjectToken, handler.LastTokenForm!["subject_token"]);
+    }
+
+    [Fact]
+    public async Task AcquireDelegatedTokenAsync_NeverRequestsOfflineAccess()
+    {
+        // The intersection is computed at issuance, so a refresh token would freeze it and keep a
+        // revoked role alive for the lifetime of the refresh. The identity service rejects the scope
+        // outright for that reason, so asking would fail the whole request.
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("delegated-access-token", expiresIn: 300));
+
+        await CreateService(handler).AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken);
+
+        Assert.DoesNotContain("offline_access", handler.LastTokenForm!["scope"], StringComparison.Ordinal);
+    }
+
     /// <summary>Builds the compact-serialisation JWTs the identity stub hands out.</summary>
     private static class TestJwt
     {

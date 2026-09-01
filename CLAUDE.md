@@ -91,6 +91,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - FromMicrosoftGraphNode (Teams channel polling via Microsoft Graph)
    - **FromTeamsBotNode** (`FromTeamsBot@1`) — hosts the Bot Framework messaging endpoint `POST /{tenant}/teamsBot` (via `IHttpRequestService`), parses the inbound Teams activity, downloads file attachments (1:1 `application/vnd.microsoft.teams.file.download.info` via pre-authenticated URL; channel `reference` via Microsoft Graph SharePoint share), and emits the `EmailData`/`AttachmentData` shape at `$.Emails` plus conversation routing at `$.Conversation` (serviceUrl/conversationId/activityId/from) for `TeamsBotReply@1`. Credentials read from `MicrosoftGraphConfiguration`. Inbound JWT check via `ValidateInboundToken` (default false; validates aud+exp only — NOT the signature yet, harden before public exposure). Requires `HttpRequestService` to surface request headers (`input["headers"]`) **and** is the only trigger registering with `receivesCredentialHeaders: true`, because a Bot Framework token cannot be validated by the platform gate and the node has to read the raw `Authorization` header itself.
    - **FromMicrosoftGraphEmailNode** — Polls an Office 365 mailbox FOLDER (path like `Archive/Invoices/ToDo`, '/'-separated, resolved from the mailbox root — never the inbox unless configured) via Microsoft Graph client credentials. Executes the pipeline ONCE PER MESSAGE (batch of one `EmailData`) so success maps 1:1 to the per-message action: on success the mail is moved to `moveToFolderPathOnSuccess` (leaf folder auto-created); on failure it stays in the source folder and is retried up to `maxAttemptsPerMessage` times per adapter lifetime. Only `fileAttachment` contents are downloaded (item/reference attachments skipped). Requires Graph application permission `Mail.ReadWrite`.
+     **Sender authenticity — `Authentication-Results` (AB#5011).** `IncludeInternetMessageHeaders` (default off, inert when off) adds `internetMessageHeaders` to the `$select` and surfaces the headers named in `InternetMessageHeaderNames` (default `Authentication-Results`, `Authentication-Results-Original`, `ARC-Authentication-Results`, `Received-SPF`) on `EmailData.Headers`, plus the parsed SPF/DKIM/DMARC/compauth verdicts on `EmailData.Authentication`. The header was not empty before — Graph returns `internetMessageHeaders` **only** when it is selected explicitly, so it was never fetched; that one word in the `$select` is the whole feature. It stays opt-in because selecting it drags the full Received chain and the DKIM signatures onto every message, and only the named headers are surfaced because they land in the data context (echoed into every debug view, persisted by `SetPipelineExecutionResult@1`). 🔴 **Gate on DMARC, not on SPF.** SPF authenticates the envelope sender and DKIM the signing domain; neither has to match the `From:` the pipeline reads. Only `dmarc=pass` requires that alignment, so `spf=pass` alone accepts a mail whose envelope sender is the attacker's own (perfectly SPF-valid) domain while `From:` claims the vendor's — `EmailAuthenticationResults.IsDmarcPass` is the one verdict a rule may be built on. 🔴 **Only the FIRST occurrence of each header is kept.** A sender can put an `Authentication-Results` header into the message they submit and the receiving server *prepends* its own rather than replacing it, so only the topmost was written by infrastructure we trust; joining the occurrences would put a forged `dmarc=pass` into the same string as the real `dmarc=fail`, where any downstream substring or `MatchRegEx` check finds it. The occurrence count is reported as `HeaderCount` and anything above 1 makes `IsDmarcPass` false. A **null** `Authentication` means *nothing is known* (an internally generated mail carries no such header), never "authentication failed" — which way an unknown verdict falls is tenant policy, not the trigger's call. Result keywords are lower-cased because `MatchRegEx` is case sensitive; an absent method stays `null` rather than becoming `none`, so "never checked" stays distinguishable from "checked, no policy". The parser (`AuthenticationResultsParser`, RFC 8601) is pure/static and strips RFC 5322 comments from the **whole** value before splitting — Exchange writes `(client-ip=1.2.3.4; helo=mail.example)`, and splitting first tears the entry in two and reads the comment's own `key=value` pairs as method results.
 
 ### Core Services
 
@@ -221,6 +222,8 @@ throws until a test declares `GivenSystemSessionIsExpected()`. After every test,
 session is checked to have carried the full identity (subject *and* roles) — a `ForUser(null, [])`
 context is not the system context and would otherwise sail through.
 
+`PipelineIdentityMatrixTests` is its sibling for the entry points — see the AB#5029 section below.
+
 `SessionIdentityClassificationTests` scans `src/MeshAdapter.Sdk/Nodes` (located via
 `[CallerFilePath]`) and pins the table above file by file, that no node reaches the repository
 directly, that every call site carries its `AB#5028` reasoning, and that exactly the two known
@@ -228,14 +231,63 @@ synchronous sites are synchronous. `SessionIdentityBehaviourTests` drives the no
 of their own. `SessionIdentityIntegrationTests` verifies the same contract against the **real**
 `TenantRepository`, where `session.GetSecurityContext()` is the truth.
 
-### Known gap — identity does not survive a pipeline chain
+### The identity ends at a pipeline chain — by decision, and visibly (AB#5045)
 
-`FromPipelineDataEvent@1` (in `octo-communication-sdk`) builds its `ExecutePipelineOptions` without a
-`VerifiedPrincipal` or a caller token, so an HTTP-triggered pipeline that chains to a second one via
-`ToPipelineDataEvent@1` loses the principal there; the second pipeline resolves the service account
-instead. Deliberately **not** fixed here — forwarding a caller identity across an asynchronous bus hop
-has its own security implications (who may enqueue into that data flow, and for how long the identity
-stays valid) and needs its own work item.
+`ToPipelineDataEvent@1` → `FromPipelineDataEvent@1` (both in `octo-communication-sdk`) crosses the
+message bus, and the trigger on the far side builds its `ExecutePipelineOptions` **without** a
+`VerifiedPrincipal` and **without** a caller token. So an HTTP-triggered pipeline that chains to a
+second one runs the first half as the user and the second half as the service account.
+
+🔴 **That is the decision, not a gap.** Forwarding the identity would let a pipeline act as a caller
+the *target* never authenticated: the sender picks the routing key, so whoever may enqueue into the
+data flow would inherit whoever last triggered the sending pipeline — and on the fire-and-forget path
+the message has no bounded lifetime, so the identity would stay usable for as long as it sits in the
+queue. A privilege escalation is not something to introduce as a side effect of a chaining node. If a
+chained execution should ever run as the user, the identity has to be **established** on the far side
+(verified), never relayed.
+
+What the decision costs is that one logical request runs under two identities, so the transition is
+made visible instead of silent: `ToPipelineDataEvent@1` records the hand-off on the **execution log**
+(`INodeContext.Info`, the channel the adapter and the Studio debug panel already surface) naming the
+subject whose identity ends there and the target pipeline that will resolve its own. Deliberately not
+on the message — its payload is pipeline data, and no credential may travel on it — and deliberately
+not a new audit channel. Without a caller identity the same site logs at debug level: the overwhelming
+majority of chains are service-to-service and an info line for each would drown the case that matters.
+
+`FromPipelineDataEventNodeTests` and `FromExecutePipelineCommandNodeTests` (in the SDK repo) pin that
+the second execution really starts with neither value, so a well-meant "the identity should survive
+the chain" change fails a test rather than shipping.
+
+### The delegation matrix — one place where the rules are proven together (AB#5029)
+
+`PipelineIdentityMatrixTests` joins what the individual suites cover into the statement the platform
+actually makes, across every trigger kind (HTTP with a verified caller, HTTP anonymous,
+cron/`FromPipelineTriggerEvent@1`, `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, and the
+channel triggers) and every identity situation:
+
+| Rule | Where it is pinned |
+|---|---|
+| Precedence: verified caller ▶ service account ▶ system | `PipelineIdentityMatrixTests` (per trigger kind), `PipelineIdentityResolverTests` |
+| Intersection is over **role names**; the **subject is the caller**, so owner-scoped checks (`RtCreatedBy`, `ownerAttributePath` — AB#4978) are about the human | `ServiceAccountTokenServiceTests.AcquireDelegatedTokenAsync_TheSubjectStaysTheCaller…`, `SessionIdentityIntegrationTests.WithBothACallerAndAServiceAccount_TheSessionActsAsTheCaller` |
+| 🔴 An **empty intersection is fail-closed and identity-side a SUCCESS** — a valid token that simply carries no roles, whose only symptom is that nothing comes back | `ServiceAccountTokenServiceTests.AcquireDelegatedTokenAsync_AnEmptyRoleIntersectionIsASuccess…`, `PipelineIdentityMatrixTests.AnEmptyRoleIntersectionResolvesQuietlyToAnIdentityWithNoRoles` |
+| A caller **with** an identity but **no roles** sees nothing on a protected type — `ForUser(sub, [])` is not the system context | `SessionIdentityIntegrationTests.ACallerWithoutRolesProducesANonSystemSessionWithNoRoles` |
+| **No service account configured** ⇒ the System path, unchanged (the fleet before provisioning) | `PipelineIdentityMatrixTests.WithoutAServiceAccount_ATriggerWithoutACallerKeepsTheSystemPath` |
+| **Configured account whose token cannot be had** ⇒ abort, never a System fallback | `PipelineIdentityMatrixTests`, `SessionIdentityIntegrationTests.AConfiguredServiceAccountWhoseTokenIsUnavailableOpensNoSessionAtAll` |
+
+Two of these deserve their own warning. The **empty intersection** looks like a bug from the outside —
+the assistant answers "I found nothing" — and the obvious repair is to treat a role-less delegated
+token as a failed acquisition. That must never happen: `AnthropicAiQuery@1` turns a null token into a
+hard failure, so rejecting a role-less one would turn a correctly restricted answer into an outage,
+and the pressure to relax it back towards the service account's own reach is exactly how a delegation
+feature loses its point. And **no caller must ever fall back to the service account because the caller
+has no roles** — that would hand a role-less user the account's full reach.
+
+`PipelineIdentityMatrixTests` also scans `src/MeshAdapter.Sdk/Nodes/Trigger` and pins that
+**`FromHttpRequestNode2.cs` is the only trigger that sets `VerifiedPrincipal` / `CallerAccessToken`**,
+plus the list of triggers that start an execution at all — the same house pattern
+`SessionIdentityClassificationTests` uses for the session call sites. A trigger that starts forwarding
+a principal changes the identity every pipeline behind it runs as, and does so invisibly: nothing
+fails, the execution just sees different data.
 
 ### JSON / Serialization (System.Text.Json)
 

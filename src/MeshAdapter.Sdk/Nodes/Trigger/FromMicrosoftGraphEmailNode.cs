@@ -197,7 +197,7 @@ internal class FromMicrosoftGraphEmailNode(
                         continue;
                     }
 
-                    var emailData = await BuildEmailDataAsync(accessToken, nodeConfig.Mailbox, messageId, message);
+                    var emailData = await BuildEmailDataAsync(accessToken, nodeConfig, messageId, message);
 
                     var batch = new EmailBatch
                     {
@@ -415,15 +415,34 @@ internal class FromMicrosoftGraphEmailNode(
         return doc.RootElement.GetProperty("id").GetString()!;
     }
 
+    /// <summary>
+    ///     The <c>$select</c> the message query asks for.
+    /// </summary>
+    /// <remarks>
+    ///     AB#5011: <c>internetMessageHeaders</c> is one of the properties Microsoft Graph returns
+    ///     <b>only</b> when it is named in <c>$select</c> — which is the whole reason
+    ///     <c>Authentication-Results</c> was not merely empty on the pipeline side but absent. Adding
+    ///     it costs the full Received chain plus the DKIM signatures on every message, so it stays
+    ///     opt-in and only the configured header names are surfaced downstream.
+    /// </remarks>
+    /// <param name="includeInternetMessageHeaders">Whether to request the internet message headers.</param>
+    internal static string BuildMessageSelect(bool includeInternetMessageHeaders)
+    {
+        return "id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId"
+               + (includeInternetMessageHeaders ? ",internetMessageHeaders" : string.Empty);
+    }
+
     private async Task<List<JsonElement>> GetMessagesAsync(string accessToken,
         FromMicrosoftGraphEmailNodeConfiguration config, string folderId)
     {
         using var client = CreateGraphClient(accessToken);
 
+        var select = BuildMessageSelect(config.IncludeInternetMessageHeaders);
+
         var url =
             $"{GraphBaseUrl}/users/{Uri.EscapeDataString(config.Mailbox)}/mailFolders/{folderId}/messages" +
             $"?$top={config.MaxMessagesPerPoll}&$orderby=receivedDateTime asc" +
-            "&$select=id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId";
+            $"&$select={select}";
 
         var response = await client.GetAsync(url, _cancellationTokenSource!.Token);
         response.EnsureSuccessStatusCode();
@@ -441,9 +460,10 @@ internal class FromMicrosoftGraphEmailNode(
         return messages;
     }
 
-    private async Task<EmailData> BuildEmailDataAsync(string accessToken, string mailbox, string messageId,
-        JsonElement message)
+    private async Task<EmailData> BuildEmailDataAsync(string accessToken,
+        FromMicrosoftGraphEmailNodeConfiguration config, string messageId, JsonElement message)
     {
+        var mailbox = config.Mailbox;
         var subject = message.TryGetProperty("subject", out var subj) ? subj.GetString() : null;
         var fromAddress = GetFromAddress(message);
         var fromName = GetFromName(message);
@@ -478,7 +498,7 @@ internal class FromMicrosoftGraphEmailNode(
         // cheaply when there is nothing to fetch.
         var attachments = await GetAttachmentsAsync(accessToken, mailbox, messageId);
 
-        return new EmailData
+        var emailData = new EmailData
         {
             Subject = subject,
             From = string.IsNullOrWhiteSpace(fromName) ? fromAddress : $"{fromName} <{fromAddress}>",
@@ -491,6 +511,100 @@ internal class FromMicrosoftGraphEmailNode(
             MessageId = message.TryGetProperty("internetMessageId", out var imi) ? imi.GetString() : messageId,
             Attachments = attachments
         };
+
+        if (config.IncludeInternetMessageHeaders)
+        {
+            ApplyInternetMessageHeaders(emailData, message, config.InternetMessageHeaderNames);
+        }
+
+        return emailData;
+    }
+
+    /// <summary>
+    ///     Header names surfaced when the node was not told which ones it wants. The set a sender gate
+    ///     needs and nothing else — the rest of the headers are kilobytes of Received chain and base64
+    ///     signatures that would land in the pipeline data context of every message. AB#5011.
+    /// </summary>
+    internal static readonly string[] DefaultInternetMessageHeaderNames =
+    [
+        AuthenticationResultsParser.HeaderName,
+        "Authentication-Results-Original",
+        "ARC-Authentication-Results",
+        "Received-SPF"
+    ];
+
+    /// <summary>
+    ///     Copies the selected internet message headers onto <paramref name="emailData" /> and parses
+    ///     the SPF/DKIM/DMARC verdicts out of <c>Authentication-Results</c>. AB#5011.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 <b>Only the first occurrence of a name is kept</b>, and the verdicts are parsed from the
+    ///     first <c>Authentication-Results</c> header alone. A sender can put such a header into the
+    ///     message they submit and the receiving server <i>prepends</i> its own rather than replacing
+    ///     it, so only the topmost one was written by infrastructure we trust. Joining the occurrences
+    ///     — the obvious way to "not lose data" — would put a forged <c>dmarc=pass</c> into the same
+    ///     string as the real verdict, where any downstream substring or regex check would find it.
+    ///     The number of occurrences is reported on
+    ///     <see cref="EmailAuthenticationResults.HeaderCount" /> instead, so a pipeline can treat a
+    ///     duplicated header as the anomaly it is.
+    ///     <para>
+    ///         Graph returns the headers in message order, i.e. most recently added first, which is why
+    ///         "first wins" is the right rule here and not merely the cheap one.
+    ///     </para>
+    /// </remarks>
+    internal static void ApplyInternetMessageHeaders(EmailData emailData, JsonElement message,
+        string[]? configuredNames)
+    {
+        if (!message.TryGetProperty("internetMessageHeaders", out var headers) ||
+            headers.ValueKind != JsonValueKind.Array)
+        {
+            // Graph omits the property entirely for a message that carries no internet headers (an
+            // internally generated or draft mail). Not an error, and deliberately not an empty
+            // Authentication record either: "no header" must stay distinguishable from "header said
+            // nothing", or a gate cannot tell "unknown" from "reported as none".
+            return;
+        }
+
+        // Authentication-Results is always collected, whatever the name filter says: it is what the
+        // verdicts are parsed from, and a list that omitted it would turn them off silently while the
+        // flag claims they are on.
+        var wanted = new HashSet<string>(
+            configuredNames is { Length: > 0 } ? configuredNames : DefaultInternetMessageHeaderNames,
+            StringComparer.OrdinalIgnoreCase) { AuthenticationResultsParser.HeaderName };
+
+        string? authenticationResults = null;
+        var authenticationResultsCount = 0;
+
+        foreach (var header in headers.EnumerateArray())
+        {
+            var name = header.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+
+            var value = header.TryGetProperty("value", out var v) ? v.GetString() ?? string.Empty : string.Empty;
+
+            if (string.Equals(name, AuthenticationResultsParser.HeaderName, StringComparison.OrdinalIgnoreCase))
+            {
+                authenticationResultsCount++;
+                authenticationResults ??= value;
+            }
+
+            if (!wanted.Contains(name))
+            {
+                continue;
+            }
+
+            // TryAdd, not the indexer: first occurrence wins — see the remarks.
+            emailData.Headers.TryAdd(name, value);
+        }
+
+        if (authenticationResultsCount > 0)
+        {
+            emailData.Authentication =
+                AuthenticationResultsParser.Parse(authenticationResults, authenticationResultsCount);
+        }
     }
 
     private async Task<List<AttachmentData>> GetAttachmentsAsync(string accessToken, string mailbox,

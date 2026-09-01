@@ -108,4 +108,42 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// </summary>
     [PropertyGroup("Query", 2)]
     public int MaxAttemptsPerMessage { get; set; } = 3;
+
+    /// <summary>
+    /// Fetches the mail's internet message headers and surfaces the ones named in
+    /// <see cref="InternetMessageHeaderNames"/> on <c>EmailData.Headers</c>, plus the parsed
+    /// SPF/DKIM/DMARC verdicts on <c>EmailData.Authentication</c>. AB#5011.
+    /// </summary>
+    /// <remarks>
+    /// Off by default and inert when off: an existing pipeline sees exactly the shape it saw before.
+    /// Turn it on where the pipeline acts on the sender address — a sender gate, a per-vendor rule,
+    /// anything that turns a mail into a document — because <c>From:</c> alone is a field anybody can
+    /// write, and <c>Authentication-Results</c> is the only part of the mail that says whether the
+    /// claimed sender really sent it.
+    /// <para>
+    /// Microsoft Graph does <b>not</b> return <c>internetMessageHeaders</c> unless it is selected
+    /// explicitly, which is why the header was simply absent before this flag existed. Selecting it
+    /// makes the per-message response noticeably larger (the full Received chain and the DKIM
+    /// signatures come with it), which is why only the named headers are surfaced.
+    /// </para>
+    /// </remarks>
+    [PropertyGroup("Query", 3)]
+    public bool IncludeInternetMessageHeaders { get; set; }
+
+    /// <summary>
+    /// Header names surfaced on <c>EmailData.Headers</c> when
+    /// <see cref="IncludeInternetMessageHeaders"/> is on. Case insensitive. Leave unset for the
+    /// authentication-relevant default set (<c>Authentication-Results</c>,
+    /// <c>Authentication-Results-Original</c>, <c>Received-SPF</c>, <c>ARC-Authentication-Results</c>).
+    /// </summary>
+    /// <remarks>
+    /// A filter rather than "everything", because the headers land in the pipeline data context: the
+    /// full set is several kilobytes of Received chain and base64 signatures per message, echoed into
+    /// every debug view and persisted by <c>SetPipelineExecutionResult@1</c>.
+    /// <c>Authentication-Results</c> is always fetched regardless of this list — it is what
+    /// <c>EmailData.Authentication</c> is parsed from, and a list that omitted it would silently turn
+    /// the verdicts off while the flag says they are on.
+    /// </remarks>
+    [PropertyGroup("Query", 4)]
+    public string[]? InternetMessageHeaderNames { get; set; }
 }

@@ -297,6 +297,38 @@ public class EmailData
     public List<AttachmentData> Attachments { get; set; } = new();
 
     /// <summary>
+    /// Selected internet message headers of the mail, keyed by header name (case insensitive).
+    /// Empty unless the trigger was configured to fetch them. AB#5011.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 Only the <b>first</b> occurrence of a name is kept. A header may legitimately appear
+    /// several times, but for the trust-bearing ones only the topmost was written by the receiving
+    /// infrastructure — a sender can put their own copy into the message they submit, and the server
+    /// prepends rather than replaces. Joining the occurrences would let a forged
+    /// <c>Authentication-Results: …; dmarc=pass</c> be found by any downstream substring or regex
+    /// check. <see cref="Authentication"/> reports how many there were.
+    /// <para>
+    /// Populated by <c>FromMicrosoftGraphEmail@1</c>; the IMAP trigger (<c>FromEmail@1</c>) leaves it
+    /// empty for now.
+    /// </para>
+    /// </remarks>
+    public Dictionary<string, string> Headers { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// SPF / DKIM / DMARC verdicts parsed out of the mail's <c>Authentication-Results</c> header —
+    /// the only evidence a pipeline has that the claimed sender really sent the mail. Null when the
+    /// trigger was not configured to fetch headers, or when the mail carried no such header
+    /// (an internally generated or relayed mail may not). AB#5011.
+    /// </summary>
+    /// <remarks>
+    /// A null here is <b>not</b> "authentication failed" and must not be treated as one — it means
+    /// nothing is known. A gate has to decide explicitly what to do with an unknown verdict, and
+    /// which way that falls is a tenant policy question, not something the trigger may decide.
+    /// </remarks>
+    public EmailAuthenticationResults? Authentication { get; set; }
+
+    /// <summary>
     /// True when at least one attachment is a PDF. Lets a pipeline decide whether
     /// the mail carries a document to stage or should be kept as a receipt itself
     /// (render the mail body). Inline images/logos are not PDFs and do not count.

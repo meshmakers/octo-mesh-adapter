@@ -14,15 +14,19 @@ public record FromSignalNodeConfiguration : TriggerNodeConfiguration
 {
     /// <summary>
     /// Base URL of the signal-cli-rest-api bridge, e.g. <c>http://localhost:8080</c>.
+    /// Optional when <see cref="SettingsConfiguration"/> supplies it (the settings value
+    /// takes precedence), so it need not be hard-coded in the pipeline definition.
     /// </summary>
     [PropertyGroup("Connection", 0)]
-    public required string ApiUrl { get; set; }
+    public string ApiUrl { get; set; } = null!;
 
     /// <summary>
     /// The bridge's registered account number to receive for, e.g. <c>+4366012345678</c>.
+    /// Optional when <see cref="SettingsConfiguration"/> supplies it (the settings value
+    /// takes precedence).
     /// </summary>
     [PropertyGroup("Connection", 1)]
-    public required string Number { get; set; }
+    public string Number { get; set; } = null!;
 
     /// <summary>
     /// Polling interval in seconds. The bridge's /v1/receive endpoint consumes messages
@@ -37,4 +41,24 @@ public record FromSignalNodeConfiguration : TriggerNodeConfiguration
     /// </summary>
     [PropertyGroup("Query", 0)]
     public string? SenderFilter { get; set; }
+
+    /// <summary>
+    /// Optional well-known name of a configuration entity that carries the bridge
+    /// number / URL, so they live in configuration instead of the pipeline definition
+    /// (a redeploy never overwrites what an operator set, and nothing tenant-specific
+    /// leaks into the seed). Reachable from the pipeline via a
+    /// <c>System.Communication/Uses</c> association. The node stays domain-agnostic —
+    /// the attribute names it reads are <see cref="NumberAttribute"/> /
+    /// <see cref="ApiUrlAttribute"/>. Values found here override the node properties.
+    /// </summary>
+    [PropertyGroup("Settings", 0)]
+    public string? SettingsConfiguration { get; set; }
+
+    /// <summary>Attribute name on <see cref="SettingsConfiguration"/> holding the bridge number.</summary>
+    [PropertyGroup("Settings", 1)]
+    public string? NumberAttribute { get; set; }
+
+    /// <summary>Attribute name on <see cref="SettingsConfiguration"/> holding the bridge base URL.</summary>
+    [PropertyGroup("Settings", 2)]
+    public string? ApiUrlAttribute { get; set; }
 }

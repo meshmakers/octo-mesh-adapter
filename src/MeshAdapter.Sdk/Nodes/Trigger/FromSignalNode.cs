@@ -28,8 +28,33 @@ internal class FromSignalNode(
     {
         var c = context.NodeContext.GetNodeConfiguration<FromSignalNodeConfiguration>();
 
+        // Bridge number / URL may live in a configuration entity instead of the pipeline
+        // definition (see SettingsConfiguration) so a redeploy never overwrites operator
+        // settings and nothing tenant-specific leaks into the seed. A settings value wins.
+        var attrs = ConfigurationSettingsReader.TryGetAttributes(
+            context.GlobalConfiguration, c.SettingsConfiguration);
+        var apiUrl = (attrs.HasValue ? ConfigurationSettingsReader.ReadString(attrs.Value, c.ApiUrlAttribute) : null)
+                     ?? c.ApiUrl;
+        var number = (attrs.HasValue ? ConfigurationSettingsReader.ReadString(attrs.Value, c.NumberAttribute) : null)
+                     ?? c.Number;
+
+        if (string.IsNullOrWhiteSpace(apiUrl))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.ApiUrl), c.SettingsConfiguration ?? nameof(c.ApiUrl));
+        }
+
+        if (string.IsNullOrWhiteSpace(number))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.Number), c.SettingsConfiguration ?? nameof(c.Number));
+        }
+
+        var effectiveConfig = c with { ApiUrl = apiUrl, Number = number };
+
         _cancellationTokenSource = new CancellationTokenSource();
-        _pollingTask = Task.Run(() => PollForMessagesAsync(context, c), _cancellationTokenSource.Token);
+        _pollingTask = Task.Run(
+            () => PollForMessagesAsync(context, effectiveConfig), _cancellationTokenSource.Token);
         return Task.CompletedTask;
     }
 

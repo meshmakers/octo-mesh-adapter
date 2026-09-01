@@ -94,108 +94,25 @@ internal class FromMicrosoftGraphEmailNode(
     internal static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
         IGlobalConfiguration globalConfiguration, FromMicrosoftGraphEmailNodeConfiguration c)
     {
-        if (string.IsNullOrWhiteSpace(c.SettingsConfiguration) ||
-            !globalConfiguration.IsDefined(c.SettingsConfiguration))
+        var attributes = ConfigurationSettingsReader.TryGetAttributes(
+            globalConfiguration, c.SettingsConfiguration);
+        if (attributes is null)
         {
+            // No settings configuration, undefined, or a malformed payload — keep the
+            // node properties (validated by the caller).
             return c;
         }
 
-        JsonElement settings;
-        try
-        {
-            using var doc = JsonDocument.Parse(globalConfiguration.GetRawJson(c.SettingsConfiguration));
-            settings = doc.RootElement.Clone();
-        }
-        catch (JsonException)
-        {
-            // A malformed settings payload must not take the trigger down — fall back to
-            // whatever the node properties carry (validated by the caller).
-            return c;
-        }
-
-        // The serialized configuration is the full runtime entity; its CK attributes live
-        // in a nested "attributes" object (e.g. { "attributes": { "EmailImportMailbox": … } }).
-        // Read from there, falling back to the root for any flatter serialization.
-        var settingsAttributes = settings;
-        if (settings.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in settings.EnumerateObject())
-            {
-                if (string.Equals(property.Name, "attributes", StringComparison.OrdinalIgnoreCase) &&
-                    property.Value.ValueKind == JsonValueKind.Object)
-                {
-                    settingsAttributes = property.Value;
-                    break;
-                }
-            }
-        }
-
-        var mailbox = ReadStringAttribute(settingsAttributes, c.MailboxAttribute) ?? c.Mailbox;
-        var folderPath = ReadStringAttribute(settingsAttributes, c.SourceFolderAttribute) ?? c.FolderPath;
-        var moveTo = ReadStringAttribute(settingsAttributes, c.DoneFolderAttribute) ?? c.MoveToFolderPathOnSuccess;
-        var polling = ReadPositiveIntAttribute(settingsAttributes, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds;
-
+        var attrs = attributes.Value;
         return c with
         {
-            Mailbox = mailbox,
-            FolderPath = folderPath,
-            MoveToFolderPathOnSuccess = moveTo,
-            PollingIntervalSeconds = polling,
+            Mailbox = ConfigurationSettingsReader.ReadString(attrs, c.MailboxAttribute) ?? c.Mailbox,
+            FolderPath = ConfigurationSettingsReader.ReadString(attrs, c.SourceFolderAttribute) ?? c.FolderPath,
+            MoveToFolderPathOnSuccess =
+                ConfigurationSettingsReader.ReadString(attrs, c.DoneFolderAttribute) ?? c.MoveToFolderPathOnSuccess,
+            PollingIntervalSeconds =
+                ConfigurationSettingsReader.ReadPositiveInt(attrs, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds,
         };
-    }
-
-    /// <summary>Case-insensitive read of a non-empty string attribute; null when absent/blank/non-string.</summary>
-    private static string? ReadStringAttribute(JsonElement settings, string? attributeName)
-    {
-        if (string.IsNullOrWhiteSpace(attributeName) || settings.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        foreach (var property in settings.EnumerateObject())
-        {
-            if (!string.Equals(property.Name, attributeName, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (property.Value.ValueKind != JsonValueKind.String)
-            {
-                return null;
-            }
-
-            var value = property.Value.GetString();
-            return string.IsNullOrWhiteSpace(value) ? null : value;
-        }
-
-        return null;
-    }
-
-    /// <summary>Case-insensitive read of a positive integer attribute (accepts a numeric or numeric-string value); null otherwise.</summary>
-    private static int? ReadPositiveIntAttribute(JsonElement settings, string? attributeName)
-    {
-        if (string.IsNullOrWhiteSpace(attributeName) || settings.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        foreach (var property in settings.EnumerateObject())
-        {
-            if (!string.Equals(property.Name, attributeName, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var value = property.Value.ValueKind switch
-            {
-                JsonValueKind.Number when property.Value.TryGetInt32(out var n) => n,
-                JsonValueKind.String when int.TryParse(property.Value.GetString(), out var n) => n,
-                _ => 0,
-            };
-            return value > 0 ? value : null;
-        }
-
-        return null;
     }
 
     public async Task StopAsync(ITriggerContext context)

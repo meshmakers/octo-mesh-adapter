@@ -17,16 +17,32 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// </summary>
 /// <param name="next">Next node in the pipeline.</param>
 /// <param name="httpClientFactory">HttpClient factory. Uses the named client "Signal".</param>
+/// <param name="etlContext">ETL context — provides access to the pipeline's GlobalConfiguration.</param>
 [NodeConfiguration(typeof(SignalSenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class SignalSenderNode(
     NodeDelegate next,
-    IHttpClientFactory httpClientFactory) : IPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<SignalSenderNodeConfiguration>();
+
+        // Bridge number / URL may live in a configuration entity (see SettingsConfiguration)
+        // instead of the pipeline definition; a settings value wins over the node property.
+        var attrs = ConfigurationSettingsReader.TryGetAttributes(
+            etlContext.GlobalConfiguration, c.SettingsConfiguration);
+        var apiUrl = (attrs.HasValue ? ConfigurationSettingsReader.ReadString(attrs.Value, c.ApiUrlAttribute) : null)
+                     ?? c.ApiUrl;
+        var number = (attrs.HasValue ? ConfigurationSettingsReader.ReadString(attrs.Value, c.NumberAttribute) : null)
+                     ?? c.Number;
+        if (string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(number))
+        {
+            nodeContext.Error("SignalSender: bridge number/URL not set (node config or settings configuration)");
+            return;
+        }
 
         var recipient = ResolveStringValue(dataContext, c.RecipientPath, c.Recipient);
         if (string.IsNullOrWhiteSpace(recipient))
@@ -52,10 +68,10 @@ public class SignalSenderNode(
             attachments = new[] { prefix + attachmentBase64 };
         }
 
-        var payload = new SignalSendPayload(c.Number, new[] { recipient }, message, attachments);
+        var payload = new SignalSendPayload(number, new[] { recipient }, message, attachments);
         var payloadJson = JsonSerializer.Serialize(payload, SystemTextJsonOptions.Default);
 
-        var url = $"{c.ApiUrl.TrimEnd('/')}/v2/send";
+        var url = $"{apiUrl.TrimEnd('/')}/v2/send";
 
         var client = httpClientFactory.CreateClient("Signal");
         client.Timeout = TimeSpan.FromSeconds(c.TimeoutSeconds);

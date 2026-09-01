@@ -56,6 +56,10 @@ internal class FromTeamsBotNode(
         var cfg = context.GlobalConfiguration.GetValue<GraphBotConfiguration>(c.ServerConfiguration);
         var expectedAudience = string.IsNullOrWhiteSpace(c.BotAppId) ? cfg.ClientId : c.BotAppId!;
 
+        // The caller context is discarded on purpose: the route is anonymous to the platform gate,
+        // so it carries no verified principal, and the Bot Framework credential in the Authorization
+        // header is not an OctoMesh token — nothing here may be delegated with it (AB#5031). The
+        // node reads that header itself via ReceivesCredentialHeaders, see ValidateInboundToken.
         var requestOptions = new HttpRequestOptions(c.Route, HttpMethod.Post, async (input, _) =>
         {
             try

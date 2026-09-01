@@ -26,12 +26,19 @@ internal class FromHttpRequestNode2(
     {
         var c = context.NodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration2>();
 
-        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async (input, verifiedPrincipal) =>
+        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async (input, caller) =>
         {
             try
             {
+                // The raw token travels on the execution options, not in `input`: a node acting as
+                // the caller against another service needs it as subject_token (delegation /
+                // on-behalf-of, AB#5031), while the data root is echoed back and persistable.
                 var result = await context.ExecuteAsync(
-                    new ExecutePipelineOptions(DateTime.UtcNow) { VerifiedPrincipal = verifiedPrincipal }, input);
+                    new ExecutePipelineOptions(DateTime.UtcNow)
+                    {
+                        VerifiedPrincipal = caller.Principal,
+                        CallerAccessToken = caller.RawAccessToken
+                    }, input);
                 if (result == null)
                 {
                     return null;

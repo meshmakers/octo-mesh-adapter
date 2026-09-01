@@ -139,6 +139,8 @@ internal class AnthropicAiQueryNode(
             {
                 // Authenticate to the MCP server via a ServiceAccountConfiguration when configured
                 // (AB#4315). No config name → calls stay unauthenticated (local/dev only).
+                // With mcpDelegateToCaller the token instead runs on the calling user's identity and
+                // any failure is fatal rather than degrading (AB#5031).
                 await EnsureMcpAccessTokenAsync(config, nodeContext);
 
                 mcpTools = await LoadMcpToolsAsync(mcpServerUrl, etlContext.TenantId, nodeContext);
@@ -681,10 +683,21 @@ internal class AnthropicAiQueryNode(
     /// Acquires an OAuth2 client-credentials token from the configured ServiceAccountConfiguration
     /// and caches it in <see cref="_mcpAccessToken" /> for the MCP requests. No-op (clears the token)
     /// when no service-account config name is set.
+    ///
+    /// With <see cref="AnthropicAiQueryNodeConfiguration.McpDelegateToCaller" /> set, a
+    /// <b>delegated</b> token for the calling user is acquired instead (AB#5031) and every
+    /// degrade-to-unauthenticated path below is bypassed — see
+    /// <see cref="AcquireDelegatedMcpAccessTokenAsync" />.
     /// </summary>
-    private async Task EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
+    internal async Task EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
         INodeContext nodeContext)
     {
+        if (config.McpDelegateToCaller)
+        {
+            _mcpAccessToken = await AcquireDelegatedMcpAccessTokenAsync(config, nodeContext);
+            return;
+        }
+
         if (string.IsNullOrEmpty(config.McpServiceAccountConfigName))
         {
             _mcpAccessToken = null;
@@ -725,10 +738,66 @@ internal class AnthropicAiQueryNode(
     }
 
     /// <summary>
-    /// Adds the <c>Authorization: Bearer</c> header to an MCP request when a service-account token
-    /// has been acquired. No-op otherwise (unauthenticated local/dev calls).
+    ///     Acquires a token that runs on the <b>calling user's</b> identity — the service account of
+    ///     <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> acting on
+    ///     behalf of the caller who triggered the pipeline (AB#5026 / AB#5031). The MCP server then
+    ///     applies the user's own roles and data permissions instead of the service account's full
+    ///     <c>octo_api</c> reach.
     /// </summary>
-    private void AddMcpAuthHeader(HttpRequestMessage request)
+    /// <remarks>
+    ///     🔴 <b>Fail-closed.</b> Every failure here throws instead of degrading. The two
+    ///     degrade-to-unauthenticated paths of the service-account mode exist so a broken
+    ///     ServiceAccountConfiguration still leaves a working (tool-less) chat; in delegation mode the
+    ///     whole point is that the request runs with the caller's permissions, so continuing with a
+    ///     service-account token — or with none at all, which an auth-enforcing MCP server answers
+    ///     with zero tools but a permissive one would answer with everything — would silently defeat
+    ///     the authorization this mode exists to enforce.
+    /// </remarks>
+    private async Task<string> AcquireDelegatedMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (string.IsNullOrEmpty(config.McpServiceAccountConfigName))
+        {
+            throw new InvalidOperationException(
+                "mcpDelegateToCaller is set but no mcpServiceAccountConfigName is configured. Delegation " +
+                "runs through a service account acting on behalf of the caller, so the " +
+                "ServiceAccountConfiguration naming that account is required.");
+        }
+
+        var callerAccessToken = etlContext.CallerAccessToken;
+        if (string.IsNullOrEmpty(callerAccessToken))
+        {
+            throw new InvalidOperationException(
+                "mcpDelegateToCaller is set but the pipeline execution carries no caller token — the " +
+                "trigger was anonymous or does not forward one. Use FromHttpRequest@2 with " +
+                "allowAnonymous: false, or turn mcpDelegateToCaller off for a service-account-driven " +
+                "pipeline. Refusing to fall back to the service account's identity.");
+        }
+
+        var delegatedToken = await serviceAccountTokenService.AcquireDelegatedTokenAsync(
+            etlContext.TenantRepository, config.McpServiceAccountConfigName, callerAccessToken);
+
+        if (string.IsNullOrEmpty(delegatedToken))
+        {
+            throw new InvalidOperationException(
+                $"Could not obtain a delegated access token via ServiceAccountConfiguration " +
+                $"'{config.McpServiceAccountConfigName}' for the calling user (see the adapter log for the " +
+                "reason reported by the identity service). Refusing to send MCP calls under another " +
+                "identity or unauthenticated.");
+        }
+
+        nodeContext.Debug(
+            "MCP access token acquired by delegation (on-behalf-of the calling user) via " +
+            $"ServiceAccountConfiguration '{config.McpServiceAccountConfigName}'");
+
+        return delegatedToken;
+    }
+
+    /// <summary>
+    /// Adds the <c>Authorization: Bearer</c> header to an MCP request when a service-account or
+    /// delegated token has been acquired. No-op otherwise (unauthenticated local/dev calls).
+    /// </summary>
+    internal void AddMcpAuthHeader(HttpRequestMessage request)
     {
         if (!string.IsNullOrEmpty(_mcpAccessToken))
         {

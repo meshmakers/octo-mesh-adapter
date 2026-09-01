@@ -23,11 +23,17 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// <param name="globalConfiguration">Global configuration for the pipeline</param>
     /// <param name="properties">properties that are shared between the different stages of the ETL process and different runs of the pipeline</param>
     /// <param name="verifiedPrincipal">Authenticated caller of the trigger, if any (AB#4975)</param>
+    /// <param name="callerAccessToken">
+    /// Raw access token the caller presented to the trigger, for nodes that must act as the caller
+    /// against another service (delegation / on-behalf-of, AB#5031). Never log it and never write it
+    /// into the data context.
+    /// </param>
     public MeshEtlContext(string tenantId, ITenantRepository tenantRepository,
         OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
         IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties,
-        Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? verifiedPrincipal = null)
-        : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal)
+        Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? verifiedPrincipal = null,
+        string? callerAccessToken = null)
+        : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal, callerAccessToken)
     {
         TenantRepository = tenantRepository;
     }

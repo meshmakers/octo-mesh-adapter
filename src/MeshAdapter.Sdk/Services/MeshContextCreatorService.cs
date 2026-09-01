@@ -31,7 +31,11 @@ internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCa
             pipelineExecutionId,
             pipelineRegistration.PipelineRtEntityId, executePipelineOptions.TransactionStartedDateTime,
             executePipelineOptions.ExternalReceivedDateTime, pipelineRegistration.GlobalConfiguration,
-            pipelineRegistration.Dictionary, executePipelineOptions.VerifiedPrincipal);
+            pipelineRegistration.Dictionary, executePipelineOptions.VerifiedPrincipal,
+            // Per-execution side channel. Deliberately NOT put into pipelineRegistration.Dictionary
+            // (= IEtlContext.Properties): that dictionary lives on the registration and is shared by
+            // every run of the pipeline, so one caller's token would outlive their request (AB#5031).
+            executePipelineOptions.CallerAccessToken);
 
 
         var etlContext = context as TContext;

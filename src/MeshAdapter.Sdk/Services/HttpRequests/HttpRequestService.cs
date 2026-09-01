@@ -84,6 +84,7 @@ internal class HttpRequestService(
         // The verified caller (AB#4975): a safe subset only — the data root is echoed in the HTTP
         // response and persistable, so no token material may ever travel with it. Exposed to
         // pipeline authors as $.principal (inside ForEach bodies: $.full.principal).
+        var callerContext = TriggerCallerContext.Anonymous;
         VerifiedPrincipal? verifiedPrincipal = null;
         if (context.User.Identity?.IsAuthenticated == true)
         {
@@ -110,6 +111,13 @@ internal class HttpRequestService(
                 ["name"] = verifiedPrincipal.Name,
                 ["roles"] = rolesArray
             };
+
+            // 🔴 The raw token goes to the trigger's execute delegate ONLY — never into `input`.
+            // A node that has to act as the caller against another service (delegation /
+            // on-behalf-of, AB#5031) needs the token itself as subject_token, but the data root is
+            // echoed back in the response, persistable by SetPipelineExecutionResult@1 and shown in
+            // the Studio debug panel. The CredentialHeaders filter below stays exactly as it was.
+            callerContext = new TriggerCallerContext(verifiedPrincipal, ExtractBearerToken(context));
         }
 
         // Expose request headers so trigger nodes can authenticate the caller
@@ -251,7 +259,7 @@ internal class HttpRequestService(
             input["query"] = query;
         }
 
-        var r = await route.ExecuteFunc(input, verifiedPrincipal);
+        var r = await route.ExecuteFunc(input, callerContext);
         if (r != null)
         {
             context.Response.ContentType = MimeTypes.MimeTypeJson;
@@ -260,6 +268,48 @@ internal class HttpRequestService(
         return true;
     }
     
+    /// <summary>
+    /// Reads the raw bearer token out of the <c>Authorization</c> header, or null when the header is
+    /// absent, empty or carries another scheme (Basic, a Bot Framework credential the platform gate
+    /// did not evaluate, …). The scheme is checked so a non-bearer credential is never handed on as
+    /// if it were one — a delegation request would then fail at the identity service with an
+    /// unhelpful error instead of never being attempted.
+    ///
+    /// 🔴 The returned value is credential material. It is only ever handed to the trigger's execute
+    /// delegate via <see cref="TriggerCallerContext" />; it must never be written into the pipeline
+    /// data, logged, or included in a response.
+    /// </summary>
+    private static string? ExtractBearerToken(HttpContext context)
+    {
+        foreach (var headerValue in context.Request.Headers.Authorization)
+        {
+            if (string.IsNullOrWhiteSpace(headerValue))
+            {
+                continue;
+            }
+
+            var separator = headerValue.IndexOf(' ');
+            if (separator <= 0)
+            {
+                continue;
+            }
+
+            if (!headerValue.AsSpan(0, separator)
+                    .Equals("Bearer".AsSpan(), StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var token = headerValue[(separator + 1)..].Trim();
+            if (!string.IsNullOrEmpty(token))
+            {
+                return token;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Authorizes the caller of a route and records the decision in the tenant's event log.
     /// An anonymous invocation carries no caller identity and serves public webhooks, so it is

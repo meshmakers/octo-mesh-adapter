@@ -136,12 +136,18 @@ public static class NotificationPlaceholderResolver
     /// What an <see cref="PlaceholderFormat.InlineImage"/> becomes when the image is there and
     /// the template can show it; null when neither holds.
     /// </param>
-    public static string Format(object? raw, PlaceholderFormat format, string? inlineImageMarkup)
+    /// <param name="encodeForMarkup">
+    /// Whether the result is going into text that will be rendered as HTML. The caller decides:
+    /// a body usually is, a subject never is. See <see cref="EncodeForMarkup"/>.
+    /// </param>
+    public static string Format(
+        object? raw, PlaceholderFormat format, string? inlineImageMarkup, bool encodeForMarkup = false)
     {
         if (format == PlaceholderFormat.InlineImage)
         {
             // The markup is only produced when the caller established both that an image exists
-            // and that the template renders markup at all.
+            // and that the template renders markup at all. Exempt from encoding by definition -
+            // this one IS markup, and it is the node's own, not a value out of a record.
             return raw == null || inlineImageMarkup == null ? string.Empty : inlineImageMarkup;
         }
 
@@ -150,7 +156,7 @@ public static class NotificationPlaceholderResolver
             return string.Empty;
         }
 
-        return format switch
+        var text = format switch
         {
             PlaceholderFormat.Salutation => NotificationPlaceholderCatalog.Salutation(raw),
             PlaceholderFormat.BillingType => NotificationPlaceholderCatalog.BillingType(raw),
@@ -158,7 +164,30 @@ public static class NotificationPlaceholderResolver
             PlaceholderFormat.Money => FormatMoney(raw),
             _ => raw as string ?? Convert.ToString(raw, CultureInfo.InvariantCulture) ?? string.Empty
         };
+
+        // Every format, not only the free-text one. The four above produce text this code chose,
+        // so encoding them changes nothing today - but the reason they are safe is an argument
+        // about their implementations, and the next format added would inherit the exemption
+        // rather than the rule.
+        return encodeForMarkup ? EncodeForMarkup(text) : text;
     }
+
+    /// <summary>
+    /// Escapes the five characters that can start markup or break out of an attribute, and
+    /// nothing else.
+    ///
+    /// Deliberately not <see cref="System.Net.WebUtility.HtmlEncode(string)"/>, which also turns every
+    /// character above ASCII into a numeric entity: the text/plain alternative is derived from
+    /// this same string, so <c>Müller</c> would reach a text-only reader as <c>M&amp;#252;ller</c>.
+    /// The five here are the HTML-context set, and a German name, a currency amount and the
+    /// no-break space in it all pass through untouched.
+    /// </summary>
+    public static string EncodeForMarkup(string text) => text
+        .Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("<", "&lt;", StringComparison.Ordinal)
+        .Replace(">", "&gt;", StringComparison.Ordinal)
+        .Replace("\"", "&quot;", StringComparison.Ordinal)
+        .Replace("'", "&#39;", StringComparison.Ordinal);
 
     private static string FormatDate(object raw)
     {

@@ -236,3 +236,194 @@ public class ResolveNotificationPlaceholdersNodeTests
         Assert.Equal("[]", context.Get<string>("$.renderedBody"));
     }
 }
+
+/// <summary>
+/// A substituted value is data from a customer record; the template around it is what an operator
+/// wrote. Only the template may carry markup.
+///
+/// The body is rendered as HTML on two of the three paths - verbatim for <c>Html</c>, through
+/// Markdig for <c>Markdown</c>, and Markdig passes raw HTML through because the shared pipeline
+/// does not disable it - so an unescaped value lands in the recipient's client as markup. A
+/// company name of <c>&lt;a href="http://evil"&gt;Zahlung&lt;/a&gt;</c> is then a working link in
+/// a mail the community appears to have sent.
+/// </summary>
+public class ResolveNotificationPlaceholdersNodeEncodingTests
+{
+    private const string Injected = """
+        {
+          "customer": {
+            "RtId": "6a8e",
+            "Attributes": { "Contact": { "Attributes": {
+              "FirstName": "<img src=x onerror=alert(1)>",
+              "CompanyName": "Müller & Söhne"
+            } } }
+          },
+          "config": { "RtId": "6977", "Attributes": { "Name": "EEG" } },
+          "renderingType": "RENDERING_TYPE",
+          "subject": "Betreff ${customer.firstName}",
+          "body": "Hallo ${customer.firstName} von ${customer.companyName}"
+        }
+        """;
+
+    private static async Task<IDataContext> RunAsync(string? renderingType)
+    {
+        var json = Injected.Replace("RENDERING_TYPE", renderingType ?? string.Empty);
+        var dataContext = new DataContextImpl(JsonDocument.Parse(json));
+        var nodeContext = A.Fake<INodeContext>();
+        A.CallTo(() => nodeContext.GetNodeConfiguration<ResolveNotificationPlaceholdersNodeConfiguration>())
+            .Returns(new ResolveNotificationPlaceholdersNodeConfiguration
+            {
+                SubjectPath = "$.subject",
+                SubjectTargetPath = "$.renderedSubject",
+                BodyPath = "$.body",
+                BodyTargetPath = "$.renderedBody",
+                CustomerPath = "$.customer",
+                CommunityConfigPath = "$.config",
+                RenderingTypePath = renderingType == null ? null : "$.renderingType",
+            });
+        A.CallTo(() => nodeContext.NodePath).Returns("Test/ResolveNotificationPlaceholders@1");
+
+        await new ResolveNotificationPlaceholdersNode((_, _) => Task.CompletedTask)
+            .ProcessObjectAsync(dataContext, nodeContext);
+
+        return dataContext;
+    }
+
+    [Theory]
+    [InlineData("Html")]
+    [InlineData("Markdown")]
+    public async Task A_value_cannot_introduce_markup_into_a_body_that_renders_as_html(string renderingType)
+    {
+        var context = await RunAsync(renderingType);
+
+        var body = context.Get<string>("$.renderedBody");
+        Assert.DoesNotContain("<img", body);
+        Assert.Contains("&lt;img src=x onerror=alert(1)&gt;", body);
+    }
+
+    /// <summary>
+    /// No rendering type wired means the sender falls back to its configured default, which is
+    /// <c>Markdown</c> - so "unknown" has to encode. The logo goes the other way and stays silent
+    /// unless markup is certain, because there the failure is a broken image rather than an
+    /// injection.
+    /// </summary>
+    [Fact]
+    public async Task An_unknown_rendering_type_encodes_rather_than_assuming_plain_text()
+    {
+        var context = await RunAsync(null);
+
+        Assert.Contains("&lt;img", context.Get<string>("$.renderedBody"));
+    }
+
+    [Fact]
+    public async Task A_plain_body_keeps_the_value_as_it_is_stored()
+    {
+        var context = await RunAsync("Plain");
+
+        var body = context.Get<string>("$.renderedBody");
+        Assert.Contains("<img src=x onerror=alert(1)>", body);
+        Assert.DoesNotContain("&lt;", body);
+    }
+
+    /// <summary>
+    /// The subject is a header, delivered as text. Encoding it would print the entities.
+    /// </summary>
+    [Theory]
+    [InlineData("Html")]
+    [InlineData("Plain")]
+    [InlineData(null)]
+    public async Task The_subject_is_never_encoded(string? renderingType)
+    {
+        var context = await RunAsync(renderingType);
+
+        Assert.Equal("Betreff <img src=x onerror=alert(1)>", context.Get<string>("$.renderedSubject"));
+    }
+
+    /// <summary>
+    /// Only the five characters that can start markup or break out of an attribute are touched.
+    /// Everything else has to survive, because the text/plain alternative is derived from this
+    /// same string and a reader would otherwise get numeric entities where the umlauts were.
+    /// </summary>
+    [Fact]
+    public async Task Nothing_but_the_markup_characters_is_encoded()
+    {
+        var context = await RunAsync("Html");
+
+        Assert.Contains("Müller &amp; Söhne", context.Get<string>("$.renderedBody"));
+    }
+}
+
+/// <summary>
+/// A refusal has to say which of the two things went wrong: a token spelled wrongly, or a token
+/// spelled correctly on a path that cannot supply it. The first is fixed in the template, the
+/// second in the pipeline, and the message is the only place an operator learns which.
+/// </summary>
+public class ResolveNotificationPlaceholdersNodeUnknownTokenTests
+{
+    private static async Task<Exception?> RunAsync(string body, string? customerPath)
+    {
+        const string json = """
+            {
+              "customer": { "RtId": "6a8e", "Attributes": { "Contact": { "Attributes": { "FirstName": "Max" } } } },
+              "config": { "RtId": "6977", "Attributes": { "Name": "EEG" } },
+              "subject": "s",
+              "body": "BODY"
+            }
+            """;
+
+        var dataContext = new DataContextImpl(JsonDocument.Parse(json.Replace("BODY", body)));
+        var nodeContext = A.Fake<INodeContext>();
+        A.CallTo(() => nodeContext.GetNodeConfiguration<ResolveNotificationPlaceholdersNodeConfiguration>())
+            .Returns(new ResolveNotificationPlaceholdersNodeConfiguration
+            {
+                SubjectPath = "$.subject",
+                SubjectTargetPath = "$.renderedSubject",
+                BodyPath = "$.body",
+                BodyTargetPath = "$.renderedBody",
+                CustomerPath = customerPath,
+                CommunityConfigPath = "$.config",
+            });
+        A.CallTo(() => nodeContext.NodePath).Returns("Test/ResolveNotificationPlaceholders@1");
+
+        try
+        {
+            await new ResolveNotificationPlaceholdersNode((_, _) => Task.CompletedTask)
+                .ProcessObjectAsync(dataContext, nodeContext);
+            return null;
+        }
+        catch (Exception e)
+        {
+            return e;
+        }
+    }
+
+    [Fact]
+    public async Task A_misspelled_token_is_reported_as_one_rather_than_as_an_empty_reason()
+    {
+        var error = await RunAsync("Hallo ${customre.firstName}", "$.customer");
+
+        Assert.NotNull(error);
+        Assert.Contains("not in the catalog: customre.firstName", error.Message);
+        Assert.DoesNotContain("()", error.Message);
+    }
+
+    [Fact]
+    public async Task A_known_token_on_a_path_that_supplies_nothing_still_names_the_path()
+    {
+        var error = await RunAsync("Hallo ${customer.firstName}", customerPath: null);
+
+        Assert.NotNull(error);
+        Assert.Contains("Customer (no path configured)", error.Message);
+        Assert.DoesNotContain("not in the catalog", error.Message);
+    }
+
+    [Fact]
+    public async Task Both_reasons_appear_when_both_occur()
+    {
+        var error = await RunAsync("${customer.firstName} ${customre.lastName}", customerPath: null);
+
+        Assert.NotNull(error);
+        Assert.Contains("Customer (no path configured)", error.Message);
+        Assert.Contains("not in the catalog: customre.lastName", error.Message);
+    }
+}

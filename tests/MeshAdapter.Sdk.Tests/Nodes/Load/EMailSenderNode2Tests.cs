@@ -149,6 +149,19 @@ public class EMailSenderNode2BodyFormatTests
         Assert.Null(EMailSenderNode2.PlainTextAlternative("<p>x</p>", BodyFormats.Html));
     }
 
+    /// <summary>
+    /// The resolver escapes a substituted value before it reaches a body that becomes markup, so
+    /// the plain part has to undo that or the two halves of one mail disagree - the HTML reader
+    /// sees an ampersand where the text reader sees <c>&amp;amp;</c>. Observed on a live send.
+    /// </summary>
+    [Theory]
+    [InlineData("Firma: M&#252;ller &amp; S&#246;hne", "Firma: Müller & Söhne")]
+    [InlineData("&lt;a href=&quot;http://x&quot;&gt;y&lt;/a&gt;", """<a href="http://x">y</a>""")]
+    public void The_plain_alternative_of_a_markdown_body_reads_as_the_html_renders(string body, string expected)
+    {
+        Assert.Equal(expected, EMailSenderNode2.PlainTextAlternative(body, BodyFormats.Markdown));
+    }
+
     [Fact]
     public void A_markdown_image_is_dropped_from_the_plain_alternative()
     {

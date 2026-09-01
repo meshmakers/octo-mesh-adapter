@@ -274,7 +274,13 @@ public class EMailSenderNode2(
     {
         BodyFormats.Html => null,
         BodyFormats.PlainText => body,
-        _ => StripInlineImageMarkup(body)
+        // Decoded, because the HTML part renders entities and this part does not. The resolver
+        // escapes a substituted value before it goes into a body that becomes markup, so without
+        // this a company name of `Müller & Söhne` reaches a text-only reader as
+        // `Müller &amp; Söhne` while the HTML reader sees the ampersand. Entities the author
+        // typed are decoded too, and that is the same rule: what the HTML reader sees is what
+        // the text reader should read.
+        _ => WebUtility.HtmlDecode(StripInlineImageMarkup(body))
     };
 
     /// <summary>
@@ -348,6 +354,32 @@ public class EMailSenderNode2(
     {
         var resolved = new List<ResolvedAttachment>();
 
+        try
+        {
+            await ResolveEachAsync(c, dataContext, nodeContext, bodyInHtml, resolved);
+        }
+        catch
+        {
+            // Nothing else will close these. A stream is disposed by the MailMessage that owns
+            // it, and the message is only built after this method returns - so an attachment
+            // failing here strands every stream already opened before it. The two exceptions the
+            // loop handles are only the ones it can turn into a decision; a Mongo timeout or a
+            // cancellation goes straight past them.
+            foreach (var item in resolved)
+            {
+                item.Content.Dispose();
+            }
+
+            throw;
+        }
+
+        return resolved;
+    }
+
+    private async Task ResolveEachAsync(
+        EMailSenderNodeConfiguration2 c, IDataContext dataContext, INodeContext nodeContext,
+        string bodyInHtml, List<ResolvedAttachment> resolved)
+    {
         foreach (var attachment in c.Attachments)
         {
             // An inline attachment exists to be addressed from the body; one nothing addresses
@@ -416,8 +448,6 @@ public class EMailSenderNode2(
                     attachment.ContentTypePath != null ? dataContext.Get<string>(attachment.ContentTypePath) : null,
                     attachment.ContentType)));
         }
-
-        return resolved;
     }
 
     /// <summary>

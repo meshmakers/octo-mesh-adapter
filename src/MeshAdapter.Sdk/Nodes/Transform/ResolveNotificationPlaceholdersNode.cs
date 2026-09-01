@@ -25,8 +25,9 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
 
         var sources = ReadSources(c, dataContext);
         var logoMarkup = ResolveLogoMarkup(c, dataContext);
+        var encodeBody = BodyIsRenderedAsMarkup(c, dataContext);
 
-        PlaceholderValue Lookup(string token)
+        PlaceholderValue Lookup(string token, bool encodeForMarkup)
         {
             var definition = NotificationPlaceholderCatalog.Definitions
                 .FirstOrDefault(d => string.Equals(d.Token, token, StringComparison.OrdinalIgnoreCase));
@@ -54,11 +55,17 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
                 NotificationPlaceholderResolver.Format(
                     dataContext.GetValue($"{root}.Attributes.{attributePath}"),
                     definition.Format,
-                    logoMarkup);
+                    logoMarkup,
+                    encodeForMarkup);
         }
 
-        var subject = NotificationPlaceholderResolver.Resolve(dataContext.Get<string>(c.SubjectPath), Lookup);
-        var body = NotificationPlaceholderResolver.Resolve(dataContext.Get<string>(c.BodyPath), Lookup);
+        // The subject is a mail header and arrives as text, so encoding it would print the
+        // entities. The body is markup on two of the three paths, and on the third the value is
+        // escaped by the sender anyway - so the split is per target, not per template.
+        var subject = NotificationPlaceholderResolver.Resolve(
+            dataContext.Get<string>(c.SubjectPath), token => Lookup(token, false));
+        var body = NotificationPlaceholderResolver.Resolve(
+            dataContext.Get<string>(c.BodyPath), token => Lookup(token, encodeBody));
 
         var missing = subject.SourceMissing.Concat(body.SourceMissing)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -131,13 +138,26 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
     /// <summary>
     /// Which sources the refused tokens needed, and what each one was configured to read, so the
     /// message names the thing an operator has to change.
+    ///
+    /// A token the catalog does not know has no source to name - a typo like
+    /// <c>${customre.firstName}</c> is refused for a different reason than a billing token on a
+    /// bulk path, and saying so is the difference between fixing a spelling and hunting a
+    /// pipeline path. Left implicit, such a token contributed nothing here and the message ended
+    /// in an empty <c>()</c>.
     /// </summary>
     private static string DescribeMissingSources(
         ResolveNotificationPlaceholdersNodeConfiguration c,
         IReadOnlyDictionary<PlaceholderSource, string?> sources,
         IEnumerable<string> missingTokens)
     {
-        var needed = missingTokens
+        var tokens = missingTokens.ToArray();
+
+        var unknown = tokens
+            .Where(token => !NotificationPlaceholderCatalog.Definitions
+                .Any(d => string.Equals(d.Token, token, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        var needed = tokens
             .Select(token => NotificationPlaceholderCatalog.Definitions
                 .FirstOrDefault(d => string.Equals(d.Token, token, StringComparison.OrdinalIgnoreCase)))
             .Where(definition => definition != null)
@@ -145,13 +165,20 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
             .Distinct()
             .OrderBy(source => source.ToString(), StringComparer.Ordinal);
 
-        return string.Join(", ", needed.Select(source =>
+        var parts = needed.Select(source =>
         {
             var configured = ConfiguredPath(c, source);
             return configured == null
                 ? $"{source} (no path configured)"
                 : $"{source} ('{configured}' held no entity)";
-        }));
+        }).ToList();
+
+        if (unknown.Length > 0)
+        {
+            parts.Add($"not in the catalog: {string.Join(", ", unknown)}");
+        }
+
+        return string.Join(", ", parts);
     }
 
     private static string? ConfiguredPath(
@@ -202,5 +229,32 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
         return string.Equals(renderingType, "Html", StringComparison.OrdinalIgnoreCase)
             ? $"""<img src="cid:{c.LogoContentId}" alt="" />"""
             : null;
+    }
+
+    /// <summary>
+    /// Whether a substituted value has to be escaped before it goes into the body.
+    ///
+    /// A value comes out of a customer record; the template around it is what an operator wrote.
+    /// Only the second may carry markup. <c>SendEMail@2</c> renders the body verbatim for
+    /// <c>Html</c> and through Markdig for <c>Markdown</c> - and Markdig passes raw HTML through,
+    /// since the shared pipeline drops only the generic-attributes extension - so on both an
+    /// unescaped value reaches the recipient's client as markup.
+    ///
+    /// **This is the mirror image of <see cref="ResolveLogoMarkup"/> and deliberately so.** The
+    /// logo needs certainty that markup will be rendered, and stays silent otherwise, because
+    /// guessing wrong leaves a broken image. Encoding needs certainty of the opposite: an unwired
+    /// <c>RenderingTypePath</c> means the sender falls back to its own default, which is
+    /// <c>Markdown</c>, so "I do not know" has to mean "escape it".
+    /// </summary>
+    private static bool BodyIsRenderedAsMarkup(
+        ResolveNotificationPlaceholdersNodeConfiguration c, IDataContext dataContext)
+    {
+        if (string.IsNullOrWhiteSpace(c.RenderingTypePath))
+        {
+            return true;
+        }
+
+        var renderingType = dataContext.Get<string>(c.RenderingTypePath);
+        return !string.Equals(renderingType, "Plain", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -977,6 +977,31 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: a per-execution scratch space is required ({reason}).");
     }
 
+    /// <summary>
+    /// A template names placeholders whose source this send path never supplied - a billing
+    /// token on a path carrying no bill, or a customer token for an address that matched no
+    /// customer. The resolver cannot tell such a token from one whose value happens to be empty,
+    /// so it refuses rather than guessing which of the two a blank would mean.
+    /// </summary>
+    public static Exception PlaceholderSourceMissing(
+        INodeContext nodeContext, IEnumerable<string> tokens, string sources)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: the template uses placeholder(s) {string.Join(", ", tokens)} " +
+            $"whose source this send path does not provide ({sources}).");
+    }
+
+    /// <summary>
+    /// An attachment names a binary the store does not hold. Distinct from a missing id: the id
+    /// is there and points at nothing, which a restore without its blobs produces.
+    /// </summary>
+    public static Exception AttachmentBinaryNotFound(INodeContext nodeContext, string binaryId, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: attachment binary '{binaryId}' was not found in the binary store.",
+            inner);
+    }
+
     public static Exception InvalidHttpApiConfiguration(INodeContext nodeContext, string configurationName,
         Exception inner)
     {

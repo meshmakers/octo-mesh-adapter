@@ -28,4 +28,15 @@ public record GetNotificationTemplateNodeConfiguration : TargetPathNodeConfigura
     /// </remarks>
     [PropertyGroup("Paths", 2, "jsonpath")]
     public required string SubjectTargetPath { get; set; }
+
+    /// <summary>
+    /// Where to write the template's RenderingType (<c>Plain</c> or <c>Html</c>), so the sender
+    /// can honour what the template says it is.
+    ///
+    /// The node used to forward subject and body only, which meant the operator's choice in the
+    /// template editor reached nobody: every EnergyCommunity template declares Plain and every
+    /// mail went out as converted HTML. Optional, so a pipeline that does not ask is unaffected.
+    /// </summary>
+    [PropertyGroup("Paths", 3, "jsonpath")]
+    public string? RenderingTypeTargetPath { get; set; }
 }

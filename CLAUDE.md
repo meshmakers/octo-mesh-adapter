@@ -332,6 +332,38 @@ The build automatically generates a `pipeline-schema.json` file in the build out
 - **Incremental**: Only regenerates when the binary changes
 - **Opt-out**: Set MSBuild property `GeneratePipelineSchema=false` to disable
 
+## The adapter's own credential in the chart (AB#5072)
+
+`src/charts/octo-mesh-adapter` carries the three env vars the SDK's
+`AdapterAccessTokenService` needs to log the adapter in **before** it connects to
+`/{tenantId}/adapterHub`. All three are optional and inert when unset — an unconfigured adapter
+acquires no token and connects anonymously, which is what the whole fleet does today.
+
+| Env var | Chart value | Notes |
+|---|---|---|
+| `OCTO_ADAPTER__ISSUERURI` | `.Values.authUri` | **Same value as `OCTO_ADAPTER__AUTHORITYURL`, by decision.** |
+| `OCTO_ADAPTER__CLIENTID` | `.Values.serviceAccountClientId` | Non-secret. Written by the communication controller as a `ValueOverride` at deploy time. |
+| `OCTO_ADAPTER__CLIENTSECRET` | `.Values.secrets.serviceAccountClientSecret` via `octo-mesh.secretEnv` | 🔴 Secret-flagged; accepts a plaintext string **or** the `{valueFrom: {secretKeyRef: …}}` map the operator produces from `{release}-octo-secrets`, exactly like `secrets.rabbitmq`. |
+
+🔴 **`AUTHORITYURL` and `ISSUERURI` are two keys for two directions, fed from one value.**
+`AuthorityUrl` (`MeshAdapterConfiguration`, this repo) is **inbound** — the issuer secured
+`FromHttpRequest@2` routes accept on tokens presented *to* the adapter. `IssuerUri`
+(`AdapterOptions`, octo-communication-sdk) is **outbound** — the identity service the adapter
+authenticates *itself* against. Two config keys exist because `AdapterOptions` lives in the SDK and
+must also serve adapters with no `MeshAdapterConfiguration` (Loxone, Modbus, Zenon, the simulation
+plug). They always name the same identity service, so the chart feeds both from `authUri`; a second
+chart value could only ever drift. It must be the **public** issuer address — OIDC discovery runs
+against it and the communication controller validates the issuer of the resulting token.
+
+⚠️ **`octo-mesh.secretEnv` fails on an empty value**, which is deliberate for the four mandatory
+cluster secrets. The client secret is optional, so its `include` sits behind an `if`; dropping that
+guard makes every adapter without credentials fail to render.
+
+The controller side of the wire (which `ValueOverride` paths are projected, why they are not gated on
+`ReceivesClusterSecrets`, and why provisioning had to move before the deploy notification) is
+documented in `octo-communication-controller-services/CLAUDE.md` → "Phase 4 — the credentials reach
+the adapter pod (AB#5072)".
+
 ## Helm chart publishing (AB#4948)
 
 `src/charts/octo-mesh-adapter` is packaged on every build and published to two

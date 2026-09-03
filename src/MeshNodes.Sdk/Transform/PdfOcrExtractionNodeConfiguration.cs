@@ -91,23 +91,35 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     public int MaxDeskewAngle { get; set; } = 40;
 
     /// <summary>
-    /// For PDF input, extract the embedded text layer first (digital PDFs) and only
-    /// fall back to raster+Tesseract OCR when the layer is missing or too sparse
-    /// (scanned/image PDFs). The text layer is exact where OCR is lossy: Tesseract
-    /// drops separator-less alphanumeric codes such as invoice numbers and mangles
-    /// non-German diacritics. Enabled by default. Ignored for image input and when
-    /// <see cref="ExtractTables"/> or <see cref="ExtractBarcodes"/> is requested
-    /// (those only come from the OCR path). AB#4528.
+    /// For PDF input, prefer the embedded text layer over OCR: pages with a usable
+    /// layer are read losslessly, only pages without one are OCR'd ("Mixed").
+    /// The text layer is exact where OCR is lossy (separator-less codes such as invoice
+    /// numbers, non-German diacritics). Enabled by default. Ignored for image input,
+    /// when <see cref="ExtractTables"/> or <see cref="ExtractBarcodes"/> is requested
+    /// (OCR-path features) and when <see cref="PageNumbers"/> selects specific pages.
+    /// Text that only exists inside embedded images is not in the text layer — if that
+    /// text matters, disable this.
     /// </summary>
     [PropertyGroup("Options", 9)]
     public bool PreferTextLayer { get; set; } = true;
 
     /// <summary>
-    /// Minimum number of characters the embedded PDF text layer must yield for it to
-    /// be treated as a digital PDF and used in place of OCR. Below this threshold the
-    /// PDF is assumed to be a scan (empty/near-empty text layer) and the node falls
-    /// back to Tesseract OCR. Only used when <see cref="PreferTextLayer"/> is enabled.
+    /// Minimum number of non-whitespace characters a page's embedded text layer must
+    /// yield to count as usable (guards against PDFs whose "text layer" is a stray
+    /// watermark character). Pages below the threshold are treated as scanned and
+    /// OCR'd. Only used when <see cref="PreferTextLayer"/> is enabled.
     /// </summary>
     [PropertyGroup("Options", 10)]
     public int MinTextLayerChars { get; set; } = 100;
+
+    /// <summary>
+    /// Where the extraction tier used for the main text is written when
+    /// <see cref="PreferTextLayer"/> is enabled: "TextLayer" (all pages from the text
+    /// layer, no OCR, born-digital fidelity), "TextLayerFromOcr" (text layer present but
+    /// pages are scans with a baked-in OCR text layer — usable, OCR-grade trust),
+    /// "Mixed" (text layer + OCR for pages without one) or "Ocr".
+    /// Defaults to $.ExtractionTier. Downstream consumers can scale trust accordingly.
+    /// </summary>
+    [PropertyGroup("Output", 3, "jsonpath")]
+    public string? ExtractionTierOutputPath { get; set; }
 }

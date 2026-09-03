@@ -3,6 +3,7 @@ using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
@@ -69,7 +70,7 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(pdf);
 
-        await new PdfOcrExtractionNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        await new PdfOcrExtractionNode(next, new PdfPigTextExtractor()).ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
         var text = CapturedString(dataContext, "$.text");
@@ -105,7 +106,7 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(wrapped);
 
-        await new PdfOcrExtractionNode(next).ProcessObjectAsync(dataContext, nodeContext);
+        await new PdfOcrExtractionNode(next, new PdfPigTextExtractor()).ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
         var text = CapturedString(dataContext, "$.text");

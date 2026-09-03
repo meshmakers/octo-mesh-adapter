@@ -148,6 +148,12 @@ public static class ServiceCollectionExtensions
         // the ETL context, so a redeployed pipeline picks up a changed limit.
         services.AddSingleton<ISftpSessionFactory, SshNetSftpSessionFactory>();
 
+        // Text-layer extraction for PdfOcrExtractionNode's extraction ladder.
+        // Interface-based so the PdfPig implementation can be swapped without
+        // touching the node.
+        services.AddSingleton<Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf.IPdfTextExtractor,
+            Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf.PdfPigTextExtractor>();
+
         // Register CommunicationServicesClient for DeployDataFlow node
         services.AddOptions<CommunicationServiceClientOptions>()
             .Configure<IOptions<AdapterOptions>>((options, adapterOptions) =>

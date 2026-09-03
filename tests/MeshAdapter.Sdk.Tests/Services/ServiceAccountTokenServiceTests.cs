@@ -7,8 +7,11 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MeshAdapter.Sdk.Tests.Services;
@@ -45,12 +48,13 @@ public class ServiceAccountTokenServiceTests
         SetupConfiguration(tenantId: TenantId);
     }
 
-    private void SetupConfiguration(string? tenantId, string? clientId = ClientId, string? issuer = Issuer)
+    private void SetupConfiguration(string? tenantId, string? clientId = ClientId, string? issuer = Issuer,
+        string? secret = ClientSecret)
     {
         var entity = new RtEntity(ServiceAccountType, new OctoObjectId("670000000000000000000042"));
         entity.SetAttributeRawValue("IssuerUri", issuer);
         entity.SetAttributeRawValue("ClientId", clientId);
-        entity.SetAttributeRawValue("ClientSecret", ClientSecret);
+        entity.SetAttributeRawValue("ClientSecret", secret);
         entity.SetAttributeRawValue("TenantId", tenantId);
 
         var resultSet = A.Fake<IResultSet<RtEntity>>();
@@ -71,11 +75,29 @@ public class ServiceAccountTokenServiceTests
             .Returns(resultSet);
     }
 
-    private ServiceAccountTokenService CreateService(IdentityEndpointHandler handler)
+    private ServiceAccountTokenService CreateService(IdentityEndpointHandler handler,
+        AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshConfiguration = null,
+        ILogger<ServiceAccountTokenService>? logger = null)
     {
         return new ServiceAccountTokenService(_serviceClientAccessToken,
-            NullLogger<ServiceAccountTokenService>.Instance, new HttpClient(handler, disposeHandler: false));
+            logger ?? NullLogger<ServiceAccountTokenService>.Instance,
+            new HttpClient(handler, disposeHandler: false), adapterOptions, meshConfiguration);
     }
+
+    /// <summary>The adapter's OWN confidential client (AB#5072) — what the impersonation path runs on.</summary>
+    private static AdapterOptions OwnIdentity(string? issuerUri = null)
+    {
+        return new AdapterOptions
+        {
+            ClientId = OwnClientId,
+            ClientSecret = OwnClientSecret,
+            IssuerUri = issuerUri,
+            TenantId = null
+        };
+    }
+
+    private const string OwnClientId = "octo-mesh-adapter";
+    private const string OwnClientSecret = "the-adapters-own-secret";
 
     [Fact]
     public async Task AcquireDelegatedTokenAsync_SendsTheOnBehalfOfGrantWithTheContractedParameters()
@@ -100,7 +122,9 @@ public class ServiceAccountTokenServiceTests
 
         // The service account authenticates with its OWN client credentials — the delegation
         // validator only runs after the identity service has proven client_id. IdentityModel's
-        // default credential style puts them into the Basic authorization header.
+        // default credential style puts them into the Basic authorization header. With a usable
+        // secret the AB#5114 impersonation parameter must NOT appear.
+        Assert.False(form.ContainsKey("requested_client_id"));
         AssertClientAuthentication(handler, form);
     }
 
@@ -171,15 +195,33 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task AcquireDelegatedTokenAsync_ConfigurationWithoutTenantId_ReturnsNull()
+    public async Task AcquireDelegatedTokenAsync_ConfigurationWithoutTenantId_UsesTheAdaptersOwnTenant()
     {
-        // The grant is same-tenant and the identity service needs acr_values=tenant:X to wire the
-        // request to a tenant at all — without one, the request would be rejected with a message
-        // that reads like an outage rather than a misconfiguration.
+        // AB#5115: an empty TenantId on the configuration is the DEFAULT, not damage — it means
+        // "the tenant this adapter runs for". The AB#5031 hard requirement ("the grant needs
+        // acr_values=tenant:X") now only fails when the adapter does not know its tenant either.
+        SetupConfiguration(tenantId: null);
+        A.CallTo(() => _tenantRepository.TenantId).Returns("adapter-tenant");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("delegated-access-token", expiresIn: 300));
+        var service = CreateService(handler);
+
+        var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken);
+
+        Assert.Equal("delegated-access-token", token);
+        Assert.Equal("tenant:adapter-tenant", handler.LastTokenForm!["acr_values"]);
+    }
+
+    [Fact]
+    public async Task AcquireDelegatedTokenAsync_WithoutATenantAnywhere_ReturnsNull()
+    {
+        // The residue of the AB#5031 hard requirement: the grant is same-tenant and the identity
+        // service needs acr_values=tenant:X to wire the request to a tenant at all. With AB#5115 it
+        // only fires when BOTH the configuration and the adapter itself are tenant-less.
         SetupConfiguration(tenantId: null);
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
-        var service = CreateService(handler);
+        var service = CreateService(handler, new AdapterOptions { TenantId = null });
 
         Assert.Null(await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken));
         Assert.Equal(0, handler.CallCount);
@@ -211,6 +253,7 @@ public class ServiceAccountTokenServiceTests
         A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("service-account-token")
             .MustHaveHappenedOnceExactly();
         Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
+        Assert.False(handler.LastTokenForm.ContainsKey("requested_client_id"));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -422,6 +465,309 @@ public class ServiceAccountTokenServiceTests
         Assert.DoesNotContain("offline_access", handler.LastTokenForm!["scope"], StringComparison.Ordinal);
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // AB#5115: empty issuer/tenant on a ServiceAccountConfiguration mean "the adapter's own
+    // installation and tenant". The resolution chain is shared by all three acquisition paths; it is
+    // exercised here through EnsureTokenAsync and AcquireServiceAccountIdentityAsync, and the host of
+    // the token request names the issuer that won.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task IssuerResolution_AnExplicitIssuerOnTheConfigurationWins()
+    {
+        // A real URL on the configuration is the deliberate foreign/pinned-installation case; the
+        // adapter's own authority must not override it.
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal("identity.example.com", handler.LastTokenRequestUri!.Host);
+    }
+
+    [Fact]
+    public async Task IssuerResolution_AnEmptyIssuerMeansTheAdaptersOwnInstallation()
+    {
+        SetupConfiguration(tenantId: TenantId, issuer: "");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("service-account-token")
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task IssuerResolution_TheUnresolvedServiceAuthorityTokenCountsAsEmpty()
+    {
+        // An older communication controller projects the deploy-time template token unresolved into
+        // the configuration. That is the same statement as an empty IssuerUri — compared without
+        // case sensitivity — and must not be sent to OIDC discovery as if it were an address.
+        SetupConfiguration(tenantId: TenantId, issuer: "{{Service.Authority}}");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
+    }
+
+    [Fact]
+    public async Task IssuerResolution_WithoutAnOwnIssuerTheBearerValidationAuthorityIsUsed()
+    {
+        // Adapter:AuthorityUrl is the authority incoming bearers (FromHttpRequest@2) are validated
+        // against — on this adapter it doubles as the last issuer fallback, because wherever secured
+        // trigger routes work it is configured.
+        SetupConfiguration(tenantId: TenantId, issuer: "");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity(issuerUri: null),
+            new MeshAdapterConfiguration { AuthorityUrl = "https://authority.example.com" });
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal("authority.example.com", handler.LastTokenRequestUri!.Host);
+    }
+
+    [Fact]
+    public async Task IssuerResolution_AllSourcesEmpty_FailsNamingEverySource()
+    {
+        SetupConfiguration(tenantId: TenantId, issuer: "");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, new AdapterOptions { TenantId = null },
+            new MeshAdapterConfiguration { AuthorityUrl = "" }, logger);
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal(0, handler.CallCount);
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+
+        // The operator must learn every place that could have answered, not just "no issuer".
+        var error = Assert.Single(logger.Messages, m => m.Contains("No issuer"));
+        Assert.Contains("Adapter:IssuerUri", error);
+        Assert.Contains("Adapter:AuthorityUrl", error);
+    }
+
+    [Fact]
+    public async Task Discovery_AMixedHostDocumentIsAccepted()
+    {
+        // Seen in-cluster (AB#5111/AB#5115): the identity service derives most discovery endpoints
+        // from the REQUEST host (https://mac.local:5003) but at least check_session_iframe from its
+        // fixed canonical issuer (https://localhost:5003). IdentityModel's default policy rejects
+        // that whole document as "Endpoint is on a different host than authority" — so endpoint
+        // validation is off alongside issuer-name validation: the document comes from the trusted,
+        // TLS-authenticated IssuerUri anyway, and this test pins that policy.
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300))
+        {
+            MixedHostDiscovery = true
+        };
+        var service = CreateService(handler);
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("service-account-token")
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task TenantResolution_TheConfigurationsOwnTenantWins()
+    {
+        A.CallTo(() => _tenantRepository.TenantId).Returns("adapter-tenant");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+
+        await CreateService(handler).EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm!["acr_values"]);
+    }
+
+    [Fact]
+    public async Task TenantResolution_AnEmptyTenantFallsBackToTheAdaptersTenant()
+    {
+        SetupConfiguration(tenantId: null);
+        A.CallTo(() => _tenantRepository.TenantId).Returns("adapter-tenant");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+
+        await CreateService(handler).EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal("tenant:adapter-tenant", handler.LastTokenForm!["acr_values"]);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // AB#5114 v1: impersonation acquisition. ONE decision, shared by every path: a usable secret on
+    // the configuration keeps the pre-AB#5114 wire shape byte-for-byte; without one the adapter's
+    // OWN client credentials carry the request — through the impersonation grant for ambient tokens,
+    // through the on-behalf-of grant with requested_client_id for delegated ones.
+    // ---------------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    [InlineData("<insert client secret here>", false)]
+    [InlineData("  <placeholder>", false)]
+    [InlineData("s3cr3t", true)]
+    public void IsSecretUsable_AnEmptyOrPlaceholderSecretMeansNoSecret(string? secret, bool expected)
+    {
+        Assert.Equal(expected, ServiceAccountTokenService.IsSecretUsable(secret));
+    }
+
+    [Fact]
+    public async Task EnsureTokenAsync_AUsableSecretKeepsTheLegacyGrant_EvenWhenTheAdapterHasOwnCredentials()
+    {
+        // Regression guard: a configuration that carries its own secret is an explicit statement and
+        // must keep working exactly as before AB#5114 — the adapter's identity stays out of it.
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity());
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        var form = handler.LastTokenForm!;
+        Assert.Equal("client_credentials", form["grant_type"]);
+        Assert.False(form.ContainsKey("requested_client_id"));
+        AssertClientAuthentication(handler, form);
+    }
+
+    [Fact]
+    public async Task EnsureTokenAsync_APlaceholderSecretWithOwnCredentials_ImpersonatesTheServiceAccount()
+    {
+        SetupConfiguration(tenantId: TenantId, secret: "<insert client secret here>");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("impersonated-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity());
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        // The exact wire contract of the identity-side impersonation validator (AB#5114): the
+        // ADAPTER authenticates, the target account is named, the tenant is pinned via acr_values.
+        var form = handler.LastTokenForm!;
+        Assert.Equal("urn:meshmakers:params:oauth:grant-type:impersonate", form["grant_type"]);
+        Assert.Equal(ClientId, form["requested_client_id"]);
+        Assert.Equal($"tenant:{TenantId}", form["acr_values"]);
+        Assert.Contains("octo_api", form["scope"]);
+        AssertClientAuthentication(handler, form, OwnClientId, OwnClientSecret);
+
+        // The response is CC-shaped for the service account, so it IS the service identity.
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("impersonated-token")
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task EnsureTokenAsync_NoSecretAndNoOwnCredentials_FailsNamingBothWaysOut()
+    {
+        SetupConfiguration(tenantId: TenantId, secret: null);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, new AdapterOptions { TenantId = null }, logger: logger);
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal(0, handler.CallCount);
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+
+        // Both repairs must be named: store a secret on the configuration, or give the adapter its
+        // own identity plus a MayActAs grant.
+        var error = Assert.Single(logger.Messages, m => m.Contains("no usable ClientSecret"));
+        Assert.Contains("ClientSecret", error);
+        Assert.Contains("MayActAs", error);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_WithoutASecret_ImpersonatesAndCachesUnderTheTargetClient()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler, OwnIdentity());
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials with { ClientSecret = null });
+
+        Assert.NotNull(identity);
+        // The issued token runs as the TARGET account, so the target is the identity — never the
+        // adapter's own client.
+        Assert.Equal(ClientId, identity!.SubjectId);
+        Assert.Equal(["Accounting"], identity.Roles);
+
+        var form = handler.LastTokenForm!;
+        Assert.Equal("urn:meshmakers:params:oauth:grant-type:impersonate", form["grant_type"]);
+        Assert.Equal(ClientId, form["requested_client_id"]);
+        Assert.Equal($"tenant:{TenantId}", form["acr_values"]);
+        AssertClientAuthentication(handler, form, OwnClientId, OwnClientSecret);
+
+        // Cached in the same (TenantId, ClientId)-keyed cache as the legacy path, keyed by the
+        // target account — a second resolution costs no round trip.
+        await service.AcquireServiceAccountIdentityAsync(Credentials with { ClientSecret = null });
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountIdentityAsync_AnEmptyIssuerIsResolvedAgainstTheAdapter()
+    {
+        // The identity-resolution path reads the credentials the controller projected — which since
+        // AB#5115 may legitimately carry no issuer at all.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials with { IssuerUri = "" });
+
+        Assert.NotNull(identity);
+        Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
+    }
+
+    [Fact]
+    public async Task AcquireDelegatedTokenAsync_WithoutASecret_TheAdapterAuthenticatesAndNamesTheAccount()
+    {
+        // AB#5114 on the delegated path: same on-behalf-of grant, but the ADAPTER's own client
+        // authenticates and requested_client_id names the secret-less service account. The
+        // subject_token / acr semantics of AB#5031 are untouched.
+        SetupConfiguration(tenantId: TenantId, secret: null);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("delegated-access-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity());
+
+        var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken);
+
+        Assert.Equal("delegated-access-token", token);
+
+        var form = handler.LastTokenForm!;
+        Assert.Equal("urn:meshmakers:params:oauth:grant-type:on-behalf-of", form["grant_type"]);
+        Assert.Equal(SubjectToken, form["subject_token"]);
+        Assert.Equal("urn:ietf:params:oauth:token-type:access_token", form["subject_token_type"]);
+        Assert.Equal($"tenant:{TenantId}", form["acr_values"]);
+        Assert.Equal(ClientId, form["requested_client_id"]);
+        AssertClientAuthentication(handler, form, OwnClientId, OwnClientSecret);
+
+        // Still user-bound, still never the process-wide service identity (AB#5031).
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task AcquireDelegatedTokenAsync_WithoutASecretAndWithoutOwnCredentials_ReturnsNull()
+    {
+        SetupConfiguration(tenantId: TenantId, secret: null);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, new AdapterOptions { TenantId = null }, logger: logger);
+
+        Assert.Null(await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken));
+        Assert.Equal(0, handler.CallCount);
+        Assert.Contains(logger.Messages, m => m.Contains("MayActAs"));
+    }
+
     /// <summary>Builds the compact-serialisation JWTs the identity stub hands out.</summary>
     private static class TestJwt
     {
@@ -466,12 +812,13 @@ public class ServiceAccountTokenServiceTests
     /// the two OAuth-sanctioned places IdentityModel put them in (Basic header or post body).
     /// </summary>
     private static void AssertClientAuthentication(IdentityEndpointHandler handler,
-        IReadOnlyDictionary<string, string> form)
+        IReadOnlyDictionary<string, string> form, string expectedClientId = ClientId,
+        string expectedClientSecret = ClientSecret)
     {
         if (form.TryGetValue("client_id", out var postedClientId))
         {
-            Assert.Equal(ClientId, postedClientId);
-            Assert.Equal(ClientSecret, form["client_secret"]);
+            Assert.Equal(expectedClientId, postedClientId);
+            Assert.Equal(expectedClientSecret, form["client_secret"]);
             return;
         }
 
@@ -481,8 +828,24 @@ public class ServiceAccountTokenServiceTests
 
         var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(authorization.Parameter!));
         var separator = decoded.IndexOf(':');
-        Assert.Equal(ClientId, Uri.UnescapeDataString(decoded[..separator]));
-        Assert.Equal(ClientSecret, Uri.UnescapeDataString(decoded[(separator + 1)..]));
+        Assert.Equal(expectedClientId, Uri.UnescapeDataString(decoded[..separator]));
+        Assert.Equal(expectedClientSecret, Uri.UnescapeDataString(decoded[(separator + 1)..]));
+    }
+
+    /// <summary>Collects formatted log messages so error texts naming the fix can be asserted.</summary>
+    private sealed class CapturingLogger : ILogger<ServiceAccountTokenService>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+        }
     }
 
     /// <summary>
@@ -496,6 +859,9 @@ public class ServiceAccountTokenServiceTests
     {
         public Dictionary<string, string>? LastTokenForm { get; private set; }
 
+        /// <summary>Where the last token request went — its host names the issuer that won (AB#5115).</summary>
+        public Uri? LastTokenRequestUri { get; private set; }
+
         /// <summary>The <c>Authorization</c> header of the last token request, if any.</summary>
         public System.Net.Http.Headers.AuthenticationHeaderValue? LastTokenAuthorization { get; private set; }
 
@@ -504,6 +870,12 @@ public class ServiceAccountTokenServiceTests
 
         /// <summary>Makes the discovery fetch throw the way an unreachable/malformed issuer does.</summary>
         public bool FailDiscovery { get; init; }
+
+        /// <summary>
+        ///     Emits the SPLIT-HORIZON document shape the real identity service produces: most
+        ///     endpoints on the request host, but check_session_iframe on the fixed canonical host.
+        /// </summary>
+        public bool MixedHostDiscovery { get; init; }
 
         public static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> TokenResponse(
             string accessToken, int expiresIn)
@@ -542,16 +914,27 @@ public class ServiceAccountTokenServiceTests
                     return Json("""{"keys":[]}""");
                 }
 
+                // The endpoints are derived from the ADDRESS the service asked, not pinned to
+                // one host, so a discovery document answered for https://own.example.com
+                // advertises its endpoints there. The issuer stays fixed on purpose —
+                // CreateDiscoveryRequest switches issuer-NAME validation off (split-horizon,
+                // AB#4922), and this keeps that covered. MixedHostDiscovery additionally pins one
+                // endpoint to the canonical host, the shape the real identity service emits.
+                var authority = $"{request.RequestUri.Scheme}://{request.RequestUri.Authority}";
+                var checkSession = MixedHostDiscovery
+                    ? ",\n  \"check_session_iframe\": \"https://localhost:5003/connect/checksession\""
+                    : string.Empty;
                 return Json($$"""
                               {
                                 "issuer": "{{Issuer}}",
-                                "token_endpoint": "{{TokenEndpoint}}",
-                                "jwks_uri": "{{Issuer}}/.well-known/openid-configuration/jwks"
+                                "token_endpoint": "{{authority}}/connect/token",
+                                "jwks_uri": "{{authority}}/.well-known/openid-configuration/jwks"{{checkSession}}
                               }
                               """);
             }
 
             CallCount++;
+            LastTokenRequestUri = request.RequestUri;
             LastTokenAuthorization = request.Headers.Authorization;
             if (request.Content != null)
             {

@@ -6,10 +6,21 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 ///     <see cref="Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.IGlobalConfiguration" /> by the
 ///     communication controller (AB#5027).
 /// </summary>
-/// <param name="IssuerUri">OIDC authority the token is requested from</param>
-/// <param name="ClientId">Client id of the service account</param>
-/// <param name="ClientSecret">Client secret — credential material, never log it</param>
-/// <param name="TenantId">Tenant the account acts in; required by every OctoMesh grant</param>
+/// <param name="IssuerUri">
+///     OIDC authority the token is requested from. May be empty — or the unresolved deploy-time
+///     token <c>{{service.authority}}</c> an older controller leaves behind — which since AB#5115
+///     means "this adapter's own installation" and is resolved against the adapter's own authority
+///     configuration by <see cref="ServiceAccountTokenService" />.
+/// </param>
+/// <param name="ClientId">Client id of the service account. The only mandatory attribute.</param>
+/// <param name="ClientSecret">
+///     Client secret — credential material, never log it. Empty (or an angle-bracket placeholder)
+///     means the account HAS no secret and the adapter acquires its tokens via the impersonation /
+///     adapter-authenticated delegation grants using its own identity instead (AB#5114).
+/// </param>
+/// <param name="TenantId">
+///     Tenant the account acts in; empty means the tenant the adapter runs for (AB#5115).
+/// </param>
 public sealed record ServiceAccountCredentials(
     string IssuerUri,
     string ClientId,

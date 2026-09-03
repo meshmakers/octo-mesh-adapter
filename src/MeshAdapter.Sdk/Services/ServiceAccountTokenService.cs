@@ -4,8 +4,11 @@ using Meshmakers.Octo.Communication.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 
@@ -97,6 +100,29 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     /// </summary>
     internal const string OnBehalfOfGrantType = "urn:meshmakers:params:oauth:grant-type:on-behalf-of";
 
+    /// <summary>
+    ///     The OctoMesh impersonation grant type (AB#5114): the adapter's OWN confidential client
+    ///     asks for a client-credentials-shaped token that runs as the service account named by
+    ///     <see cref="RequestedClientIdParameterName" />, authorized by a MayActAs grant in the
+    ///     identity service. Must stay byte-identical to the identity-side constant.
+    /// </summary>
+    internal const string ImpersonationGrantType = "urn:meshmakers:params:oauth:grant-type:impersonate";
+
+    /// <summary>
+    ///     Names the TARGET service-account client of an impersonation (and of an adapter-
+    ///     authenticated on-behalf-of) request. Must stay byte-identical to the identity-side
+    ///     constant.
+    /// </summary>
+    internal const string RequestedClientIdParameterName = "requested_client_id";
+
+    /// <summary>
+    ///     Deploy-time template token an older communication controller projects UNRESOLVED into a
+    ///     configuration's <c>IssuerUri</c>. Semantically the same statement as an empty value —
+    ///     "use the adapter's own installation" (AB#5115) — so it is treated exactly like one.
+    ///     Compared case-insensitively.
+    /// </summary>
+    internal const string UnresolvedAuthorityTemplateToken = "{{service.authority}}";
+
     /// <summary>RFC 8693 token type identifier for an access token, sent as <c>subject_token_type</c>.</summary>
     internal const string AccessTokenTypeIdentifier = "urn:ietf:params:oauth:token-type:access_token";
 
@@ -111,12 +137,16 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     private readonly HttpClient _tokenHttpClient;
     private readonly ILogger<ServiceAccountTokenService> _logger;
     private readonly IServiceClientAccessToken _serviceClientAccessToken;
+    private readonly AdapterOptions _adapterOptions;
+    private readonly MeshAdapterConfiguration _meshAdapterConfiguration;
 
     /// <summary>
     ///     Cached service-account identities, keyed by <c>(TenantId, ClientId)</c> — the pair that
     ///     decides which token would be issued. Process-wide because the answer is too: several
     ///     pipelines of the same adapter share one account, and the whole point of the cache is that a
-    ///     high-frequency event trigger does not pay a token round trip per execution.
+    ///     high-frequency event trigger does not pay a token round trip per execution. The impersonated
+    ///     path (AB#5114) shares this cache and keys by the TARGET service-account client id, not by
+    ///     the adapter's own — the issued token runs as the target, so the target is the identity.
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId),
         ServiceAccountIdentity> _identityCache = new();
@@ -124,19 +154,45 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     private DateTime _tokenExpiresAt = DateTime.MinValue;
 
     public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
-        ILogger<ServiceAccountTokenService> logger)
-        : this(serviceClientAccessToken, logger, SharedTokenHttpClient)
+        ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
+        IOptions<MeshAdapterConfiguration> meshAdapterConfiguration)
+        : this(serviceClientAccessToken, logger, SharedTokenHttpClient, adapterOptions.Value,
+            meshAdapterConfiguration.Value)
     {
     }
 
     /// <summary>Test seam: lets a unit test script the token endpoint without a server.</summary>
     internal ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
-        ILogger<ServiceAccountTokenService> logger, HttpClient tokenHttpClient)
+        ILogger<ServiceAccountTokenService> logger, HttpClient tokenHttpClient,
+        AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshAdapterConfiguration = null)
     {
         _serviceClientAccessToken = serviceClientAccessToken;
         _logger = logger;
         _tokenHttpClient = tokenHttpClient;
+        _adapterOptions = adapterOptions ?? new AdapterOptions();
+        _meshAdapterConfiguration = meshAdapterConfiguration ?? new MeshAdapterConfiguration();
     }
+
+    /// <summary>
+    ///     Whether <paramref name="clientSecret" /> can authenticate a token request. A blueprint
+    ///     that provisions the configuration without a secret leaves the attribute empty, and an
+    ///     older seed leaves an angle-bracket placeholder (<c>&lt;insert secret here&gt;</c>) behind —
+    ///     both mean "no secret", not "this secret" (AB#5114).
+    /// </summary>
+    internal static bool IsSecretUsable(string? clientSecret)
+    {
+        return !string.IsNullOrWhiteSpace(clientSecret) && !clientSecret.TrimStart().StartsWith('<');
+    }
+
+    /// <summary>
+    ///     Whether the adapter can authenticate AS ITSELF — the precondition of the impersonation
+    ///     and adapter-authenticated delegation paths (AB#5114). Stricter than
+    ///     <see cref="AdapterOptions.IsEnabled" /> on purpose: both grants authenticate with a client
+    ///     secret, so a public adapter client cannot use them.
+    /// </summary>
+    private bool HasOwnClientCredentials =>
+        !string.IsNullOrWhiteSpace(_adapterOptions.ClientId)
+        && !string.IsNullOrWhiteSpace(_adapterOptions.ClientSecret);
 
     public async Task EnsureTokenAsync(ITenantRepository tenantRepository, string wellKnownName)
     {
@@ -153,42 +209,45 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return;
         }
 
-        // Discover token endpoint
-        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(configuration.IssuerUri));
-        if (disco.IsError)
+        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
+        if (issuerUri == null)
         {
-            _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}",
-                configuration.IssuerUri, disco.Error);
             return;
         }
 
-        // Request client credentials token
-        var tokenRequest = new ClientCredentialsTokenRequest
-        {
-            Address = disco.TokenEndpoint,
-            ClientId = configuration.ClientId,
-            ClientSecret = configuration.ClientSecret,
-            Scope = CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
-        };
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
 
-        if (!string.IsNullOrWhiteSpace(configuration.TenantId))
+        // Decide the path BEFORE discovery so a hopeless configuration fails without a network call.
+        var mode = SelectAcquisitionMode(configuration, wellKnownName);
+        if (mode == null)
         {
-            tokenRequest.Parameters.Add("acr_values", $"tenant:{configuration.TenantId}");
+            return;
         }
 
-        var response = await _tokenHttpClient.RequestClientCredentialsTokenAsync(tokenRequest);
+        // Discover token endpoint
+        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri));
+        if (disco.IsError)
+        {
+            _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}",
+                issuerUri, disco.Error);
+            return;
+        }
+
+        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
+
+        var response = await _tokenHttpClient.RequestTokenAsync(tokenRequest);
 
         if (response.IsError)
         {
-            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}", configuration.IssuerUri,
+            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}", issuerUri,
                 response.Error);
             return;
         }
 
         _serviceClientAccessToken.AccessToken = response.AccessToken;
         _tokenExpiresAt = DateTime.UtcNow.AddSeconds(response.ExpiresIn);
-        _logger.LogInformation("Service account token acquired for client {ClientId}, expires at {ExpiresAt}",
-            configuration.ClientId, _tokenExpiresAt);
+        _logger.LogInformation("Service account token acquired for client {ClientId} ({Mode}), expires at {ExpiresAt}",
+            configuration.ClientId, mode.Value, _tokenExpiresAt);
     }
 
     /// <inheritdoc />
@@ -216,21 +275,37 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        if (string.IsNullOrWhiteSpace(configuration.TenantId))
+        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
+        if (issuerUri == null)
+        {
+            return null;
+        }
+
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        if (string.IsNullOrWhiteSpace(tenantId))
         {
             // The grant is same-tenant and the identity service requires acr_values=tenant:X to wire
             // the request to a tenant at all; without it the token request is rejected with a
             // message about a tenant that could not be resolved, which reads like an outage.
+            // Since AB#5115 an empty TenantId on the configuration means "the adapter's tenant",
+            // so this only fires when the adapter itself does not know its tenant either.
             _logger.LogError(
-                "ServiceAccountConfiguration '{WellKnownName}' carries no TenantId; the delegation grant requires acr_values=tenant:{{tenantId}}",
+                "ServiceAccountConfiguration '{WellKnownName}' carries no TenantId and the adapter's own tenant is unknown; the delegation grant requires acr_values=tenant:{{tenantId}}",
                 wellKnownName);
+            return null;
+        }
+
+        var mode = SelectAcquisitionMode(configuration, wellKnownName);
+        if (mode == null)
+        {
             return null;
         }
 
         DiscoveryDocumentResponse disco;
         try
         {
-            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(configuration.IssuerUri), cancellationToken);
+            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri),
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -240,14 +315,14 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             // fatal, and for the delegation path it is.
             _logger.LogError(ex,
                 "OIDC discovery at {IssuerUri} failed for ServiceAccountConfiguration '{WellKnownName}'",
-                configuration.IssuerUri, wellKnownName);
+                issuerUri, wellKnownName);
             return null;
         }
 
         if (disco.IsError)
         {
             _logger.LogError("Failed to discover token endpoint at {IssuerUri} for delegation: {Error}",
-                configuration.IssuerUri, disco.Error);
+                issuerUri, disco.Error);
             return null;
         }
 
@@ -255,15 +330,11 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         {
             Address = disco.TokenEndpoint,
             GrantType = OnBehalfOfGrantType,
-            // The service account authenticates with its own client credentials; the identity
-            // service proves client_id before the delegation validator ever runs.
-            ClientId = configuration.ClientId,
-            ClientSecret = configuration.ClientSecret,
             Parameters =
             {
                 { OidcConstants.TokenRequest.SubjectToken, subjectToken },
                 { OidcConstants.TokenRequest.SubjectTokenType, AccessTokenTypeIdentifier },
-                { OidcConstants.AuthorizeRequest.AcrValues, $"tenant:{configuration.TenantId}" },
+                { OidcConstants.AuthorizeRequest.AcrValues, $"tenant:{tenantId}" },
                 {
                     // DefaultScopes.None → exactly "octo_api", notably WITHOUT offline_access: the
                     // role intersection is computed at issuance, so a refresh token would freeze it
@@ -274,6 +345,23 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
                 }
             }
         };
+
+        if (mode == AcquisitionMode.ServiceAccountSecret)
+        {
+            // The service account authenticates with its own client credentials; the identity
+            // service proves client_id before the delegation validator ever runs.
+            tokenRequest.ClientId = configuration.ClientId;
+            tokenRequest.ClientSecret = configuration.ClientSecret;
+        }
+        else
+        {
+            // AB#5114: the ADAPTER authenticates with its own client credentials and names the
+            // service account it acts through; a MayActAs grant in the identity service authorizes
+            // the pairing. subject_token / acr semantics are unchanged.
+            tokenRequest.ClientId = _adapterOptions.ClientId!;
+            tokenRequest.ClientSecret = _adapterOptions.ClientSecret;
+            tokenRequest.Parameters.Add(RequestedClientIdParameterName, configuration.ClientId);
+        }
 
         TokenResponse response;
         try
@@ -287,7 +375,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             // message, so the cause is logged here where it is known.
             _logger.LogError(ex,
                 "Delegated token request to {IssuerUri} failed for ServiceAccountConfiguration '{WellKnownName}'",
-                configuration.IssuerUri, wellKnownName);
+                issuerUri, wellKnownName);
             return null;
         }
 
@@ -295,7 +383,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         {
             _logger.LogError(
                 "Delegation rejected by {IssuerUri} for ServiceAccountConfiguration '{WellKnownName}' in tenant '{TenantId}': {Error} ({ErrorDescription})",
-                configuration.IssuerUri, wellKnownName, configuration.TenantId, response.Error,
+                issuerUri, wellKnownName, tenantId, response.Error,
                 response.ErrorDescription ?? "no description");
             return null;
         }
@@ -311,8 +399,8 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         // 🔴 NOT written to _serviceClientAccessToken — see the interface remarks. The token is
         // never logged either; only the fact that one was issued.
         _logger.LogInformation(
-            "Delegated token acquired via ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}) in tenant '{TenantId}', expires in {ExpiresIn}s",
-            wellKnownName, configuration.ClientId, configuration.TenantId, response.ExpiresIn);
+            "Delegated token acquired via ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}, {Mode}) in tenant '{TenantId}', expires in {ExpiresIn}s",
+            wellKnownName, configuration.ClientId, mode.Value, tenantId, response.ExpiresIn);
 
         return response.AccessToken;
     }
@@ -321,6 +409,9 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     /// Reads the <c>System.Communication/ServiceAccountConfiguration</c> entity and validates that it
     /// carries the credentials any grant needs. Returns null (after logging) when it is missing or
     /// incomplete — shared by both grant paths so they fail identically on a broken configuration.
+    /// Only <c>ClientId</c> is mandatory: an empty <c>IssuerUri</c> or <c>TenantId</c> means "the
+    /// adapter's own installation / tenant" since AB#5115, and an empty <c>ClientSecret</c> selects
+    /// the impersonation path since AB#5114.
     /// </summary>
     private async Task<ServiceAccountCredentials?> ReadConfigurationAsync(ITenantRepository tenantRepository,
         string wellKnownName)
@@ -351,31 +442,46 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         var clientSecret = configEntity.GetAttributeValueOrDefault("ClientSecret") as string;
         var tenantId = configEntity.GetAttributeValueOrDefault("TenantId") as string;
 
-        if (string.IsNullOrWhiteSpace(issuerUri) || string.IsNullOrWhiteSpace(clientId))
+        if (string.IsNullOrWhiteSpace(clientId))
         {
             _logger.LogWarning(
-                "ServiceAccountConfiguration '{WellKnownName}' has incomplete credentials (IssuerUri or ClientId missing)",
+                "ServiceAccountConfiguration '{WellKnownName}' carries no ClientId, cannot acquire token",
                 wellKnownName);
             return null;
         }
 
-        return new ServiceAccountCredentials(issuerUri, clientId, clientSecret, tenantId);
+        return new ServiceAccountCredentials(issuerUri ?? string.Empty, clientId, clientSecret, tenantId);
     }
 
     /// <inheritdoc />
     public async Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(
         ServiceAccountCredentials credentials, CancellationToken cancellationToken = default)
     {
-        var cacheKey = (credentials.TenantId ?? string.Empty, credentials.ClientId);
+        var tenantId = ResolveTenantId(credentials.TenantId, adapterTenantId: null, credentials.ClientId);
+
+        var cacheKey = (tenantId ?? string.Empty, credentials.ClientId);
         if (_identityCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
         {
             return cached;
         }
 
+        var issuerUri = ResolveIssuerUri(credentials.IssuerUri, credentials.ClientId);
+        if (issuerUri == null)
+        {
+            return null;
+        }
+
+        var mode = SelectAcquisitionMode(credentials, credentials.ClientId);
+        if (mode == null)
+        {
+            return null;
+        }
+
         DiscoveryDocumentResponse disco;
         try
         {
-            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(credentials.IssuerUri), cancellationToken);
+            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri),
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -383,7 +489,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             // ("Malformed URL") rather than report an error — the AB#4541 shape.
             _logger.LogError(ex,
                 "OIDC discovery at {IssuerUri} failed while resolving the identity of service account client {ClientId}",
-                credentials.IssuerUri, credentials.ClientId);
+                issuerUri, credentials.ClientId);
             return null;
         }
 
@@ -391,33 +497,22 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         {
             _logger.LogError(
                 "Failed to discover token endpoint at {IssuerUri} while resolving the identity of service account client {ClientId}: {Error}",
-                credentials.IssuerUri, credentials.ClientId, disco.Error);
+                issuerUri, credentials.ClientId, disco.Error);
             return null;
         }
 
-        var tokenRequest = new ClientCredentialsTokenRequest
-        {
-            Address = disco.TokenEndpoint,
-            ClientId = credentials.ClientId,
-            ClientSecret = credentials.ClientSecret,
-            Scope = CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
-        };
-
-        if (!string.IsNullOrWhiteSpace(credentials.TenantId))
-        {
-            tokenRequest.Parameters.Add("acr_values", $"tenant:{credentials.TenantId}");
-        }
+        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, credentials, tenantId, mode.Value);
 
         TokenResponse response;
         try
         {
-            response = await _tokenHttpClient.RequestClientCredentialsTokenAsync(tokenRequest, cancellationToken);
+            response = await _tokenHttpClient.RequestTokenAsync(tokenRequest, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex,
                 "Token request to {IssuerUri} failed while resolving the identity of service account client {ClientId}",
-                credentials.IssuerUri, credentials.ClientId);
+                issuerUri, credentials.ClientId);
             return null;
         }
 
@@ -425,7 +520,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         {
             _logger.LogError(
                 "Identity service {IssuerUri} refused a token for service account client {ClientId} in tenant '{TenantId}': {Error} ({ErrorDescription})",
-                credentials.IssuerUri, credentials.ClientId, credentials.TenantId,
+                issuerUri, credentials.ClientId, tenantId,
                 response.Error ?? "no token", response.ErrorDescription ?? "no description");
             return null;
         }
@@ -443,6 +538,8 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
         // A client-credentials token has no 'sub'; 'client_id' is the subject the engine stamps and
         // filters on then — the same precedence RuntimeSecurityContextResolver uses in octo-mcp-service.
+        // An impersonated token (AB#5114) is CC-shaped for the TARGET account, so the same read applies;
+        // credentials.ClientId (the target) stays the last-resort fallback either way.
         var subjectId = claims.Subject ?? claims.ClientId ?? credentials.ClientId;
 
         // The token's own exp is the truth; expires_in is the fallback for an issuer that omits it.
@@ -457,17 +554,172 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             // See the AB#5027 note in octo-communication-controller-services/CLAUDE.md.
             _logger.LogWarning(
                 "Service account client {ClientId} in tenant '{TenantId}' carries no roles; pipelines running under it see only data that needs none",
-                credentials.ClientId, credentials.TenantId);
+                credentials.ClientId, tenantId);
         }
         else
         {
             _logger.LogInformation(
                 "Resolved service account identity for client {ClientId} in tenant '{TenantId}': subject {SubjectId} with {RoleCount} role(s)",
-                credentials.ClientId, credentials.TenantId, subjectId, identity.Roles.Count);
+                credentials.ClientId, tenantId, subjectId, identity.Roles.Count);
         }
 
         _identityCache[cacheKey] = identity;
         return identity;
+    }
+
+    /// <summary>How the token for a service account is obtained (AB#5114).</summary>
+    internal enum AcquisitionMode
+    {
+        /// <summary>The account authenticates itself with the secret stored on the configuration.</summary>
+        ServiceAccountSecret,
+
+        /// <summary>
+        ///     The adapter authenticates with its OWN client credentials and names the account via
+        ///     <c>requested_client_id</c>; a MayActAs grant authorizes the pairing.
+        /// </summary>
+        Impersonation
+    }
+
+    /// <summary>
+    ///     Decides between the two acquisition paths — the ONE decision every grant path shares
+    ///     (AB#5114): a usable secret on the configuration keeps the pre-AB#5114 behaviour
+    ///     byte-for-byte; without one the adapter's own credentials carry the request through the
+    ///     impersonation / adapter-authenticated delegation grants. Returns null (after logging the
+    ///     one actionable error) when neither is possible.
+    /// </summary>
+    private AcquisitionMode? SelectAcquisitionMode(ServiceAccountCredentials configuration, string configurationName)
+    {
+        if (IsSecretUsable(configuration.ClientSecret))
+        {
+            return AcquisitionMode.ServiceAccountSecret;
+        }
+
+        if (HasOwnClientCredentials)
+        {
+            _logger.LogDebug(
+                "ServiceAccountConfiguration '{ConfigurationName}' carries no usable ClientSecret; impersonating client {TargetClientId} with the adapter's own identity '{OwnClientId}' (AB#5114)",
+                configurationName, configuration.ClientId, _adapterOptions.ClientId);
+            return AcquisitionMode.Impersonation;
+        }
+
+        _logger.LogError(
+            "ServiceAccountConfiguration '{ConfigurationName}' (client {ClientId}) carries no usable ClientSecret and the adapter has no identity of its own (Adapter:ClientId / Adapter:ClientSecret are not configured). Either store a ClientSecret on the configuration, or give the adapter its own client credentials plus a MayActAs grant in the identity service so it can impersonate the service account (AB#5114)",
+            configurationName, configuration.ClientId);
+        return null;
+    }
+
+    /// <summary>
+    ///     Builds the token request of the two AMBIENT paths (<see cref="EnsureTokenAsync" /> and
+    ///     <see cref="AcquireServiceAccountIdentityAsync" />): plain client credentials when the
+    ///     configuration carries a usable secret, the impersonation grant (AB#5114) when the
+    ///     adapter's own identity carries the request. Both responses are CC-shaped tokens for the
+    ///     service account, which is why the two callers can treat them identically.
+    /// </summary>
+    private TokenRequest CreateAmbientTokenRequest(string? tokenEndpoint, ServiceAccountCredentials configuration,
+        string? tenantId, AcquisitionMode mode)
+    {
+        var tokenRequest = new TokenRequest
+        {
+            Address = tokenEndpoint,
+            Parameters =
+            {
+                {
+                    OidcConstants.TokenRequest.Scope,
+                    CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
+                }
+            }
+        };
+
+        if (mode == AcquisitionMode.ServiceAccountSecret)
+        {
+            tokenRequest.GrantType = OidcConstants.GrantTypes.ClientCredentials;
+            tokenRequest.ClientId = configuration.ClientId;
+            tokenRequest.ClientSecret = configuration.ClientSecret;
+        }
+        else
+        {
+            tokenRequest.GrantType = ImpersonationGrantType;
+            tokenRequest.ClientId = _adapterOptions.ClientId!;
+            tokenRequest.ClientSecret = _adapterOptions.ClientSecret;
+            tokenRequest.Parameters.Add(RequestedClientIdParameterName, configuration.ClientId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(tenantId))
+        {
+            tokenRequest.Parameters.Add(OidcConstants.AuthorizeRequest.AcrValues, $"tenant:{tenantId}");
+        }
+
+        return tokenRequest;
+    }
+
+    /// <summary>
+    ///     Resolves the issuer every token request goes to (AB#5115). An explicit URL on the
+    ///     configuration wins — that is the deliberate foreign/pinned-installation case. An EMPTY
+    ///     value (or the unresolved <c>{{service.authority}}</c> deploy-time token an older
+    ///     controller leaves behind) is the DEFAULT, not damage: it means "this adapter's own
+    ///     installation", answered by <c>Adapter:IssuerUri</c> (the adapter's own identity,
+    ///     AB#5072) and finally <c>Adapter:AuthorityUrl</c> — which on this adapter is also the
+    ///     authority incoming bearers are validated against, so the two chain entries of the design
+    ///     collapse into one key here. Returns null (after logging every place that was empty) when
+    ///     nothing is configured anywhere.
+    /// </summary>
+    private string? ResolveIssuerUri(string? configuredIssuerUri, string configurationName)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredIssuerUri)
+            && !string.Equals(configuredIssuerUri.Trim(), UnresolvedAuthorityTemplateToken,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug(
+                "Issuer for service account configuration '{ConfigurationName}' comes from the configuration itself: {IssuerUri}",
+                configurationName, configuredIssuerUri);
+            return configuredIssuerUri;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_adapterOptions.IssuerUri))
+        {
+            _logger.LogDebug(
+                "Issuer for service account configuration '{ConfigurationName}' comes from Adapter:IssuerUri: {IssuerUri}",
+                configurationName, _adapterOptions.IssuerUri);
+            return _adapterOptions.IssuerUri;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_meshAdapterConfiguration.AuthorityUrl))
+        {
+            _logger.LogDebug(
+                "Issuer for service account configuration '{ConfigurationName}' comes from Adapter:AuthorityUrl (the bearer-validation authority): {IssuerUri}",
+                configurationName, _meshAdapterConfiguration.AuthorityUrl);
+            return _meshAdapterConfiguration.AuthorityUrl;
+        }
+
+        _logger.LogError(
+            "No issuer for service account configuration '{ConfigurationName}': its IssuerUri is empty (which means 'the adapter's own installation', AB#5115), but Adapter:IssuerUri (the adapter's own identity, AB#5072) and Adapter:AuthorityUrl (the bearer-validation authority) are empty too. Configure one of them",
+            configurationName);
+        return null;
+    }
+
+    /// <summary>
+    ///     Resolves the tenant a token request acts in (AB#5115): the configuration's own
+    ///     <c>TenantId</c> when set, otherwise the tenant the adapter is running for. Null only when
+    ///     both are empty — the caller decides whether that is fatal (it is for the delegation
+    ///     grant, which hard-requires <c>acr_values=tenant:X</c>).
+    /// </summary>
+    private string? ResolveTenantId(string? configuredTenantId, string? adapterTenantId, string configurationName)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredTenantId))
+        {
+            return configuredTenantId;
+        }
+
+        var ownTenantId = !string.IsNullOrWhiteSpace(adapterTenantId) ? adapterTenantId : _adapterOptions.TenantId;
+        if (!string.IsNullOrWhiteSpace(ownTenantId))
+        {
+            _logger.LogDebug(
+                "Service account configuration '{ConfigurationName}' carries no TenantId; using the adapter's own tenant '{TenantId}' (AB#5115)",
+                configurationName, ownTenantId);
+            return ownTenantId;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -478,15 +730,24 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     ///     default policy rejects that as "Issuer name does not match authority" — but the
     ///     configured IssuerUri is trusted by definition here (we send the client secret to it),
     ///     TLS still authenticates the host, and the same mismatch is already accepted on the
-    ///     validation side via AdditionalValidIssuers (AB#4922). Endpoint-authority validation
-    ///     stays on.
+    ///     validation side via AdditionalValidIssuers (AB#4922).
+    ///     <para>
+    ///         Endpoint-authority validation is off for the same reason: the identity service
+    ///         legitimately emits MIXED endpoint hosts in one split-horizon document — most
+    ///         endpoints derived from the request host (e.g. <c>https://mac.local:5003</c>) but
+    ///         some, at least <c>check_session_iframe</c>, from the fixed canonical issuer
+    ///         (<c>https://localhost:5003</c>). With the default policy IdentityModel rejects that
+    ///         as "Endpoint is on a different host than authority". Since the document comes from
+    ///         the trusted, TLS-authenticated IssuerUri anyway, endpoint-host consistency checks
+    ///         add nothing here either.
+    ///     </para>
     /// </summary>
     private static DiscoveryDocumentRequest CreateDiscoveryRequest(string issuerUri)
     {
         return new DiscoveryDocumentRequest
         {
             Address = issuerUri,
-            Policy = { ValidateIssuerName = false }
+            Policy = { ValidateIssuerName = false, ValidateEndpoints = false }
         };
     }
 

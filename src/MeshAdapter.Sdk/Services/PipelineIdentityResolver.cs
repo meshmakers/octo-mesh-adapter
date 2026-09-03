@@ -204,11 +204,13 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
             return null;
         }
 
-        if (payload == null || string.IsNullOrWhiteSpace(payload.IssuerUri) ||
-            string.IsNullOrWhiteSpace(payload.ClientId))
+        if (payload == null || string.IsNullOrWhiteSpace(payload.ClientId))
         {
+            // Only ClientId is mandatory (AB#5115): an empty IssuerUri means "the adapter's own
+            // installation" and an empty ClientSecret selects the impersonation path (AB#5114) —
+            // both are resolved downstream by the token service, not repair-worthy defects here.
             _logger.LogWarning(
-                "[{TenantId}] A service account configuration of this pipeline is incomplete (IssuerUri or ClientId missing) and is ignored",
+                "[{TenantId}] A service account configuration of this pipeline carries no ClientId and is ignored",
                 _tenantId);
             return null;
         }
@@ -217,7 +219,8 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
         // the pipeline's tenant is the only sane default when the attribute was never filled in.
         var tenantId = string.IsNullOrWhiteSpace(payload.TenantId) ? _tenantId : payload.TenantId;
 
-        return new ServiceAccountCredentials(payload.IssuerUri!, payload.ClientId!, payload.ClientSecret, tenantId);
+        return new ServiceAccountCredentials(payload.IssuerUri ?? string.Empty, payload.ClientId!,
+            payload.ClientSecret, tenantId);
     }
 
     /// <summary>

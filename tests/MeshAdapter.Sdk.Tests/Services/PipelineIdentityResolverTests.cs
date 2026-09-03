@@ -175,6 +175,8 @@ public class PipelineIdentityResolverTests
     [Fact]
     public async Task AnIncompleteServiceAccountConfigurationIsIgnored()
     {
+        // Only a missing ClientId makes a configuration unusable (AB#5115) — there is no account to
+        // act as. Everything else has a default.
         GivenServiceAccountConfiguration("""{ "issuerUri": "https://identity.example.com" }""");
 
         var context = await CreateResolver().ResolveAsync();
@@ -182,6 +184,33 @@ public class PipelineIdentityResolverTests
         Assert.True(context.IsSystem);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
             A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task AConfigurationWithoutAnIssuerIsNotIgnored()
+    {
+        // AB#5115: an empty IssuerUri means "the adapter's own installation" and is resolved by the
+        // token service — treating it as damage here would silently drop the configured identity and
+        // fall back to the system context, which bypasses data permissions entirely.
+        GivenServiceAccountConfiguration($$"""
+            { "clientId": "{{ClientId}}", "clientSecret": null, "tenantId": null }
+            """);
+        GivenIdentity(ClientId, "Accounting");
+
+        ServiceAccountCredentials? captured = null;
+        A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
+                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+            .Invokes((ServiceAccountCredentials c, CancellationToken _) => captured = c)
+            .Returns(Task.FromResult<ServiceAccountIdentity?>(
+                new ServiceAccountIdentity(ClientId, ["Accounting"], DateTime.UtcNow.AddMinutes(5))));
+
+        var context = await CreateResolver().ResolveAsync();
+
+        Assert.False(context.IsSystem);
+        Assert.NotNull(captured);
+        Assert.Equal(string.Empty, captured!.IssuerUri);
+        Assert.Null(captured.ClientSecret);
+        Assert.Equal(TenantId, captured.TenantId);
     }
 
     [Fact]

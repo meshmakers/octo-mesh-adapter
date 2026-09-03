@@ -68,8 +68,12 @@ internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfText
             // Tier 1: embedded e-invoice XML
             if (config.ExtractEmbeddedXml && textLayerResult is { EmbeddedFiles.Count: > 0 })
             {
-                var xmlFile = textLayerResult.EmbeddedFiles.FirstOrDefault(f =>
-                    f.Name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase));
+                // Prefer the e-invoice spec filenames (Factur-X/ZUGFeRD/XRechnung);
+                // any other .xml attachment only as fallback.
+                var xmlFile = textLayerResult.EmbeddedFiles
+                    .Where(f => f.Name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(f => EInvoiceAttachmentRank(f.Name))
+                    .FirstOrDefault();
                 if (xmlFile != null)
                 {
                     dataContext.Set(
@@ -276,6 +280,20 @@ internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfText
             );
         }
     }
+
+    /// <summary>
+    /// Ranks an embedded XML attachment: the e-invoice spec filenames first
+    /// (factur-x.xml current, zugferd-invoice.xml ZF2, ZUGFeRD-invoice.xml ZF1,
+    /// xrechnung.xml XR extension), any other .xml last.
+    /// </summary>
+    private static int EInvoiceAttachmentRank(string fileName) =>
+        fileName.ToLowerInvariant() switch
+        {
+            "factur-x.xml" => 0,
+            "zugferd-invoice.xml" => 1,
+            "xrechnung.xml" => 2,
+            _ => int.MaxValue
+        };
 
     /// <summary>
     /// Detects a PDF by its <c>%PDF-</c> magic header. Anything else (JPEG/PNG/TIFF/…)

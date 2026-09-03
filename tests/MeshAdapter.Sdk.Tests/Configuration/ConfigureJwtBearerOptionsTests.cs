@@ -1,6 +1,6 @@
 using System.Security.Claims;
 using FakeItEasy;
-using IdentityModel;
+using Duende.IdentityModel;
 using Meshmakers.Octo.Communication.Contracts;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Microsoft.AspNetCore.Authentication.JwtBearer;

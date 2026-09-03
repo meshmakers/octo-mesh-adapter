@@ -59,7 +59,7 @@ public class FromMicrosoftGraphEmailNodeLifecycleTests
         await node.StartAsync(context);
 
         // Give the background poll task a moment to fail and reach the backoff delay.
-        await Task.Delay(300);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
 
         // Cancelling the backoff delay must not fault the poll task nor make teardown throw.
         var exception = await Record.ExceptionAsync(() => node.StopAsync(context));

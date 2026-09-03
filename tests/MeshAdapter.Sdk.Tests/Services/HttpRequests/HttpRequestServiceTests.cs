@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Nodes;
-using IdentityModel;
+using Duende.IdentityModel;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
@@ -205,7 +205,7 @@ public class HttpRequestServiceTests
         Assert.Equal("application/json", context.Response.ContentType);
         context.Response.Body.Position = 0;
         using var reader = new StreamReader(context.Response.Body);
-        var responseBody = await reader.ReadToEndAsync();
+        var responseBody = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
         var parsed = JsonNode.Parse(responseBody)!.AsObject();
         Assert.Equal("success", parsed["result"]?.ToString());
     }

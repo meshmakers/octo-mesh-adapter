@@ -54,7 +54,7 @@ public class SftpFileNameGlobTests
         var fileName = new string('a', 60) + "c";
 
         var match = Task.Run(() => SftpFileNameGlob.Matches(fileName, pattern));
-        var finished = await Task.WhenAny(match, Task.Delay(TimeSpan.FromSeconds(5)));
+        var finished = await Task.WhenAny(match, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
         Assert.Same(match, finished);
         Assert.False(await match);

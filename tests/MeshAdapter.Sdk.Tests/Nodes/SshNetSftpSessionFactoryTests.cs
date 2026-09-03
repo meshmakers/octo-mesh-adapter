@@ -61,7 +61,7 @@ public class SshNetSftpSessionFactoryTests : NodeTestBase
         // has to live on the ETL context rather than on the factory, so the limit is scoped
         // the way every other node in this repository scopes it.
         await Assert.ThrowsAnyAsync<Exception>(
-            () => factory.ConnectAsync(SettingsWithBrokenKey(), "sftp-server-1", etlContext, NodeContext()));
+            () => factory.ConnectAsync(SettingsWithBrokenKey(), "sftp-server-1", etlContext, NodeContext(), TestContext.Current.CancellationToken));
 
         Assert.True(properties.ContainsKey("SftpSessionFactory.Semaphores"));
         var semaphores = Assert.IsType<ConcurrentDictionary<string, SemaphoreSlim>>(
@@ -200,7 +200,7 @@ public class SshNetSftpSessionFactoryTests : NodeTestBase
         etlContext.Properties["SftpSessionFactory.Semaphores"] = semaphores;
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
-            () => factory.ConnectAsync(settings, "sftp-server-1", etlContext, nodeContext));
+            () => factory.ConnectAsync(settings, "sftp-server-1", etlContext, nodeContext, TestContext.Current.CancellationToken));
 
         Assert.Contains("sftp-server-1", ex.Message);
         Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
@@ -223,11 +223,11 @@ public class SshNetSftpSessionFactoryTests : NodeTestBase
         // hand out a fresh slot and the test could never see a leak.
         var etlContext = EtlContext();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1", etlContext, NodeContext()));
+        await Assert.ThrowsAnyAsync<Exception>(() => factory.ConnectAsync(settings, "sftp-server-1", etlContext, NodeContext(), TestContext.Current.CancellationToken));
 
         // With a leaked slot the second attempt would wait forever instead of failing.
-        var second = factory.ConnectAsync(settings, "sftp-server-1", etlContext, NodeContext());
-        var finished = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
+        var second = factory.ConnectAsync(settings, "sftp-server-1", etlContext, NodeContext(), TestContext.Current.CancellationToken);
+        var finished = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
         Assert.Same(second, finished);
         await Assert.ThrowsAnyAsync<Exception>(() => second);
@@ -351,7 +351,7 @@ public class SshNetSftpSessionFactoryTests : NodeTestBase
         var nodeContext = NodeContext();
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
-            () => factory.ConnectAsync(Settings(value), "sftp-server-1", EtlContext(), nodeContext));
+            () => factory.ConnectAsync(Settings(value), "sftp-server-1", EtlContext(), nodeContext, TestContext.Current.CancellationToken));
         Assert.Contains("sftp-server-1", ex.Message);
         Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
     }

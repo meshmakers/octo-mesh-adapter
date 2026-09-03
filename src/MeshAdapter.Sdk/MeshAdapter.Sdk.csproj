@@ -35,7 +35,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="IronOcr" Version="2026.8.1" />
+        <PackageReference Include="IronOcr" Version="2026.9.4" />
         <!-- Cover-sheet rendering (RenderDataSheetPdf) + PDF merge (MergePdf) for
              the accounting BMD handover export. QuestPDF Community license is set
              in RenderDataSheetPdfNode; PdfSharp (MIT) does the page-level merge. -->
@@ -48,16 +48,18 @@
         <PackageReference Include="PdfPig" Version="0.1.16" />
         <!-- HTML parsing for RenderHtmlPdf (browser-free, cross-platform). Turns a
              forwarded e-mail body (HTML or plain text) into a receipt PDF via QuestPDF. -->
-        <PackageReference Include="AngleSharp" Version="1.7.2" />
+        <PackageReference Include="AngleSharp" Version="1.7.3" />
         <PackageReference Include="IronOcr.Languages.German" Version="2020.11.2" />
-        <PackageReference Include="IronOcr.Linux" Version="2026.8.1" />
-        <PackageReference Include="IronOcr.MacOs" Version="2026.8.1" />
-        <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.8.1" />
+        <PackageReference Include="IronOcr.Linux" Version="2026.9.4" />
+        <PackageReference Include="IronOcr.MacOs" Version="2026.9.4" />
+        <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.9.4" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoCommVersion)" />
         <!-- Phase 3 cut: adapter base classes + pipeline framework moved out of
              Sdk.Common to dedicated packages in octo-communication-sdk. -->
         <PackageReference Include="Meshmakers.Octo.Sdk.Adapters" Version="$(OctoCommVersion)" />
         <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoCommVersion)" />
+        <!-- Direct reference: the released SDK still ships the legacy IdentityModel until the next libs train. -->
+        <PackageReference Include="Duende.IdentityModel" Version="8.1.0" />
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />

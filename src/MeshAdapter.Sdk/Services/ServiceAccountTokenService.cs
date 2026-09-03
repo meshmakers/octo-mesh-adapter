@@ -154,7 +154,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         }
 
         // Discover token endpoint
-        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(configuration.IssuerUri);
+        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(configuration.IssuerUri));
         if (disco.IsError)
         {
             _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}",
@@ -230,7 +230,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         DiscoveryDocumentResponse disco;
         try
         {
-            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(configuration.IssuerUri, cancellationToken);
+            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(configuration.IssuerUri), cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -375,7 +375,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         DiscoveryDocumentResponse disco;
         try
         {
-            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(credentials.IssuerUri, cancellationToken);
+            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(credentials.IssuerUri), cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -469,4 +469,25 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         _identityCache[cacheKey] = identity;
         return identity;
     }
+
+    /// <summary>
+    ///     Discovery request that tolerates a split-horizon issuer: in hybrid installations the
+    ///     adapter reaches the identity service under a cluster-visible host (e.g.
+    ///     <c>https://mac.local:5003</c> from a local kind pod) while the identity service mints a
+    ///     FIXED issuer under its canonical host (<c>https://localhost:5003/</c>). IdentityModel's
+    ///     default policy rejects that as "Issuer name does not match authority" — but the
+    ///     configured IssuerUri is trusted by definition here (we send the client secret to it),
+    ///     TLS still authenticates the host, and the same mismatch is already accepted on the
+    ///     validation side via AdditionalValidIssuers (AB#4922). Endpoint-authority validation
+    ///     stays on.
+    /// </summary>
+    private static DiscoveryDocumentRequest CreateDiscoveryRequest(string issuerUri)
+    {
+        return new DiscoveryDocumentRequest
+        {
+            Address = issuerUri,
+            Policy = { ValidateIssuerName = false }
+        };
+    }
+
 }

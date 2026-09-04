@@ -414,6 +414,24 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Cannot download file via SFTP: {exception.Message}", exception);
     }
 
+    public static Exception CannotDeleteViaSftp(INodeContext nodeContext, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot delete file via SFTP: {exception.Message}", exception);
+    }
+
+    public static Exception SftpFileNotFound(INodeContext nodeContext, string remotePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote file '{remotePath}' does not exist and MissingFileHandling is 'Fail'. Use 'Ignore' where a file someone else already removed is an acceptable outcome, for example when a run is repeated after a partial pass.");
+    }
+
+    public static Exception RemotePathIsDirectory(INodeContext nodeContext, string remotePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote path '{remotePath}' ends with '/', which names a directory. This node deletes exactly one file.");
+    }
+
     public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)
     {
         return new MeshAdapterPipelineExecutionException(

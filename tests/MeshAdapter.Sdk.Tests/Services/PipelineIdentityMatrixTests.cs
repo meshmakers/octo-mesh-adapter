@@ -310,7 +310,8 @@ public class PipelineIdentityMatrixTests
     }
 
     // =============================================================================================
-    // The claim the theory above rests on: only ONE trigger carries a caller identity.
+    // Which triggers carry a caller identity. Before AB#5126 only FromHttpRequestNode2 did; Strang B
+    // (AB#5126/5124/5123/5125) resolves a caller on every channel trigger too. This pins that set.
     // =============================================================================================
 
     /// <summary>
@@ -322,10 +323,12 @@ public class PipelineIdentityMatrixTests
     ///     trigger that starts forwarding a principal — or a channel trigger that grows one — changes
     ///     the identity every pipeline behind it runs as, and does so invisibly: nothing fails, the
     ///     execution just sees different data. Modelled on <c>SessionIdentityClassificationTests</c>,
-    ///     which does the same for the session call sites.
+    ///     which does the same for the session call sites. Since AB#5126 the set is HTTP plus the
+    ///     channel triggers whose sender the caller-binding seam resolves; a change to this list must
+    ///     be a deliberate edit here.
     /// </remarks>
     [Fact]
-    public void OnlyTheHttpTriggerCarriesACallerIdentity()
+    public void TheTriggersThatCarryACallerIdentityArePinned()
     {
         var carriers = EnumerateTriggerSources()
             .Where(t =>
@@ -338,7 +341,14 @@ public class PipelineIdentityMatrixTests
             .OrderBy(p => p, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(["FromHttpRequestNode2.cs"], carriers);
+        Assert.Equal([
+            "FromEmailNode.cs",
+            "FromHttpRequestNode2.cs",
+            "FromMicrosoftGraphEmailNode.cs",
+            "FromMicrosoftGraphNode.cs",
+            "FromSignalNode.cs",
+            "FromTeamsBotNode.cs"
+        ], carriers);
     }
 
     /// <summary>

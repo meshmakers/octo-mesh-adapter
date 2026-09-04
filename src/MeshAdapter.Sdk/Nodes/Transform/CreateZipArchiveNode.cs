@@ -231,7 +231,7 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
         // AB#5028 — scoped: the archive is a real user artefact, so it is created under the
         // execution's identity and carries its creator stamp. Note the deliberate split inside this
         // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
-        var session = await etlContext.GetScopedSessionAsync();
+        var session = await etlContext.GetSessionForAsync(config.Identity);
         session.StartTransaction();
         var operationResult = new OperationResult();
         await etlContext.TenantRepository.ApplyChangesAsync(session, entityUpdateInfoList, assocUpdateInfoList,

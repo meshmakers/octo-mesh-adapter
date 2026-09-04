@@ -253,6 +253,71 @@ public class PipelineIdentityResolverTests
         Assert.Equal("sa-alpha", captured!.ClientId);
     }
 
+    // ----------------------------------------------------- AB#5127: ResolveServiceAccountAsync
+
+    [Fact]
+    public async Task ResolveServiceAccount_UsesTheServiceAccountEvenWhenACallerIsPresent_WithItsFullRoles()
+    {
+        // The elevation: `identity: ServiceAccount` runs the node as the service account with its full
+        // roles even though the execution was invoke-gated as a user. No caller, no intersection.
+        GivenServiceAccountConfiguration(ServiceAccountJson());
+        GivenIdentity(ClientId, "CommunicationManagement", "Accounting");
+
+        var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
+
+        var context = await CreateResolver(principal).ResolveServiceAccountAsync();
+
+        Assert.False(context.IsSystem);
+        Assert.Equal(ClientId, context.SubjectId);
+        Assert.Equal(["CommunicationManagement", "Accounting"], context.Roles);
+        Assert.DoesNotContain("Reader", context.Roles);
+    }
+
+    [Fact]
+    public async Task ResolveServiceAccount_CallerPathStillReturnsTheCaller()
+    {
+        // The two resolutions are independent: elevating one node must not change what the caller-scoped
+        // nodes of the same execution resolve to.
+        GivenServiceAccountConfiguration(ServiceAccountJson());
+        GivenIdentity(ClientId, "ServiceRole");
+
+        var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
+        var resolver = CreateResolver(principal);
+
+        var elevated = await resolver.ResolveServiceAccountAsync();
+        var scoped = await resolver.ResolveAsync();
+
+        Assert.Equal(ClientId, elevated.SubjectId);
+        Assert.Equal("user-42", scoped.SubjectId);
+        Assert.Equal(["Reader"], scoped.Roles);
+    }
+
+    [Fact]
+    public async Task ResolveServiceAccount_WithoutAServiceAccount_FallsBackToSystem()
+    {
+        GivenServiceAccountConfiguration();
+
+        var context = await CreateResolver().ResolveServiceAccountAsync();
+
+        Assert.True(context.IsSystem);
+    }
+
+    [Fact]
+    public async Task ResolveServiceAccount_FailedTokenAcquisitionFailsInsteadOfFallingBackToSystem()
+    {
+        // Same fail-closed contract as the caller path: a configured account whose token cannot be
+        // acquired throws rather than widening to the permission-bypassing system context.
+        GivenServiceAccountConfiguration(ServiceAccountJson());
+        A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
+                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+            .Returns(Task.FromResult<ServiceAccountIdentity?>(null));
+
+        var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
+
+        await Assert.ThrowsAnyAsync<PipelineExecutionException>(
+            async () => await CreateResolver(principal).ResolveServiceAccountAsync());
+    }
+
     [Fact]
     public async Task AnUnreadableConfigurationDoesNotFailTheExecution()
     {

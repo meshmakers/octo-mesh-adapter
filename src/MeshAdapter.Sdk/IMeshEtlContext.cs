@@ -1,6 +1,7 @@
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter;
 
@@ -39,6 +40,33 @@ public interface IMeshEtlContext : IEtlContext
     ///     what breaks if it were scoped.
     /// </remarks>
     Task<IOctoSession> GetSystemSessionAsync();
+
+    /// <summary>
+    ///     Opens a session for the identity a data node <b>selected in its configuration</b>
+    ///     (AB#5127) — the third resolution alongside the two above:
+    ///     <list type="bullet">
+    ///         <item><see cref="NodeExecutionIdentity.Caller" /> maps to <see cref="GetScopedSessionAsync" />.</item>
+    ///         <item>
+    ///             <see cref="NodeExecutionIdentity.ServiceAccount" /> opens a session as the pipeline's
+    ///             effective service account with its <b>full roles even when a caller is present</b> —
+    ///             the elevation. There is no equivalent among the fixed two methods, which is the whole
+    ///             reason this overload exists.
+    ///         </item>
+    ///         <item><see cref="NodeExecutionIdentity.System" /> maps to <see cref="GetSystemSessionAsync" />.</item>
+    ///     </list>
+    ///     An unrecognised value resolves to <see cref="NodeExecutionIdentity.Caller" /> so a missing or
+    ///     future-added identity can never silently elevate.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 <b>AB#5128 seam.</b> <see cref="NodeExecutionIdentity.ServiceAccount" /> and
+    ///     <see cref="NodeExecutionIdentity.System" /> are <b>elevations</b> and are, until AB#5128
+    ///     lands, <b>ungated</b> here: any pipeline author can request them. AB#5128 adds the
+    ///     deploy-time authorization / confused-deputy check that refuses an un-authorized elevation;
+    ///     it hooks in at the projection / deploy path, not at this call. We only ship this to
+    ///     test/0.2-dev, so the capability may precede the gate for now.
+    /// </remarks>
+    /// <param name="identity">The identity the node's configuration selected.</param>
+    Task<IOctoSession> GetSessionForAsync(NodeExecutionIdentity identity);
 
     /// <summary>
     ///     Synchronous counterpart of <see cref="GetScopedSessionAsync" />, for the call sites that

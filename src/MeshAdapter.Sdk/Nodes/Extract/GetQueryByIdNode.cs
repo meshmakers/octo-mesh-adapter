@@ -46,7 +46,7 @@ public class GetQueryByIdNode(
         // Disposed on every exit path (runtime, stream-data, and the QueryNotFound throw) so the
         // session is never left alive until GC.
         // AB#5028 — scoped: executes a persisted query over tenant business data.
-        using var session = await context.GetScopedSessionAsync();
+        using var session = await context.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
         var rtQuery =

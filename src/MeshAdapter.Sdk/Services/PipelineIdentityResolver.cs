@@ -18,6 +18,18 @@ public interface IPipelineIdentityResolver
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     ValueTask<RtSecurityContext> ResolveAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     The <see cref="RtSecurityContext" /> of the pipeline's <b>effective service account</b>
+    ///     with its <b>full roles</b>, <b>ignoring any verified caller</b> (AB#5127). This is the
+    ///     identity a node opts into with <c>identity: ServiceAccount</c>: the elevation that runs the
+    ///     node as the service account even though the execution was invoke-gated as a user. Falls
+    ///     back to <see cref="RtSecurityContext.System" /> only when no service account is configured
+    ///     (the same legacy tenants <see cref="ResolveAsync" /> falls back for); a configured account
+    ///     whose token cannot be acquired fails the execution, never falls open to System.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
+    ValueTask<RtSecurityContext> ResolveServiceAccountAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -79,6 +91,7 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private RtSecurityContext? _resolved;
+    private RtSecurityContext? _resolvedServiceAccount;
 
     public PipelineIdentityResolver(string tenantId, VerifiedPrincipal? verifiedPrincipal,
         IGlobalConfiguration globalConfiguration, IServiceAccountTokenService serviceAccountTokenService,
@@ -113,6 +126,31 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
         }
     }
 
+    /// <inheritdoc />
+    public async ValueTask<RtSecurityContext> ResolveServiceAccountAsync(
+        CancellationToken cancellationToken = default)
+    {
+        // Memoised independently of the caller-aware ResolveAsync: a pipeline can mix `identity: Caller`
+        // and `identity: ServiceAccount` nodes and each must get its own decision. When there is no
+        // verified caller the two happen to agree, and the token service's own identity cache (AB#5028)
+        // keeps the second acquisition a cache hit either way.
+        if (_resolvedServiceAccount != null)
+        {
+            return _resolvedServiceAccount;
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            _resolvedServiceAccount ??= await ResolveServiceAccountOrSystemCoreAsync(cancellationToken);
+            return _resolvedServiceAccount;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     private async Task<RtSecurityContext> ResolveCoreAsync(CancellationToken cancellationToken)
     {
         if (_verifiedPrincipal != null)
@@ -123,11 +161,25 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
             return RtSecurityContext.ForUser(_verifiedPrincipal.SubjectId, _verifiedPrincipal.Roles);
         }
 
+        // No caller: the effective identity IS the service account (or the system context when none is
+        // configured) — the same result `identity: ServiceAccount` asks for explicitly.
+        return await ResolveServiceAccountOrSystemCoreAsync(cancellationToken);
+    }
+
+    /// <summary>
+    ///     Resolves the pipeline's effective service account, <b>independent of any caller</b>:
+    ///     the SA's full-role context, or the system context when nothing is configured. The
+    ///     fail-closed contract of <see cref="ResolveCoreAsync" /> applies unchanged — a configured
+    ///     account whose token cannot be acquired throws rather than widening to System.
+    /// </summary>
+    private async Task<RtSecurityContext> ResolveServiceAccountOrSystemCoreAsync(
+        CancellationToken cancellationToken)
+    {
         var credentials = TryReadServiceAccountCredentials();
         if (credentials == null)
         {
             _logger.LogDebug(
-                "[{TenantId}] Pipeline execution has neither a verified caller nor a service account and acts as the system context",
+                "[{TenantId}] Pipeline execution has no service account configured and acts as the system context",
                 _tenantId);
             return RtSecurityContext.System;
         }

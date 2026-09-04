@@ -90,7 +90,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                         // back to a system session without a verified caller is gone: the fallback is
                         // now the adapter's service account and only then the system context, decided
                         // once per execution rather than here (AB#5027 / AB#5028).
-                        var session = await etlContext.GetScopedSessionAsync();
+                        var session = await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
 
                         OperationResult operationResult = new();

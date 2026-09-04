@@ -43,7 +43,7 @@ internal class SimulateEnergyMeasurementsNode(NodeDelegate next, IMeshEtlContext
         var slotDuration = TimeSpan.FromMinutes(15);
 
         // AB#5028 — scoped: reads and writes tenant business data (energy measurements).
-        var session = await etlContext.GetScopedSessionAsync();
+        var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
         // 1. Load ALL existing EnergyMeasurement entities of the configured type.

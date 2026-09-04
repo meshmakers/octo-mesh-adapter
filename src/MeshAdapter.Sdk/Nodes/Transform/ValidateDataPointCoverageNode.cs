@@ -71,7 +71,7 @@ internal class ValidateDataPointCoverageNode(NodeDelegate next, IMeshEtlContext 
         // read is indistinguishable from a mapping that does not exist, so a narrowly scoped identity
         // produces FALSE POSITIVES ("coverage missing") rather than false negatives. That direction is
         // the safe one for a validator, but the report has to be read with the identity in mind.
-        using var session = await etlContext.GetScopedSessionAsync();
+        using var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
         // Load root entity

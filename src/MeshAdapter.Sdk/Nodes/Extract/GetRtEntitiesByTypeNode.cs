@@ -27,7 +27,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         c.SortOrders.GetSortOrders(queryOptions);
 
         // AB#5028 — scoped: an ordinary read of tenant business data.
-        var session = await etlContext.GetScopedSessionAsync();
+        var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip, c.Take);
         await session.CommitTransactionAsync();

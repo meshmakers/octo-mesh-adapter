@@ -3,6 +3,7 @@ using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -176,5 +177,104 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://mcp.example.com/testTenant/mcp");
         node.AddMcpAuthHeader(request);
         Assert.Null(request.Headers.Authorization);
+    }
+
+    // ------------------------------------------------------ AB#5127: identity alias, both directions
+
+    private (AnthropicAiQueryNode Node, INodeContext NodeContext, AnthropicAiQueryNodeConfiguration Config)
+        PrepareWithIdentity(NodeExecutionIdentity identity, bool mcpDelegateToCaller = false)
+    {
+        var config = new AnthropicAiQueryNodeConfiguration
+        {
+            Question = "Answer the user's question using the available tools.",
+            McpServerUrl = "https://mcp.example.com",
+            McpServiceAccountConfigName = ServiceAccountConfig,
+            McpDelegateToCaller = mcpDelegateToCaller,
+            Identity = identity
+        };
+
+        var (_, nodeContext, next) = PrepareTest(config);
+        return (CreateNode(next), nodeContext, config);
+    }
+
+    [Theory]
+    [InlineData(NodeExecutionIdentity.Caller)]
+    [InlineData(NodeExecutionIdentity.ServiceAccount)]
+    [InlineData(NodeExecutionIdentity.System)]
+    public void DelegatesToCaller_ResolvesTheAlias(NodeExecutionIdentity identity)
+    {
+        // identity: Caller (or legacy mcpDelegateToCaller: true) is the only combination that delegates.
+        Assert.Equal(identity == NodeExecutionIdentity.Caller,
+            new AnthropicAiQueryNodeConfiguration { Question = "q", Identity = identity }.DelegatesToCaller);
+
+        Assert.True(new AnthropicAiQueryNodeConfiguration
+        {
+            Question = "q", Identity = identity, McpDelegateToCaller = true
+        }.DelegatesToCaller);
+    }
+
+    [Fact]
+    public async Task IdentityCaller_DelegatesLikeMcpDelegateToCallerTrue()
+    {
+        // identity: Caller is the general spelling of mcpDelegateToCaller: true — same delegated token.
+        A.CallTo(() => _etlContext.CallerAccessToken).Returns(CallerToken);
+        A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(_tenantRepository, ServiceAccountConfig,
+                CallerToken, A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("delegated-token"));
+        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+
+        var (node, nodeContext, config) =
+            PrepareWithIdentity(NodeExecutionIdentity.Caller, mcpDelegateToCaller: false);
+
+        await node.EnsureMcpAccessTokenAsync(config, nodeContext);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://mcp.example.com/testTenant/mcp");
+        node.AddMcpAuthHeader(request);
+
+        Assert.Equal("delegated-token", BearerOf(request));
+        A.CallTo(() => _tokenService.EnsureTokenAsync(A<ITenantRepository>._, A<string>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task IdentityServiceAccount_UsesTheServiceAccountLikeFlagOff()
+    {
+        // identity: ServiceAccount (the AI node's default) is the general spelling of the flag being
+        // absent — the service account's own token, never the caller's.
+        A.CallTo(() => _etlContext.CallerAccessToken).Returns(CallerToken);
+        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+
+        var (node, nodeContext, config) = PrepareWithIdentity(NodeExecutionIdentity.ServiceAccount);
+
+        await node.EnsureMcpAccessTokenAsync(config, nodeContext);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://mcp.example.com/testTenant/mcp");
+        node.AddMcpAuthHeader(request);
+
+        Assert.Equal("service-account-token", BearerOf(request));
+        A.CallTo(() => _tokenService.EnsureTokenAsync(_tenantRepository, ServiceAccountConfig))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(A<ITenantRepository>._, A<string>._,
+            A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task LegacyMcpDelegateToCaller_StillDelegates_EvenWhenIdentityIsServiceAccount()
+    {
+        // Backward compatibility: a pipeline that only knows the old flag keeps delegating even though
+        // the new property defaults to ServiceAccount — the "caller" spelling wins.
+        A.CallTo(() => _etlContext.CallerAccessToken).Returns(CallerToken);
+        A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(_tenantRepository, ServiceAccountConfig,
+                CallerToken, A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("delegated-token"));
+
+        var (node, nodeContext, config) =
+            PrepareWithIdentity(NodeExecutionIdentity.ServiceAccount, mcpDelegateToCaller: true);
+
+        await node.EnsureMcpAccessTokenAsync(config, nodeContext);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://mcp.example.com/testTenant/mcp");
+        node.AddMcpAuthHeader(request);
+
+        Assert.Equal("delegated-token", BearerOf(request));
     }
 }

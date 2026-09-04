@@ -692,7 +692,11 @@ internal class AnthropicAiQueryNode(
     internal async Task EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
         INodeContext nodeContext)
     {
-        if (config.McpDelegateToCaller)
+        // AB#5127: mcpDelegateToCaller is the AI-node alias of the general `identity` property.
+        // identity: Caller (or legacy mcpDelegateToCaller: true) delegates to the calling user;
+        // identity: ServiceAccount / System (the historical default, mcpDelegateToCaller absent) use
+        // the service account's own token. DelegatesToCaller resolves both spellings.
+        if (config.DelegatesToCaller)
         {
             _mcpAccessToken = await AcquireDelegatedMcpAccessTokenAsync(config, nodeContext);
             return;

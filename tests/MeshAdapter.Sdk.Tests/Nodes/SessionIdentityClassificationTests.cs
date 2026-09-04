@@ -27,6 +27,11 @@ public class SessionIdentityClassificationTests
     private static readonly Regex SystemAsync = new(@"GetSystemSessionAsync\(\)", RegexOptions.Compiled);
     private static readonly Regex SystemSync = new(@"GetSystemSession\(\)", RegexOptions.Compiled);
 
+    // AB#5127: the caller-scoped data nodes now select their session from their configuration's
+    // `identity` value via GetSessionForAsync(...). The default is Caller, so a configurable call site
+    // is classified as scoped here — it is a caller-scoped node that also accepts an opt-in elevation.
+    private static readonly Regex Configurable = new(@"GetSessionForAsync\(", RegexOptions.Compiled);
+
     /// <summary>
     ///     The classification, file by file: how many scoped and how many system sessions each node
     ///     opens. Adding a node means adding a row; changing a node's identity means changing one —
@@ -103,7 +108,9 @@ public class SessionIdentityClassificationTests
         var actual = ScanNodes().Values.ToList();
 
         // 32 sites, not the 31 the work item estimated — ToDiscord@1 opens two (the entity lookup
-        // and the binary download) and both had to be decided separately.
+        // and the binary download) and both had to be decided separately. AB#5127 did not add or
+        // remove a site: it turned all 15 scoped ones into config-selected ones (counted as scoped,
+        // default Caller), so the totals are unchanged.
         Assert.Equal(15, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
@@ -147,7 +154,10 @@ public class SessionIdentityClassificationTests
                 var documented = false;
                 for (var j = windowStart; j < i; j++)
                 {
-                    if (lines[j].Contains("AB#5028", StringComparison.Ordinal))
+                    // AB#5028 classified every site originally; AB#5127 turned the caller-scoped ones
+                    // into config-selected ones — either marker documents the decision.
+                    if (lines[j].Contains("AB#5028", StringComparison.Ordinal)
+                        || lines[j].Contains("AB#5127", StringComparison.Ordinal))
                     {
                         documented = true;
                         break;
@@ -162,8 +172,8 @@ public class SessionIdentityClassificationTests
         }
 
         Assert.True(undocumented.Count == 0,
-            "These session call sites carry no AB#5028 comment saying which identity they use and "
-            + "what breaks if it were the other one: " + string.Join(", ", undocumented));
+            "These session call sites carry no AB#5028 / AB#5127 comment saying which identity they "
+            + "use and what breaks if it were the other one: " + string.Join(", ", undocumented));
     }
 
     [Fact]
@@ -204,7 +214,8 @@ public class SessionIdentityClassificationTests
             var system = 0;
             foreach (var line in CodeLines(File.ReadAllLines(path)))
             {
-                scoped += ScopedAsync.Matches(line).Count + ScopedSync.Matches(line).Count;
+                scoped += ScopedAsync.Matches(line).Count + ScopedSync.Matches(line).Count
+                          + Configurable.Matches(line).Count;
                 system += SystemAsync.Matches(line).Count + SystemSync.Matches(line).Count;
             }
 
@@ -239,7 +250,8 @@ public class SessionIdentityClassificationTests
     private static int CountSessions(string line)
     {
         return ScopedAsync.Matches(line).Count + ScopedSync.Matches(line).Count
-               + SystemAsync.Matches(line).Count + SystemSync.Matches(line).Count;
+               + SystemAsync.Matches(line).Count + SystemSync.Matches(line).Count
+               + Configurable.Matches(line).Count;
     }
 
     /// <summary>

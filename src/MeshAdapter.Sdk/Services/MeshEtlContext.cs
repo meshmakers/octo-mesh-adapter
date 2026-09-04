@@ -2,6 +2,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
@@ -67,6 +68,31 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     }
 
     /// <inheritdoc />
+    public Task<IOctoSession> GetSessionForAsync(NodeExecutionIdentity identity)
+    {
+        // 🔴 AB#5128 seam: ServiceAccount / System are elevations and are ungated here until AB#5128
+        // adds the deploy-time authorization check on the projection / deploy path. See IMeshEtlContext.
+        return identity switch
+        {
+            NodeExecutionIdentity.ServiceAccount => GetServiceAccountSessionAsync(),
+            NodeExecutionIdentity.System => GetSystemSessionAsync(),
+            // Caller — and any unrecognised value — fall to the scoped session, so a missing or
+            // future-added identity can never silently elevate (AB#5127).
+            _ => GetScopedSessionAsync()
+        };
+    }
+
+    /// <summary>
+    ///     Opens a session as the pipeline's effective service account with its full roles, even when
+    ///     a caller principal is present (AB#5127). Distinct from <see cref="GetScopedSessionAsync" />,
+    ///     which would prefer the caller.
+    /// </summary>
+    private async Task<IOctoSession> GetServiceAccountSessionAsync()
+    {
+        return await TenantRepository.GetSessionAsync(await ResolveServiceAccountContextAsync());
+    }
+
+    /// <inheritdoc />
     public IOctoSession GetScopedSession()
     {
         return TenantRepository.GetSession(ResolveSecurityContextAsync().AsTask().GetAwaiter().GetResult());
@@ -90,5 +116,19 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
         return ValueTask.FromResult(VerifiedPrincipal == null
             ? RtSecurityContext.System
             : RtSecurityContext.ForUser(VerifiedPrincipal.SubjectId, VerifiedPrincipal.Roles));
+    }
+
+    private ValueTask<RtSecurityContext> ResolveServiceAccountContextAsync()
+    {
+        if (_identityResolver != null)
+        {
+            return _identityResolver.ResolveServiceAccountAsync();
+        }
+
+        // No resolver wired (a test or a host that builds the context by hand): there is no
+        // service-account source here, so the best non-caller identity available is the system
+        // context. A caller, when one exists, is deliberately NOT used — ServiceAccount means "not
+        // the caller".
+        return ValueTask.FromResult(RtSecurityContext.System);
     }
 }

@@ -1,6 +1,7 @@
 using FakeItEasy;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 
 namespace MeshAdapter.Sdk.Tests.Helpers;
@@ -81,6 +82,21 @@ public abstract class SessionNodeTestBase : NodeTestBase, IDisposable
     protected RtSecurityContext EffectiveSecurityContext { get; set; } =
         RtSecurityContext.ForUser(ScopedSubjectId, [ScopedRole]);
 
+    /// <summary>Subject id the pipeline's service account acts as (AB#5127).</summary>
+    protected const string ServiceAccountSubjectId = "octo-pipeline-sa-service";
+
+    /// <summary>A role the service account carries but the caller does not (AB#5127).</summary>
+    protected const string ServiceAccountRole = "ServiceAccountRole";
+
+    /// <summary>
+    ///     The identity <see cref="IMeshEtlContext.GetSessionForAsync" /> resolves to for
+    ///     <see cref="NodeExecutionIdentity.ServiceAccount" /> — the pipeline's service account with
+    ///     its full roles, deliberately distinct from <see cref="EffectiveSecurityContext" /> so a
+    ///     test can prove an elevated node runs as the account and <b>not</b> as the caller (AB#5127).
+    /// </summary>
+    protected RtSecurityContext ServiceAccountSecurityContext { get; set; } =
+        RtSecurityContext.ForUser(ServiceAccountSubjectId, [ServiceAccountRole]);
+
     /// <summary>Sets up the fakes and arms both guards.</summary>
     protected SessionNodeTestBase()
     {
@@ -120,6 +136,19 @@ public abstract class SessionNodeTestBase : NodeTestBase, IDisposable
             .ReturnsLazily(() => TenantRepository.GetSessionAsync(RtSecurityContext.System));
         A.CallTo(() => EtlContext.GetSystemSession())
             .ReturnsLazily(() => TenantRepository.GetSession(RtSecurityContext.System));
+
+        // AB#5127: the config-selected overload maps Caller ▶ the caller's identity, ServiceAccount ▶
+        // the service account's own full-role identity (even with a caller present), System ▶ system.
+        // Mirrors MeshEtlContext.GetSessionForAsync so a node test exercises the same routing.
+        A.CallTo(() => EtlContext.GetSessionForAsync(A<NodeExecutionIdentity>._))
+            .ReturnsLazily((NodeExecutionIdentity identity) => identity switch
+            {
+                NodeExecutionIdentity.ServiceAccount =>
+                    TenantRepository.GetSessionAsync(ServiceAccountSecurityContext),
+                NodeExecutionIdentity.System =>
+                    TenantRepository.GetSessionAsync(RtSecurityContext.System),
+                _ => TenantRepository.GetSessionAsync(EffectiveSecurityContext)
+            });
     }
 
     /// <summary>
@@ -170,6 +199,18 @@ public abstract class SessionNodeTestBase : NodeTestBase, IDisposable
     {
         A.CallTo(() => SecureSessionFactory.GetSession(
                 A<RtSecurityContext>.That.Matches(c => Matches(c, EffectiveSecurityContext))))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    ///     Asserts the node opened its session as the pipeline's <b>service account</b> — the full
+    ///     <see cref="ServiceAccountSecurityContext" />, subject and roles included, so the assertion
+    ///     proves the elevation reached the repository as the account and not as the caller (AB#5127).
+    /// </summary>
+    protected void AssertServiceAccountSessionOpened()
+    {
+        A.CallTo(() => SecureSessionFactory.GetSessionAsync(
+                A<RtSecurityContext>.That.Matches(c => Matches(c, ServiceAccountSecurityContext))))
             .MustHaveHappened();
     }
 
@@ -225,11 +266,17 @@ public abstract class SessionNodeTestBase : NodeTestBase, IDisposable
                 continue;
             }
 
-            Assert.True(Matches(context, EffectiveSecurityContext),
-                "A caller-scoped session was opened with "
+            // A non-system session must carry either the caller's identity (the Caller default) or the
+            // service account's (the AB#5127 ServiceAccount elevation) — never an empty or foreign one,
+            // which would sail past a check on IsSystem alone while enforcing nothing.
+            Assert.True(
+                Matches(context, EffectiveSecurityContext) || Matches(context, ServiceAccountSecurityContext),
+                "A non-system session was opened with "
                 + $"subject '{context.SubjectId}' and roles [{string.Join(", ", context.Roles)}], but the "
-                + $"execution's identity is subject '{EffectiveSecurityContext.SubjectId}' with roles "
-                + $"[{string.Join(", ", EffectiveSecurityContext.Roles)}] (AB#5028).");
+                + $"execution's caller identity is subject '{EffectiveSecurityContext.SubjectId}' with roles "
+                + $"[{string.Join(", ", EffectiveSecurityContext.Roles)}] and its service account is subject "
+                + $"'{ServiceAccountSecurityContext.SubjectId}' with roles "
+                + $"[{string.Join(", ", ServiceAccountSecurityContext.Roles)}] (AB#5028 / AB#5127).");
         }
     }
 

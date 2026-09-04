@@ -54,7 +54,7 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
             .FieldIn(nameof(RtEntity.RtWellKnownName), names);
 
         // AB#5028 — scoped: an ordinary read of tenant business data.
-        var session = await etlContext.GetScopedSessionAsync();
+        var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip,
             c.Take);

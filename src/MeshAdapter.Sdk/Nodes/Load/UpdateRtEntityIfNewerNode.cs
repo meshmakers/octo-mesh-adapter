@@ -54,7 +54,7 @@ internal class UpdateRtEntityIfNewerNode(NodeDelegate next, IMeshEtlContext etlC
                     .FieldIn(nameof(RtEntity.RtWellKnownName), wellKnownNames);
 
                 // AB#5028 — scoped: reads and updates tenant business data.
-                var session = await etlContext.GetScopedSessionAsync();
+                var session = await etlContext.GetSessionForAsync(c.Identity);
                 session.StartTransaction();
                 var existing = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
                     session, ckTypeId, queryOptions, 0, wellKnownNames.Count);

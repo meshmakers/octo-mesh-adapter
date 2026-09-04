@@ -48,7 +48,7 @@ internal class ApplyDataPointMappingsNode(
         }
 
         // AB#5028 — scoped: evaluates mappings over tenant business data.
-        using var session = await etlContext.GetScopedSessionAsync();
+        using var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
         // Step 1: Find DataPointMapping entities via inbound MapsFrom association.

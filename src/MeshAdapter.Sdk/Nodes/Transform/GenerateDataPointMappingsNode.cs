@@ -41,7 +41,7 @@ internal class GenerateDataPointMappingsNode(NodeDelegate next, IMeshEtlContext 
         // ⚠️ The suggestion set is only as complete as the identity's view: a target the execution
         // may not read is not "already mapped, skip" but "missing, suggest again". Under a narrowly
         // scoped identity this node can therefore propose duplicates of mappings that already exist.
-        using var session = await etlContext.GetScopedSessionAsync();
+        using var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
         var containers = (await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(

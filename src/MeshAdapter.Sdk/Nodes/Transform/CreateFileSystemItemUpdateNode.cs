@@ -106,7 +106,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
         // AB#5028 — scoped: the file system item is a real user artefact, so it is created under the
         // execution's identity and carries its creator stamp. Note the deliberate split inside this
         // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
-        var session = await etlContext.GetScopedSessionAsync();
+        var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         OperationResult operationResult = new();
         await etlContext.TenantRepository.ApplyChangesAsync(session, entityUpdateInfoList, assocUpdateInfoList,

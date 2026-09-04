@@ -56,7 +56,7 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
         c.SortOrders.GetSortOrders(queryOptions);
 
         // AB#5028 — scoped: an ordinary read of tenant business data.
-        using var session = await etlContext.GetScopedSessionAsync();
+        using var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
         var result = await etlContext.TenantRepository.GetRtAssociationTargetsAsync(session, originRtIds,

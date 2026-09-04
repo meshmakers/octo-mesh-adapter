@@ -122,13 +122,19 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
 
         // AB#5126 caller-binding seam. The binder enforces the per-trigger three-state policy for
-        // every channel trigger. AB#5124 wires the real EntraID directory: it resolves a Teams
-        // sender's AAD object id to the OctoMesh user the EntraID IdP provisioned (via the AB#5122
-        // verified-identifier directory, read through generic CK access over the tenant repository).
-        // It stays fail-closed for every kind it does not own (phone / e-mail — AB#5123/5125), so
-        // those still resolve to nothing until their WIs land.
+        // every channel trigger and consumes a single IVerifiedCallerDirectory. That directory is now
+        // a COMPOSITE (AB#5123) that dispatches a sender by its kind to per-kind leaf directories
+        // (IKindVerifiedCallerDirectory), so the channels coexist:
+        //   • EntraID (AB#5124): resolves a Teams sender's AAD object id to the IdP-provisioned user.
+        //   • Phone  (AB#5123): resolves a Signal sender's number to the self-service-enrolled user.
+        // Both read the AB#5122 verified-identifier directory through generic CK access over the
+        // tenant repository, and both stay fail-closed for kinds they do not own. E-mail (AB#5125)
+        // slots in later as another leaf with no change to the binder or the composite.
         services.AddSingleton<IEntraIdUserLookup, CkEntraIdUserLookup>();
-        services.AddSingleton<IVerifiedCallerDirectory, EntraIdVerifiedCallerDirectory>();
+        services.AddSingleton<IPhoneUserLookup, CkPhoneUserLookup>();
+        services.AddSingleton<IKindVerifiedCallerDirectory, EntraIdVerifiedCallerDirectory>();
+        services.AddSingleton<IKindVerifiedCallerDirectory, PhoneVerifiedCallerDirectory>();
+        services.AddSingleton<IVerifiedCallerDirectory, CompositeVerifiedCallerDirectory>();
         services.AddSingleton<IChannelCallerBinder, ChannelCallerBinder>();
 
         // Shared by every SFTP node. Stateless: the per-server concurrency counters live on

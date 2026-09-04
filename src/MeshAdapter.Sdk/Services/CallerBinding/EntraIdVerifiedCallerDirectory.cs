@@ -32,14 +32,16 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 /// </remarks>
 internal sealed class EntraIdVerifiedCallerDirectory(
     IEntraIdUserLookup lookup,
-    ILogger<EntraIdVerifiedCallerDirectory> logger) : IVerifiedCallerDirectory
+    ILogger<EntraIdVerifiedCallerDirectory> logger) : IKindVerifiedCallerDirectory
 {
+    public bool Owns(ChannelIdentifierKind kind) => kind == ChannelIdentifierKind.EntraIdObjectId;
+
     public async Task<ResolvedCaller?> ResolveAsync(string tenantId, ChannelSender sender,
         CancellationToken cancellationToken = default)
     {
         // Own only the EntraID object id. Every other kind is deliberately unresolved here — the
-        // fail-closed answer while its per-channel WI is not wired (AB#5123/5125).
-        if (sender.Kind != ChannelIdentifierKind.EntraIdObjectId)
+        // composite routes them to their own leaf (phone / e-mail — AB#5123/5125).
+        if (!Owns(sender.Kind))
         {
             return null;
         }

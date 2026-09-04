@@ -131,7 +131,8 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
         {
             [PlaceholderSource.Customer] = BaseOrNull(dataContext, c.CustomerPath),
             [PlaceholderSource.Community] = BaseOrNull(dataContext, c.CommunityConfigPath),
-            [PlaceholderSource.BillingDocument] = BaseOrNull(dataContext, c.BillingDocumentPath)
+            [PlaceholderSource.BillingDocument] = BaseOrNull(dataContext, c.BillingDocumentPath),
+            [PlaceholderSource.Registration] = BaseOrNull(dataContext, c.RegistrationPath)
         };
     }
 
@@ -187,6 +188,7 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
         PlaceholderSource.Customer => Blank(c.CustomerPath),
         PlaceholderSource.Community => Blank(c.CommunityConfigPath),
         PlaceholderSource.BillingDocument => Blank(c.BillingDocumentPath),
+        PlaceholderSource.Registration => Blank(c.RegistrationPath),
         _ => null
     };
 

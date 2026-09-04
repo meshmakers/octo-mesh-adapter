@@ -14,7 +14,15 @@ public enum PlaceholderSource
     Community,
 
     /// <summary>The billing document, absent on a path that is not sending one.</summary>
-    BillingDocument
+    BillingDocument,
+
+    /// <summary>
+    /// A public membership application (AB#3717), absent on every path but the registration
+    /// confirmation. Its own source rather than the Customer one because an application is not a
+    /// customer: it carries flat attributes, has no <c>Contact</c> record, and exists before
+    /// anybody accepted it.
+    /// </summary>
+    Registration
 }
 
 /// <summary>
@@ -131,7 +139,23 @@ public static class NotificationPlaceholderCatalog
         new("billingDocument.periodFrom", PlaceholderSource.BillingDocument, "TimeRange.Attributes.From", PlaceholderFormat.Date),
         new("billingDocument.periodTo", PlaceholderSource.BillingDocument, "TimeRange.Attributes.To", PlaceholderFormat.Date),
         new("billingDocument.grossTotal", PlaceholderSource.BillingDocument, "GrossTotal", PlaceholderFormat.Money),
-        new("billingDocument.billingType", PlaceholderSource.BillingDocument, "BillingType", PlaceholderFormat.BillingType)
+        new("billingDocument.billingType", PlaceholderSource.BillingDocument, "BillingType", PlaceholderFormat.BillingType),
+
+        // AB#3717. Absent on purpose, and not for lack of an attribute: DateOfBirth,
+        // TaxIdentificationNumber and CompanyRegisterNumber are identifiers that have no business
+        // being invited into unencrypted mail; ApplicantType is an enum key and would render as
+        // "0"; MeteringPoints is a RecordArray no token can render; ConsentAccepted,
+        // ConsentVersion, Language and SubmittedAt are bookkeeping rather than letter text.
+        new("registration.firstName", PlaceholderSource.Registration, "FirstName"),
+        new("registration.lastName", PlaceholderSource.Registration, "LastName"),
+        new("registration.companyName", PlaceholderSource.Registration, "CompanyName"),
+        new("registration.contactPerson", PlaceholderSource.Registration, "ContactPerson"),
+        new("registration.email", PlaceholderSource.Registration, "EMail"),
+        new("registration.street", PlaceholderSource.Registration, "BillingStreet"),
+        new("registration.houseNumber", PlaceholderSource.Registration, "BillingHouseNumber"),
+        new("registration.zipcode", PlaceholderSource.Registration, "BillingPostalCode"),
+        new("registration.cityTown", PlaceholderSource.Registration, "BillingCity"),
+        new("registration.phone", PlaceholderSource.Registration, "PhoneNumber")
     ];
 
     /// <summary>

@@ -152,7 +152,6 @@ public static class NotificationPlaceholderCatalog
         new("registration.contactPerson", PlaceholderSource.Registration, "ContactPerson"),
         new("registration.email", PlaceholderSource.Registration, "EMail"),
         new("registration.street", PlaceholderSource.Registration, "BillingStreet"),
-        new("registration.houseNumber", PlaceholderSource.Registration, "BillingHouseNumber"),
         new("registration.zipcode", PlaceholderSource.Registration, "BillingPostalCode"),
         new("registration.cityTown", PlaceholderSource.Registration, "BillingCity"),
         new("registration.phone", PlaceholderSource.Registration, "PhoneNumber")

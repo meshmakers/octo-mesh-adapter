@@ -283,11 +283,18 @@ public class NotificationPlaceholderCatalogTests
     {
         foreach (var definition in NotificationPlaceholderCatalog.Definitions)
         {
+            // Every source spelled out and no catch-all: the discard used to map to
+            // "billingDocument.", so a source added later was asserted against another group's
+            // prefix instead of its own. Throwing makes the next one a compile-time-obvious
+            // decision rather than a puzzling failure.
             var expected = definition.Source switch
             {
                 PlaceholderSource.Customer => "customer.",
                 PlaceholderSource.Community => "community.",
-                _ => "billingDocument."
+                PlaceholderSource.BillingDocument => "billingDocument.",
+                PlaceholderSource.Registration => "registration.",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(definition.Source), definition.Source, "Give the new source its token prefix.")
             };
             Assert.StartsWith(expected, definition.Token, StringComparison.Ordinal);
         }
@@ -321,12 +328,19 @@ public class NotificationPlaceholderCatalogTests
             withFallback);
     }
 
+    /// <summary>
+    /// "As a minimum" is the claim, so containment is the assertion. It counted the distinct
+    /// sources instead, which says "there are exactly three" - the opposite of a minimum, and it
+    /// failed the moment AB#3717 added a fourth without any of the three going missing.
+    /// </summary>
     [Fact]
     public void The_three_sources_the_issue_names_as_a_minimum_are_all_covered()
     {
         var sources = NotificationPlaceholderCatalog.Definitions.Select(d => d.Source).Distinct().ToArray();
 
-        Assert.Equal(3, sources.Length);
+        Assert.Contains(PlaceholderSource.Customer, sources);
+        Assert.Contains(PlaceholderSource.Community, sources);
+        Assert.Contains(PlaceholderSource.BillingDocument, sources);
     }
 }
 

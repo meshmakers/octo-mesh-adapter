@@ -127,13 +127,17 @@ public static class ServiceCollectionExtensions
         // (IKindVerifiedCallerDirectory), so the channels coexist:
         //   • EntraID (AB#5124): resolves a Teams sender's AAD object id to the IdP-provisioned user.
         //   • Phone  (AB#5123): resolves a Signal sender's number to the self-service-enrolled user.
-        // Both read the AB#5122 verified-identifier directory through generic CK access over the
-        // tenant repository, and both stay fail-closed for kinds they do not own. E-mail (AB#5125)
-        // slots in later as another leaf with no change to the binder or the composite.
+        //   • E-mail (AB#5125): resolves an inbound mail's From to the admin-whitelisted user; its
+        //     message trust is the DKIM/DMARC verdict the e-mail trigger derived.
+        // All read the AB#5122 verified-identifier directory through generic CK access over the
+        // tenant repository, and all stay fail-closed for kinds they do not own. A new channel adds
+        // one leaf and one registration line with no change to the binder or the composite.
         services.AddSingleton<IEntraIdUserLookup, CkEntraIdUserLookup>();
         services.AddSingleton<IPhoneUserLookup, CkPhoneUserLookup>();
+        services.AddSingleton<IEmailUserLookup, CkEmailUserLookup>();
         services.AddSingleton<IKindVerifiedCallerDirectory, EntraIdVerifiedCallerDirectory>();
         services.AddSingleton<IKindVerifiedCallerDirectory, PhoneVerifiedCallerDirectory>();
+        services.AddSingleton<IKindVerifiedCallerDirectory, EmailVerifiedCallerDirectory>();
         services.AddSingleton<IVerifiedCallerDirectory, CompositeVerifiedCallerDirectory>();
         services.AddSingleton<IChannelCallerBinder, ChannelCallerBinder>();
 

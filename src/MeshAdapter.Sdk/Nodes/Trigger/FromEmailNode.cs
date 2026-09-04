@@ -161,6 +161,10 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                         }).ToList() ?? new List<AttachmentData>()
                     };
                     
+                    // AB#5125: surface the receiving server's Authentication-Results (DKIM/DMARC)
+                    // verdict so the caller-binding can derive this mail's message trust.
+                    PopulateAuthentication(emailData, message);
+
                     newEmails.Add(emailData);
                     processedUids.Add(uid);
                     
@@ -189,15 +193,18 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     
                     // AB#5126: one execution per batch. A caller is only unambiguous when the whole
                     // batch shares one sender address; otherwise the execution has no single identity.
-                    // Per-message identity is the per-channel WI's job (AB#5125 — e-mail/DKIM, which
-                    // also derives the real message trust). The From address is the identifier.
+                    // The From address is the identifier; AB#5125 derives the per-message trust from
+                    // each mail's DKIM/DMARC (Authentication-Results) verdict and takes the WEAKEST
+                    // over the batch (fail-safe: one unauthenticated mail caps the batch at Weak).
                     var distinctSenders = newEmails
                         .Select(e => e.FromAddress)
                         .Where(a => !string.IsNullOrWhiteSpace(a))
                         .Distinct()
                         .ToList();
+                    var messageTrust = EmailMessageTrust.Min(
+                        newEmails.Select(e => EmailMessageTrust.Evaluate(e.Authentication, e.FromAddress)));
                     var sender = distinctSenders.Count == 1
-                        ? new ChannelSender(ChannelIdentifierKind.EmailAddress, distinctSenders[0]!, CallerTrustLevel.None)
+                        ? new ChannelSender(ChannelIdentifierKind.EmailAddress, distinctSenders[0]!, messageTrust)
                         : null;
                     var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
                     if (binding.Rejected)
@@ -266,6 +273,41 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         
         _imapClient?.Dispose();
         _cancellationTokenSource?.Dispose();
+    }
+
+    /// <summary>
+    ///     Surfaces the mail's <c>Authentication-Results</c> (DKIM/DMARC) verdict onto
+    ///     <see cref="EmailData.Authentication" /> and <see cref="EmailData.Headers" /> (AB#5125).
+    ///     Only the FIRST occurrence is trusted — the receiving server PREPENDS its own header rather
+    ///     than replacing a sender-supplied one, so a later occurrence is sender-controlled text — and
+    ///     the count is passed to the parser so a second header defeats <c>IsDmarcPass</c>. Absent
+    ///     header ⇒ <see cref="EmailData.Authentication" /> stays null ("nothing known", NOT "failed"),
+    ///     which the trust mapper treats fail-safe as Weak.
+    /// </summary>
+    internal static void PopulateAuthentication(EmailData emailData, MimeMessage message)
+    {
+        string? firstValue = null;
+        var count = 0;
+        foreach (var header in message.Headers)
+        {
+            if (!string.Equals(header.Field, AuthenticationResultsParser.HeaderName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            count++;
+            firstValue ??= header.Value;
+        }
+
+        if (count == 0)
+        {
+            return;
+        }
+
+        // TryAdd: first occurrence wins, matching the Graph trigger's EmailData.Headers contract.
+        emailData.Headers.TryAdd(AuthenticationResultsParser.HeaderName, firstValue ?? string.Empty);
+        emailData.Authentication = AuthenticationResultsParser.Parse(firstValue, count);
     }
 }
 
@@ -336,8 +378,8 @@ public class EmailData
     /// <c>Authentication-Results: …; dmarc=pass</c> be found by any downstream substring or regex
     /// check. <see cref="Authentication"/> reports how many there were.
     /// <para>
-    /// Populated by <c>FromMicrosoftGraphEmail@1</c>; the IMAP trigger (<c>FromEmail@1</c>) leaves it
-    /// empty for now.
+    /// Populated by <c>FromMicrosoftGraphEmail@1</c> (its configured header set) and by the IMAP
+    /// trigger (<c>FromEmail@1</c>), which surfaces the <c>Authentication-Results</c> header (AB#5125).
     /// </para>
     /// </remarks>
     public Dictionary<string, string> Headers { get; set; } =

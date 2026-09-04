@@ -210,11 +210,13 @@ internal class FromMicrosoftGraphEmailNode(
                     };
 
                     // AB#5126: one message → one execution, so the sender maps cleanly to a caller.
-                    // The From address is the identifier; AB#5125 derives the real message trust from
-                    // the DKIM / Authentication-Results verdict (None here until then).
+                    // The From address is the identifier; AB#5125 derives the per-message trust from
+                    // the DKIM/DMARC (Authentication-Results) verdict — Strong only for a
+                    // dkim=pass + aligned dmarc=pass mail, Weak otherwise (fail-safe when unknown).
+                    var messageTrust = EmailMessageTrust.Evaluate(emailData.Authentication, fromAddress);
                     var sender = string.IsNullOrWhiteSpace(fromAddress)
                         ? null
-                        : new ChannelSender(ChannelIdentifierKind.EmailAddress, fromAddress, CallerTrustLevel.None);
+                        : new ChannelSender(ChannelIdentifierKind.EmailAddress, fromAddress, messageTrust);
                     var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
                     if (binding.Rejected)
                     {

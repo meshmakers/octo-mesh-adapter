@@ -122,9 +122,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
 
         // AB#5126 caller-binding seam. The binder enforces the per-trigger three-state policy for
-        // every channel trigger; the directory is the fail-closed default until a per-channel WI
-        // (AB#5123/5124/5125) wires the real verified-identifier lookup.
-        services.AddSingleton<IVerifiedCallerDirectory, UnboundVerifiedCallerDirectory>();
+        // every channel trigger. AB#5124 wires the real EntraID directory: it resolves a Teams
+        // sender's AAD object id to the OctoMesh user the EntraID IdP provisioned (via the AB#5122
+        // verified-identifier directory, read through generic CK access over the tenant repository).
+        // It stays fail-closed for every kind it does not own (phone / e-mail — AB#5123/5125), so
+        // those still resolve to nothing until their WIs land.
+        services.AddSingleton<IEntraIdUserLookup, CkEntraIdUserLookup>();
+        services.AddSingleton<IVerifiedCallerDirectory, EntraIdVerifiedCallerDirectory>();
         services.AddSingleton<IChannelCallerBinder, ChannelCallerBinder>();
 
         // Shared by every SFTP node. Stateless: the per-server concurrency counters live on

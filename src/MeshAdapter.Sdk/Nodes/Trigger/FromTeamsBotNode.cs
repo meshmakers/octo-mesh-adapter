@@ -165,12 +165,17 @@ internal class FromTeamsBotNode(
             ProcessedAt = DateTime.UtcNow
         };
 
-        // AB#5126: resolve the sender to a verified caller under this trigger's binding policy. The
-        // EntraID object id is the stable per-user identity; AB#5124 refines its mapping and message
-        // trust. When it is absent there is no reliable identifier, so the sender is unresolvable.
+        // AB#5124/5126: resolve the sender to a verified caller under this trigger's binding policy.
+        // The EntraID object id is the stable per-user identity, mapped to the OctoMesh user by the
+        // EntraID directory (AB#5124). The MESSAGE-trust dimension is Strong only when the inbound
+        // Bot Framework token was cryptographically validated (AB#5010) — that is what lets the
+        // channel vouch that THIS activity really came from that aadObjectId; without validation the
+        // sender id is self-asserted, so it stays Weak. When the oid is absent there is no reliable
+        // identifier at all, so the sender is unresolvable.
+        var messageTrust = c.ValidateInboundToken ? CallerTrustLevel.Strong : CallerTrustLevel.Weak;
         var sender = string.IsNullOrWhiteSpace(fromAad)
             ? null
-            : new ChannelSender(ChannelIdentifierKind.EntraIdObjectId, fromAad, CallerTrustLevel.Weak);
+            : new ChannelSender(ChannelIdentifierKind.EntraIdObjectId, fromAad, messageTrust);
         var binding = await callerBinder.BindAsync(context.TenantId, c.CallerBinding, sender);
         if (binding.Rejected)
         {

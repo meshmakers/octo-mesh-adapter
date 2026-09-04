@@ -14,6 +14,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Meshmakers.Octo.Services.Notifications.Services;
@@ -119,6 +120,12 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+
+        // AB#5126 caller-binding seam. The binder enforces the per-trigger three-state policy for
+        // every channel trigger; the directory is the fail-closed default until a per-channel WI
+        // (AB#5123/5124/5125) wires the real verified-identifier lookup.
+        services.AddSingleton<IVerifiedCallerDirectory, UnboundVerifiedCallerDirectory>();
+        services.AddSingleton<IChannelCallerBinder, ChannelCallerBinder>();
 
         // Shared by every SFTP node. Stateless: the per-server concurrency counters live on
         // the ETL context, so a redeployed pipeline picks up a changed limit.

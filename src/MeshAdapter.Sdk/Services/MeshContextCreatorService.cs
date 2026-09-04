@@ -49,7 +49,9 @@ internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCa
             // (= IEtlContext.Properties): that dictionary lives on the registration and is shared by
             // every run of the pipeline, so one caller's token would outlive their request (AB#5031).
             executePipelineOptions.CallerAccessToken,
-            identityResolver);
+            identityResolver,
+            // AB#5126: the effective trust the trigger resolved, so a node can demand a minimum.
+            executePipelineOptions.CallerTrust);
 
 
         var etlContext = context as TContext;

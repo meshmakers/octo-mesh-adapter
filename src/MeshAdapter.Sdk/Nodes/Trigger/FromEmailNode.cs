@@ -12,11 +12,14 @@ using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 using MimeKit;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 [NodeConfiguration(typeof(FromEmailNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNode
+internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder callerBinder)
+    : ITriggerPipelineNode
 {
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
@@ -184,9 +187,34 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                         ProcessedAt = DateTime.UtcNow
                     };
                     
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), emailBatch);
-                    
-                    logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                    // AB#5126: one execution per batch. A caller is only unambiguous when the whole
+                    // batch shares one sender address; otherwise the execution has no single identity.
+                    // Per-message identity is the per-channel WI's job (AB#5125 — e-mail/DKIM, which
+                    // also derives the real message trust). The From address is the identifier.
+                    var distinctSenders = newEmails
+                        .Select(e => e.FromAddress)
+                        .Where(a => !string.IsNullOrWhiteSpace(a))
+                        .Distinct()
+                        .ToList();
+                    var sender = distinctSenders.Count == 1
+                        ? new ChannelSender(ChannelIdentifierKind.EmailAddress, distinctSenders[0]!, CallerTrustLevel.None)
+                        : null;
+                    var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromEmail: {Reason} Skipping batch of {Count} email(s).",
+                            binding.RejectReason, newEmails.Count);
+                    }
+                    else
+                    {
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, emailBatch);
+
+                        logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                    }
                 }
                 
                 // Expunge deleted messages if any were deleted

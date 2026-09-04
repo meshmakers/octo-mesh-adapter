@@ -10,13 +10,16 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 [NodeConfiguration(typeof(FromMicrosoftGraphEmailNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class FromMicrosoftGraphEmailNode(
     ILogger<FromMicrosoftGraphEmailNode> logger,
-    IHttpClientFactory httpClientFactory)
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder)
     : ITriggerPipelineNode
 {
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
@@ -206,11 +209,29 @@ internal class FromMicrosoftGraphEmailNode(
                         ProcessedAt = DateTime.UtcNow
                     };
 
+                    // AB#5126: one message → one execution, so the sender maps cleanly to a caller.
+                    // The From address is the identifier; AB#5125 derives the real message trust from
+                    // the DKIM / Authentication-Results verdict (None here until then).
+                    var sender = string.IsNullOrWhiteSpace(fromAddress)
+                        ? null
+                        : new ChannelSender(ChannelIdentifierKind.EmailAddress, fromAddress, CallerTrustLevel.None);
+                    var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromMicrosoftGraphEmail: {Reason} Skipping message '{MessageId}'.",
+                            binding.RejectReason, messageId);
+                        continue;
+                    }
+
                     try
                     {
                         // One pipeline run per message so the success/failure of a run maps
                         // 1:1 to the move decision for exactly that message.
-                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, batch);
 
                         failureCounts.Remove(messageId);
 

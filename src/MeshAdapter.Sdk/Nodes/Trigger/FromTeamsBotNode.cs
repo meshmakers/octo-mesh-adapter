@@ -13,6 +13,8 @@ using Microsoft.Extensions.Logging;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 using HttpRequestOptions = Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests.HttpRequestOptions;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 /// <summary>
@@ -29,7 +31,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 internal class FromTeamsBotNode(
     ILogger<FromTeamsBotNode> logger,
     IHttpRequestService httpRequestService,
-    IHttpClientFactory httpClientFactory) : ITriggerPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder) : ITriggerPipelineNode
 {
     private HttpRouteHandle? _routeHandle;
 
@@ -162,7 +165,24 @@ internal class FromTeamsBotNode(
             ProcessedAt = DateTime.UtcNow
         };
 
-        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
+        // AB#5126: resolve the sender to a verified caller under this trigger's binding policy. The
+        // EntraID object id is the stable per-user identity; AB#5124 refines its mapping and message
+        // trust. When it is absent there is no reliable identifier, so the sender is unresolvable.
+        var sender = string.IsNullOrWhiteSpace(fromAad)
+            ? null
+            : new ChannelSender(ChannelIdentifierKind.EntraIdObjectId, fromAad, CallerTrustLevel.Weak);
+        var binding = await callerBinder.BindAsync(context.TenantId, c.CallerBinding, sender);
+        if (binding.Rejected)
+        {
+            logger.LogWarning("FromTeamsBot: {Reason}", binding.RejectReason);
+            return null;
+        }
+
+        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+        {
+            VerifiedPrincipal = binding.Principal,
+            CallerTrust = binding.Trust
+        }, batch);
         logger.LogInformation(
             "FromTeamsBot: processed activity from {From} with {AttachmentCount} attachment(s)",
             fromName ?? fromId ?? "unknown", attachments.Count);

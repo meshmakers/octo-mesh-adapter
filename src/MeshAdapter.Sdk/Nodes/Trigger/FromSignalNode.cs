@@ -6,6 +6,8 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 /// <summary>
@@ -19,7 +21,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class FromSignalNode(
     ILogger<FromSignalNode> logger,
-    IHttpClientFactory httpClientFactory) : ITriggerPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder) : ITriggerPipelineNode
 {
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
@@ -96,8 +99,35 @@ internal class FromSignalNode(
                         ProcessedAt = DateTime.UtcNow
                     };
 
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
-                    logger.LogInformation("Processed {Count} new Signal messages", messages.Count);
+                    // AB#5126: this trigger fires one execution for a batch of messages. A caller is
+                    // only unambiguous when the whole batch shares one sender number; otherwise the
+                    // execution has no single identity and is treated as unresolved. True per-message
+                    // identity (per-sender execution) is the per-channel WI's job (AB#5123 — phone/OTP,
+                    // which also sets the real message trust). The phone number is the identifier.
+                    var distinctSources = messages
+                        .Select(m => m.Source)
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .Distinct()
+                        .ToList();
+                    var sender = distinctSources.Count == 1
+                        ? new ChannelSender(ChannelIdentifierKind.PhoneNumber, distinctSources[0]!, CallerTrustLevel.Weak)
+                        : null;
+                    var binding = await callerBinder.BindAsync(context.TenantId, c.CallerBinding, sender,
+                        _cancellationTokenSource!.Token);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromSignal: {Reason} Skipping batch of {Count} message(s).",
+                            binding.RejectReason, messages.Count);
+                    }
+                    else
+                    {
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, batch);
+                        logger.LogInformation("Processed {Count} new Signal messages", messages.Count);
+                    }
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(c.PollingIntervalSeconds), _cancellationTokenSource.Token);

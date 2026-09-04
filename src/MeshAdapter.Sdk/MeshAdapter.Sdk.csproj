@@ -19,6 +19,9 @@
     <ItemGroup>
         <InternalsVisibleTo Include="MeshAdapter.Sdk.Tests" />
         <InternalsVisibleTo Include="MeshAdapter.Sdk.IntegrationTests" />
+        <!-- Lets FakeItEasy/Castle DynamicProxy fake internal seam types (e.g. IEntraIdUserLookup,
+             ChannelCallerBinder) from the test assemblies (AB#5126/5124). -->
+        <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
     </ItemGroup>
 
     <ItemGroup>

@@ -38,13 +38,19 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// <see cref="RtSecurityContext.System" /> — the shape a test or a host that builds the context by
     /// hand gets.
     /// </param>
+    /// <param name="callerTrust">
+    /// Effective trust of the verified caller (min of enrollment and message trust), so a node can
+    /// demand a minimum before delegating (AB#5126). Defaults to
+    /// <see cref="Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel.None" /> — no verified caller.
+    /// </param>
     public MeshEtlContext(string tenantId, ITenantRepository tenantRepository,
         OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
         IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties,
         Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? verifiedPrincipal = null,
         string? callerAccessToken = null,
-        IPipelineIdentityResolver? identityResolver = null)
-        : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal, callerAccessToken)
+        IPipelineIdentityResolver? identityResolver = null,
+        Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel callerTrust = Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel.None)
+        : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal, callerAccessToken, callerTrust)
     {
         TenantRepository = tenantRepository;
         _identityResolver = identityResolver;

@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
             .AddSimulationNodes()
             .RegisterNode<GetRtEntitiesByWellKnownNameTypeNode>()
             .RegisterNode<GetRtEntitiesByTypeNode>()
+            .RegisterNode<WriteVerifiedCallerNode>()
             .RegisterNode<GetRtEntitiesByIdNode>()
             .RegisterNode<CheckDuplicateNode>()
             .RegisterNode<ComputeFileHashNode>()

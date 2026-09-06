@@ -126,6 +126,47 @@ internal class AnthropicAiQueryNode(
                 }
             }
 
+            // AB#5136 (Strang B): when the trigger resolved a verified caller — the bearer of
+            // FromHttpRequest@2, or a channel sender bound via CallerBinding on FromSignal/FromEmail/
+            // FromMicrosoftGraph(Email) — surface that identity to the model uniformly, independent
+            // of any DataPaths. The channel triggers only carry the caller on the execution
+            // (ExecutePipelineOptions.VerifiedPrincipal, for data authorization); unlike
+            // FromHttpRequest@2 they never write $.principal into the data root, so without this the
+            // assistant cannot tell the user who they are over Signal/e-mail/Teams. This is the single
+            // source of "who am I talking to". Absent when the pipeline runs anonymous / as the
+            // service account, in which case nothing is added.
+            // Only surface a caller that carries a human identity (name or e-mail). A principal with
+            // just a SubjectId and roles is a service account — e.g. the shared answerer pipeline's
+            // own identity (AB#5045), which must NOT be shown as "the calling user". For that
+            // stager→answerer topology the real caller travels as data instead (WriteVerifiedCaller@1
+            // in the stager → $.input.caller here), read via DataPaths.
+            if (etlContext.VerifiedPrincipal is { } caller
+                && (caller.Name is not null || caller.Email is not null))
+            {
+                contextBuilder.AppendLine(
+                    "Calling user (the verified identity of the person you are talking to — address them " +
+                    "personally, treat \"ich\"/\"meine\" as this user, and answer any question about who they " +
+                    "are, their name, username or e-mail directly from here, never via tools. The data you " +
+                    "can query is already scoped to what this user may see):");
+                if (caller.Name is not null)
+                {
+                    contextBuilder.AppendLine($"  name: {caller.Name}");
+                }
+
+                if (caller.Email is not null)
+                {
+                    contextBuilder.AppendLine($"  email: {caller.Email}");
+                }
+
+                if (caller.Roles is { Count: > 0 })
+                {
+                    contextBuilder.AppendLine($"  roles: {string.Join(", ", caller.Roles)}");
+                }
+
+                contextBuilder.AppendLine($"  tenant: {caller.TenantId ?? etlContext.TenantId}");
+                contextBuilder.AppendLine();
+            }
+
             var fullContext = contextBuilder.ToString();
             nodeContext.Debug($"Querying Claude with {fullContext.Length} characters of context");
 

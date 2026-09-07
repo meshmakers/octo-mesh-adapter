@@ -66,12 +66,21 @@ public record ResolveNotificationPlaceholdersNodeConfiguration : NodeConfigurati
     public string? BillingDocumentPath { get; set; }
 
     /// <summary>
+    /// Path to the public membership application, on the one path that sends a registration
+    /// confirmation (AB#3717). Its own source rather than <see cref="CustomerPath"/> because an
+    /// application carries flat attributes and no <c>Contact</c> record, so the
+    /// <c>customer.*</c> tokens cannot resolve on one.
+    /// </summary>
+    [PropertyGroup("Sources", 3, "jsonpath")]
+    public string? RegistrationPath { get; set; }
+
+    /// <summary>
     /// Path to the template's rendering type, as written by
     /// <c>GetNotificationTemplate@1.RenderingTypeTargetPath</c>. Only an <c>Html</c> template
     /// can show the community logo; in a plain-text one that token renders as nothing rather
     /// than as markup the reader would see as characters.
     /// </summary>
-    [PropertyGroup("Sources", 3, "jsonpath")]
+    [PropertyGroup("Sources", 4, "jsonpath")]
     public string? RenderingTypePath { get; set; }
 
     /// <summary>
@@ -79,6 +88,6 @@ public record ResolveNotificationPlaceholdersNodeConfiguration : NodeConfigurati
     /// <c>${community.logo}</c> addresses. Must match the attachment entry on
     /// <c>SendEMail@2</c>.
     /// </summary>
-    [PropertyGroup("Sources", 4)]
+    [PropertyGroup("Sources", 5)]
     public string LogoContentId { get; set; } = "community-footer";
 }

@@ -80,7 +80,7 @@ public record ResolveNotificationPlaceholdersNodeConfiguration : NodeConfigurati
     /// can show the community logo; in a plain-text one that token renders as nothing rather
     /// than as markup the reader would see as characters.
     /// </summary>
-    [PropertyGroup("Sources", 3, "jsonpath")]
+    [PropertyGroup("Sources", 4, "jsonpath")]
     public string? RenderingTypePath { get; set; }
 
     /// <summary>
@@ -88,6 +88,6 @@ public record ResolveNotificationPlaceholdersNodeConfiguration : NodeConfigurati
     /// <c>${community.logo}</c> addresses. Must match the attachment entry on
     /// <c>SendEMail@2</c>.
     /// </summary>
-    [PropertyGroup("Sources", 4)]
+    [PropertyGroup("Sources", 5)]
     public string LogoContentId { get; set; } = "community-footer";
 }

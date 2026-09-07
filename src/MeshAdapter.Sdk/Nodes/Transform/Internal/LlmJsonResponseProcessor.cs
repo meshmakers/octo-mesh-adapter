@@ -227,45 +227,7 @@ internal static class LlmJsonResponseProcessor
         }
     }
 
-    private static string? ExtractJsonFromText(string text)
-    {
-        var jsonBlockStart = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
-        if (jsonBlockStart >= 0)
-        {
-            var jsonStart = text.IndexOf('\n', jsonBlockStart) + 1;
-            var jsonEnd = text.IndexOf("```", jsonStart, StringComparison.Ordinal);
-            if (jsonEnd > jsonStart)
-            {
-                return text.Substring(jsonStart, jsonEnd - jsonStart).Trim();
-            }
-        }
-
-        var braceStart = text.IndexOf('{');
-        if (braceStart < 0) return null;
-
-        var braceCount = 0;
-        for (var i = braceStart; i < text.Length; i++)
-        {
-            switch (text[i])
-            {
-                case '{':
-                    braceCount++;
-                    break;
-                case '}':
-                    braceCount--;
-                    break;
-            }
-
-            if (braceCount != 0) continue;
-            var jsonCandidate = text.Substring(braceStart, i - braceStart + 1);
-            if (jsonCandidate.Contains('"') && jsonCandidate.Contains(':'))
-            {
-                return jsonCandidate;
-            }
-        }
-
-        return null;
-    }
+    private static string? ExtractJsonFromText(string text) => LlmJsonExtractor.ExtractJsonFromText(text);
 
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..maxLength] + "…";

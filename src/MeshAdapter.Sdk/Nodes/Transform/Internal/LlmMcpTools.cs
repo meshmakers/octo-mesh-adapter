@@ -17,13 +17,13 @@ internal static class LlmMcpTools
     /// Opens a client per server and aggregates their tools, optionally filtered by
     /// <paramref name="allowedToolNames"/> (case-insensitive; null/empty = all) and
     /// capped at <paramref name="maxResultChars"/> per tool result (0 = unlimited).
-    /// A broken server logs a warning and is skipped. Opened clients are added to
-    /// <paramref name="clients"/> immediately so the caller's finally block always
-    /// disposes them.
+    /// A broken server logs a warning and is skipped. Transports and opened clients are added
+    /// to <paramref name="resources"/> as soon as they exist so the caller's finally block always
+    /// disposes them — the client disposes only its session, an HTTP transport owns its HttpClient.
     /// </summary>
     internal static async Task<IList<AIFunction>> LoadAsync(
         IList<McpServerResolver.McpServerConfig> servers,
-        List<McpClient> clients,
+        List<IAsyncDisposable> resources,
         string[]? allowedToolNames,
         int maxResultChars,
         INodeContext nodeContext,
@@ -39,9 +39,13 @@ internal static class LlmMcpTools
             try
             {
                 IClientTransport transport = McpServerResolver.BuildTransport(server);
+                if (transport is IAsyncDisposable disposableTransport)
+                {
+                    resources.Add(disposableTransport);
+                }
 
                 var client = await McpClient.CreateAsync(transport, cancellationToken: ct);
-                clients.Add(client);
+                resources.Add(client);
                 var tools = await client.ListToolsAsync(cancellationToken: ct);
 
                 var accepted = allowlist is null
@@ -186,28 +190,48 @@ internal static class LlmMcpTools
             nodeContext.Warning(
                 $"MCP tool '{inner.Name}' result truncated from {text.Length} to {maxChars} chars. " +
                 "Request fewer fields (e.g. attributePaths) to avoid truncation.");
-            return text[..maxChars] + "\n[TRUNCATED — result too large; request fewer fields.]";
+            return TruncateSurrogateSafe(text, maxChars) + "\n[TRUNCATED — result too large; request fewer fields.]";
         }
     }
 
     /// <summary>
-    /// Disposes every opened MCP client (stdio: shuts down the spawned subprocess;
-    /// HTTP/SSE: closes the connection). Disposal failures are logged, never thrown.
+    /// Cuts <paramref name="text"/> to at most <paramref name="maxChars"/> UTF-16 code units without
+    /// splitting a surrogate pair: a lone high surrogate would be replaced by U+FFFD when the tool
+    /// result is serialized for the follow-up request, changing the content the model sees.
     /// </summary>
-    internal static async Task DisposeAsync(List<McpClient> clients, INodeContext nodeContext)
+    internal static string TruncateSurrogateSafe(string text, int maxChars)
     {
-        foreach (var client in clients)
+        if (maxChars <= 0) return string.Empty;
+        if (text.Length <= maxChars) return text;
+
+        var cut = maxChars;
+        if (char.IsHighSurrogate(text[cut - 1]) && char.IsLowSurrogate(text[cut]))
+        {
+            cut--;
+        }
+
+        return text[..cut];
+    }
+
+    /// <summary>
+    /// Disposes every opened MCP resource in reverse order of registration, each client before its
+    /// transport (stdio: shuts down the spawned subprocess; HTTP/SSE: closes the connection and the
+    /// owned HttpClient). Disposal failures are logged, never thrown.
+    /// </summary>
+    internal static async Task DisposeAsync(List<IAsyncDisposable> resources, INodeContext nodeContext)
+    {
+        for (var i = resources.Count - 1; i >= 0; i--)
         {
             try
             {
-                await client.DisposeAsync();
+                await resources[i].DisposeAsync();
             }
             catch (Exception ex)
             {
-                nodeContext.Warning($"Failed to dispose MCP client: {ex.Message}");
+                nodeContext.Warning($"Failed to dispose MCP {(resources[i] is McpClient ? "client" : "transport")}: {ex.Message}");
             }
         }
 
-        clients.Clear();
+        resources.Clear();
     }
 }

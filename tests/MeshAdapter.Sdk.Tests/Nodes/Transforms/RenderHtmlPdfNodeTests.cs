@@ -30,6 +30,18 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         Assert.Equal("%PDF", Encoding.ASCII.GetString(bytes, 0, 4));
     }
 
+    /// <summary>
+    /// Extracts the text of every page so tests can assert the rendered-content
+    /// contract — visible text present, hidden/skipped text absent — rather than
+    /// only the PDF header.
+    /// </summary>
+    private static string ExtractPdfText(string? base64)
+    {
+        Assert.NotNull(base64);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(Convert.FromBase64String(base64!));
+        return string.Join("\n", pdf.GetPages().Select(p => p.Text));
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_RichHtml_RendersPdf()
     {
@@ -142,7 +154,9 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
-        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("64,48", text);
+        Assert.DoesNotContain("Logge Dich", text);
     }
 
     [Fact]
@@ -163,7 +177,11 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
-        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Betrag fällig", text);
+        Assert.Contains("am 08.09.2026", text);
+        Assert.DoesNotContain('\u00AD', text);
+        Assert.DoesNotContain('\u034F', text);
     }
 
     [Fact]
@@ -171,9 +189,9 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     {
         // Mail HTML overwhelmingly writes "display:none!important" (no space, with
         // !important) — the hidden-style detection must match these variants too.
-        var preheader = string.Concat(Enumerable.Repeat("\u034F  ", 200));
+        var preheader = "PREHEADER1 " + string.Concat(Enumerable.Repeat("\u034F  ", 200));
         var html = $"<div style=\"display:none!important;\">{preheader}</div>"
-                   + $"<div style=\"display: none !important\">{preheader}</div>"
+                   + $"<div style=\"display: none !important\">PREHEADER2</div>"
                    + "<p>Sichtbarer Beleginhalt</p>";
         var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
         var (dataContext, nodeContext, next) = PrepareTest(config);
@@ -191,7 +209,7 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_HiddenInlineElement_IsSkipped()
     {
         // visibility:hidden on an inline element inside a text run.
-        var html = "<p>Visible<span style=\"visibility: hidden\">"
+        var html = "<p>Visible<span style=\"visibility: hidden\">HIDDENSENTINEL"
                    + string.Concat(Enumerable.Repeat("\u034F ", 200))
                    + "</span> text</p>";
         var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
@@ -203,7 +221,35 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
-        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Visible", text);
+        Assert.Contains("text", text);
+        Assert.DoesNotContain("HIDDENSENTINEL", text);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_HiddenTableSection_IsSkipped()
+    {
+        // A hidden <tbody>/<thead> must not contribute rows \u2014 only checking the
+        // <tr> elements would still render their content.
+        const string html = "<table>"
+                            + "<thead style=\"display:none\"><tr><td>HIDDENHEAD</td></tr></thead>"
+                            + "<tbody style=\"display:none!important\"><tr><td>HIDDENBODY</td></tr></tbody>"
+                            + "<tbody><tr><td>Sichtbare Zeile</td></tr></tbody>"
+                            + "</table>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Sichtbare Zeile", text);
+        Assert.DoesNotContain("HIDDENHEAD", text);
+        Assert.DoesNotContain("HIDDENBODY", text);
     }
 
     [Fact]

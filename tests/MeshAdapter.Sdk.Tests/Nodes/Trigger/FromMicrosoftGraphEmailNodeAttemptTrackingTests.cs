@@ -51,6 +51,19 @@ public class FromMicrosoftGraphEmailNodeAttemptTrackingTests
     }
 
     [Fact]
+    public void WithoutAttemptCategory_KeepsMalformedPrefixedCategory()
+    {
+        // A user category that merely shares the prefix without a numeric suffix is
+        // metadata, not a marker — it must never be removed.
+        var malformed = FromMicrosoftGraphEmailNode.AttemptCategoryPrefix + "many";
+
+        var result = FromMicrosoftGraphEmailNode.WithoutAttemptCategory(
+            [malformed, FromMicrosoftGraphEmailNode.AttemptCategoryPrefix + "2"]);
+
+        Assert.Equal([malformed], result);
+    }
+
+    [Fact]
     public void WithoutAttemptCategory_RemovesEveryMarkerAndKeepsUserCategories()
     {
         var result = FromMicrosoftGraphEmailNode.WithoutAttemptCategory(

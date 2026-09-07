@@ -369,7 +369,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                 case "tr" when !IsHidden(child):
                     rows.Add(child);
                     break;
-                case "thead" or "tbody" or "tfoot":
+                case "thead" or "tbody" or "tfoot" when !IsHidden(child):
                     CollectRows(child, rows);
                     break;
             }

@@ -806,6 +806,18 @@ internal class FromMicrosoftGraphEmailNode(
     internal const string AttemptCategoryPrefix = "OctoMesh-Import-Attempt-";
 
     /// <summary>
+    /// True when a category is a well-formed attempt marker (prefix plus a numeric
+    /// suffix). Only these are ever counted or removed — a category that merely
+    /// shares the prefix is user metadata and is preserved.
+    /// </summary>
+    private static bool IsAttemptCategory(string category, out int attempts)
+    {
+        attempts = 0;
+        return category.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase) &&
+               int.TryParse(category.AsSpan(AttemptCategoryPrefix.Length), out attempts);
+    }
+
+    /// <summary>
     /// Reads the attempt count from a message's categories. Multiple markers (which
     /// only a partial category update failure could leave behind) read as the maximum.
     /// </summary>
@@ -814,9 +826,7 @@ internal class FromMicrosoftGraphEmailNode(
         var attempts = 0;
         foreach (var category in categories)
         {
-            if (category.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase) &&
-                int.TryParse(category.AsSpan(AttemptCategoryPrefix.Length), out var value) &&
-                value > attempts)
+            if (IsAttemptCategory(category, out var value) && value > attempts)
             {
                 attempts = value;
             }
@@ -837,13 +847,14 @@ internal class FromMicrosoftGraphEmailNode(
     }
 
     /// <summary>
-    /// Returns the categories with every attempt marker removed, preserving every
-    /// unrelated (user-assigned) category.
+    /// Returns the categories with every well-formed attempt marker removed,
+    /// preserving every unrelated (user-assigned) category — including one that
+    /// merely shares the prefix without a numeric suffix.
     /// </summary>
     internal static List<string> WithoutAttemptCategory(IReadOnlyList<string> categories)
     {
         return categories
-            .Where(c => !c.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase))
+            .Where(c => !IsAttemptCategory(c, out _))
             .ToList();
     }
 

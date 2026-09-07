@@ -51,6 +51,21 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
 
+    // Invisible formatting characters: soft hyphen, combining grapheme joiner,
+    // zero-width space/non-joiner/joiner, word joiner, zero-width no-break space (BOM).
+    // Marketing-mail preheaders pad hundreds of these into hidden text; QuestPDF's
+    // text shaper cannot place such runs ("cannot render even a single character")
+    // and, depending on the platform's font fallback, either throws a layout
+    // exception or allocates until the process is OOM-killed (AB#5142). They carry
+    // no visible content, so stripping them is lossless for a rendered receipt.
+    [GeneratedRegex("[\\u00AD\\u034F\\u200B-\\u200D\\u2060\\uFEFF]")]
+    private static partial Regex InvisibleCharsRegex();
+
+    // Matches a trailing "!important" (with optional inner/outer spacing) on an
+    // inline style declaration value.
+    [GeneratedRegex(@"!\s*important\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ImportantSuffixRegex();
+
     private readonly record struct InlineStyle(bool Bold, bool Italic, bool Underline, bool Link)
     {
         public InlineStyle WithBold() => this with { Bold = true };
@@ -85,7 +100,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                         {
                             page.Header().Column(header =>
                             {
-                                header.Item().Text(title).FontSize(15).Bold();
+                                header.Item().Text(StripInvisible(title)).FontSize(15).Bold();
                                 header.Item().PaddingTop(6).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
                             });
                         }
@@ -100,7 +115,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                             }
                             else
                             {
-                                content2.Item().Text(content);
+                                content2.Item().Text(StripInvisible(content));
                             }
                         });
 
@@ -139,7 +154,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         var body = document.Body;
         if (body == null)
         {
-            col.Item().Text(html);
+            col.Item().Text(StripInvisible(html));
             return;
         }
 
@@ -194,6 +209,11 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
     private static void CollectInline(IElement element, InlineStyle style, List<InlineRun> buffer)
     {
+        if (IsHidden(element))
+        {
+            return;
+        }
+
         var name = element.LocalName;
         var childStyle = name switch
         {
@@ -232,7 +252,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     private static void DispatchBlock(IElement element, ColumnDescriptor col, InlineStyle style)
     {
         var name = element.LocalName;
-        if (SkippedTags.Contains(name))
+        if (SkippedTags.Contains(name) || IsHidden(element))
         {
             return;
         }
@@ -277,7 +297,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         var index = 1;
         foreach (var item in element.Children)
         {
-            if (item.LocalName != "li")
+            if (item.LocalName != "li" || IsHidden(item))
             {
                 continue;
             }
@@ -302,7 +322,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         }
 
         var grid = rows
-            .Select(r => r.Children.Where(c => c.LocalName is "td" or "th").ToList())
+            .Select(r => r.Children.Where(c => (c.LocalName is "td" or "th") && !IsHidden(c)).ToList())
             .ToList();
         var columnCount = grid.Max(cells => cells.Count);
         if (columnCount == 0)
@@ -344,10 +364,10 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         {
             switch (child.LocalName)
             {
-                case "tr":
+                case "tr" when !IsHidden(child):
                     rows.Add(child);
                     break;
-                case "thead" or "tbody" or "tfoot":
+                case "thead" or "tbody" or "tfoot" when !IsHidden(child):
                     CollectRows(child, rows);
                     break;
             }
@@ -357,7 +377,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     private static void RenderPre(IElement element, ColumnDescriptor col)
     {
         col.Item().Background(Colors.Grey.Lighten4).Padding(6)
-            .Text(element.TextContent).FontFamily(Fonts.Consolas).FontSize(9);
+            .Text(StripInvisible(element.TextContent)).FontFamily(Fonts.Consolas).FontSize(9);
     }
 
     private static void RenderBlockquote(IElement element, ColumnDescriptor col, InlineStyle style)
@@ -375,7 +395,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
             var alt = element.GetAttribute("alt");
             if (!string.IsNullOrWhiteSpace(alt))
             {
-                col.Item().Text($"[{alt}]").Italic().FontColor(Colors.Grey.Medium);
+                col.Item().Text(StripInvisible($"[{alt}]")).Italic().FontColor(Colors.Grey.Medium);
             }
 
             return;
@@ -573,7 +593,76 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         return result;
     }
 
-    private static string Normalize(string text) => WhitespaceRegex().Replace(text, " ");
+    private static string Normalize(string text) =>
+        WhitespaceRegex().Replace(InvisibleCharsRegex().Replace(text, string.Empty), " ");
+
+    /// <summary>
+    /// True when the element's inline style hides it (<c>display:none</c> or
+    /// <c>visibility:hidden</c>). Hidden containers — the marketing-mail preheader
+    /// pattern — are skipped entirely: their text is invisible in every mail client,
+    /// and it is exactly where senders park layout-breaking filler (AB#5142).
+    /// The declarations are evaluated with inline-CSS semantics: the last
+    /// declaration of a property wins, except that an <c>!important</c> one beats
+    /// later non-important ones — so <c>display:none;display:block</c> is visible.
+    /// </summary>
+    private static bool IsHidden(IElement element)
+    {
+        var style = element.GetAttribute("style");
+        if (string.IsNullOrEmpty(style))
+        {
+            return false;
+        }
+
+        string? display = null;
+        var displayImportant = false;
+        string? visibility = null;
+        var visibilityImportant = false;
+
+        foreach (var declaration in style.Split(';'))
+        {
+            var colon = declaration.IndexOf(':');
+            if (colon < 0)
+            {
+                continue;
+            }
+
+            var property = declaration[..colon].Trim();
+            var value = declaration[(colon + 1)..].Trim();
+            var important = ImportantSuffixRegex().IsMatch(value);
+            if (important)
+            {
+                value = ImportantSuffixRegex().Replace(value, string.Empty).TrimEnd();
+            }
+
+            if (property.Equals("display", StringComparison.OrdinalIgnoreCase))
+            {
+                if (important || !displayImportant)
+                {
+                    display = value;
+                    displayImportant = important;
+                }
+            }
+            else if (property.Equals("visibility", StringComparison.OrdinalIgnoreCase))
+            {
+                if (important || !visibilityImportant)
+                {
+                    visibility = value;
+                    visibilityImportant = important;
+                }
+            }
+        }
+
+        return string.Equals(display, "none", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(visibility, "hidden", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Removes the invisible formatting characters QuestPDF cannot place. Applied at
+    /// EVERY text sink — parsed HTML runs go through <see cref="Normalize"/>, while
+    /// plain text, titles, <c>&lt;pre&gt;</c> content and image alt fallbacks reach
+    /// QuestPDF raw and must be stripped without collapsing their line breaks.
+    /// </summary>
+    private static string StripInvisible(string text) => InvisibleCharsRegex().Replace(text, string.Empty);
 
     private static string? ReadOptionalString(IDataContext dataContext, string? path)
     {

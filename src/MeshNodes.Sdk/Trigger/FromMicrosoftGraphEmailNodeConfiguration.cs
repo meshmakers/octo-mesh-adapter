@@ -50,6 +50,18 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     public string? MoveToFolderPathOnSuccess { get; set; }
 
     /// <summary>
+    /// Optional folder path a message is moved to once it failed
+    /// <see cref="MaxAttemptsPerMessage"/> times (e.g. "Archive/Invoices/Failed").
+    /// The leaf folder is created if it does not exist yet (its parent path must
+    /// exist). Without it, exhausted messages stay in the source folder and are
+    /// skipped. Attempts are tracked on the message itself (an Outlook category
+    /// marker), so the count survives adapter restarts — including runs that kill
+    /// the process (e.g. an OOM) and therefore never report a failure.
+    /// </summary>
+    [PropertyGroup("Connection", 4)]
+    public string? MoveToFolderPathOnFailure { get; set; }
+
+    /// <summary>
     /// Maximum number of messages fetched per polling cycle (oldest first)
     /// </summary>
     [PropertyGroup("Query", 0)]
@@ -62,8 +74,12 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     public string? SenderFilter { get; set; }
 
     /// <summary>
-    /// Number of times a failing message is retried (one attempt per polling
-    /// cycle) before it is skipped until the adapter restarts
+    /// Number of times a failing message is tried (one attempt per polling
+    /// cycle) before it is skipped — or moved to
+    /// <see cref="MoveToFolderPathOnFailure"/> when that is configured. The
+    /// attempt count is stamped on the message as an Outlook category before
+    /// each run, so it survives adapter restarts and counts runs that never
+    /// returned (process death).
     /// </summary>
     [PropertyGroup("Query", 2)]
     public int MaxAttemptsPerMessage { get; set; } = 3;

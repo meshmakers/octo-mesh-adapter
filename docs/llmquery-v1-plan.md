@@ -1,9 +1,9 @@
 # LlmQuery@1 — v1 Plan (production-minimal)
 
-Status: draft · Date: 2026-06-10 · Scope source: `llmquery-production-plan.md` (Phases 1 + encryption item of Phase 2)
+Status: draft · Date: 2026-06-10 · Scope updated 2026-09-07 · Scope source: `llmquery-production-plan.md` (Phases 1 + encryption item of Phase 2)
 
-**v1 definition**: `LlmQuery@1` with MCP tool support is safe to ship for pipeline use — OpenAI-compatible (Ollama/Cerebras) and Anthropic providers, Stdio/Sse/Http MCP transports, static bearer auth.
-**Explicitly out of scope**: streaming, batch, OIDC/service-account MCP auth, custom headers/env vars, `AnthropicAiQuery@1` deprecation, >100 s OpenAI transport fix (clamped instead).
+**v1 definition**: `LlmQuery@1` with MCP tool support is safe to ship for pipeline use — OpenAI-compatible (Ollama/Cerebras) and Anthropic providers, Stdio/Sse/Http MCP transports, and three MCP authentication paths: static bearer, custom headers (`AdditionalHeaders`, AB#4140) and service-account client-credentials tokens (`AuthServiceAccountConfigurationName`, AB#4377 — see `mcp-auth-plan.md`).
+**Explicitly out of scope**: streaming, batch, environment variables for stdio servers, `AnthropicAiQuery@1` deprecation, >100 s OpenAI transport fix (clamped instead). BearerToken encryption at rest is **in** scope (Workstream C below); `mcp-auth-plan.md` defers to this plan for it.
 
 ---
 

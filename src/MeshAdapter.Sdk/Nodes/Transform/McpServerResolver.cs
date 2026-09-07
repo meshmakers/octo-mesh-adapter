@@ -74,20 +74,13 @@ internal static class McpServerResolver
             if (string.IsNullOrEmpty(rawJson)) continue;
             var doc = JObject.Parse(rawJson);
 
-            var transportToken = doc["transport"];
-            var transport = transportToken?.Type switch
-            {
-                JTokenType.Integer => (McpTransport)transportToken.Value<int>(),
-                JTokenType.String => Enum.TryParse<McpTransport>(
-                    transportToken.Value<string>()!, ignoreCase: true, out var t) ? t : McpTransport.Sse,
-                _ => McpTransport.Sse
-            };
+            var transport = ParseTransport(doc["transport"], name, nodeContext);
 
             var additionalHeaders = ParseHeaders(doc["additionalHeaders"] as JArray);
 
             result.Add(new McpServerConfig(
                 Name: name,
-                Url: doc.Value<string>("url"),
+                Url: ResolveUrl(doc.Value<string>("url"), etlContext.TenantId),
                 Transport: transport,
                 Command: doc.Value<string>("command"),
                 Arguments: doc.Value<string>("arguments"),
@@ -103,6 +96,48 @@ internal static class McpServerResolver
         }
         return result;
     }
+
+    /// <summary>
+    /// Both wire forms are accepted (integer key or enum name). An unknown value falls back to
+    /// Sse — the documented default — with a warning, instead of producing an undefined enum
+    /// member that <see cref="BuildTransport"/> would reject later with a less useful message.
+    /// </summary>
+    internal static McpTransport ParseTransport(JToken? transportToken, string name, INodeContext nodeContext)
+    {
+        switch (transportToken?.Type)
+        {
+            case JTokenType.Integer:
+                var key = transportToken.Value<int>();
+                if (Enum.IsDefined(typeof(McpTransport), key))
+                {
+                    return (McpTransport)key;
+                }
+
+                nodeContext.Warning(
+                    $"McpConfiguration '{name}': unknown transport key {key}; falling back to Sse.");
+                return McpTransport.Sse;
+            case JTokenType.String:
+                var text = transportToken.Value<string>()!;
+                if (Enum.TryParse<McpTransport>(text, ignoreCase: true, out var parsed)
+                    && Enum.IsDefined(typeof(McpTransport), parsed))
+                {
+                    return parsed;
+                }
+
+                nodeContext.Warning(
+                    $"McpConfiguration '{name}': unknown transport '{text}'; falling back to Sse.");
+                return McpTransport.Sse;
+            default:
+                return McpTransport.Sse;
+        }
+    }
+
+    /// <summary>
+    /// Substitutes the <c>{tenantId}</c> placeholder the CK attribute description promises, so a
+    /// seeded configuration can name the tenant-routed MCP endpoint without baking a tenant in.
+    /// </summary>
+    internal static string? ResolveUrl(string? url, string tenantId) =>
+        string.IsNullOrEmpty(url) ? url : url.Replace("{tenantId}", tenantId, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Replaces the static <c>BearerToken</c> of every server that references a
@@ -129,9 +164,28 @@ internal static class McpServerResolver
                 continue;
             }
 
-            var token = await tokenService.GetAccessTokenAsync(
-                etlContext.TenantRepository, etlContext.TenantId,
-                server.AuthServiceAccountConfigurationName, ct);
+            string? token;
+            try
+            {
+                token = await tokenService.GetAccessTokenAsync(
+                    etlContext.TenantRepository, etlContext.TenantId,
+                    server.AuthServiceAccountConfigurationName, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Degrade this ONE server, as documented above: a broken ServiceAccountConfiguration
+                // (e.g. a placeholder IssuerUri that makes OIDC discovery throw, AB#4541) must not
+                // abort the whole LLM call — the same contract AnthropicAiQuery@1 keeps.
+                nodeContext.Warning(
+                    $"MCP server '{server.Name}': acquiring a service-account token from " +
+                    $"'{server.AuthServiceAccountConfigurationName}' failed ({ex.GetType().Name}: {ex.Message}); " +
+                    "falling back to the static BearerToken (requests may be unauthenticated).");
+                continue;
+            }
 
             if (!string.IsNullOrEmpty(token))
             {

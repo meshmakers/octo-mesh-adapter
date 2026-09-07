@@ -343,39 +343,44 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(configuration.IssuerUri, cancellationToken);
-        if (disco.IsError)
+        // Same resolution contract as EnsureTokenAsync and AcquireDelegatedTokenAsync: an empty
+        // IssuerUri means the adapter's own installation and an empty TenantId the adapter's own
+        // tenant (AB#5115); a configuration without a usable secret is impersonated with the
+        // adapter's identity (AB#5114); discovery accepts split-horizon issuers (AB#5112). Bypassing
+        // these here left the keyed path failing on exactly the seeds the other two paths accept.
+        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
+        if (issuerUri == null)
         {
-            _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}",
-                configuration.IssuerUri, disco.Error);
             return null;
         }
 
-        var tokenRequest = new ClientCredentialsTokenRequest
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        var mode = SelectAcquisitionMode(configuration, wellKnownName);
+        if (mode == null)
         {
-            Address = disco.TokenEndpoint,
-            ClientId = configuration.ClientId,
-            ClientSecret = configuration.ClientSecret,
-            Scope = CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
-        };
-
-        if (!string.IsNullOrWhiteSpace(configuration.TenantId))
-        {
-            tokenRequest.Parameters.Add("acr_values", $"tenant:{configuration.TenantId}");
+            return null;
         }
 
-        var response = await _tokenHttpClient.RequestClientCredentialsTokenAsync(tokenRequest, cancellationToken);
+        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri),
+            cancellationToken);
+        if (disco.IsError)
+        {
+            _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}", issuerUri, disco.Error);
+            return null;
+        }
+
+        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
+        var response = await _tokenHttpClient.RequestTokenAsync(tokenRequest, cancellationToken);
         if (response.IsError || string.IsNullOrEmpty(response.AccessToken))
         {
-            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}",
-                configuration.IssuerUri, response.Error);
+            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}", issuerUri, response.Error);
             return null;
         }
 
         var expiresAt = DateTime.UtcNow.AddSeconds(response.ExpiresIn);
         _logger.LogInformation(
-            "Service account token acquired for '{WellKnownName}' (client {ClientId}), expires at {ExpiresAt}",
-            wellKnownName, configuration.ClientId, expiresAt);
+            "Service account token acquired for '{WellKnownName}' (client {ClientId}, {Mode}), expires at {ExpiresAt}",
+            wellKnownName, configuration.ClientId, mode.Value, expiresAt);
 
         return new CachedToken(response.AccessToken, expiresAt);
     }

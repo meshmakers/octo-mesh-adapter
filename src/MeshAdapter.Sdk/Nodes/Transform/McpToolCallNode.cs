@@ -32,6 +32,17 @@ internal class McpToolCallNode(
     {
         var config = nodeContext.GetNodeConfiguration<McpToolCallNodeConfiguration>();
 
+        // Invalid configuration fails before any work — outside the try on purpose: ContinueOnError
+        // is for runtime failures, not for a persisted TimeoutSeconds that can never work (a negative
+        // value makes the CancellationTokenSource throw, 0 hands the tool an already-cancelled token).
+        if (config.TimeoutSeconds <= 0)
+        {
+            throw MeshAdapterPipelineExecutionException.ProcessingError(
+                nodeContext,
+                new ArgumentOutOfRangeException(nameof(config.TimeoutSeconds), config.TimeoutSeconds,
+                    "TimeoutSeconds must be a positive number of seconds."));
+        }
+
         // Bounds the connect + tool-call duration; also honours upstream interrupts.
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(config.TimeoutSeconds));
         var ct = timeoutCts.Token;
@@ -181,16 +192,23 @@ internal class McpToolCallNode(
             return null;
         }
 
+        // A tool invoked without its arguments does not degrade safely: a search tool runs with no
+        // query, a scoped tool runs unscoped, and the pipeline stores a wrong result as a success.
+        // Fail instead and let ContinueOnError decide (the caller's generic handler wraps this).
+        Dictionary<string, object?>? arguments;
         try
         {
-            return JsonSerializer.Deserialize<Dictionary<string, object?>>(rawJson, SystemTextJsonOptions.Default);
+            arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(rawJson, SystemTextJsonOptions.Default);
         }
         catch (JsonException ex)
         {
-            nodeContext.Warning(
-                $"Could not parse tool arguments as a JSON object ({ex.Message}); " +
-                "calling the tool with no arguments.");
-            return null;
+            throw new ArgumentException(
+                $"Tool arguments are not a JSON object ({ex.Message}). Check '{nameof(config.Arguments)}' or " +
+                $"the value at '{nameof(config.ArgumentsPath)}' ({config.ArgumentsPath}).", ex);
         }
+
+        return arguments ?? throw new ArgumentException(
+            $"Tool arguments resolved to JSON null. Check '{nameof(config.Arguments)}' or the value at " +
+            $"'{nameof(config.ArgumentsPath)}' ({config.ArgumentsPath}).");
     }
 }

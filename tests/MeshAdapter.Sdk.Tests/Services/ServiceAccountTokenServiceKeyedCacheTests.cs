@@ -25,13 +25,23 @@ public class ServiceAccountTokenServiceKeyedCacheTests
         Func<string, ServiceAccountTokenService.CachedToken?> mint)
         : ServiceAccountTokenService(globalToken, NullLogger<ServiceAccountTokenService>.Instance, new HttpClient())
     {
-        public int AcquireCount { get; private set; }
+        private int _acquireCount;
 
-        protected override Task<CachedToken?> AcquireTokenAsync(ITenantRepository tenantRepository,
+        public int AcquireCount => Volatile.Read(ref _acquireCount);
+
+        /// <summary>When set, every acquisition awaits this gate before minting (single-flight probe).</summary>
+        public TaskCompletionSource? Gate { get; init; }
+
+        protected override async Task<CachedToken?> AcquireTokenAsync(ITenantRepository tenantRepository,
             string wellKnownName, CancellationToken cancellationToken)
         {
-            AcquireCount++;
-            return Task.FromResult(mint(wellKnownName));
+            Interlocked.Increment(ref _acquireCount);
+            if (Gate is not null)
+            {
+                await Gate.Task.WaitAsync(cancellationToken);
+            }
+
+            return mint(wellKnownName);
         }
     }
 
@@ -102,6 +112,34 @@ public class ServiceAccountTokenServiceKeyedCacheTests
         // A transient identity-server outage must not poison the cache — each call retries.
         Assert.Equal(2, sut.AcquireCount);
         A.CallToSet(() => globalToken.AccessToken).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_ConcurrentCallsForOneKey_AcquireOnceAndShareTheToken()
+    {
+        var globalToken = A.Fake<IServiceClientAccessToken>();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sut = new StubTokenService(globalToken, ValidToken) { Gate = gate };
+
+        // Five concurrent pipeline executions hit an empty cache for the same (tenant, name).
+        var calls = Enumerable.Range(0, 5)
+            .Select(_ => sut.GetAccessTokenAsync(_repo, "tenant-1", "sa-alpha"))
+            .ToArray();
+        // The first caller is inside the acquisition, the others are queued on the lock. Bounded:
+        // if acquisition never starts the test must fail with a diagnostic, not hang.
+        using var startTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (sut.AcquireCount == 0)
+        {
+            Assert.False(startTimeout.IsCancellationRequested, "AcquireTokenAsync was not entered within 5 s");
+            await Task.Delay(10, CancellationToken.None);
+        }
+
+        gate.SetResult();
+        var tokens = await Task.WhenAll(calls);
+
+        // Single-flight: one round trip to the identity server, every caller gets that token.
+        Assert.Equal(1, sut.AcquireCount);
+        Assert.All(tokens, t => Assert.Equal("token-for-sa-alpha", t));
     }
 
     [Fact]

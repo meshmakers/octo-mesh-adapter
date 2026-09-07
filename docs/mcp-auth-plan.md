@@ -65,17 +65,19 @@ registration.
 Reuse the `ServiceAccountConfiguration` CK type and the `ServiceAccountConfigName` naming
 convention already established by `DeployPipelineNode@1`.
 
-- **2a (interim, no codegen):** add `ServiceAccountConfigName` to the *node* config
+- **2a (interim, no codegen):** add a service-account name to the *node* config
   (`McpToolCallNodeConfiguration`, optionally `LlmQueryNodeConfiguration`). Fast to prove out; auth
   is specified per caller.
-- **2b ✓ (recommended end state):** add a `serviceAccountConfigName` attribute to the
-  **`McpConfiguration` CK type**, so auth belongs to the *server definition* and every caller
-  (`LlmQuery`, `McpToolCall`) picks it up automatically. This is what makes "MeshMakers MCP by
+- **2b ✓ (shipped, AB#4377):** the `AuthServiceAccountConfigurationName` attribute on the
+  **`McpConfiguration` CK type** (System.Communication 3.34.0), read by `McpServerResolver` from the
+  JSON key `authServiceAccountConfigurationName`, so auth belongs to the *server definition* and every
+  caller (`LlmQuery`, `McpToolCall`) picks it up automatically. This is what makes "MeshMakers MCP by
   default" clean — the seeded config carries its own auth. Cost: one CK-model bump + blueprint +
-  codegen (the known cycle).
+  codegen (the known cycle). The name is the same across CK type, resolver and blueprint seed;
+  `DeployPipeline@1`'s node-level `ServiceAccountConfigName` is a different, older property.
 
 Recommendation: ship **2b** for the real thing; use **2a** only as a smoke test before paying the CK
-cost. When `serviceAccountConfigName` is empty, behaviour is unchanged (static `BearerToken` /
+cost. When `AuthServiceAccountConfigurationName` is empty, behaviour is unchanged (static `BearerToken` /
 `AdditionalHeaders`).
 
 ## #3 — Where token acquisition runs
@@ -102,9 +104,13 @@ Reuse `IServiceAccountTokenService` (already DI-registered and battle-tested via
   MeshMakers MCP `/{tenantId}/mcp`, referencing that service account) via the **System.Communication
   blueprint** (proven), unless platform-services is ready to own blueprint/CK seeding — check with
   Gerald, since platform-services is taking over CK/blueprint import.
-- **Security:** scope the default MCP client tightly (`OctoApiReadOnly` unless it truly needs
-  admin). The MeshMakers MCP exposes tenant-admin / CK / pipeline tools, so a broad default is
-  dangerous. Tighten `allowed_tenants` as well.
+- **Security:** the default MCP client must hold `octo_api` today — `ServiceAccountTokenService`
+  requests that scope (see #1) and octo-mcp-service requires it on its transport endpoint
+  (`Mcp:RequiredApiScopes`), so an `octo_api.read_only`-only client cannot obtain a usable token.
+  Least privilege is therefore enforced on the *tool* side for now: `LlmQuery@1.mcpToolNames`
+  restricts a pipeline to the read tools it needs. Moving the client to `octo_api.read_only` needs
+  a configurable scope in the token service **and** in octo-mcp-service first. Tighten
+  `allowed_tenants` as well.
 
 ## Net recommendation
 
@@ -140,8 +146,8 @@ exists.
 - WI #4208 — MCP OIDC client registration in the identity bootstrap blueprint.
 - Platform-services — will it own the blueprint/CK seed for the default MCP config?
 - Confirm the exact `ITenantRepository` acquisition in the node (mirror `DeployPipelineNode`).
-- Encryption-at-rest for `ClientSecret` / `BearerToken` / secret headers (`enc:v1`) — separate,
-  pre-existing backlog item; more relevant once service-account secrets are stored.
+- Encryption-at-rest for `ClientSecret` / `BearerToken` / secret headers (`enc:v1`) — owned by
+  `llmquery-v1-plan.md`, Workstream C; not duplicated here.
 
 ## References (verified 2026-07-02)
 

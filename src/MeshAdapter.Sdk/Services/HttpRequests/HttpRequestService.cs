@@ -10,6 +10,7 @@ using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Net.Http.Headers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -32,6 +33,42 @@ internal class HttpRequestService(
     /// </summary>
     private static readonly HashSet<string> CredentialHeaders =
         new(StringComparer.OrdinalIgnoreCase) { "Authorization", "Proxy-Authorization", "Cookie" };
+
+    /// <summary>
+    /// Decodes the body with the charset the client declared (<c>Content-Type: ...; charset=</c>),
+    /// falling back to UTF-8, and honours a byte-order mark. Media-type matching accepts
+    /// parameters, so a UTF-16 JSON body must not be read as UTF-8 and handed to the parser.
+    /// </summary>
+    private static StreamReader CreateBodyReader(HttpRequest request)
+    {
+        var declared = ResolveDeclaredEncoding(request.GetTypedHeaders().ContentType);
+        return new StreamReader(request.Body, declared ?? Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+    }
+
+    /// <summary>
+    /// The charset parameter may be a quoted string (<c>charset="utf-16"</c>). The typed header keeps
+    /// the quotes in <see cref="MediaTypeHeaderValue.Charset"/>, so its <c>Encoding</c> property would
+    /// fail the lookup and silently fall back; unescape first. Unknown charsets resolve to null.
+    /// </summary>
+    private static Encoding? ResolveDeclaredEncoding(MediaTypeHeaderValue? contentType)
+    {
+        var charset = contentType?.Parameters
+            .FirstOrDefault(p => p.Name.Equals("charset", StringComparison.OrdinalIgnoreCase))
+            ?.GetUnescapedValue();
+        if (charset is not { HasValue: true, Length: > 0 })
+        {
+            return null;
+        }
+
+        try
+        {
+            return Encoding.GetEncoding(charset.Value.Value!);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Claim naming the tenant a user token was issued for. Unprefixed because the JWT options
@@ -148,13 +185,16 @@ internal class HttpRequestService(
 
             if (context.Request.HasJsonContentType())
             {
-                using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+                using var reader = CreateBodyReader(context.Request);
                 var bodyText = await reader.ReadToEndAsync();
                 input["body"] = JsonNode.Parse(bodyText);
             }
-            else if (string.Equals(mediaType, MimeTypes.MimeText, StringComparison.OrdinalIgnoreCase))
+            else if (IsTextBasedContentType(mediaType ?? string.Empty))
             {
-                using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+                // Every text media type (text/*, XML, form-urlencoded, ...) is decoded with its declared
+                // charset; the generic fallback below assumes UTF-8 and corrupts e.g. Latin-1 CSV.
+
+                using var reader = CreateBodyReader(context.Request);
                 var body = await reader.ReadToEndAsync();
 
                 input["body"] = body;

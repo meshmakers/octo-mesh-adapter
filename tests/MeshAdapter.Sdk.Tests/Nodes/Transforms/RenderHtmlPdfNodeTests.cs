@@ -167,6 +167,27 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_HiddenPreheaderWithImportantVariant_RendersPdf()
+    {
+        // Mail HTML overwhelmingly writes "display:none!important" (no space, with
+        // !important) — the hidden-style detection must match these variants too.
+        var preheader = string.Concat(Enumerable.Repeat("\u034F  ", 200));
+        var html = $"<div style=\"display:none!important;\">{preheader}</div>"
+                   + $"<div style=\"display: none !important\">{preheader}</div>"
+                   + "<p>Sichtbarer Beleginhalt</p>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_HiddenInlineElement_IsSkipped()
     {
         // visibility:hidden on an inline element inside a text run.

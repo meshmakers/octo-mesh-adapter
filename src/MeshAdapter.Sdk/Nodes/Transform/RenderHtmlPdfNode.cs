@@ -61,8 +61,10 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     [GeneratedRegex("[\\u00AD\\u034F\\u200B-\\u200D\\u2060\\uFEFF]")]
     private static partial Regex InvisibleCharsRegex();
 
-    // Matches an inline style declaring display:none or visibility:hidden.
-    [GeneratedRegex(@"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:;|$)",
+    // Matches an inline style declaring display:none or visibility:hidden,
+    // including the "!important" variants ubiquitous in mail HTML
+    // (e.g. "display:none!important", "display: none !important").
+    [GeneratedRegex(@"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!\s*important\s*)?(?:;|$)",
         RegexOptions.IgnoreCase)]
     private static partial Regex HiddenStyleRegex();
 
@@ -322,7 +324,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         }
 
         var grid = rows
-            .Select(r => r.Children.Where(c => c.LocalName is "td" or "th" && !IsHidden(c)).ToList())
+            .Select(r => r.Children.Where(c => (c.LocalName is "td" or "th") && !IsHidden(c)).ToList())
             .ToList();
         var columnCount = grid.Max(cells => cells.Count);
         if (columnCount == 0)

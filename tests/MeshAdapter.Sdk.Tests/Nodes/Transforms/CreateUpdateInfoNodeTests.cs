@@ -341,7 +341,7 @@ public class CreateUpdateInfoNodeTests
         // Return a CkRecordGraph whose AllAttributesByName contains a single "Name" String attribute so
         // the inner walker validates "Name" and runs recordChild.SetAttributeValue("Name", String, "abc").
         var itemRecordGraph = BuildSingleStringAttributeRecordGraph("TestModel/Item-1", "Name");
-        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, (RtCkId<CkRecordId>)"TestModel/Item-1"))
             .Returns(itemRecordGraph);
 
         var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
@@ -429,7 +429,7 @@ public class CreateUpdateInfoNodeTests
         var sectionRecordGraph = BuildRecordGraph("TestModel/Section-1",
             ("Heading", AttributeValueTypesDto.String),
             ("SortOrder", AttributeValueTypesDto.Int));
-        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, sectionRecordCkId.ToRtCkId()))
             .Returns(sectionRecordGraph);
 
         var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
@@ -504,7 +504,7 @@ public class CreateUpdateInfoNodeTests
 
         var sectionRecordGraph = BuildRecordGraph("TestModel/Section-1",
             ("Heading", AttributeValueTypesDto.String));
-        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, sectionRecordCkId.ToRtCkId()))
             .Returns(sectionRecordGraph);
 
         var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
@@ -512,6 +512,76 @@ public class CreateUpdateInfoNodeTests
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
             node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    /// <summary>
+    /// Nested plain records: a Section carries a Record child (Meta) and a RecordArray child (Notes).
+    /// Both must come out as RtRecord instances, not as raw JSON objects.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_PlainObjectsWithNestedRecordChildren_CoerceRecursively()
+    {
+        var config = new CreateUpdateInfoNodeConfiguration
+        {
+            UpdateKind = UpdateKind.Update,
+            RtId = TestRtId,
+            CkTypeId = TestRtCkTypeId,
+            TargetPath = "$.result",
+            AttributeUpdates = new List<AttributeUpdateConfiguration>
+            {
+                new()
+                {
+                    AttributeName = "Sections",
+                    AttributeValueType = AttributeValueTypesDto.RecordArray,
+                    ValuePath = "$.sections"
+                }
+            }
+        };
+        var testData = new JsonObject
+        {
+            ["sections"] = new JsonArray(
+                new JsonObject
+                {
+                    ["heading"] = "Summary",
+                    ["meta"] = new JsonObject { ["author"] = "alice" },
+                    ["notes"] = new JsonArray(new JsonObject { ["text"] = "n1" }, new JsonObject { ["text"] = "n2" })
+                })
+        };
+        var (dataContextReal, nodeContext, meshEtlContext, ckCacheService, next) = PrepareTest(config, testData);
+
+        var sectionRecordCkId = new CkId<CkRecordId>("TestModel/Section-1");
+        var metaRecordCkId = new CkId<CkRecordId>("TestModel/Meta-1");
+        var noteRecordCkId = new CkId<CkRecordId>("TestModel/Note-1");
+        SetupCacheForRecordArrayAttribute(ckCacheService, "Sections", sectionRecordCkId);
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, sectionRecordCkId.ToRtCkId()))
+            .Returns(BuildRecordGraph("TestModel/Section-1",
+                ("Heading", AttributeValueTypesDto.String, null),
+                ("Meta", AttributeValueTypesDto.Record, "TestModel/Meta-1"),
+                ("Notes", AttributeValueTypesDto.RecordArray, "TestModel/Note-1")));
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, metaRecordCkId.ToRtCkId()))
+            .Returns(BuildRecordGraph("TestModel/Meta-1", ("Author", AttributeValueTypesDto.String)));
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, noteRecordCkId.ToRtCkId()))
+            .Returns(BuildRecordGraph("TestModel/Note-1", ("Text", AttributeValueTypesDto.String)));
+
+        var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
+        EntityUpdateInfo<RtEntity>? capturedUpdate = null;
+        A.CallTo(() => dataContext.Set("$.result", A<EntityUpdateInfo<RtEntity>?>._, A<DocumentModes>._,
+                A<ValueKinds>._, A<TargetValueWriteModes>._))
+            .Invokes((string _, EntityUpdateInfo<RtEntity>? u, DocumentModes _, ValueKinds _,
+                TargetValueWriteModes _) => capturedUpdate = u);
+        var node = new CreateUpdateInfoNode(next, meshEtlContext, ckCacheService);
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var sections = Assert.IsAssignableFrom<IEnumerable>(capturedUpdate!.RtEntity!.Attributes["Sections"])
+            .Cast<object?>().ToList();
+        var section = Assert.IsType<RtRecord>(Assert.Single(sections));
+        var meta = Assert.IsType<RtRecord>(section.Attributes["Meta"]);
+        Assert.Equal("alice", meta.Attributes["Author"]);
+        var notes = Assert.IsAssignableFrom<IEnumerable>(section.Attributes["Notes"]).Cast<object?>().ToList();
+        Assert.Equal(2, notes.Count);
+        Assert.All(notes, n => Assert.IsType<RtRecord>(n));
+        Assert.Equal("n2", Assert.IsType<RtRecord>(notes[1]).Attributes["Text"]);
     }
 
     /// <summary>
@@ -565,11 +635,17 @@ public class CreateUpdateInfoNodeTests
     /// Builds a <see cref="CkRecordGraph"/> with the given (name, valueType) attributes.
     /// </summary>
     private static CkRecordGraph BuildRecordGraph(string ckRecordIdString,
-        params (string Name, AttributeValueTypesDto ValueType)[] attributes)
+        params (string Name, AttributeValueTypesDto ValueType)[] attributes) =>
+        BuildRecordGraph(ckRecordIdString,
+            attributes.Select(a => (a.Name, a.ValueType, (string?)null)).ToArray());
+
+    /// <summary>Like <see cref="BuildRecordGraph(string, (string, AttributeValueTypesDto)[])"/>, with an optional declared record type per attribute for nested Record / RecordArray children.</summary>
+    private static CkRecordGraph BuildRecordGraph(string ckRecordIdString,
+        params (string Name, AttributeValueTypesDto ValueType, string? ValueCkRecordId)[] attributes)
     {
         var ckRecordId = new CkId<CkRecordId>(ckRecordIdString);
         var allAttributes = new Dictionary<CkId<CkAttributeId>, CkTypeAttributeGraph>();
-        foreach (var (name, valueType) in attributes)
+        foreach (var (name, valueType, valueCkRecordId) in attributes)
         {
             var attrId = new CkId<CkAttributeId>("TestModel", new CkAttributeId(name));
             allAttributes[attrId] = new CkTypeAttributeGraph(
@@ -577,7 +653,7 @@ public class CreateUpdateInfoNodeTests
                 attributeName: name,
                 autoCompleteValues: null,
                 valueType: valueType,
-                valueCkRecordId: null,
+                valueCkRecordId: valueCkRecordId is null ? null : new CkId<CkRecordId>(valueCkRecordId),
                 valueCkEnumId: null,
                 autoIncrementReference: null,
                 metaData: null,

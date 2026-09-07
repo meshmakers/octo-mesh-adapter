@@ -193,8 +193,7 @@ internal class FromMicrosoftGraphEmailNode(
                         failureCounts.Remove(messageId);
                         if (stamped)
                         {
-                            await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId,
-                                WithoutAttemptCategory(categories));
+                            await TryClearAttemptCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId);
                         }
 
                         if (targetFolderId != null)
@@ -875,6 +874,40 @@ internal class FromMicrosoftGraphEmailNode(
             .Where(c => c != null)
             .Select(c => c!)
             .ToList();
+    }
+
+    /// <summary>
+    /// Removes the attempt marker from a message using the message's CURRENT
+    /// categories — the pipeline run between stamping and clearing can take a
+    /// while, and clearing from the poll-time snapshot would silently revert any
+    /// category a user assigned in the meantime. Never throws (a leftover marker
+    /// on a successfully imported message is cosmetic; the mail leaves the source
+    /// folder anyway).
+    /// </summary>
+    private async Task TryClearAttemptCategoriesAsync(string accessToken, string mailbox, string messageId)
+    {
+        try
+        {
+            using var client = CreateGraphClient(accessToken);
+            var getUrl =
+                $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}?$select=categories";
+            var response = await client.GetAsync(getUrl, _cancellationTokenSource!.Token);
+            response.EnsureSuccessStatusCode();
+            var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_cancellationTokenSource.Token));
+            var current = GetCategories(doc.RootElement);
+
+            await TrySetCategoriesAsync(accessToken, mailbox, messageId, WithoutAttemptCategory(current));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not clear the attempt-tracking category on message {MessageId}; the marker stays behind",
+                messageId);
+        }
     }
 
     /// <summary>

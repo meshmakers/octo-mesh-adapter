@@ -38,7 +38,7 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     private static string ExtractPdfText(string? base64)
     {
         Assert.NotNull(base64);
-        using var pdf = UglyToad.PdfPig.PdfDocument.Open(Convert.FromBase64String(base64!));
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(Convert.FromBase64String(base64));
         return string.Join("\n", pdf.GetPages().Select(p => p.Text));
     }
 
@@ -225,6 +225,75 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         Assert.Contains("Visible", text);
         Assert.Contains("text", text);
         Assert.DoesNotContain("HIDDENSENTINEL", text);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PlainTextWithInvisibleCharacterRun_IsStrippedAndKeepsLineBreaks()
+    {
+        // The plain-text sink bypasses Normalize — the invisible characters must be
+        // stripped there too, WITHOUT collapsing the line breaks plain text relies on.
+        var text = "Zeile eins\n"
+                   + string.Concat(Enumerable.Repeat("\u034F \u00AD", 200))
+                   + "\nZeile zwei";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.body", TargetPath = "$.pdf", IsHtml = false };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.body")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.body")).Returns(text);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var rendered = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Zeile eins", rendered);
+        Assert.Contains("Zeile zwei", rendered);
+        Assert.DoesNotContain('\u00AD', rendered);
+        Assert.DoesNotContain('\u034F', rendered);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PreWithInvisibleCharacterRun_IsStripped()
+    {
+        var html = "<pre>Code A"
+                   + string.Concat(Enumerable.Repeat("\u034F\u00AD", 200))
+                   + "Code B</pre>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var rendered = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Code A", rendered);
+        Assert.Contains("Code B", rendered);
+        Assert.DoesNotContain('\u00AD', rendered);
+        Assert.DoesNotContain('\u034F', rendered);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_OverriddenHiddenDeclaration_StaysVisible()
+    {
+        // Inline-CSS semantics: the LAST declaration of a property wins, unless an
+        // earlier one is !important — display:none;display:block is visible.
+        const string html = "<div style=\"display:none;display:block\">VISIBLEOVERRIDE</div>"
+                            + "<div style=\"display:block;display:none\">HIDDENLAST</div>"
+                            + "<div style=\"display:none!important;display:block\">HIDDENIMPORTANT</div>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("VISIBLEOVERRIDE", text);
+        Assert.DoesNotContain("HIDDENLAST", text);
+        Assert.DoesNotContain("HIDDENIMPORTANT", text);
     }
 
     [Fact]

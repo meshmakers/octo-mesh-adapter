@@ -34,6 +34,17 @@ internal class HttpRequestService(
         new(StringComparer.OrdinalIgnoreCase) { "Authorization", "Proxy-Authorization", "Cookie" };
 
     /// <summary>
+    /// Decodes the body with the charset the client declared (<c>Content-Type: ...; charset=</c>),
+    /// falling back to UTF-8, and honours a byte-order mark. Media-type matching accepts
+    /// parameters, so a UTF-16 JSON body must not be read as UTF-8 and handed to the parser.
+    /// </summary>
+    private static StreamReader CreateBodyReader(HttpRequest request)
+    {
+        var declared = request.GetTypedHeaders().ContentType?.Encoding;
+        return new StreamReader(request.Body, declared ?? Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+    }
+
+    /// <summary>
     /// Claim naming the tenant a user token was issued for. Unprefixed because the JWT options
     /// keep inbound claim types as issued.
     /// </summary>
@@ -139,15 +150,22 @@ internal class HttpRequestService(
         }
         if (context.Request.ContentLength > 0)
         {
-            if (context.Request.ContentType == MimeTypes.MimeTypeJson)
+            // Compare MEDIA TYPES, not the raw Content-Type header. Clients routinely
+            // append parameters ("application/json; charset=utf-8" — Bot Framework,
+            // Chatbox, most HTTP libraries), which an exact string match silently
+            // misclassifies: the JSON body then reaches trigger nodes as one raw
+            // string instead of a parsed object, and $.body.* paths resolve to nothing 
+            var mediaType = context.Request.GetTypedHeaders().ContentType?.MediaType.Value;
+
+            if (context.Request.HasJsonContentType())
             {
-                using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+                using var reader = CreateBodyReader(context.Request);
                 var bodyText = await reader.ReadToEndAsync();
                 input["body"] = JsonNode.Parse(bodyText);
             }
-            else if (context.Request.ContentType == MimeTypes.MimeText)
+            else if (string.Equals(mediaType, MimeTypes.MimeText, StringComparison.OrdinalIgnoreCase))
             {
-                using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+                using var reader = CreateBodyReader(context.Request);
                 var body = await reader.ReadToEndAsync();
 
                 input["body"] = body;

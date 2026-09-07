@@ -30,6 +30,18 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         Assert.Equal("%PDF", Encoding.ASCII.GetString(bytes, 0, 4));
     }
 
+    /// <summary>
+    /// Extracts the text of every page so tests can assert the rendered-content
+    /// contract — visible text present, hidden/skipped text absent — rather than
+    /// only the PDF header.
+    /// </summary>
+    private static string ExtractPdfText(string? base64)
+    {
+        Assert.NotNull(base64);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(Convert.FromBase64String(base64));
+        return string.Join("\n", pdf.GetPages().Select(p => p.Text));
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_RichHtml_RendersPdf()
     {
@@ -115,6 +127,198 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_HiddenPreheaderWithInvisibleCharacters_RendersPdf()
+    {
+        // Real-world poison mail (AB#5142, prod-1 OOM loop): a marketing preheader
+        // hidden via display:none, padded with hundreds of COMBINING GRAPHEME JOINER
+        // (U+034F) and SOFT HYPHEN (U+00AD) characters. QuestPDF cannot lay out such
+        // a run — depending on the platform's fonts it either throws a layout
+        // exception or allocates until the process is OOM-killed.
+        var preheader = "Logge Dich in Deinem Konto ein, um zu bezahlen "
+                        + string.Concat(Enumerable.Repeat("\u034F  ", 150))
+                        + string.Concat(Enumerable.Repeat("\u00AD ", 150));
+        var html = "<table><tbody>"
+                   + $"<tr><td><div style=\"display:none\">{preheader}</div></td></tr>"
+                   + "<tr><td>Bitte zahle den offenen Betrag: 64,48 EUR</td></tr>"
+                   + "</tbody></table>";
+        var config = new RenderHtmlPdfNodeConfiguration
+            { Path = "$.html", TargetPath = "$.pdf", Title = "Fwd: Achtung: Deine Zahlung ist fehlgeschlagen" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("64,48", text);
+        Assert.DoesNotContain("Logge Dich", text);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VisibleInvisibleCharacterRun_IsStrippedAndRendersPdf()
+    {
+        // The same invisible-character padding OUTSIDE a hidden container — the
+        // characters carry no visible content and are stripped during normalization,
+        // so the layout never sees the unplaceable run.
+        var html = "<p>Betrag fällig"
+                   + string.Concat(Enumerable.Repeat("\u034F \u00AD\u200B\u200D\u2060\uFEFF", 100))
+                   + "am 08.09.2026</p>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Betrag fällig", text);
+        Assert.Contains("am 08.09.2026", text);
+        Assert.DoesNotContain('\u00AD', text);
+        Assert.DoesNotContain('\u034F', text);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_HiddenPreheaderWithImportantVariant_RendersPdf()
+    {
+        // Mail HTML overwhelmingly writes "display:none!important" (no space, with
+        // !important) — the hidden-style detection must match these variants too.
+        var preheader = "PREHEADER1 " + string.Concat(Enumerable.Repeat("\u034F  ", 200));
+        var html = $"<div style=\"display:none!important;\">{preheader}</div>"
+                   + $"<div style=\"display: none !important\">PREHEADER2</div>"
+                   + "<p>Sichtbarer Beleginhalt</p>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_HiddenInlineElement_IsSkipped()
+    {
+        // visibility:hidden on an inline element inside a text run.
+        var html = "<p>Visible<span style=\"visibility: hidden\">HIDDENSENTINEL"
+                   + string.Concat(Enumerable.Repeat("\u034F ", 200))
+                   + "</span> text</p>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Visible", text);
+        Assert.Contains("text", text);
+        Assert.DoesNotContain("HIDDENSENTINEL", text);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PlainTextWithInvisibleCharacterRun_IsStrippedAndKeepsLineBreaks()
+    {
+        // The plain-text sink bypasses Normalize — the invisible characters must be
+        // stripped there too, WITHOUT collapsing the line breaks plain text relies on.
+        var text = "Zeile eins\n"
+                   + string.Concat(Enumerable.Repeat("\u034F \u00AD", 200))
+                   + "\nZeile zwei";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.body", TargetPath = "$.pdf", IsHtml = false };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.body")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.body")).Returns(text);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var rendered = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Zeile eins", rendered);
+        Assert.Contains("Zeile zwei", rendered);
+        Assert.DoesNotContain('\u00AD', rendered);
+        Assert.DoesNotContain('\u034F', rendered);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_PreWithInvisibleCharacterRun_IsStripped()
+    {
+        var html = "<pre>Code A"
+                   + string.Concat(Enumerable.Repeat("\u034F\u00AD", 200))
+                   + "Code B</pre>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var rendered = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Code A", rendered);
+        Assert.Contains("Code B", rendered);
+        Assert.DoesNotContain('\u00AD', rendered);
+        Assert.DoesNotContain('\u034F', rendered);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_OverriddenHiddenDeclaration_StaysVisible()
+    {
+        // Inline-CSS semantics: the LAST declaration of a property wins, unless an
+        // earlier one is !important — display:none;display:block is visible.
+        const string html = "<div style=\"display:none;display:block\">VISIBLEOVERRIDE</div>"
+                            + "<div style=\"display:block;display:none\">HIDDENLAST</div>"
+                            + "<div style=\"display:none!important;display:block\">HIDDENIMPORTANT</div>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("VISIBLEOVERRIDE", text);
+        Assert.DoesNotContain("HIDDENLAST", text);
+        Assert.DoesNotContain("HIDDENIMPORTANT", text);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_HiddenTableSection_IsSkipped()
+    {
+        // A hidden <tbody>/<thead> must not contribute rows \u2014 only checking the
+        // <tr> elements would still render their content.
+        const string html = "<table>"
+                            + "<thead style=\"display:none\"><tr><td>HIDDENHEAD</td></tr></thead>"
+                            + "<tbody style=\"display:none!important\"><tr><td>HIDDENBODY</td></tr></tbody>"
+                            + "<tbody><tr><td>Sichtbare Zeile</td></tr></tbody>"
+                            + "</table>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = ExtractPdfText(CapturedString(dataContext, config.TargetPath));
+        Assert.Contains("Sichtbare Zeile", text);
+        Assert.DoesNotContain("HIDDENHEAD", text);
+        Assert.DoesNotContain("HIDDENBODY", text);
     }
 
     [Fact]

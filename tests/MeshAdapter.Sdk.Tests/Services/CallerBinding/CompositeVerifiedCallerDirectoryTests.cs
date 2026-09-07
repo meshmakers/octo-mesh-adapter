@@ -39,7 +39,8 @@ public class CompositeVerifiedCallerDirectoryTests
         var composite = new CompositeVerifiedCallerDirectory([entra, phone],
             A.Fake<ILogger<CompositeVerifiedCallerDirectory>>());
 
-        var result = await composite.ResolveAsync(TenantId, Sender(ChannelIdentifierKind.PhoneNumber));
+        var result = await composite.ResolveAsync(TenantId, Sender(ChannelIdentifierKind.PhoneNumber),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal("phone-user", result!.Principal.SubjectId);
@@ -58,7 +59,8 @@ public class CompositeVerifiedCallerDirectoryTests
         var composite = new CompositeVerifiedCallerDirectory([entra, phone],
             A.Fake<ILogger<CompositeVerifiedCallerDirectory>>());
 
-        var result = await composite.ResolveAsync(TenantId, Sender(ChannelIdentifierKind.EmailAddress));
+        var result = await composite.ResolveAsync(TenantId, Sender(ChannelIdentifierKind.EmailAddress),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => phone.ResolveAsync(A<string>._, A<ChannelSender>._, A<CancellationToken>._))
@@ -75,7 +77,8 @@ public class CompositeVerifiedCallerDirectoryTests
         var composite = new CompositeVerifiedCallerDirectory([first, second],
             A.Fake<ILogger<CompositeVerifiedCallerDirectory>>());
 
-        var result = await composite.ResolveAsync(TenantId, Sender(ChannelIdentifierKind.PhoneNumber));
+        var result = await composite.ResolveAsync(TenantId, Sender(ChannelIdentifierKind.PhoneNumber),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal("second-user", result!.Principal.SubjectId);

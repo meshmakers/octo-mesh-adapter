@@ -379,7 +379,7 @@ public class SftpUploadNodeTests : SessionNodeTestBase
         await using var stream = await node.GetUploadStreamAsync(config, dataContext, nodeContext);
 
         using var buffer = new MemoryStream();
-        await stream.CopyToAsync(buffer);
+        await stream.CopyToAsync(buffer, TestContext.Current.CancellationToken);
         Assert.Equal(payload, buffer.ToArray());
     }
 

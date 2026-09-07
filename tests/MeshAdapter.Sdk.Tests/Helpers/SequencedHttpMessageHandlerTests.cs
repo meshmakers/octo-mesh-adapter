@@ -26,7 +26,7 @@ public class SequencedHttpMessageHandlerTests
         var request = new HttpRequestMessage(HttpMethod.Post, "https://host/api?page=1");
         request.Headers.TryAddWithoutValidation("AuthenticationToken", "token-1");
         request.Content = new StringContent("body");
-        (await client.SendAsync(request)).Dispose();
+        (await client.SendAsync(request, TestContext.Current.CancellationToken)).Dispose();
         request.Dispose();
 
         var recorded = handler.Requests.Single();
@@ -43,9 +43,9 @@ public class SequencedHttpMessageHandlerTests
             SequencedHttpMessageHandler.Json("{\"ok\":true}"));
         using var client = new HttpClient(handler);
 
-        (await client.GetAsync("https://host/api")).Dispose();
-        (await client.GetAsync("https://host/api")).Dispose();
-        using var third = await client.GetAsync("https://host/api");
+        (await client.GetAsync("https://host/api", TestContext.Current.CancellationToken)).Dispose();
+        (await client.GetAsync("https://host/api", TestContext.Current.CancellationToken)).Dispose();
+        using var third = await client.GetAsync("https://host/api", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, third.StatusCode);
         Assert.Equal(3, handler.CallCount);

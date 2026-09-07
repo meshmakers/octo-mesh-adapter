@@ -65,7 +65,7 @@ public class PipelineIdentityResolverTests
         var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U",
             ["Accounting", "Reader"]);
 
-        var context = await CreateResolver(principal).ResolveAsync();
+        var context = await CreateResolver(principal).ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.Equal("user-42", context.SubjectId);
@@ -82,7 +82,7 @@ public class PipelineIdentityResolverTests
         GivenServiceAccountConfiguration(ServiceAccountJson());
         GivenIdentity(ClientId, "CommunicationManagement", "Accounting");
 
-        var context = await CreateResolver().ResolveAsync();
+        var context = await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.Equal(ClientId, context.SubjectId);
@@ -102,7 +102,7 @@ public class PipelineIdentityResolverTests
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ClientId, ["Role"], DateTime.UtcNow.AddMinutes(5))));
 
-        await CreateResolver().ResolveAsync();
+        await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.NotNull(captured);
         Assert.Equal(Issuer, captured!.IssuerUri);
@@ -125,7 +125,7 @@ public class PipelineIdentityResolverTests
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ClientId, ["Role"], DateTime.UtcNow.AddMinutes(5))));
 
-        await CreateResolver().ResolveAsync();
+        await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(TenantId, captured!.TenantId);
     }
@@ -137,8 +137,8 @@ public class PipelineIdentityResolverTests
         GivenIdentity(ClientId, "Role");
 
         var resolver = CreateResolver();
-        var first = await resolver.ResolveAsync();
-        var second = await resolver.ResolveAsync();
+        var first = await resolver.ResolveAsync(TestContext.Current.CancellationToken);
+        var second = await resolver.ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.Same(first, second);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
@@ -167,7 +167,7 @@ public class PipelineIdentityResolverTests
         // the whole fleet down.
         GivenServiceAccountConfiguration();
 
-        var context = await CreateResolver().ResolveAsync();
+        var context = await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.True(context.IsSystem);
     }
@@ -179,7 +179,7 @@ public class PipelineIdentityResolverTests
         // act as. Everything else has a default.
         GivenServiceAccountConfiguration("""{ "issuerUri": "https://identity.example.com" }""");
 
-        var context = await CreateResolver().ResolveAsync();
+        var context = await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.True(context.IsSystem);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
@@ -204,7 +204,7 @@ public class PipelineIdentityResolverTests
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ClientId, ["Accounting"], DateTime.UtcNow.AddMinutes(5))));
 
-        var context = await CreateResolver().ResolveAsync();
+        var context = await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.NotNull(captured);
@@ -225,7 +225,7 @@ public class PipelineIdentityResolverTests
             .Returns(Task.FromResult<ServiceAccountIdentity?>(null));
 
         var exception = await Assert.ThrowsAnyAsync<PipelineExecutionException>(
-            async () => await CreateResolver().ResolveAsync());
+            async () => await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken));
 
         Assert.Contains(ClientId, exception.Message, StringComparison.Ordinal);
         Assert.Contains("system context", exception.Message, StringComparison.OrdinalIgnoreCase);
@@ -248,7 +248,7 @@ public class PipelineIdentityResolverTests
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity("resolved", ["Role"], DateTime.UtcNow.AddMinutes(5))));
 
-        await CreateResolver().ResolveAsync();
+        await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("sa-alpha", captured!.ClientId);
     }
@@ -265,7 +265,7 @@ public class PipelineIdentityResolverTests
 
         var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
 
-        var context = await CreateResolver(principal).ResolveServiceAccountAsync();
+        var context = await CreateResolver(principal).ResolveServiceAccountAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.Equal(ClientId, context.SubjectId);
@@ -284,8 +284,8 @@ public class PipelineIdentityResolverTests
         var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
         var resolver = CreateResolver(principal);
 
-        var elevated = await resolver.ResolveServiceAccountAsync();
-        var scoped = await resolver.ResolveAsync();
+        var elevated = await resolver.ResolveServiceAccountAsync(TestContext.Current.CancellationToken);
+        var scoped = await resolver.ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(ClientId, elevated.SubjectId);
         Assert.Equal("user-42", scoped.SubjectId);
@@ -297,7 +297,7 @@ public class PipelineIdentityResolverTests
     {
         GivenServiceAccountConfiguration();
 
-        var context = await CreateResolver().ResolveServiceAccountAsync();
+        var context = await CreateResolver().ResolveServiceAccountAsync(TestContext.Current.CancellationToken);
 
         Assert.True(context.IsSystem);
     }
@@ -315,7 +315,8 @@ public class PipelineIdentityResolverTests
         var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
 
         await Assert.ThrowsAnyAsync<PipelineExecutionException>(
-            async () => await CreateResolver(principal).ResolveServiceAccountAsync());
+            async () => await CreateResolver(principal)
+                .ResolveServiceAccountAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -325,7 +326,7 @@ public class PipelineIdentityResolverTests
         // an account": nothing usable was configured, so the legacy system path applies.
         GivenServiceAccountConfiguration("{ this is not json");
 
-        var context = await CreateResolver().ResolveAsync();
+        var context = await CreateResolver().ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.True(context.IsSystem);
     }

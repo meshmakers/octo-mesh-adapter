@@ -175,7 +175,8 @@ public class PipelineIdentityMatrixTests
     {
         GivenAServiceAccountIsConfigured("CommunicationManagement", "Accounting", "Reader");
 
-        var context = await ResolverFor(kind).ResolveAsync();
+        var context = await ResolverFor(kind)
+            .ResolveAsync(TestContext.Current.CancellationToken);
 
         if (kind == TriggerKind.HttpWithVerifiedCaller)
         {
@@ -202,7 +203,8 @@ public class PipelineIdentityMatrixTests
         // each trigger kind rather than once.
         GivenNoServiceAccountIsConfigured();
 
-        var context = await ResolverFor(kind).ResolveAsync();
+        var context = await ResolverFor(kind)
+            .ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.True(context.IsSystem);
     }
@@ -213,7 +215,8 @@ public class PipelineIdentityMatrixTests
         // The caller does not depend on the service account existing: it is on the options already.
         GivenNoServiceAccountIsConfigured();
 
-        var context = await ResolverFor(TriggerKind.HttpWithVerifiedCaller).ResolveAsync();
+        var context = await ResolverFor(TriggerKind.HttpWithVerifiedCaller)
+            .ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.Equal(CallerSubjectId, context.SubjectId);
@@ -233,7 +236,7 @@ public class PipelineIdentityMatrixTests
         GivenTheServiceAccountTokenCannotBeAcquired();
 
         var exception = await Assert.ThrowsAnyAsync<PipelineExecutionException>(
-            async () => await ResolverFor(kind).ResolveAsync());
+            async () => await ResolverFor(kind).ResolveAsync(TestContext.Current.CancellationToken));
 
         Assert.Contains(ServiceAccountClientId, exception.Message, StringComparison.Ordinal);
     }
@@ -245,7 +248,8 @@ public class PipelineIdentityMatrixTests
         // must not fail an HTTP request that carried its own proof of identity.
         GivenTheServiceAccountTokenCannotBeAcquired();
 
-        var context = await ResolverFor(TriggerKind.HttpWithVerifiedCaller).ResolveAsync();
+        var context = await ResolverFor(TriggerKind.HttpWithVerifiedCaller)
+            .ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(CallerSubjectId, context.SubjectId);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
@@ -265,7 +269,8 @@ public class PipelineIdentityMatrixTests
         // IsSystem alone would wave it through, which is why the assertion is on the roles too.
         GivenAServiceAccountIsConfigured("CommunicationManagement");
 
-        var context = await ResolverFor(TriggerKind.HttpWithVerifiedCaller, callerRoles: []).ResolveAsync();
+        var context = await ResolverFor(TriggerKind.HttpWithVerifiedCaller, callerRoles: [])
+            .ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.Equal(CallerSubjectId, context.SubjectId);
@@ -286,7 +291,8 @@ public class PipelineIdentityMatrixTests
         // through to the system context, which is the "repair" that would silently grant everything.
         GivenAServiceAccountIsConfigured();
 
-        var context = await ResolverFor(TriggerKind.CronPipelineTrigger).ResolveAsync();
+        var context = await ResolverFor(TriggerKind.CronPipelineTrigger)
+            .ResolveAsync(TestContext.Current.CancellationToken);
 
         Assert.False(context.IsSystem);
         Assert.Equal(ServiceAccountClientId, context.SubjectId);
@@ -302,7 +308,7 @@ public class PipelineIdentityMatrixTests
     {
         GivenAServiceAccountIsConfigured("Accounting");
 
-        await ResolverFor(TriggerKind.HttpWithVerifiedCaller).ResolveAsync();
+        await ResolverFor(TriggerKind.HttpWithVerifiedCaller).ResolveAsync(TestContext.Current.CancellationToken);
 
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
             A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();

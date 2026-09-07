@@ -40,7 +40,8 @@ public class EntraIdVerifiedCallerDirectoryTests
     public async Task Non_EntraId_kind_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,
-            new ChannelSender(ChannelIdentifierKind.EmailAddress, "u@example.com", CallerTrustLevel.Weak));
+            new ChannelSender(ChannelIdentifierKind.EmailAddress, "u@example.com", CallerTrustLevel.Weak),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => _lookup.FindByObjectIdAsync(A<string>._, A<string>._, A<CancellationToken>._))
@@ -51,7 +52,8 @@ public class EntraIdVerifiedCallerDirectoryTests
     public async Task Blank_object_id_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,
-            new ChannelSender(ChannelIdentifierKind.EntraIdObjectId, "  ", CallerTrustLevel.Strong));
+            new ChannelSender(ChannelIdentifierKind.EntraIdObjectId, "  ", CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => _lookup.FindByObjectIdAsync(A<string>._, A<string>._, A<CancellationToken>._))
@@ -63,7 +65,8 @@ public class EntraIdVerifiedCallerDirectoryTests
     {
         LookupReturns(null);
 
-        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
     }
@@ -73,7 +76,8 @@ public class EntraIdVerifiedCallerDirectoryTests
     {
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal("user-rt-1", result!.Principal.SubjectId);
@@ -89,7 +93,8 @@ public class EntraIdVerifiedCallerDirectoryTests
         // The AB#5124 goal: IdP-enrolled (enrollment Strong) + validated Teams token (message Strong).
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(CallerTrustLevel.Strong, result!.EffectiveTrust);
@@ -105,7 +110,8 @@ public class EntraIdVerifiedCallerDirectoryTests
     {
         LookupReturns(Record(enrollment));
 
-        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(message));
+        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(message),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(expected, result!.EffectiveTrust);

@@ -34,7 +34,8 @@ public class ChannelCallerBinderTests
     [Fact]
     public async Task AnonymousAllowed_never_queries_the_directory()
     {
-        var result = await _binder.BindAsync(TenantId, CallerBindingMode.AnonymousAllowed, Sender);
+        var result = await _binder.BindAsync(TenantId, CallerBindingMode.AnonymousAllowed, Sender,
+            TestContext.Current.CancellationToken);
 
         Assert.False(result.Rejected);
         Assert.Null(result.Principal);
@@ -49,7 +50,8 @@ public class ChannelCallerBinderTests
         var principal = new VerifiedPrincipal("user-1", TenantId, "u@example.com", "U", ["Reader"]);
         DirectoryResolvesTo(new ResolvedCaller(principal, CallerTrustLevel.Strong));
 
-        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingOptional, Sender);
+        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingOptional, Sender,
+            TestContext.Current.CancellationToken);
 
         Assert.False(result.Rejected);
         Assert.Same(principal, result.Principal);
@@ -61,7 +63,8 @@ public class ChannelCallerBinderTests
     {
         DirectoryResolvesTo(null);
 
-        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingOptional, Sender);
+        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingOptional, Sender,
+            TestContext.Current.CancellationToken);
 
         Assert.False(result.Rejected);
         Assert.Null(result.Principal);
@@ -72,7 +75,8 @@ public class ChannelCallerBinderTests
     {
         DirectoryResolvesTo(null);
 
-        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingRequired, Sender);
+        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingRequired, Sender,
+            TestContext.Current.CancellationToken);
 
         Assert.True(result.Rejected);
         Assert.NotNull(result.RejectReason);
@@ -84,7 +88,8 @@ public class ChannelCallerBinderTests
     {
         // A batch trigger that could not pin a single sender passes null — treated as unresolved, so
         // a required binding refuses rather than running as the service account.
-        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingRequired, sender: null);
+        var result = await _binder.BindAsync(TenantId, CallerBindingMode.BindingRequired, sender: null,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(result.Rejected);
         A.CallTo(() => _directory.ResolveAsync(A<string>._, A<ChannelSender>._, A<CancellationToken>._))

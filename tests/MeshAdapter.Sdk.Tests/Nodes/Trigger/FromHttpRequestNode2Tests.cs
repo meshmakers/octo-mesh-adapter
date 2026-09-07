@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json.Nodes;
 using FakeItEasy;
-using IdentityModel;
+using Duende.IdentityModel;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;

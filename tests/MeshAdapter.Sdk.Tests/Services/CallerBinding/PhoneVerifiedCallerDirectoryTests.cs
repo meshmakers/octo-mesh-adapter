@@ -48,7 +48,8 @@ public class PhoneVerifiedCallerDirectoryTests
     public async Task Non_phone_kind_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,
-            new ChannelSender(ChannelIdentifierKind.EmailAddress, "u@example.com", CallerTrustLevel.Weak));
+            new ChannelSender(ChannelIdentifierKind.EmailAddress, "u@example.com", CallerTrustLevel.Weak),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => _lookup.FindByPhoneNumberAsync(A<string>._, A<string>._, A<CancellationToken>._))
@@ -59,7 +60,8 @@ public class PhoneVerifiedCallerDirectoryTests
     public async Task Blank_number_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,
-            new ChannelSender(ChannelIdentifierKind.PhoneNumber, "  ", CallerTrustLevel.Strong));
+            new ChannelSender(ChannelIdentifierKind.PhoneNumber, "  ", CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => _lookup.FindByPhoneNumberAsync(A<string>._, A<string>._, A<CancellationToken>._))
@@ -71,7 +73,8 @@ public class PhoneVerifiedCallerDirectoryTests
     {
         LookupReturns(null);
 
-        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
     }
@@ -81,7 +84,8 @@ public class PhoneVerifiedCallerDirectoryTests
     {
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal("user-rt-1", result!.Principal.SubjectId);
@@ -97,7 +101,8 @@ public class PhoneVerifiedCallerDirectoryTests
         // The AB#5123 goal: OTP-enrolled (enrollment Strong) + Signal-verified message (message Strong).
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(CallerTrustLevel.Strong, result!.EffectiveTrust);
@@ -113,7 +118,8 @@ public class PhoneVerifiedCallerDirectoryTests
     {
         LookupReturns(Record(enrollment));
 
-        var result = await _directory.ResolveAsync(TenantId, PhoneSender(message));
+        var result = await _directory.ResolveAsync(TenantId, PhoneSender(message),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(expected, result!.EffectiveTrust);

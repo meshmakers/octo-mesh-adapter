@@ -50,7 +50,8 @@ public class EmailVerifiedCallerDirectoryTests
     public async Task Non_email_kind_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,
-            new ChannelSender(ChannelIdentifierKind.PhoneNumber, "+436601234567", CallerTrustLevel.Strong));
+            new ChannelSender(ChannelIdentifierKind.PhoneNumber, "+436601234567", CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => _lookup.FindByEmailAddressAsync(A<string>._, A<string>._, A<CancellationToken>._))
@@ -61,7 +62,8 @@ public class EmailVerifiedCallerDirectoryTests
     public async Task Blank_address_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,
-            new ChannelSender(ChannelIdentifierKind.EmailAddress, "  ", CallerTrustLevel.Strong));
+            new ChannelSender(ChannelIdentifierKind.EmailAddress, "  ", CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         A.CallTo(() => _lookup.FindByEmailAddressAsync(A<string>._, A<string>._, A<CancellationToken>._))
@@ -73,7 +75,8 @@ public class EmailVerifiedCallerDirectoryTests
     {
         LookupReturns(null);
 
-        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.Null(result);
     }
@@ -83,7 +86,8 @@ public class EmailVerifiedCallerDirectoryTests
     {
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal("user-rt-1", result!.Principal.SubjectId);
@@ -100,7 +104,8 @@ public class EmailVerifiedCallerDirectoryTests
         // (message Strong) ⇒ effective Strong.
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Strong));
+        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(CallerTrustLevel.Strong, result!.EffectiveTrust);
@@ -113,7 +118,8 @@ public class EmailVerifiedCallerDirectoryTests
         // message without valid DKIM/DMARC (SMTP From is spoofable), so effective is capped at Weak.
         LookupReturns(Record(CallerTrustLevel.Strong));
 
-        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Weak));
+        var result = await _directory.ResolveAsync(TenantId, EmailSender(CallerTrustLevel.Weak),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(CallerTrustLevel.Weak, result!.EffectiveTrust);
@@ -130,7 +136,8 @@ public class EmailVerifiedCallerDirectoryTests
     {
         LookupReturns(Record(enrollment));
 
-        var result = await _directory.ResolveAsync(TenantId, EmailSender(message));
+        var result = await _directory.ResolveAsync(TenantId, EmailSender(message),
+            TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(expected, result!.EffectiveTrust);

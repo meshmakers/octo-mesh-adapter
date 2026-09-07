@@ -5,7 +5,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using FakeItEasy;
-using IdentityModel;
+using Duende.IdentityModel;
 using Meshmakers.Octo.Communication.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.Adapters;
@@ -85,7 +85,7 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
     {
         using var client = await CreateClientAsync();
 
-        var response = await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 });
+        var response = await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 }, TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         // RFC 6750 §3.1: a request that carried no credentials gets a bare challenge - there is
@@ -157,7 +157,7 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
     {
         using var client = await CreateClientAsync();
 
-        var response = await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 });
+        var response = await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 }, TestContext.Current.CancellationToken);
 
         // Without this the challenge travels the wire but no script may read it, which would
         // leave every browser caller exactly as blind as before the change.
@@ -211,7 +211,7 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
     {
         using var client = await CreateClientAsync();
 
-        await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 });
+        await client.PostAsJsonAsync($"/{TenantId}{Route}", new { probe = 1 }, TestContext.Current.CancellationToken);
         await Post(client, CreateToken(TenantId, roles: "Reader"));
         await Post(client, CreateToken(TenantId, roles: "TenantAdmin"));
 

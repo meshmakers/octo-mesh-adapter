@@ -189,21 +189,12 @@ internal class FromMicrosoftGraphEmailNode(
                         // One pipeline run per message so the success/failure of a run maps
                         // 1:1 to the move decision for exactly that message.
                         await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
-
-                        failureCounts.Remove(messageId);
-                        if (stamped)
-                        {
-                            await TryClearAttemptCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId);
-                        }
-
-                        if (targetFolderId != null)
-                        {
-                            await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId, targetFolderId);
-                        }
-
-                        logger.LogInformation(
-                            "Processed mail '{Subject}' from '{From}' ({AttachmentCount} attachments)",
-                            emailData.Subject, fromAddress, emailData.Attachments.Count);
+                    }
+                    catch (OperationCanceledException) when (_cancellationTokenSource.Token.IsCancellationRequested)
+                    {
+                        // Adapter shutdown, not a message failure — unwind to the poll
+                        // loop's cancellation handling without failure bookkeeping.
+                        throw;
                     }
                     catch (Exception ex)
                     {
@@ -211,7 +202,27 @@ internal class FromMicrosoftGraphEmailNode(
                         logger.LogError(ex,
                             "Pipeline run failed for mail '{Subject}' (attempt {Attempt}/{MaxAttempts}); message stays in '{Folder}'",
                             emailData.Subject, attempts + 1, nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                        continue;
                     }
+
+                    // Post-success bookkeeping runs OUTSIDE the failure net: a cleanup
+                    // hiccup (or a shutdown cancel) after a successful run must never turn
+                    // the success into a counted failed attempt. A failing move bubbles to
+                    // the poll-level handler, which resets the folder ids and backs off.
+                    failureCounts.Remove(messageId);
+                    if (stamped)
+                    {
+                        await TryClearAttemptCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId);
+                    }
+
+                    if (targetFolderId != null)
+                    {
+                        await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId, targetFolderId);
+                    }
+
+                    logger.LogInformation(
+                        "Processed mail '{Subject}' from '{From}' ({AttachmentCount} attachments)",
+                        emailData.Subject, fromAddress, emailData.Attachments.Count);
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),
@@ -893,7 +904,7 @@ internal class FromMicrosoftGraphEmailNode(
                 $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}?$select=categories";
             var response = await client.GetAsync(getUrl, _cancellationTokenSource!.Token);
             response.EnsureSuccessStatusCode();
-            var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_cancellationTokenSource.Token));
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_cancellationTokenSource.Token));
             var current = GetCategories(doc.RootElement);
 
             await TrySetCategoriesAsync(accessToken, mailbox, messageId, WithoutAttemptCategory(current));

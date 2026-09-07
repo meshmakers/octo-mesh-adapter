@@ -3,9 +3,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 
 /// <summary>
-/// Configuration node object for deleting one file from an SFTP server. Write counterpart of
-/// <c>SftpDownload@1</c>: the pair is what lets a pipeline fetch a file and remove it once the
-/// content has been processed, which is the contract a file drop-off works by.
+/// Configuration node object for deleting one file from an SFTP server: it removes the file
+/// <c>SftpDownload@1</c> read, once the content has been processed, which is the contract a
+/// file drop-off works by.
 /// </summary>
 [NodeName("SftpDelete", 1)]
 public record SftpDeleteNodeConfiguration : NodeConfiguration
@@ -17,14 +17,14 @@ public record SftpDeleteNodeConfiguration : NodeConfiguration
     public required string ServerConfiguration { get; set; }
 
     /// <summary>
-    /// Static remote path of the file to delete (set this or <see cref="RemotePathPath" />)
+    /// Static remote path of the file to delete (set this or <c>RemotePathPath</c>)
     /// </summary>
     [PropertyGroup("Data Mapping", 0)]
     public string? RemotePath { get; set; }
 
     /// <summary>
     /// Path in the data context to resolve the remote path dynamically; takes precedence over
-    /// <see cref="RemotePath" />
+    /// <c>RemotePath</c>
     /// </summary>
     [PropertyGroup("Data Mapping", 1, "jsonpath")]
     public string? RemotePathPath { get; set; }
@@ -40,22 +40,22 @@ public record SftpDeleteNodeConfiguration : NodeConfiguration
     /// something this node grants every caller.
     /// </summary>
     [PropertyGroup("Options", 0)]
-    public MissingFileHandling MissingFileHandling
+    public MissingFileHandling OnMissingFile
     {
-        get => _missingFileHandling;
+        get => _onMissingFile;
         set
         {
             if (!Enum.IsDefined(value))
             {
                 throw new ArgumentException(
-                    $"Unknown missingFileHandling value '{(int)value}'. Use Fail or Ignore.", nameof(value));
+                    $"Unknown onMissingFile value '{(int)value}'. Use Fail or Ignore.", nameof(value));
             }
 
-            _missingFileHandling = value;
+            _onMissingFile = value;
         }
     }
 
-    private MissingFileHandling _missingFileHandling = MissingFileHandling.Fail;
+    private MissingFileHandling _onMissingFile = MissingFileHandling.Fail;
 }
 
 /// <summary>

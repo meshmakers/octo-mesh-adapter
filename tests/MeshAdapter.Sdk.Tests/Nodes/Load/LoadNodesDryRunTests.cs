@@ -140,7 +140,7 @@ public class LoadNodesDryRunTests
         Assert.NotNull(intent.IntentData);
         Assert.Equal(remotePath, intent.IntentData!["remotePath"]!.GetValue<string>());
         Assert.Equal("sftp.example.com", intent.IntentData["host"]!.GetValue<string>());
-        Assert.Equal("Fail", intent.IntentData["missingFileHandling"]!.GetValue<string>());
+        Assert.Equal("Fail", intent.IntentData["onMissingFile"]!.GetValue<string>());
     }
 
     [Fact]

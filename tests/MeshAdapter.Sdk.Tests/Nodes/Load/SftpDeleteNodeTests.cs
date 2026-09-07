@@ -55,9 +55,11 @@ public class SftpDeleteNodeTests : NodeTestBase
 
         A.CallTo(() => _session.Delete(RemoteFile)).MustHaveHappenedOnceExactly();
         // The session holds the server's concurrency slot; releasing it twice or not at all
-        // both move that limit for the rest of the process.
-        A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly();
-        VerifyNextCalled(next, dataContext, nodeContext);
+        // both move that limit for the rest of the process. The order matters too: the
+        // downstream chain runs inside the same call, so holding the session across it would
+        // keep a slot taken for as long as the rest of the pipeline needs.
+        A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly());
     }
 
     [Fact]
@@ -111,9 +113,32 @@ public class SftpDeleteNodeTests : NodeTestBase
         // something this test should depend on.
         SetupGetSimpleValueByPath(dataContext, DynamicPath, resolved);
 
-        var ex = await Assert.ThrowsAnyAsync<PipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(
             () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
         // Message text read out of Sdk.Pipeline 3.4.108: "Value not set. Value path: '<path>'".
+        Assert.Contains(DynamicPath, ex.Message);
+        A.CallTo(() => _session.Delete(A<string>._)).MustNotHaveHappened();
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DynamicPathResolvesToBlankWithStaticPathSet_DoesNotFallBack()
+    {
+        var config = new SftpDeleteNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig,
+            RemotePath = RemoteFile,
+            RemotePathPath = DynamicPath
+        };
+
+        var (dataContext, nodeContext, next) = PrepareTest<SftpDeleteNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, DynamicPath, "");
+
+        // A configured RemotePathPath decides alone. Falling back to the static path here
+        // would delete a file the pipeline did not name in this iteration - the static value
+        // is the one the loop was meant to replace.
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains(DynamicPath, ex.Message);
         A.CallTo(() => _session.Delete(A<string>._)).MustNotHaveHappened();
         VerifyNextNotCalled(next, dataContext, nodeContext);
@@ -152,7 +177,8 @@ public class SftpDeleteNodeTests : NodeTestBase
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
-        Assert.Contains("Cannot delete file via SFTP", ex.Message);
+        Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
+        Assert.Contains($"Cannot delete file '{RemoteFile}' via SFTP", ex.Message);
         Assert.Contains("permission denied", ex.Message);
         A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly();
         VerifyNextNotCalled(next, dataContext, nodeContext);
@@ -178,7 +204,7 @@ public class SftpDeleteNodeTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains("no free connection slot", ex.Message);
-        Assert.DoesNotContain("Cannot delete file via SFTP", ex.Message);
+        Assert.DoesNotContain("Cannot delete file", ex.Message);
     }
 
     [Fact]
@@ -194,7 +220,7 @@ public class SftpDeleteNodeTests : NodeTestBase
 
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
-        Assert.DoesNotContain("Cannot delete file via SFTP", ex.Message);
+        Assert.DoesNotContain("Cannot delete file", ex.Message);
         A.CallTo(() => _session.Delete(A<string>._)).MustNotHaveHappened();
     }
 
@@ -223,7 +249,7 @@ public class SftpDeleteNodeTests : NodeTestBase
         {
             ServerConfiguration = ServerConfig,
             RemotePath = RemoteFile,
-            MissingFileHandling = MissingFileHandling.Ignore
+            OnMissingFile = MissingFileHandling.Ignore
         };
         A.CallTo(() => _session.Delete(RemoteFile)).Returns(false);
 
@@ -234,8 +260,8 @@ public class SftpDeleteNodeTests : NodeTestBase
         // string and the path as an argument, the way SftpListNode.cs:134 does.
         A.CallTo(() => logger.Warning(A<string>._, A<string>._,
             A<string>.That.Contains("does not exist any more"), A<object[]>._)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly();
-        VerifyNextCalled(next, dataContext, nodeContext);
+        A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly());
     }
 
     [Fact]
@@ -255,7 +281,7 @@ public class SftpDeleteNodeTests : NodeTestBase
         Assert.Contains(RemoteFile, ex.Message);
         // The file was gone, not unreachable: reporting this as a transport failure would send
         // an operator looking for a broken connection.
-        Assert.DoesNotContain("Cannot delete file via SFTP", ex.Message);
+        Assert.DoesNotContain("Cannot delete file", ex.Message);
         A.CallTo(() => _session.Dispose()).MustHaveHappenedOnceExactly();
         VerifyNextNotCalled(next, dataContext, nodeContext);
     }

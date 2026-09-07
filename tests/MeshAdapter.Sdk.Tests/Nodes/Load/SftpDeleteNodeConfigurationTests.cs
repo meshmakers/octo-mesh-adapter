@@ -14,11 +14,11 @@ public class SftpDeleteNodeConfigurationTests
     }
 
     [Fact]
-    public void MissingFileHandling_DefaultsToFail()
+    public void OnMissingFile_DefaultsToFail()
     {
         // Fail is also the zero member, so default(MissingFileHandling) is the strict value:
         // a definition that leaves the key out cannot end up on the lenient one by accident.
-        Assert.Equal(MissingFileHandling.Fail, CreateConfig().MissingFileHandling);
+        Assert.Equal(MissingFileHandling.Fail, CreateConfig().OnMissingFile);
         Assert.Equal(0, (int)MissingFileHandling.Fail);
         Assert.Equal(MissingFileHandling.Fail, default(MissingFileHandling));
     }
@@ -26,21 +26,21 @@ public class SftpDeleteNodeConfigurationTests
     [Theory]
     [InlineData(MissingFileHandling.Fail)]
     [InlineData(MissingFileHandling.Ignore)]
-    public void MissingFileHandling_DefinedValue_IsAccepted(MissingFileHandling value)
+    public void OnMissingFile_DefinedValue_IsAccepted(MissingFileHandling value)
     {
         var config = CreateConfig();
 
-        config.MissingFileHandling = value;
+        config.OnMissingFile = value;
 
-        Assert.Equal(value, config.MissingFileHandling);
+        Assert.Equal(value, config.OnMissingFile);
     }
 
     [Fact]
-    public void MissingFileHandling_UndefinedValue_IsRejected()
+    public void OnMissingFile_UndefinedValue_IsRejected()
     {
         var config = CreateConfig();
 
-        var ex = Assert.Throws<ArgumentException>(() => config.MissingFileHandling = (MissingFileHandling)42);
+        var ex = Assert.Throws<ArgumentException>(() => config.OnMissingFile = (MissingFileHandling)42);
         Assert.Contains("Fail or Ignore", ex.Message);
     }
 }

@@ -42,16 +42,11 @@ internal static class LlmClientFactory
     {
         if (string.IsNullOrEmpty(config.ApiKeyConfigurationName)) return null;
 
-        if (etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        var key = ReadConfigurationValue(config.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext);
+        if (!string.IsNullOrEmpty(key))
         {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            var key = JObject.Parse(rawJson).Value<string>("apiKey");
-            if (!string.IsNullOrEmpty(key))
-            {
-                nodeContext.Debug(
-                    $"API key loaded from configuration '{config.ApiKeyConfigurationName}'");
-                return key;
-            }
+            nodeContext.Debug($"API key loaded from configuration '{config.ApiKeyConfigurationName}'");
+            return key;
         }
 
         nodeContext.Warning(
@@ -66,11 +61,9 @@ internal static class LlmClientFactory
     internal static string ResolveModel(
         LlmQueryNodeConfiguration config, IMeshEtlContext etlContext, INodeContext nodeContext)
     {
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName)
-            && etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName))
         {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            var model = JObject.Parse(rawJson).Value<string>("aiModel");
+            var model = ReadConfigurationValue(config.ApiKeyConfigurationName, "aiModel", etlContext, nodeContext);
             if (!string.IsNullOrEmpty(model))
             {
                 nodeContext.Debug(
@@ -90,9 +83,61 @@ internal static class LlmClientFactory
         return config.Model;
     }
 
+    /// <summary>
+    /// One guarded read for every AiConfiguration lookup: <c>IsDefined</c> only proves the name
+    /// is known, the stored payload can still be empty or malformed, and that must end in the
+    /// callers' documented fallback (warning, node default) rather than a parse exception.
+    /// </summary>
+    private static string? ReadConfigurationValue(
+        string configurationName, string property, IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        if (!etlContext.GlobalConfiguration.IsDefined(configurationName)) return null;
+
+        var rawJson = etlContext.GlobalConfiguration.GetRawJson(configurationName);
+        if (string.IsNullOrWhiteSpace(rawJson)) return null;
+
+        try
+        {
+            return JObject.Parse(rawJson).Value<string>(property);
+        }
+        catch (Newtonsoft.Json.JsonException ex)
+        {
+            nodeContext.Warning($"AiConfiguration '{configurationName}' is not valid JSON ({ex.Message}).");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A custom endpoint that receives an API key must be https; loopback stays allowed for local
+    /// development and keyless endpoints (local Ollama) are unaffected.
+    /// </summary>
+    internal static void RequireHttpsForKeyedEndpoint(string? baseUrl, string? apiKey)
+    {
+        if (string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(baseUrl))
+        {
+            return;
+        }
+
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException($"baseUrl '{baseUrl}' is not an absolute URI.");
+        }
+
+        if (uri.Scheme == Uri.UriSchemeHttps || uri.IsLoopback)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"baseUrl '{baseUrl}' is not https; the API key would be sent in clear text. " +
+            "Use an https endpoint, or a loopback address for local development.");
+    }
+
     private static IChatClient CreateOpenAiCompatible(
         LlmQueryNodeConfiguration config, string? apiKey, string model)
     {
+        RequireHttpsForKeyedEndpoint(config.BaseUrl, apiKey);
+
         // The OpenAI SDK requires a non-empty credential even for auth-less backends.
         var credential = new ApiKeyCredential(apiKey ?? "unused");
 
@@ -123,6 +168,8 @@ internal static class LlmClientFactory
                 "Anthropic provider requires an API key. Set ApiKeyConfigurationName " +
                 "to reference an AiConfiguration entity that holds it.");
         }
+
+        RequireHttpsForKeyedEndpoint(config.BaseUrl, apiKey);
 
         var client = new Anthropic.AnthropicClient { ApiKey = apiKey };
         if (!string.IsNullOrEmpty(config.BaseUrl))

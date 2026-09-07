@@ -12,6 +12,8 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 [NodeConfiguration(typeof(AnthropicAiQueryNodeConfiguration))]
@@ -1165,107 +1167,10 @@ internal class AnthropicAiQueryNode(
     }
 
     /// <summary>
-    /// Extracts a JSON value embedded in a mixed prose/markdown response. Handles a fenced
-    /// <c>```json … ```</c> block first, otherwise takes the first top-level JSON value — array
-    /// <c>[ … ]</c> or object <c>{ … }</c>, whichever appears first — via string/escape-aware brace
-    /// matching. The array case matters for this node: the prompt asks for a JSON array of mappings,
-    /// and when the model wraps it in prose ("Here are the mappings: [ … ]") the direct
-    /// deserialize fails and the fallback must return the whole array, not the first inner object.
+    /// Extracts a JSON value embedded in a mixed prose/markdown response — fenced block first,
+    /// otherwise the first top-level array or object via string/escape-aware bracket matching.
+    /// Shared with <c>LlmQuery@1</c> through <see cref="LlmJsonExtractor"/> so both nodes recover
+    /// the same inputs; kept as a member because the response path and the tests call it here.
     /// </summary>
-    internal static string? ExtractJsonFromText(string text)
-    {
-        var fenced = ExtractFencedJson(text);
-        if (fenced != null)
-        {
-            return fenced;
-        }
-
-        var arrayStart = text.IndexOf('[');
-        var objectStart = text.IndexOf('{');
-
-        if (arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart))
-        {
-            return ExtractBalanced(text, arrayStart, '[', ']');
-        }
-
-        if (objectStart >= 0)
-        {
-            return ExtractBalanced(text, objectStart, '{', '}');
-        }
-
-        return null;
-    }
-
-    private static string? ExtractFencedJson(string text)
-    {
-        var fenceStart = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
-        if (fenceStart < 0)
-        {
-            return null;
-        }
-
-        var jsonStart = text.IndexOf('\n', fenceStart);
-        if (jsonStart < 0)
-        {
-            return null;
-        }
-
-        jsonStart++;
-        var jsonEnd = text.IndexOf("```", jsonStart, StringComparison.Ordinal);
-        return jsonEnd > jsonStart ? text.Substring(jsonStart, jsonEnd - jsonStart).Trim() : null;
-    }
-
-    /// <summary>
-    /// Returns the balanced <paramref name="open" />…<paramref name="close" /> span starting at
-    /// <paramref name="start" />, ignoring brackets inside JSON string literals (honouring
-    /// backslash escapes) so a bracket in a value like a reason text does not unbalance the scan.
-    /// </summary>
-    private static string? ExtractBalanced(string text, int start, char open, char close)
-    {
-        var depth = 0;
-        var inString = false;
-        var escaped = false;
-
-        for (var i = start; i < text.Length; i++)
-        {
-            var ch = text[i];
-
-            if (inString)
-            {
-                if (escaped)
-                {
-                    escaped = false;
-                }
-                else if (ch == '\\')
-                {
-                    escaped = true;
-                }
-                else if (ch == '"')
-                {
-                    inString = false;
-                }
-
-                continue;
-            }
-
-            if (ch == '"')
-            {
-                inString = true;
-            }
-            else if (ch == open)
-            {
-                depth++;
-            }
-            else if (ch == close)
-            {
-                depth--;
-                if (depth == 0)
-                {
-                    return text.Substring(start, i - start + 1);
-                }
-            }
-        }
-
-        return null;
-    }
+    internal static string? ExtractJsonFromText(string text) => LlmJsonExtractor.ExtractJsonFromText(text);
 }

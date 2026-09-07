@@ -29,9 +29,22 @@ internal class LlmQueryNode(
     /// </summary>
     internal const string ActivitySourceName = LlmClientFactory.ActivitySourceName;
 
+    /// <summary>Largest whole-second timeout a CancellationTokenSource accepts.</summary>
+    internal const int MaxTimeoutSeconds = 4_294_967;
+
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<LlmQueryNodeConfiguration>();
+
+        // Configuration error, outside the try on purpose: a non-positive or absurd timeout can never
+        // work and must not be turned into a pass-through by ContinueOnError.
+        if (config.TimeoutSeconds is < 1 or > MaxTimeoutSeconds)
+        {
+            throw MeshAdapterPipelineExecutionException.ProcessingError(
+                nodeContext,
+                new ArgumentOutOfRangeException(nameof(config.TimeoutSeconds), config.TimeoutSeconds,
+                    $"TimeoutSeconds must be between 1 and {MaxTimeoutSeconds}."));
+        }
 
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(config.TimeoutSeconds));
         var ct = timeoutCts.Token;
@@ -39,7 +52,7 @@ internal class LlmQueryNode(
         // MCP clients must stay alive for the duration of the LLM call (the tool loop
         // invokes them) and are disposed in the finally block — stdio clients own a
         // spawned subprocess, HTTP/SSE clients an open connection.
-        var mcpClients = new List<McpClient>();
+        var mcpClients = new List<IAsyncDisposable>();
 
         try
         {
@@ -76,6 +89,19 @@ internal class LlmQueryNode(
             {
                 if (config.McpConfigurationNames.Count == 0)
                 {
+                    // Path left at its default "$" on a structured document: the whole request
+                    // (headers, uploaded files, ...) is never the intended prompt, and the former
+                    // warn-and-skip looked like a successful execution that wrote nothing.
+                    if (LlmPromptBuilder.IsWholeDocument(dataContext, config.Path))
+                    {
+                        throw MeshAdapterPipelineExecutionException.ProcessingError(
+                            nodeContext,
+                            new ArgumentException(
+                                $"path '{config.Path}' resolves to the whole document. Set path to the " +
+                                "string holding the content (e.g. $.body.text), or list the values to " +
+                                "include under dataPaths and keep path on a string field."));
+                    }
+
                     nodeContext.Warning($"No content found at path: {config.Path}");
                     await next(dataContext, nodeContext);
                     return;
@@ -95,7 +121,9 @@ internal class LlmQueryNode(
             var userPrompt = LlmPromptBuilder.BuildUserPrompt(
                 config.Question, context, config.ResponseFormat, config.JsonFormatSample);
 
-            var client = LlmClientFactory.Create(config, apiKey, model);
+            // IChatClient is IDisposable and the builder pipeline does not dispose the inner
+            // transport on its own; scope it to the call.
+            using var client = LlmClientFactory.Create(config, apiKey, model);
 
             var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
             if (mcpServers.Count > 0)
@@ -225,13 +253,15 @@ internal class LlmQueryNode(
 
         if (wantsJson && hasTools)
         {
-            nodeContext.Warning(
-                "responseFormat=json is incompatible with MCP tools on most providers; " +
-                "sending the request without response_format and relying on the system " +
-                "prompt to enforce JSON." +
+            // Expected in agentic pipelines, not a problem: providers reject a response format
+            // together with tools, so JSON is requested through the system prompt and the reply
+            // still goes through the JSON parse and repair.
+            nodeContext.Info(
+                "JSON mode with MCP tools: the provider-side response format is omitted; JSON is " +
+                "requested via the system prompt and the reply is parsed and repaired as usual." +
                 (string.IsNullOrWhiteSpace(config.JsonSchema)
                     ? string.Empty
-                    : " The configured jsonSchema is NOT enforced in tool mode."));
+                    : " The configured jsonSchema is used as guidance only in tool mode."));
         }
 
         JsonElement? responseSchema = null;

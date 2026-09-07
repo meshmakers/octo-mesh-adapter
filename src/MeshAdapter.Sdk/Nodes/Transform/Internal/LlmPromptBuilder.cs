@@ -16,7 +16,9 @@ internal static class LlmPromptBuilder
     /// <summary>
     /// Resolves the optional main content: string values verbatim, other explicit
     /// (non-"$") values as indented JSON. The default "$" root or an absent path
-    /// yields null — MCP-only pipelines carry no document payload.
+    /// yields null — MCP-only pipelines carry no document payload, and the whole
+    /// document (request headers, uploaded files, ...) is never a prompt; the node
+    /// turns that case into a configuration error via <see cref="IsWholeDocument"/>.
     /// </summary>
     internal static string? ResolveMainContent(IDataContext dataContext, string? path)
     {
@@ -36,6 +38,13 @@ internal static class LlmPromptBuilder
 
         return null;
     }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is the root and the document there is an object or
+    /// array — i.e. the pipeline left Path at its default instead of naming the content.
+    /// </summary>
+    internal static bool IsWholeDocument(IDataContext dataContext, string? path) =>
+        path == "$" && dataContext.GetKind(path) is DataKind.Object or DataKind.Array;
 
     /// <summary>
     /// Builds the context block (main content + optional data-path values). With

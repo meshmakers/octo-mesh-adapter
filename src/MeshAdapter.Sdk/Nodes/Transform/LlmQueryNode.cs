@@ -194,7 +194,9 @@ internal class LlmQueryNode(
             {
                 ModelId = config.Model,
                 MaxOutputTokens = config.MaxTokens,
-                Temperature = (float?)config.Temperature,
+                // Default 0.3 only when the pipeline set neither sampling control, so a TopP-only
+                // pipeline is not rejected by the mutual-exclusion check above.
+                Temperature = (float?)(config.Temperature ?? (config.TopP is null ? 0.3 : null)),
                 TopP = config.TopP,
                 TopK = config.TopK,
                 ResponseFormat = wantsJson && !hasTools ? ChatResponseFormat.Json : null,

@@ -1,9 +1,9 @@
 # LlmQuery@1 — v1 Plan (production-minimal)
 
-Status: draft · Date: 2026-06-10 · Scope source: `llmquery-production-plan.md` (Phases 1 + encryption item of Phase 2)
+Status: draft · Date: 2026-06-10 · Scope updated 2026-09-07 · Scope source: `llmquery-production-plan.md` (Phases 1 + encryption item of Phase 2)
 
-**v1 definition**: `LlmQuery@1` with MCP tool support is safe to ship for pipeline use — OpenAI-compatible (Ollama/Cerebras) and Anthropic providers, Stdio/Sse/Http MCP transports, static bearer auth.
-**Explicitly out of scope**: streaming, batch, OIDC/service-account MCP auth, custom headers/env vars, `AnthropicAiQuery@1` deprecation, >100 s OpenAI transport fix (clamped instead).
+**v1 definition**: `LlmQuery@1` with MCP tool support and the deterministic `McpToolCall@1` (one MCP tool call, no model in the loop, same server resolution and authentication) are safe to ship for pipeline use — OpenAI-compatible (Ollama/Cerebras) and Anthropic providers, Stdio/Sse/Http MCP transports, and three MCP authentication paths: static bearer, custom headers (`AdditionalHeaders`, AB#4140) and service-account client-credentials tokens (`AuthServiceAccountConfigurationName`, AB#4377).
+**Explicitly out of scope**: streaming, batch, environment variables for stdio servers, `AnthropicAiQuery@1` deprecation, >100 s OpenAI transport fix (clamped instead). BearerToken encryption at rest is **in** scope (Workstream C below).
 
 ---
 
@@ -38,10 +38,11 @@ Pattern: reuse the existing `enc:v1` envelope (AES-256-GCM, `WorkloadEncryptionS
    - For entities with `CkTypeId == System.Communication/McpConfiguration`, post-process the serialized JSON: `bearerToken = _encryptionService.Decrypt(bearerToken)`. `Decrypt()` passes non-sentinel values through unchanged → **zero migration**, existing plaintext tokens keep working.
    - Precedent: this is exactly how workload secrets reach the communication operator (`PoolService` decrypts `repo.Password` / `IsSecret` overrides into `WorkloadDeployedDto`). The plaintext exists only in the TLS SignalR channel and adapter memory; the adapter never holds `InstanceSecretKey` (matters for edge deployments).
 3. **CK model**: extend the `BearerToken` attribute description to state the value is stored `enc:v1`-encrypted; do not change the type (stays String — sentinel-prefixed ciphertext).
+   - **Secret `AdditionalHeaders` values are encrypted the same way.** `HttpHeader.isSecret` marks a header value as a credential (`ownership: Secret` in the CK); Studio encrypts it on save with the same `encryptValue` call and the controller decrypts it in the same post-processing step as `bearerToken`.
 4. **GraphQL read-back**: confirm the entity query returns ciphertext (it will, it's the stored value) — the form already masks it (`••••••••`) and never displays it. Verify no other UI surface (configurations list, generic entity browser) renders the raw attribute; if the generic browser does, accept it for v1 (it shows ciphertext, not the secret).
 5. **Tests**: encryption round-trip unit test (controller); form test: changed vs. untouched token paths; adapter integration: pipeline with encrypted token against a bearer-protected MCP server (can be `mcp-server-time` behind a one-line auth proxy, or skip to manual verification against GitHub MCP).
 
-**Acceptance**: new/edited tokens land in Mongo with the `enc:v1:` prefix; a pre-existing plaintext token still works; tool calls against a bearer-auth MCP server succeed; the plaintext never appears in any log (`LogToolCalls` does not log transport config — verify).
+**Acceptance**: new/edited tokens and secret header values land in Mongo with the `enc:v1:` prefix; a pre-existing plaintext token still works; tool calls against a bearer-auth MCP server succeed; the plaintext never appears in any log (`LogToolCalls` does not log transport config — verify).
 
 ## Workstream D — Deploy-time validation (2–3 days)
 
@@ -49,18 +50,19 @@ Goal: turn today's three silent failure modes into registration-time errors surf
 
 1. **Configuration-reference validation** (the `Uses`-association footgun): at pipeline registration (`PipelineRegistryService.RegisterPipelineAsync`, after `GlobalConfiguration` is built and the configuration root is deserialized), validate each `LlmQueryNodeConfiguration`:
    - every name in `McpConfigurationNames` is defined in `GlobalConfiguration` (else: `PipelineInitializationError` listing the missing name and the fix — "create the configuration and link it to the pipeline via the Uses association");
-   - `ApiKeyConfigurationName`, when set, is defined likewise.
+   - `ApiKeyConfigurationName`, when set, is defined likewise;
+   - `McpToolCallNodeConfiguration`: `McpConfigurationName` defined in `GlobalConfiguration`, `ToolName` and `TargetPath` non-empty, `TimeoutSeconds` ≥ 1 (the execution-time checks in `McpToolCallNode` move to registration as well).
    - Mechanism: introduce `IValidatableNodeConfiguration { void Validate(IGlobalConfiguration cfg); }` in Sdk.Common; the registry walks node configs and invokes it. Generic — future nodes opt in. (Alternative if SDK change is unwanted for v1: do the check in `LlmQueryNode` at first execution and *throw* instead of warning — weaker, deploy still "succeeds", but zero SDK surface. Prefer the SDK hook.)
 2. **Shape validation** (same hook, or constructor-level):
    - `Temperature`/`TopP` mutual exclusion (exists at execution time — move/duplicate to registration);
    - `ResponseFormat` ∈ {json, text};
    - `MaxToolRounds` ≥ 1; `TimeoutSeconds` ≥ 1.
-3. **Per-MCP-config shape check** (needs `GlobalConfiguration`, so registration-time): Transport=Stdio ⇒ Command non-empty; Transport=Sse|Http ⇒ Url non-empty and absolute `https?://` URI. Mirrors the runtime checks in `BuildStdioTransport`/`BuildHttpTransport` but fails at deploy.
+3. **Per-MCP-config shape check** (needs `GlobalConfiguration`, so registration-time): Transport=Stdio ⇒ Command non-empty; Transport=Sse|Http ⇒ Url non-empty and absolute `https?://` URI; **credentialed endpoints must be `https://`**: when `BearerToken`, `AdditionalHeaders` or `AuthServiceAccountConfigurationName` is set (the latter becomes a bearer before the transport is built), a remote `http://` Url is rejected, loopback stays allowed — the same rule `McpServerResolver.RequireHttpsForCredentials` enforces at run time, so a deployment cannot succeed and then fail on first execution. Mirrors the runtime checks in `BuildStdioTransport`/`BuildHttpTransport` but fails at deploy.
 4. **Timeout clamp**: `Provider == OpenAiCompatible && TimeoutSeconds > 100` ⇒ clamp to 100 + registration warning referencing the SDK HttpClient ceiling (full fix deferred to v2).
 5. **Studio form**: enforce the same Stdio/Http field requirements as validators (conditional fields exist; add required-validation + mutation-error display on save failure).
 6. Deployment errors must be visible: confirm `DeploymentUpdateErrorMessageDto` from a failed validation lands on the adapter entity (`lastConfigurationError`) and is shown in Studio — that was the blind spot on 2026-06-10.
 
-**Acceptance**: deploying a pipeline referencing a missing MCP config fails with an actionable message visible in Studio; Stdio-without-Command fails at deploy; `timeoutSeconds: 300` on Ollama logs a clamp warning at registration.
+**Acceptance**: deploying a pipeline referencing a missing MCP config fails with an actionable message visible in Studio; Stdio-without-Command fails at deploy; a remote `http://` Url with a bearer, custom headers or a service-account reference fails at deploy while `http://localhost` passes; `timeoutSeconds: 300` on Ollama logs a clamp warning at registration.
 
 ## Workstream E — Unit-test core (2–3 days, parallel to C/D)
 
@@ -72,6 +74,7 @@ New `LlmQueryNodeTests` (pure, no network) in `MeshAdapter.Sdk.Tests` (create th
 | `BuildStdioTransport` / `BuildHttpTransport` | empty Command/Url → typed exception with config name; argument parsing (one-per-line, JSON array); Http vs Sse `TransportMode` mapping |
 | `ProcessResponse` / `ExtractJsonFromText` | clean JSON; prose-wrapped JSON; malformed → fallback to text; empty |
 | `LogToolCalls` | no tools offered → silent; offered-but-unused → info line; call+result pairing by CallId; unserializable args; >500-char result truncation |
+| `McpToolCallNode` | invalid configuration fails before work regardless of `ContinueOnError` (non-positive timeout, blank names, unknown `McpConfigurationName`); malformed arguments fail instead of calling unscoped; **successful call**: in-process MCP server over stream transport, serialized `CallToolResult` lands at `TargetPath`, `next` invoked |
 | Validation (Workstream D) | each rule, positive + negative |
 | Config defaults | `Temperature`/`TopP` exclusivity, enum YAML round-trip (`OpenAICompatible` vs `OpenAiCompatible` casing) |
 
@@ -105,6 +108,6 @@ A (hygiene) ─┬─► B (codegen)       ─┐
 - [ ] Zero hand-written GraphQL types; codegen in CI
 - [ ] BearerToken `enc:v1` at rest; legacy plaintext still functional; no plaintext in logs
 - [ ] Missing config reference / bad transport shape / oversized timeout fail or warn at deploy, visible in Studio
-- [ ] Unit-test core green in CI; nightly Ollama smoke scheduled
+- [ ] Unit-test core green in CI (including the deterministic `McpToolCall@1` success case); nightly Ollama smoke scheduled
 - [ ] E2E matrix re-run: Ollama+stdio, Cerebras+stdio, Anthropic+deepwiki(Http), Anthropic+deepwiki(Sse), multi-server, GitHub-PAT bearer (encrypted)
 - [ ] Runbook section (tenant-prefixed routes, Uses association, adapter identity, stale-process restart) merged into docs

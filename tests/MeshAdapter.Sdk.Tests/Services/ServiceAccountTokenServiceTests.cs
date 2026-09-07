@@ -189,6 +189,24 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
+    public async Task GetAccessTokenAsync_DiscoveryThrows_ReturnsNullInsteadOfFaultingTheSharedFlight()
+    {
+        // Keyed path: the contract is null on failure, and a transport fault must not fault the
+        // single-flight task that concurrent callers of this (tenant, name) await.
+        SetupConfiguration(tenantId: TenantId, issuer: "https://identity.invalid");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300))
+        {
+            FailDiscovery = true
+        };
+        var service = CreateService(handler);
+
+        Assert.Null(await service.GetAccessTokenAsync(_tenantRepository, TenantId, WellKnownName,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
     public async Task AcquireDelegatedTokenAsync_NoSubjectToken_ReturnsNullWithoutCallingIdentity()
     {
         var handler = new IdentityEndpointHandler(

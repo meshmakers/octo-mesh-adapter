@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Cryptography.Pkcs;
 using System.Text;
@@ -813,8 +814,11 @@ internal class FromMicrosoftGraphEmailNode(
     private static bool IsAttemptCategory(string category, out int attempts)
     {
         attempts = 0;
+        // The marker is a persisted protocol between adapter runs: plain ASCII digits,
+        // no sign, no whitespace, culture-invariant — anything else is user metadata.
         return category.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase) &&
-               int.TryParse(category.AsSpan(AttemptCategoryPrefix.Length), out attempts);
+               int.TryParse(category.AsSpan(AttemptCategoryPrefix.Length), NumberStyles.None,
+                   CultureInfo.InvariantCulture, out attempts);
     }
 
     /// <summary>

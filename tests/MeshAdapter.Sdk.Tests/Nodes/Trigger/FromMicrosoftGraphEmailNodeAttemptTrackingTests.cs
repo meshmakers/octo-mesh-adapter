@@ -39,6 +39,12 @@ public class FromMicrosoftGraphEmailNodeAttemptTrackingTests
     {
         Assert.Equal(0, FromMicrosoftGraphEmailNode.GetAttemptCount(
             [FromMicrosoftGraphEmailNode.AttemptCategoryPrefix + "many"]));
+        // The marker protocol is plain ASCII digits — signed or padded suffixes are
+        // user metadata, not markers.
+        Assert.Equal(0, FromMicrosoftGraphEmailNode.GetAttemptCount(
+            [FromMicrosoftGraphEmailNode.AttemptCategoryPrefix + "+2"]));
+        Assert.Equal(0, FromMicrosoftGraphEmailNode.GetAttemptCount(
+            [FromMicrosoftGraphEmailNode.AttemptCategoryPrefix + " 2"]));
     }
 
     [Fact]

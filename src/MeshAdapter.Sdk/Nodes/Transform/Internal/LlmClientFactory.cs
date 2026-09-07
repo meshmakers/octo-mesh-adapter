@@ -42,16 +42,11 @@ internal static class LlmClientFactory
     {
         if (string.IsNullOrEmpty(config.ApiKeyConfigurationName)) return null;
 
-        if (etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        var key = ReadConfigurationValue(config.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext);
+        if (!string.IsNullOrEmpty(key))
         {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            var key = JObject.Parse(rawJson).Value<string>("apiKey");
-            if (!string.IsNullOrEmpty(key))
-            {
-                nodeContext.Debug(
-                    $"API key loaded from configuration '{config.ApiKeyConfigurationName}'");
-                return key;
-            }
+            nodeContext.Debug($"API key loaded from configuration '{config.ApiKeyConfigurationName}'");
+            return key;
         }
 
         nodeContext.Warning(
@@ -66,11 +61,9 @@ internal static class LlmClientFactory
     internal static string ResolveModel(
         LlmQueryNodeConfiguration config, IMeshEtlContext etlContext, INodeContext nodeContext)
     {
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName)
-            && etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
+        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName))
         {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            var model = JObject.Parse(rawJson).Value<string>("aiModel");
+            var model = ReadConfigurationValue(config.ApiKeyConfigurationName, "aiModel", etlContext, nodeContext);
             if (!string.IsNullOrEmpty(model))
             {
                 nodeContext.Debug(
@@ -88,6 +81,30 @@ internal static class LlmClientFactory
         }
 
         return config.Model;
+    }
+
+    /// <summary>
+    /// One guarded read for every AiConfiguration lookup: <c>IsDefined</c> only proves the name
+    /// is known, the stored payload can still be empty or malformed, and that must end in the
+    /// callers' documented fallback (warning, node default) rather than a parse exception.
+    /// </summary>
+    private static string? ReadConfigurationValue(
+        string configurationName, string property, IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        if (!etlContext.GlobalConfiguration.IsDefined(configurationName)) return null;
+
+        var rawJson = etlContext.GlobalConfiguration.GetRawJson(configurationName);
+        if (string.IsNullOrWhiteSpace(rawJson)) return null;
+
+        try
+        {
+            return JObject.Parse(rawJson).Value<string>(property);
+        }
+        catch (Newtonsoft.Json.JsonException ex)
+        {
+            nodeContext.Warning($"AiConfiguration '{configurationName}' is not valid JSON ({ex.Message}).");
+            return null;
+        }
     }
 
     private static IChatClient CreateOpenAiCompatible(

@@ -76,6 +76,19 @@ internal class LlmQueryNode(
             {
                 if (config.McpConfigurationNames.Count == 0)
                 {
+                    // Path left at its default "$" on a structured document: the whole request
+                    // (headers, uploaded files, ...) is never the intended prompt, and the former
+                    // warn-and-skip looked like a successful execution that wrote nothing.
+                    if (LlmPromptBuilder.IsWholeDocument(dataContext, config.Path))
+                    {
+                        throw MeshAdapterPipelineExecutionException.ProcessingError(
+                            nodeContext,
+                            new ArgumentException(
+                                $"path '{config.Path}' resolves to the whole document. Set path to the " +
+                                "string holding the content (e.g. $.body.text), or list the values to " +
+                                "include under dataPaths and keep path on a string field."));
+                    }
+
                     nodeContext.Warning($"No content found at path: {config.Path}");
                     await next(dataContext, nodeContext);
                     return;
@@ -95,7 +108,9 @@ internal class LlmQueryNode(
             var userPrompt = LlmPromptBuilder.BuildUserPrompt(
                 config.Question, context, config.ResponseFormat, config.JsonFormatSample);
 
-            var client = LlmClientFactory.Create(config, apiKey, model);
+            // IChatClient is IDisposable and the builder pipeline does not dispose the inner
+            // transport on its own; scope it to the call.
+            using var client = LlmClientFactory.Create(config, apiKey, model);
 
             var mcpServers = McpServerResolver.Resolve(config.McpConfigurationNames, etlContext, nodeContext);
             if (mcpServers.Count > 0)

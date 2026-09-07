@@ -107,6 +107,73 @@ public class LlmQueryNodeJsonRepairTests
         Assert.Equal("say 'hi'", round.GetProperty("tags")[0].GetString());
     }
 
+    // ---- Shared extraction (LlmJsonExtractor) reached through the deterministic tier ----
+
+    [Fact]
+    public async Task SingleLineFencedJson_ExtractedDeterministically_NoLlmCall()
+    {
+        var client = A.Fake<IChatClient>();
+
+        var result = await LlmJsonResponseProcessor.ProcessWithRepairAsync(
+            """Here you go: ```json {"a":1} ``` done""", MakeConfig(), client, MakeOptions(),
+            A.Fake<INodeContext>(), CancellationToken.None);
+
+        var element = Assert.IsType<JsonElement>(result);
+        Assert.Equal(1, element.GetProperty("a").GetInt32());
+        AssertNoLlmCall(client);
+    }
+
+    [Fact]
+    public async Task ProseWrappedArray_ExtractedAsWholeArray_NoLlmCall()
+    {
+        var client = A.Fake<IChatClient>();
+
+        var result = await LlmJsonResponseProcessor.ProcessWithRepairAsync(
+            """Here are the mappings: [{"a":1},{"a":2}] — let me know.""", MakeConfig(), client, MakeOptions(),
+            A.Fake<INodeContext>(), CancellationToken.None);
+
+        var element = Assert.IsType<JsonElement>(result);
+        Assert.Equal(JsonValueKind.Array, element.ValueKind);
+        Assert.Equal(2, element.GetArrayLength());
+        AssertNoLlmCall(client);
+    }
+
+    [Fact]
+    public async Task ClosingBraceInsideStringValue_DoesNotTruncateTheObject_NoLlmCall()
+    {
+        var client = A.Fake<IChatClient>();
+
+        var result = await LlmJsonResponseProcessor.ProcessWithRepairAsync(
+            """Result: {"note":"closes }","a":1} end""", MakeConfig(), client, MakeOptions(),
+            A.Fake<INodeContext>(), CancellationToken.None);
+
+        var element = Assert.IsType<JsonElement>(result);
+        Assert.Equal("closes }", element.GetProperty("note").GetString());
+        Assert.Equal(1, element.GetProperty("a").GetInt32());
+        AssertNoLlmCall(client);
+    }
+
+    // ---- MCP tool result capping ----
+
+    [Fact]
+    public void TruncateSurrogateSafe_CutBetweenSurrogates_MovesTheCutBeforeThePair()
+    {
+        // "ab" + 😀 (a surrogate pair, 2 UTF-16 code units) + "cd": a cut at 3 would split the pair.
+        const string text = "ab\U0001F600cd";
+
+        var cut = LlmMcpTools.TruncateSurrogateSafe(text, 3);
+
+        Assert.Equal("ab", cut);
+        Assert.DoesNotContain(cut, c => char.IsSurrogate(c));
+    }
+
+    [Fact]
+    public void TruncateSurrogateSafe_CutNotInsideAPair_CutsExactly()
+    {
+        Assert.Equal("ab\U0001F600", LlmMcpTools.TruncateSurrogateSafe("ab\U0001F600cd", 4));
+        Assert.Equal("abc", LlmMcpTools.TruncateSurrogateSafe("abc", 10));
+    }
+
     // ---- LLM tier: cost contracts ----
 
     [Fact]

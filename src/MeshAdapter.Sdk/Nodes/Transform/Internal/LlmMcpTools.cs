@@ -186,8 +186,27 @@ internal static class LlmMcpTools
             nodeContext.Warning(
                 $"MCP tool '{inner.Name}' result truncated from {text.Length} to {maxChars} chars. " +
                 "Request fewer fields (e.g. attributePaths) to avoid truncation.");
-            return text[..maxChars] + "\n[TRUNCATED — result too large; request fewer fields.]";
+            return TruncateSurrogateSafe(text, maxChars) + "\n[TRUNCATED — result too large; request fewer fields.]";
         }
+    }
+
+    /// <summary>
+    /// Cuts <paramref name="text"/> to at most <paramref name="maxChars"/> UTF-16 code units without
+    /// splitting a surrogate pair: a lone high surrogate would be replaced by U+FFFD when the tool
+    /// result is serialized for the follow-up request, changing the content the model sees.
+    /// </summary>
+    internal static string TruncateSurrogateSafe(string text, int maxChars)
+    {
+        if (maxChars <= 0) return string.Empty;
+        if (text.Length <= maxChars) return text;
+
+        var cut = maxChars;
+        if (char.IsHighSurrogate(text[cut - 1]) && char.IsLowSurrogate(text[cut]))
+        {
+            cut--;
+        }
+
+        return text[..cut];
     }
 
     /// <summary>

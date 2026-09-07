@@ -27,6 +27,23 @@ public interface IServiceAccountTokenService
     Task EnsureTokenAsync(ITenantRepository tenantRepository, string wellKnownName);
 
     /// <summary>
+    ///     Acquires a valid access token for the named ServiceAccountConfiguration and
+    ///     returns it <b>without touching the adapter-global <see cref="IServiceClientAccessToken" /></b>
+    ///     Tokens are cached per <c>(tenantId, wellKnownName)</c>
+    ///     (60 s expiry buffer, single-flight acquisition), so two nodes referencing different
+    ///     service accounts never receive each other's token. Returns <c>null</c> when the
+    ///     configuration cannot be resolved or the grant fails — callers decide their own
+    ///     fallback (a warning is logged).
+    /// </summary>
+    /// <param name="tenantRepository">The tenant repository to read the configuration from</param>
+    /// <param name="tenantId">Tenant the configuration belongs to. Part of the cache key —
+    ///     two tenants with a same-named ServiceAccountConfiguration must never share a token.</param>
+    /// <param name="wellKnownName">Well-known name of the ServiceAccountConfiguration entity</param>
+    /// <param name="cancellationToken">Cancellation token (bounded by the caller's timeout budget)</param>
+    Task<string?> GetAccessTokenAsync(ITenantRepository tenantRepository, string tenantId, string wellKnownName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     ///     Acquires a <b>delegated</b> access token that runs on the end user's <c>sub</c> — the
     ///     service account of <paramref name="wellKnownName" /> acting on behalf of the caller who
     ///     presented <paramref name="subjectToken" /> (OctoMesh delegation grant, AB#5026/AB#5031).
@@ -153,6 +170,20 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     private DateTime _tokenExpiresAt = DateTime.MinValue;
 
+    /// <summary>Safety margin for the keyed token cache — mirrors <see cref="IdentityCacheSkew" />.</summary>
+    private static readonly TimeSpan ExpiryBuffer = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    ///     Keyed token cache for <see cref="GetAccessTokenAsync" />: key is
+    ///     <c>tenantId::wellKnownName</c>. Deliberately separate from <see cref="_tokenExpiresAt" />
+    ///     (the adapter's own service identity) and from <see cref="_identityCache" /> (identity
+    ///     answers, not credentials).
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CachedToken> _cache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly SemaphoreSlim _acquireLock = new(1, 1);
+
     public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
         ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
         IOptions<MeshAdapterConfiguration> meshAdapterConfiguration)
@@ -248,6 +279,110 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         _tokenExpiresAt = DateTime.UtcNow.AddSeconds(response.ExpiresIn);
         _logger.LogInformation("Service account token acquired for client {ClientId} ({Mode}), expires at {ExpiresAt}",
             configuration.ClientId, mode.Value, _tokenExpiresAt);
+    }
+
+    internal sealed record CachedToken(string AccessToken, DateTime ExpiresAtUtc)
+    {
+        public bool IsValid => DateTime.UtcNow < ExpiresAtUtc - ExpiryBuffer;
+
+        /// <summary>Redacts the token — record auto-ToString would print it into any log/exception.</summary>
+        public override string ToString() =>
+            $"CachedToken {{ AccessToken = <redacted>, ExpiresAtUtc = {ExpiresAtUtc:O} }}";
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> GetAccessTokenAsync(ITenantRepository tenantRepository,
+        string tenantId, string wellKnownName, CancellationToken cancellationToken = default)
+    {
+        // Tenant-scoped cache key: the adapter is single-tenant per process today, but
+        // nothing in this API enforces that — a same-named configuration in another
+        // tenant must never resolve to this tenant's token.
+        var cacheKey = $"{tenantId}::{wellKnownName}";
+
+        if (_cache.TryGetValue(cacheKey, out var cached) && cached.IsValid)
+        {
+            return cached.AccessToken;
+        }
+
+        // Single-flight: concurrent pipeline messages must not stampede the identity
+        // server when a token expires. Double-check after the wait.
+        await _acquireLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_cache.TryGetValue(cacheKey, out cached) && cached.IsValid)
+            {
+                return cached.AccessToken;
+            }
+
+            var acquired = await AcquireTokenAsync(tenantRepository, wellKnownName, cancellationToken);
+            if (acquired is null)
+            {
+                return null;
+            }
+
+            _cache[cacheKey] = acquired;
+            return acquired.AccessToken;
+        }
+        finally
+        {
+            _acquireLock.Release();
+        }
+    }
+
+    /// <summary>
+    ///     Resolves the ServiceAccountConfiguration entity and performs the client-credentials
+    ///     grant for <see cref="GetAccessTokenAsync" />. Virtual so unit tests can substitute the
+    ///     network round-trip while exercising the cache-keying and side-effect contracts.
+    /// </summary>
+    protected virtual async Task<CachedToken?> AcquireTokenAsync(ITenantRepository tenantRepository,
+        string wellKnownName, CancellationToken cancellationToken)
+    {
+        var configuration = await ReadConfigurationAsync(tenantRepository, wellKnownName);
+        if (configuration == null)
+        {
+            return null;
+        }
+
+        // Same resolution contract as EnsureTokenAsync and AcquireDelegatedTokenAsync: an empty
+        // IssuerUri means the adapter's own installation and an empty TenantId the adapter's own
+        // tenant (AB#5115); a configuration without a usable secret is impersonated with the
+        // adapter's identity (AB#5114); discovery accepts split-horizon issuers (AB#5112). Bypassing
+        // these here left the keyed path failing on exactly the seeds the other two paths accept.
+        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
+        if (issuerUri == null)
+        {
+            return null;
+        }
+
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        var mode = SelectAcquisitionMode(configuration, wellKnownName);
+        if (mode == null)
+        {
+            return null;
+        }
+
+        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri),
+            cancellationToken);
+        if (disco.IsError)
+        {
+            _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}", issuerUri, disco.Error);
+            return null;
+        }
+
+        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
+        var response = await _tokenHttpClient.RequestTokenAsync(tokenRequest, cancellationToken);
+        if (response.IsError || string.IsNullOrEmpty(response.AccessToken))
+        {
+            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}", issuerUri, response.Error);
+            return null;
+        }
+
+        var expiresAt = DateTime.UtcNow.AddSeconds(response.ExpiresIn);
+        _logger.LogInformation(
+            "Service account token acquired for '{WellKnownName}' (client {ClientId}, {Mode}), expires at {ExpiresAt}",
+            wellKnownName, configuration.ClientId, mode.Value, expiresAt);
+
+        return new CachedToken(response.AccessToken, expiresAt);
     }
 
     /// <inheritdoc />

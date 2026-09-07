@@ -148,6 +148,67 @@ public class HttpRequestServiceTests
     }
 
     [Fact]
+    public async Task SendRequestAsync_JsonBodyWithUtf8CharsetParameter_ParsedAsJsonNode()
+    {
+        JsonNode? receivedInput = null;
+        var options = CreateRouteOptions("/api/json", HttpMethod.Post, input =>
+        {
+            receivedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        });
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/json",
+            "{\"name\":\"Grüße\"}", "application/json; charset=utf-8");
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal("Grüße", receivedInput!["body"]!["name"]?.ToString());
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_JsonBodyDeclaredUtf16WithoutBom_DecodedWithTheDeclaredCharset()
+    {
+        JsonNode? receivedInput = null;
+        var options = CreateRouteOptions("/api/json", HttpMethod.Post, input =>
+        {
+            receivedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        });
+        _service.CreateRoute(options);
+
+        // UTF-16LE without a byte-order mark: only the declared charset can tell it from UTF-8.
+        var bytes = Encoding.Unicode.GetBytes("{\"name\":\"Grüße\",\"value\":42}");
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/json", bytes, "application/json; charset=utf-16");
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        var body = receivedInput!["body"];
+        Assert.NotNull(body);
+        Assert.Equal("Grüße", body!["name"]?.ToString());
+        Assert.Equal(42, body["value"]?.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_TextBodyDeclaredLatin1_DecodedWithTheDeclaredCharset()
+    {
+        JsonNode? receivedInput = null;
+        var options = CreateRouteOptions("/api/text", HttpMethod.Post, input =>
+        {
+            receivedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        });
+        _service.CreateRoute(options);
+
+        var bytes = Encoding.Latin1.GetBytes("Grüße");
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/text", bytes, "text/plain; charset=iso-8859-1");
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal("Grüße", receivedInput!["body"]?.ToString());
+    }
+
+    [Fact]
     public async Task SendRequestAsync_TextBody_ParsedAsString()
     {
         JsonNode? receivedInput = null;
@@ -846,17 +907,20 @@ public class HttpRequestServiceTests
     }
 
     private static DefaultHttpContext CreateHttpContext(string method, string path,
-        string? body = null, string? contentType = null)
+        string? body = null, string? contentType = null) =>
+        CreateHttpContext(method, path, body is null ? null : Encoding.UTF8.GetBytes(body), contentType);
+
+    private static DefaultHttpContext CreateHttpContext(string method, string path,
+        byte[]? bodyBytes, string? contentType)
     {
         var context = new DefaultHttpContext();
         context.Request.Method = method;
         context.Request.Path = path;
 
-        if (body != null)
+        if (bodyBytes != null)
         {
-            var bytes = Encoding.UTF8.GetBytes(body);
-            context.Request.Body = new MemoryStream(bytes);
-            context.Request.ContentLength = bytes.Length;
+            context.Request.Body = new MemoryStream(bodyBytes);
+            context.Request.ContentLength = bodyBytes.Length;
             context.Request.ContentType = contentType;
         }
 

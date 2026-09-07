@@ -9,7 +9,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfiguration
 {
     /// <summary>
-    /// Specific page numbers to process (if not set, all pages will be processed)
+    /// Specific 1-based page numbers to OCR (if not set, all pages will be processed). Only the
+    /// selected pages are rasterized and recognized. Setting this disables the text-layer ladder.
     /// </summary>
     [PropertyGroup("Options", 0)]
     public int[]? PageNumbers { get; set; }

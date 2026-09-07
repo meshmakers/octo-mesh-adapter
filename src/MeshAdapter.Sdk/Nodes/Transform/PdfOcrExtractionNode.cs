@@ -110,30 +110,27 @@ internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfText
             // Tier 2: OCR — runs unless the text layer covered every page.
             if (extractedText == null)
             {
-                var result = RunOcr(config, fileData, isPdf);
+                // OCR only what still needs it: the pages without a text layer in the mixed case,
+                // or the configured page selection. Rasterizing and recognizing pages whose text
+                // is then discarded was the dominant cost on mixed documents.
+                var ocrPageIndices = pagesWithLayer != null
+                    ? PagesWithoutLayer(pagesWithLayer)
+                    : SelectedPageIndices(config);
+                var result = RunOcr(config, fileData, isPdf, ocrPageIndices);
 
-                // OcrResult pages are 0-based in document order; PdfPageText.PageNumber is 1-based.
+                // OcrResult pages come back in the order requested; PdfPageText.PageNumber is 1-based.
                 var ocrPageTexts = result.Pages?.Select(p => p.Text).ToList();
                 if (pagesWithLayer != null && ocrPageTexts is { Count: > 0 })
                 {
-                    // Mixed: text-layer pages stay lossless; OCR fills the gaps (page order kept).
-                    var merged = new List<string>(pagesWithLayer.Count);
-                    foreach (var page in pagesWithLayer)
+                    if (ocrPageTexts.Count != ocrPageIndices!.Count)
                     {
-                        if (page.HasTextLayer)
-                        {
-                            merged.Add(page.Text);
-                        }
-                        else
-                        {
-                            var ocrIndex = page.PageNumber - 1;
-                            merged.Add(ocrIndex >= 0 && ocrIndex < ocrPageTexts.Count
-                                ? ocrPageTexts[ocrIndex]
-                                : string.Empty);
-                        }
+                        nodeContext.Warning(
+                            $"OCR returned {ocrPageTexts.Count} page(s) for {ocrPageIndices.Count} requested; " +
+                            "pages without a result are left empty");
                     }
 
-                    extractedText = string.Join("\n\n", merged);
+                    // Mixed: text-layer pages stay lossless; OCR fills the gaps (page order kept).
+                    extractedText = MergeMixedPages(pagesWithLayer, ocrPageTexts);
                 }
                 else
                 {
@@ -201,7 +198,52 @@ internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfText
     /// <summary>
     /// Pre-existing IronOCR path, unchanged in behavior.
     /// </summary>
-    private static OcrResult RunOcr(PdfOcrExtractionNodeConfiguration config, byte[] fileData, bool isPdf)
+    /// <summary>
+    /// Zero-based indices of the pages that have no usable text layer, in document order — the
+    /// pages the OCR pass has to cover in the mixed case.
+    /// </summary>
+    internal static IReadOnlyList<int> PagesWithoutLayer(IReadOnlyList<PdfPageText> pages) =>
+        pages.Where(p => !p.HasTextLayer).Select(p => p.PageNumber - 1).Where(i => i >= 0).ToList();
+
+    /// <summary>
+    /// Zero-based indices for a configured <see cref="PdfOcrExtractionNodeConfiguration.PageNumbers"/>
+    /// selection (1-based on the configuration); null when every page is to be processed.
+    /// </summary>
+    internal static IReadOnlyList<int>? SelectedPageIndices(PdfOcrExtractionNodeConfiguration config) =>
+        config.PageNumbers is { Length: > 0 }
+            ? config.PageNumbers.Where(n => n >= 1).Select(n => n - 1).Distinct().OrderBy(i => i).ToList()
+            : null;
+
+    /// <summary>
+    /// Interleaves text-layer pages with the OCR results of the pages that lacked one. The OCR
+    /// texts arrive in the order of <see cref="PagesWithoutLayer"/>, so they are consumed
+    /// sequentially rather than indexed by absolute page number — the OCR pass no longer covers
+    /// every page. A missing OCR result leaves that page empty instead of shifting the others.
+    /// </summary>
+    internal static string MergeMixedPages(IReadOnlyList<PdfPageText> pages,
+        IReadOnlyList<string> ocrTextsForPagesWithoutLayer)
+    {
+        var merged = new List<string>(pages.Count);
+        var nextOcr = 0;
+        foreach (var page in pages)
+        {
+            if (page.HasTextLayer)
+            {
+                merged.Add(page.Text);
+            }
+            else
+            {
+                merged.Add(nextOcr < ocrTextsForPagesWithoutLayer.Count
+                    ? ocrTextsForPagesWithoutLayer[nextOcr++]
+                    : string.Empty);
+            }
+        }
+
+        return string.Join("\n\n", merged);
+    }
+
+    private static OcrResult RunOcr(PdfOcrExtractionNodeConfiguration config, byte[] fileData, bool isPdf,
+        IReadOnlyList<int>? pageIndices)
     {
         // Initialize IronOCR with explicit configuration
         License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
@@ -217,8 +259,11 @@ internal class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfText
             ocr.Configuration.PageSegmentationMode = TesseractPageSegmentationMode.AutoOsd;
         }
 
+        // IronOCR page indices are zero-based; null means the whole document.
         using OcrInputBase ocrInput = isPdf
-            ? new OcrPdfInput(fileData)
+            ? pageIndices is { Count: > 0 }
+                ? new OcrPdfInput(fileData, PageIndices: pageIndices)
+                : new OcrPdfInput(fileData)
             : new OcrImageInput(fileData);
 
         // A photographed document benefits from geometric + noise correction

@@ -6,15 +6,13 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 public enum LlmProvider
 {
     /// <summary>
-    ///     <term>OpenAICompatible</term>
-    ///     <description>OpenAI, Azure OpenAI, Ollama (/v1/), vLLM, TGI, LiteLLM
-    ///     proxy, AWS Bedrock OpenAI-gateway, KServe, LocalAI, and any custom
-    ///     self-hosted endpoint that exposes the OpenAI HTTP API.</description>
+    /// Any endpoint exposing the OpenAI HTTP API: OpenAI cloud, Azure OpenAI,
+    /// and self-hosted backends (Ollama, vLLM, Cerebras, LiteLLM, ...).
     /// </summary>
     OpenAiCompatible,
+
     /// <summary>
-    ///     <term>Anthropic</term>
-    ///     <description>Native Anthropic API (Claude direct).</description>
+    /// Native Anthropic API (Claude).
     /// </summary>
-    Anthropic   // placeholder for Spike 4
+    Anthropic
 }

@@ -1,4 +1,6 @@
+using System.Net;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using ModelContextProtocol.Client;
 using Newtonsoft.Json.Linq;
@@ -74,20 +76,13 @@ internal static class McpServerResolver
             if (string.IsNullOrEmpty(rawJson)) continue;
             var doc = JObject.Parse(rawJson);
 
-            var transportToken = doc["transport"];
-            var transport = transportToken?.Type switch
-            {
-                JTokenType.Integer => (McpTransport)transportToken.Value<int>(),
-                JTokenType.String => Enum.TryParse<McpTransport>(
-                    transportToken.Value<string>()!, ignoreCase: true, out var t) ? t : McpTransport.Sse,
-                _ => McpTransport.Sse
-            };
+            var transport = ParseTransport(doc["transport"], name, nodeContext);
 
             var additionalHeaders = ParseHeaders(doc["additionalHeaders"] as JArray);
 
             result.Add(new McpServerConfig(
                 Name: name,
-                Url: doc.Value<string>("url"),
+                Url: ResolveUrl(doc.Value<string>("url"), etlContext.TenantId),
                 Transport: transport,
                 Command: doc.Value<string>("command"),
                 Arguments: doc.Value<string>("arguments"),
@@ -105,15 +100,61 @@ internal static class McpServerResolver
     }
 
     /// <summary>
+    /// Both wire forms are accepted (integer key or enum name). An unknown value falls back to
+    /// Sse — the documented default — with a warning, instead of producing an undefined enum
+    /// member that <see cref="BuildTransport"/> would reject later with a less useful message.
+    /// </summary>
+    internal static McpTransport ParseTransport(JToken? transportToken, string name, INodeContext nodeContext)
+    {
+        switch (transportToken?.Type)
+        {
+            case JTokenType.Integer:
+                var key = transportToken.Value<int>();
+                if (Enum.IsDefined(typeof(McpTransport), key))
+                {
+                    return (McpTransport)key;
+                }
+
+                nodeContext.Warning(
+                    $"McpConfiguration '{name}': unknown transport key {key}; falling back to Sse.");
+                return McpTransport.Sse;
+            case JTokenType.String:
+                var text = transportToken.Value<string>()!;
+                if (Enum.TryParse<McpTransport>(text, ignoreCase: true, out var parsed)
+                    && Enum.IsDefined(typeof(McpTransport), parsed))
+                {
+                    return parsed;
+                }
+
+                nodeContext.Warning(
+                    $"McpConfiguration '{name}': unknown transport '{text}'; falling back to Sse.");
+                return McpTransport.Sse;
+            default:
+                return McpTransport.Sse;
+        }
+    }
+
+    /// <summary>
+    /// Substitutes the <c>{tenantId}</c> placeholder the CK attribute description promises, so a
+    /// seeded configuration can name the tenant-routed MCP endpoint without baking a tenant in.
+    /// </summary>
+    internal static string? ResolveUrl(string? url, string tenantId) =>
+        string.IsNullOrEmpty(url) ? url : url.Replace("{tenantId}", tenantId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Replaces the static <c>BearerToken</c> of every server that references a
     /// <c>ServiceAccountConfiguration</c> (via <c>AuthServiceAccountConfigurationName</c>)
     /// with a freshly acquired client-credentials token. Precedence, matching DD-4:
     /// service-account token &gt; static BearerToken; an explicit <c>Authorization</c>
     /// entry in AdditionalHeaders still overrides both (applied later in
-    /// <see cref="BuildTransport"/>). Acquisition failures log a warning and fall
-    /// back to the static token — a broken identity server degrades that one server,
-    /// not the whole pipeline.
+    /// <see cref="BuildTransport"/>). A configured service account is a required execution
+    /// identity: when the token cannot be acquired the server is rejected (fail closed) rather
+    /// than called with the static token or anonymously under a different identity.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The referenced ServiceAccountConfiguration yields no token (misconfigured or identity
+    /// server unavailable).
+    /// </exception>
     internal static async Task<IList<McpServerConfig>> ApplyServiceAccountTokensAsync(
         IList<McpServerConfig> servers,
         IServiceAccountTokenService tokenService,
@@ -129,24 +170,41 @@ internal static class McpServerResolver
                 continue;
             }
 
-            var token = await tokenService.GetAccessTokenAsync(
-                etlContext.TenantRepository, etlContext.TenantId,
-                server.AuthServiceAccountConfigurationName, ct);
+            string? token;
+            try
+            {
+                token = await tokenService.GetAccessTokenAsync(
+                    etlContext.TenantRepository, etlContext.TenantId,
+                    server.AuthServiceAccountConfigurationName, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Fail closed: never call the server under the static token or anonymously when it
+                // was configured to run as the service account.
+                throw new InvalidOperationException(
+                    $"MCP server '{server.Name}': acquiring a service-account token from " +
+                    $"'{server.AuthServiceAccountConfigurationName}' failed ({ex.GetType().Name}: {ex.Message}). " +
+                    "The configured service account is required; the server is not called under another identity.",
+                    ex);
+            }
 
-            if (!string.IsNullOrEmpty(token))
+            if (string.IsNullOrEmpty(token))
             {
-                servers[i] = server with { BearerToken = token };
-                nodeContext.Debug(
-                    $"MCP server '{server.Name}': using service-account bearer from " +
-                    $"'{server.AuthServiceAccountConfigurationName}' (overrides static BearerToken)");
+                throw new InvalidOperationException(
+                    $"MCP server '{server.Name}': no service-account token could be acquired from " +
+                    $"'{server.AuthServiceAccountConfigurationName}' (configuration missing, secret unusable, or the grant failed; " +
+                    "see the adapter log for the cause). " +
+                    "The configured service account is required; the server is not called under another identity.");
             }
-            else
-            {
-                nodeContext.Warning(
-                    $"MCP server '{server.Name}': could not acquire a service-account token from " +
-                    $"'{server.AuthServiceAccountConfigurationName}'; falling back to the static " +
-                    "BearerToken (requests may be unauthenticated).");
-            }
+
+            servers[i] = server with { BearerToken = token };
+            nodeContext.Debug(
+                $"MCP server '{server.Name}': using service-account bearer from " +
+                $"'{server.AuthServiceAccountConfigurationName}' (overrides static BearerToken)");
         }
 
         return servers;
@@ -196,6 +254,9 @@ internal static class McpServerResolver
                 "Set Url to the MCP server endpoint (e.g. https://mcp.example.com).");
         }
 
+        var endpoint = new Uri(server.Url);
+        RequireHttpsForCredentials(server, endpoint);
+
         // HttpClientTransport unifies SSE and Streamable HTTP — TransportMode picks
         // between them. McpTransport.Http → Streamable HTTP (the newer spec, faster);
         // McpTransport.Sse → legacy Server-Sent Events. Default AutoDetect tries
@@ -234,8 +295,33 @@ internal static class McpServerResolver
         {
             options.AdditionalHeaders = headers;
         }
-        return new HttpClientTransport(options);
+        // Own HttpClient without automatic redirects: the SDK copies the credential headers onto
+        // every request, so a redirect to another origin would hand them to that origin.
+        var httpClient = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false });
+        return new HttpClientTransport(options, httpClient, NullLoggerFactory.Instance, ownsHttpClient: true);
     }
+
+    /// <summary>
+    /// A bearer token or custom headers travel on every MCP request, so they may only go over
+    /// TLS. Loopback stays allowed for local development servers; everything else must be https.
+    /// Credential-free endpoints keep working over plain http.
+    /// </summary>
+    internal static void RequireHttpsForCredentials(McpServerConfig server, Uri endpoint)
+    {
+        var hasCredentials = !string.IsNullOrEmpty(server.BearerToken) || server.AdditionalHeaders.Count > 0;
+        if (!hasCredentials || endpoint.Scheme == Uri.UriSchemeHttps || IsLoopback(endpoint))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"McpConfiguration '{server.Name}' sends credentials (BearerToken, AdditionalHeaders or a " +
+            $"service-account token) to '{endpoint.Scheme}://{endpoint.Host}', which is not TLS. Use an https " +
+            "URL, or remove the credentials for an unauthenticated endpoint.");
+    }
+
+    private static bool IsLoopback(Uri endpoint) =>
+        endpoint.IsLoopback || (IPAddress.TryParse(endpoint.Host, out var ip) && IPAddress.IsLoopback(ip));
 
     private static IList<string> ParseStdioArguments(string? arguments)
     {

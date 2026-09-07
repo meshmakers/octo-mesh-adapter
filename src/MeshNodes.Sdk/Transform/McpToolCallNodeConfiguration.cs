@@ -24,8 +24,10 @@ public record McpToolCallNodeConfiguration : TargetPathNodeConfiguration
     /// Well-known name of the <c>System.Communication/McpConfiguration</c> entity
     /// whose MCP server hosts the tool. Resolved from <c>GlobalConfiguration</c> at
     /// pipeline-execution time. The configuration must be linked to the pipeline via
-    /// the <c>Uses</c> association so it ships in <c>GlobalConfiguration</c>; an
-    /// unknown name logs a warning and the node passes through without calling.
+    /// the <c>Uses</c> association so it ships in <c>GlobalConfiguration</c>. An
+    /// unknown or empty name is a configuration error: the node fails with a pipeline
+    /// execution exception before any work and does not continue to the next node,
+    /// regardless of <c>ContinueOnError</c>.
     /// </summary>
     [PropertyGroup("Connection", 0)]
     public required string McpConfigurationName { get; set; }

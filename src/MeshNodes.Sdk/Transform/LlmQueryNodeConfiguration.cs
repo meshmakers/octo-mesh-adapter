@@ -30,7 +30,9 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     ///   <item><description>Cerebras:  https://api.cerebras.ai/v1/</description></item>
     ///   <item><description>Groq:      https://api.groq.com/openai/v1/</description></item>
     /// </list>
-    /// The trailing slash is required. Ignored when Provider = Anthropic.
+    /// The trailing slash is required. For Provider = Anthropic it overrides the default
+    /// https://api.anthropic.com endpoint (self-hosted proxies, enterprise gateways); leave null
+    /// to use the public API.
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public string? BaseUrl { get; set; }
@@ -87,9 +89,9 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// Sampling temperature, typically 0.0–1.0. Lower = more deterministic;
-    /// higher = more random. Default 0.3 works well for extraction and
-    /// summarization tasks; bump to 0.7 for varied creative output. Set to
-    /// null (omit from YAML) to let the provider apply its own default.
+    /// higher = more random. When neither Temperature nor <see cref="TopP"/> is set,
+    /// the node applies 0.3, which works well for extraction and summarization;
+    /// bump to 0.7 for varied creative output.
     /// <para>
     /// <b>Mutually exclusive with <see cref="TopP"/>.</b> Industry convention
     /// (OpenAI, Anthropic, Cerebras, Ollama) is to use only one of these
@@ -100,7 +102,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// </para>
     /// </summary>
     [PropertyGroup("AI Configuration / Sampling", 4)]
-    public double? Temperature { get; set; } = 0.3;
+    public double? Temperature { get; set; }
 
     /// <summary>
     /// Nucleus-sampling threshold, 0.0–1.0. Optional; null = provider default.

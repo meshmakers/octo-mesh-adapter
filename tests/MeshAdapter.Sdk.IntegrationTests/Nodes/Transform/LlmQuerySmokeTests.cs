@@ -469,18 +469,58 @@ public class LlmQuerySmokeTests
     private static async Task EnsureOllamaReachableAsync()
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        string body;
         try
         {
             var resp = await http.GetAsync($"{OllamaBaseUrl}models");
-            resp.IsSuccessStatusCode.Should().BeTrue(
-                $"Ollama responded but with status {(int)resp.StatusCode}. " +
-                "Ensure the daemon is healthy.");
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Reachable but unhealthy or incompatible: still an unavailable service, so skip.
+                Assert.Skip(
+                    $"Ollama responded with status {(int)resp.StatusCode} at {OllamaBaseUrl}models — skipping smoke test. " +
+                    "Ensure the daemon is healthy and serves the OpenAI-compatible /v1 API.");
+                return;
+            }
+
+            body = await resp.Content.ReadAsStringAsync();
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             Assert.Skip(
                 $"Ollama is not reachable at {OllamaBaseUrl} ({ex.GetType().Name}) — skipping smoke test. " +
                 $"Start it with `ollama serve` and `ollama pull {Model}` to run this locally.");
+            return;
+        }
+
+        // A reachable daemon without the model would fail the success/telemetry tests instead of
+        // skipping them. OpenAI-compatible listing: { "data": [ { "id": "<model>" }, ... ] }
+        System.Text.Json.JsonElement root;
+        try
+        {
+            root = System.Text.Json.JsonDocument.Parse(body).RootElement;
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            // Something answers 200 at the endpoint but it is not the OpenAI-compatible API
+            // (a proxy page, a different service on the port): unavailable, so skip, not fail.
+            Assert.Skip(
+                $"Ollama at {OllamaBaseUrl}models returned a non-JSON body ({ex.Message}) — skipping smoke test. " +
+                "Ensure the daemon serves the OpenAI-compatible /v1 API on this address.");
+            return;
+        }
+
+        var installed = root.TryGetProperty("data", out var data)
+                        && data.ValueKind == System.Text.Json.JsonValueKind.Array
+            ? data.EnumerateArray()
+                .Select(m => m.TryGetProperty("id", out var id) ? id.GetString() : null)
+                .OfType<string>()
+                .ToList()
+            : [];
+        if (!installed.Contains(Model))
+        {
+            Assert.Skip(
+                $"Ollama is reachable but does not serve '{Model}' — skipping smoke test. " +
+                $"Run `ollama pull {Model}` to run this locally (installed: {string.Join(", ", installed)}).");
         }
     }
 }

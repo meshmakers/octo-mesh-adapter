@@ -118,6 +118,74 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_HiddenPreheaderWithInvisibleCharacters_RendersPdf()
+    {
+        // Real-world poison mail (AB#5142, prod-1 OOM loop): a marketing preheader
+        // hidden via display:none, padded with hundreds of COMBINING GRAPHEME JOINER
+        // (U+034F) and SOFT HYPHEN (U+00AD) characters. QuestPDF cannot lay out such
+        // a run — depending on the platform's fonts it either throws a layout
+        // exception or allocates until the process is OOM-killed.
+        var preheader = "Logge Dich in Deinem Konto ein, um zu bezahlen "
+                        + string.Concat(Enumerable.Repeat("\u034F  ", 150))
+                        + string.Concat(Enumerable.Repeat("\u00AD ", 150));
+        var html = "<table><tbody>"
+                   + $"<tr><td><div style=\"display:none\">{preheader}</div></td></tr>"
+                   + "<tr><td>Bitte zahle den offenen Betrag: 64,48 EUR</td></tr>"
+                   + "</tbody></table>";
+        var config = new RenderHtmlPdfNodeConfiguration
+            { Path = "$.html", TargetPath = "$.pdf", Title = "Fwd: Achtung: Deine Zahlung ist fehlgeschlagen" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VisibleInvisibleCharacterRun_IsStrippedAndRendersPdf()
+    {
+        // The same invisible-character padding OUTSIDE a hidden container — the
+        // characters carry no visible content and are stripped during normalization,
+        // so the layout never sees the unplaceable run.
+        var html = "<p>Betrag fällig"
+                   + string.Concat(Enumerable.Repeat("\u034F \u00AD\u200B\u200D\u2060\uFEFF", 100))
+                   + "am 08.09.2026</p>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_HiddenInlineElement_IsSkipped()
+    {
+        // visibility:hidden on an inline element inside a text run.
+        var html = "<p>Visible<span style=\"visibility: hidden\">"
+                   + string.Concat(Enumerable.Repeat("\u034F ", 200))
+                   + "</span> text</p>";
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
+        A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
+
+        var node = new RenderHtmlPdfNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        AssertIsPdf(CapturedString(dataContext, config.TargetPath));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_EmptyContent_RendersPdf()
     {
         var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf" };

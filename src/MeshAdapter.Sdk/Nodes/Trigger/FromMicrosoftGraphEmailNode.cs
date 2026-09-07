@@ -89,10 +89,16 @@ internal class FromMicrosoftGraphEmailNode(
     {
         string? sourceFolderId = null;
         string? targetFolderId = null;
-        // Messages that keep failing are skipped after MaxAttemptsPerMessage tries so a
-        // poison message cannot block the folder queue; successful messages are moved
-        // away, so no bookkeeping is needed for them.
+        string? failureFolderId = null;
+        // In-process fallback attempt counter for mailboxes where the category stamp
+        // cannot be written; the authoritative count lives ON the message as an
+        // Outlook category (AB#5142), so it survives adapter restarts and counts
+        // runs that killed the process (e.g. an OOM in a render node) and therefore
+        // never reported a failure.
         var failureCounts = new Dictionary<string, int>();
+        // Avoids re-warning every poll about an exhausted message that stays in the
+        // source folder because no failure folder is configured.
+        var exhaustedLogged = new HashSet<string>();
 
         while (!_cancellationTokenSource!.Token.IsCancellationRequested)
         {
@@ -106,6 +112,12 @@ internal class FromMicrosoftGraphEmailNode(
                 {
                     targetFolderId ??= await ResolveFolderIdAsync(accessToken, nodeConfig.Mailbox,
                         nodeConfig.MoveToFolderPathOnSuccess, createLeafIfMissing: true);
+                }
+
+                if (!string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure))
+                {
+                    failureFolderId ??= await ResolveFolderIdAsync(accessToken, nodeConfig.Mailbox,
+                        nodeConfig.MoveToFolderPathOnFailure, createLeafIfMissing: true);
                 }
 
                 var messages = await GetMessagesAsync(accessToken, nodeConfig, sourceFolderId);
@@ -123,9 +135,28 @@ internal class FromMicrosoftGraphEmailNode(
                         continue;
                     }
 
-                    if (failureCounts.TryGetValue(messageId, out var attempts) &&
-                        attempts >= nodeConfig.MaxAttemptsPerMessage)
+                    var subject = message.TryGetProperty("subject", out var subj) ? subj.GetString() : null;
+                    var categories = GetCategories(message);
+                    var attempts = Math.Max(GetAttemptCount(categories),
+                        failureCounts.GetValueOrDefault(messageId));
+
+                    if (attempts >= nodeConfig.MaxAttemptsPerMessage)
                     {
+                        if (failureFolderId != null)
+                        {
+                            await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId, failureFolderId);
+                            logger.LogWarning(
+                                "Mail '{Subject}' failed {MaxAttempts} attempt(s); moved to '{Folder}'",
+                                subject, nodeConfig.MaxAttemptsPerMessage, nodeConfig.MoveToFolderPathOnFailure);
+                        }
+                        else if (exhaustedLogged.Add(messageId))
+                        {
+                            logger.LogWarning(
+                                "Mail '{Subject}' failed {MaxAttempts} attempt(s); skipping it " +
+                                "(configure moveToFolderPathOnFailure to move such messages aside)",
+                                subject, nodeConfig.MaxAttemptsPerMessage);
+                        }
+
                         continue;
                     }
 
@@ -146,6 +177,12 @@ internal class FromMicrosoftGraphEmailNode(
                         ProcessedAt = DateTime.UtcNow
                     };
 
+                    // Stamp the attempt BEFORE the run: a poison message can take the whole
+                    // process down (OOM), in which case no catch block ever runs — only a
+                    // marker persisted on the message itself makes that run count (AB#5142).
+                    var stamped = await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId,
+                        WithAttemptCategory(categories, attempts + 1));
+
                     try
                     {
                         // One pipeline run per message so the success/failure of a run maps
@@ -153,6 +190,11 @@ internal class FromMicrosoftGraphEmailNode(
                         await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
 
                         failureCounts.Remove(messageId);
+                        if (stamped)
+                        {
+                            await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId,
+                                WithoutAttemptCategory(categories));
+                        }
 
                         if (targetFolderId != null)
                         {
@@ -165,11 +207,10 @@ internal class FromMicrosoftGraphEmailNode(
                     }
                     catch (Exception ex)
                     {
-                        var count = failureCounts.GetValueOrDefault(messageId) + 1;
-                        failureCounts[messageId] = count;
+                        failureCounts[messageId] = attempts + 1;
                         logger.LogError(ex,
                             "Pipeline run failed for mail '{Subject}' (attempt {Attempt}/{MaxAttempts}); message stays in '{Folder}'",
-                            emailData.Subject, count, nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                            emailData.Subject, attempts + 1, nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
                     }
                 }
 
@@ -186,6 +227,7 @@ internal class FromMicrosoftGraphEmailNode(
                 // renamed/moved, which surfaces as a request failure here).
                 sourceFolderId = null;
                 targetFolderId = null;
+                failureFolderId = null;
                 logger.LogError(ex, "Error while polling Microsoft Graph mailbox '{Mailbox}'", nodeConfig.Mailbox);
                 // Guard the backoff delay: a cancel during StopAsync makes Task.Delay throw
                 // TaskCanceledException, which — being raised inside this catch — would escape
@@ -363,7 +405,7 @@ internal class FromMicrosoftGraphEmailNode(
         var url =
             $"{GraphBaseUrl}/users/{Uri.EscapeDataString(config.Mailbox)}/mailFolders/{folderId}/messages" +
             $"?$top={config.MaxMessagesPerPoll}&$orderby=receivedDateTime asc" +
-            "&$select=id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId";
+            "&$select=id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId,categories";
 
         var response = await client.GetAsync(url, _cancellationTokenSource!.Token);
         response.EnsureSuccessStatusCode();
@@ -754,6 +796,101 @@ internal class FromMicrosoftGraphEmailNode(
             case MimePart part:
                 yield return part;
                 break;
+        }
+    }
+
+    // Outlook category carrying the persistent per-message attempt count, e.g.
+    // "OctoMesh-Import-Attempt-2". Deliberately a category (not an extended
+    // property): it is visible in the mailbox, so an operator can see at a glance
+    // why a message was skipped or moved aside. AB#5142.
+    internal const string AttemptCategoryPrefix = "OctoMesh-Import-Attempt-";
+
+    /// <summary>
+    /// Reads the attempt count from a message's categories. Multiple markers (which
+    /// only a partial category update failure could leave behind) read as the maximum.
+    /// </summary>
+    internal static int GetAttemptCount(IReadOnlyList<string> categories)
+    {
+        var attempts = 0;
+        foreach (var category in categories)
+        {
+            if (category.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(category.AsSpan(AttemptCategoryPrefix.Length), out var value) &&
+                value > attempts)
+            {
+                attempts = value;
+            }
+        }
+
+        return attempts;
+    }
+
+    /// <summary>
+    /// Returns the categories with the attempt marker set to <paramref name="attempts"/>,
+    /// preserving every unrelated (user-assigned) category.
+    /// </summary>
+    internal static List<string> WithAttemptCategory(IReadOnlyList<string> categories, int attempts)
+    {
+        var result = WithoutAttemptCategory(categories);
+        result.Add($"{AttemptCategoryPrefix}{attempts}");
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the categories with every attempt marker removed, preserving every
+    /// unrelated (user-assigned) category.
+    /// </summary>
+    internal static List<string> WithoutAttemptCategory(IReadOnlyList<string> categories)
+    {
+        return categories
+            .Where(c => !c.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static IReadOnlyList<string> GetCategories(JsonElement message)
+    {
+        if (!message.TryGetProperty("categories", out var categories) ||
+            categories.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return categories.EnumerateArray()
+            .Select(c => c.GetString())
+            .Where(c => c != null)
+            .Select(c => c!)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Replaces a message's categories. Never throws: a mailbox where the stamp cannot
+    /// be written degrades to the in-process attempt counter instead of blocking the
+    /// import (the caller checks the return value before relying on the stamp).
+    /// </summary>
+    private async Task<bool> TrySetCategoriesAsync(string accessToken, string mailbox, string messageId,
+        List<string> categories)
+    {
+        try
+        {
+            using var client = CreateGraphClient(accessToken);
+            var url = $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}";
+            var payload = JsonSerializer.Serialize(new { categories });
+            var response = await client.PatchAsync(url,
+                new StringContent(payload, Encoding.UTF8, "application/json"), _cancellationTokenSource!.Token);
+            response.EnsureSuccessStatusCode();
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not update the attempt-tracking categories on message {MessageId}; " +
+                "attempt counting falls back to in-process tracking until the adapter restarts",
+                messageId);
+            return false;
         }
     }
 

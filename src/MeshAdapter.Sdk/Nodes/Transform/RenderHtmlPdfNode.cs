@@ -51,6 +51,21 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
 
+    // Invisible formatting characters: soft hyphen, combining grapheme joiner,
+    // zero-width space/non-joiner/joiner, word joiner, zero-width no-break space (BOM).
+    // Marketing-mail preheaders pad hundreds of these into hidden text; QuestPDF's
+    // text shaper cannot place such runs ("cannot render even a single character")
+    // and, depending on the platform's font fallback, either throws a layout
+    // exception or allocates until the process is OOM-killed (AB#5142). They carry
+    // no visible content, so stripping them is lossless for a rendered receipt.
+    [GeneratedRegex("[\\u00AD\\u034F\\u200B-\\u200D\\u2060\\uFEFF]")]
+    private static partial Regex InvisibleCharsRegex();
+
+    // Matches an inline style declaring display:none or visibility:hidden.
+    [GeneratedRegex(@"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:;|$)",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex HiddenStyleRegex();
+
     private readonly record struct InlineStyle(bool Bold, bool Italic, bool Underline, bool Link)
     {
         public InlineStyle WithBold() => this with { Bold = true };
@@ -194,6 +209,11 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
     private static void CollectInline(IElement element, InlineStyle style, List<InlineRun> buffer)
     {
+        if (IsHidden(element))
+        {
+            return;
+        }
+
         var name = element.LocalName;
         var childStyle = name switch
         {
@@ -232,7 +252,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     private static void DispatchBlock(IElement element, ColumnDescriptor col, InlineStyle style)
     {
         var name = element.LocalName;
-        if (SkippedTags.Contains(name))
+        if (SkippedTags.Contains(name) || IsHidden(element))
         {
             return;
         }
@@ -277,7 +297,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         var index = 1;
         foreach (var item in element.Children)
         {
-            if (item.LocalName != "li")
+            if (item.LocalName != "li" || IsHidden(item))
             {
                 continue;
             }
@@ -302,7 +322,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         }
 
         var grid = rows
-            .Select(r => r.Children.Where(c => c.LocalName is "td" or "th").ToList())
+            .Select(r => r.Children.Where(c => c.LocalName is "td" or "th" && !IsHidden(c)).ToList())
             .ToList();
         var columnCount = grid.Max(cells => cells.Count);
         if (columnCount == 0)
@@ -344,7 +364,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         {
             switch (child.LocalName)
             {
-                case "tr":
+                case "tr" when !IsHidden(child):
                     rows.Add(child);
                     break;
                 case "thead" or "tbody" or "tfoot":
@@ -573,7 +593,20 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         return result;
     }
 
-    private static string Normalize(string text) => WhitespaceRegex().Replace(text, " ");
+    private static string Normalize(string text) =>
+        WhitespaceRegex().Replace(InvisibleCharsRegex().Replace(text, string.Empty), " ");
+
+    /// <summary>
+    /// True when the element's inline style hides it (<c>display:none</c> or
+    /// <c>visibility:hidden</c>). Hidden containers — the marketing-mail preheader
+    /// pattern — are skipped entirely: their text is invisible in every mail client,
+    /// and it is exactly where senders park layout-breaking filler (AB#5142).
+    /// </summary>
+    private static bool IsHidden(IElement element)
+    {
+        var style = element.GetAttribute("style");
+        return !string.IsNullOrEmpty(style) && HiddenStyleRegex().IsMatch(style);
+    }
 
     private static string? ReadOptionalString(IDataContext dataContext, string? path)
     {

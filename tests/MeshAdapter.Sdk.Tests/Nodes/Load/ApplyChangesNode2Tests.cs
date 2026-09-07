@@ -333,4 +333,20 @@ public class ApplyChangesNode2Tests : NodeTestBase
         Assert.NotNull(capturedEntities);
         Assert.Equal(2, capturedEntities!.Count);
     }
+
+    /// <summary>
+    /// The duplicate-key behaviour is opt-in. A caller that never asked to hear about a unique
+    /// index must keep failing rather than silently storing nothing - the node has always thrown,
+    /// and every existing write pipeline relies on that. The reporting path itself is exercised
+    /// against a real unique index (the MongoDB driver gives BulkWriteError no public constructor,
+    /// so a fake cannot produce a faithful one).
+    /// </summary>
+    [Fact]
+    public void Duplicate_key_reporting_is_off_unless_the_pipeline_asks_for_it()
+    {
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+
+        Assert.Equal(DuplicateKeyHandling.Throw, config.OnDuplicateKey);
+        Assert.Null(config.DuplicateKeyTargetPath);
+    }
 }

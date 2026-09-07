@@ -7,27 +7,31 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 /// attachment) through a signal-cli-rest-api bridge via <c>POST {ApiUrl}/v2/send</c>.
 /// </summary>
 /// <remarks>
-/// The bridge base URL and the sending account number are plain node configuration
-/// (not secrets — the local bridge is unauthenticated), following the
-/// <c>{Field}</c> + <c>{Field}Path</c> convention: when the *Path variant is
-/// non-empty the value is read from the data context; otherwise the literal is used.
-/// Prototype context: AB#4406 (Epic AB#3295).
+/// Number/ApiUrl resolution (AB#5145): the tenant's registered
+/// <c>System.Communication/SignalChannel</c> singleton (activated via the Studio self-service,
+/// AB#5143) wins and needs NO configuration here at all; the connection/settings properties
+/// below are the deprecated legacy fallback (not secrets — the cluster-local bridge is
+/// unauthenticated). Message properties follow the <c>{Field}</c> + <c>{Field}Path</c>
+/// convention: when the *Path variant is non-empty the value is read from the data context;
+/// otherwise the literal is used. Prototype context: AB#4406 (Epic AB#3295).
 /// </remarks>
 [NodeName("SignalSender", 1)]
 public record SignalSenderNodeConfiguration : TargetPathNodeConfiguration
 {
     /// <summary>
-    /// Base URL of the signal-cli-rest-api bridge, e.g. <c>http://localhost:8080</c>.
-    /// Optional when <see cref="SettingsConfiguration"/> supplies it (the settings value
-    /// takes precedence), so it need not be hard-coded in the pipeline definition.
+    /// DEPRECATED legacy fallback (AB#5145): base URL of the signal-cli-rest-api bridge,
+    /// e.g. <c>http://localhost:8080</c>. Only read when the tenant has no REGISTERED
+    /// <c>System.Communication/SignalChannel</c>; a <see cref="SettingsConfiguration"/> value
+    /// still takes precedence over this literal. May be omitted entirely on new-style pipelines.
     /// </summary>
     [PropertyGroup("Connection", 0)]
     public string ApiUrl { get; set; } = null!;
 
     /// <summary>
-    /// The bridge's registered account number that sends the message, e.g. <c>+4366012345678</c>.
-    /// Optional when <see cref="SettingsConfiguration"/> supplies it (the settings value
-    /// takes precedence).
+    /// DEPRECATED legacy fallback (AB#5145): the bridge's registered account number that sends
+    /// the message, e.g. <c>+4366012345678</c>. Only read when the tenant has no REGISTERED
+    /// <c>System.Communication/SignalChannel</c>; a <see cref="SettingsConfiguration"/> value
+    /// still takes precedence over this literal. May be omitted entirely on new-style pipelines.
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public string Number { get; set; } = null!;
@@ -39,11 +43,13 @@ public record SignalSenderNodeConfiguration : TargetPathNodeConfiguration
     public int TimeoutSeconds { get; set; } = 30;
 
     /// <summary>
-    /// Optional well-known name of a configuration entity that carries the bridge
-    /// number / URL, so they live in configuration instead of the pipeline definition.
-    /// Reachable from the pipeline via a <c>System.Communication/Uses</c> association.
-    /// The attribute names it reads are <see cref="NumberAttribute"/> /
-    /// <see cref="ApiUrlAttribute"/>; values found here override the node properties.
+    /// DEPRECATED legacy fallback (AB#5145): optional well-known name of a configuration entity
+    /// that carries the bridge number / URL (e.g. the accounting app's
+    /// <c>SignalImportSettings</c>), reachable from the pipeline via a
+    /// <c>System.Communication/Uses</c> association; the attribute names it reads are
+    /// <see cref="NumberAttribute"/> / <see cref="ApiUrlAttribute"/>, and values found here
+    /// override the node properties. Only consulted when the tenant has no REGISTERED
+    /// <c>System.Communication/SignalChannel</c> — new-style pipelines omit this entirely.
     /// </summary>
     [PropertyGroup("Settings", 0)]
     public string? SettingsConfiguration { get; set; }

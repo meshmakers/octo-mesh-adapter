@@ -16,6 +16,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 /// from <c>GET {ApiUrl}/v1/attachments/{id}</c> and exposed as base64 in
 /// <c>$.Messages[].Attachments[].Data</c> — the same shape the E-Mail assistant produces —
 /// so the invoice OCR flow works unchanged. Prototype context: AB#4406 (Epic AB#3295).
+/// Number/ApiUrl resolution (AB#5145): the tenant's registered
+/// <c>System.Communication/SignalChannel</c> singleton wins over the deprecated legacy settings;
+/// with neither, the trigger stays idle — see <see cref="SignalChannelEndpointResolver"/>.
 /// </summary>
 [NodeConfiguration(typeof(FromSignalNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -31,29 +34,27 @@ internal class FromSignalNode(
     {
         var c = context.NodeContext.GetNodeConfiguration<FromSignalNodeConfiguration>();
 
-        // Bridge number / URL may live in a configuration entity instead of the pipeline
-        // definition (see SettingsConfiguration) so a redeploy never overwrites operator
-        // settings and nothing tenant-specific leaks into the seed. A settings value wins.
-        var attrs = ConfigurationSettingsReader.TryGetAttributes(
-            context.GlobalConfiguration, c.SettingsConfiguration);
-        var apiUrl = (attrs.HasValue ? ConfigurationSettingsReader.ReadString(attrs.Value, c.ApiUrlAttribute) : null)
-                     ?? c.ApiUrl;
-        var number = (attrs.HasValue ? ConfigurationSettingsReader.ReadString(attrs.Value, c.NumberAttribute) : null)
-                     ?? c.Number;
-
-        if (string.IsNullOrWhiteSpace(apiUrl))
+        // AB#5145 resolution order (see SignalChannelEndpointResolver): the tenant's registered
+        // SignalChannel singleton wins; the legacy settingsConfiguration/node-property mechanism
+        // is the deprecated fallback so existing pipeline definitions keep working.
+        var resolution = SignalChannelEndpointResolver.Resolve(context.GlobalConfiguration,
+            c.SettingsConfiguration, c.NumberAttribute, c.ApiUrlAttribute, c.Number, c.ApiUrl);
+        foreach (var warning in resolution.Warnings)
         {
-            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
-                context.NodeContext, nameof(c.ApiUrl), c.SettingsConfiguration ?? nameof(c.ApiUrl));
+            logger.LogWarning("FromSignal: {Warning}", warning);
         }
 
-        if (string.IsNullOrWhiteSpace(number))
+        if (!resolution.IsConfigured)
         {
-            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
-                context.NodeContext, nameof(c.Number), c.SettingsConfiguration ?? nameof(c.Number));
+            // Unconfigured is IDLE, not an error: throwing here would flip the pipeline (and with
+            // it the adapter's configuration state) into an error loop on every tenant that simply
+            // has not activated a Signal number yet.
+            logger.LogInformation(
+                "FromSignal: no Signal channel is configured for this tenant (no registered System.Communication/SignalChannel and no legacy number/apiUrl settings) — the trigger stays idle.");
+            return Task.CompletedTask;
         }
 
-        var effectiveConfig = c with { ApiUrl = apiUrl, Number = number };
+        var effectiveConfig = c with { ApiUrl = resolution.ApiUrl!, Number = resolution.Number! };
 
         _cancellationTokenSource = new CancellationTokenSource();
         _pollingTask = Task.Run(

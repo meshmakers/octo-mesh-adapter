@@ -341,7 +341,7 @@ public class CreateUpdateInfoNodeTests
         // Return a CkRecordGraph whose AllAttributesByName contains a single "Name" String attribute so
         // the inner walker validates "Name" and runs recordChild.SetAttributeValue("Name", String, "abc").
         var itemRecordGraph = BuildSingleStringAttributeRecordGraph("TestModel/Item-1", "Name");
-        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, (RtCkId<CkRecordId>)"TestModel/Item-1"))
             .Returns(itemRecordGraph);
 
         var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
@@ -429,7 +429,7 @@ public class CreateUpdateInfoNodeTests
         var sectionRecordGraph = BuildRecordGraph("TestModel/Section-1",
             ("Heading", AttributeValueTypesDto.String),
             ("SortOrder", AttributeValueTypesDto.Int));
-        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, sectionRecordCkId.ToRtCkId()))
             .Returns(sectionRecordGraph);
 
         var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));
@@ -504,7 +504,7 @@ public class CreateUpdateInfoNodeTests
 
         var sectionRecordGraph = BuildRecordGraph("TestModel/Section-1",
             ("Heading", AttributeValueTypesDto.String));
-        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, A<RtCkId<CkRecordId>>._))
+        A.CallTo(() => ckCacheService.GetRtCkRecord(TestTenantId, sectionRecordCkId.ToRtCkId()))
             .Returns(sectionRecordGraph);
 
         var dataContext = A.Fake<IDataContext>(o => o.Wrapping(dataContextReal));

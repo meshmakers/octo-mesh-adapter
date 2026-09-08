@@ -12,7 +12,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -104,6 +106,44 @@ public class LoadNodesDryRunTests
     }
 
     [Fact]
+    public async Task SftpDeleteNode_DryRun_RecordsIntentAndDeletesNothing()
+    {
+        const string serverConfig = "LkvSftp";
+        const string remotePath = "/out/AR00001.TXT";
+        var recorder = new RecordingDebugger();
+        var etlContext = A.Fake<IMeshEtlContext>();
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined(serverConfig)).Returns(true);
+        A.CallTo(() => globalConfiguration.GetValue<SftpServerSettings>(serverConfig))
+            .Returns(new SftpServerSettings { Host = "sftp.example.com", Username = "user", Password = "secret" });
+        // Left unconfigured on purpose: the dry-run branch must not reach it at all, which the
+        // assertion below states.
+        var sessionFactory = A.Fake<ISftpSessionFactory>();
+
+        var config = new SftpDeleteNodeConfiguration
+        {
+            ServerConfiguration = serverConfig,
+            RemotePath = remotePath
+        };
+        var (dataContext, nodeContext, next) = BuildContext(config, recorder);
+
+        var node = new SftpDeleteNode(next, etlContext, sessionFactory);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+            A<INodeContext>._, A<CancellationToken>._)).MustNotHaveHappened();
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+
+        var intent = Assert.Single(recorder.Intents,
+            i => i.NodeTypeName == DryRunHonouredLoadNodes.SftpDelete);
+        Assert.NotNull(intent.IntentData);
+        Assert.Equal(remotePath, intent.IntentData!["remotePath"]!.GetValue<string>());
+        Assert.Equal("sftp.example.com", intent.IntentData["host"]!.GetValue<string>());
+        Assert.Equal("Fail", intent.IntentData["onMissingFile"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task DryRunOff_ApplyChangesNode_StillWritesToMongo()
     {
         const string dataPath = "$.updateInfos";
@@ -146,9 +186,10 @@ public class LoadNodesDryRunTests
         Assert.Contains(DryRunHonouredLoadNodes.GrafanaDeprovisionTenant, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SaveStreamDataInArchive, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SaveTimeRangeStreamDataInArchive, DryRunHonouredLoadNodes.All);
+        Assert.Contains(DryRunHonouredLoadNodes.SftpDelete, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SftpUpload, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.ToDiscord, DryRunHonouredLoadNodes.All);
-        Assert.Equal(10, DryRunHonouredLoadNodes.All.Count);
+        Assert.Equal(11, DryRunHonouredLoadNodes.All.Count);
     }
 
     /// <summary>

@@ -531,11 +531,19 @@ Downloads exactly one file and writes its decoded content to the target path. Re
         serverConfiguration: LkvSftp
         remotePathPath: $.key.fullPath
         targetPath: $.key.content
+
+      # ... whatever processes $.key.content belongs here: the file is gone
+      # after the next step, so anything that still needs the content must
+      # already have run and succeeded.
+      - type: SftpDelete@1
+        serverConfiguration: LkvSftp
+        remotePathPath: $.key.fullPath
+        onMissingFile: Ignore
 ```
 
 Setting `keyPath` explicitly is the safer habit — `keyPath: $.current` then pairs with `remotePathPath: $.current.fullPath`. The two always move together.
 
-`maxDegreeOfParallelism` also decides how many files are read at once, and each iteration opens its own session: keep it at or below the server configuration's `MaxConcurrentConnections`, or the extra iterations only queue on the slot semaphore.
+`maxDegreeOfParallelism` also decides how many files are read at once, and each iteration opens a session per SFTP node it runs - two in the loop above, one for the download and one for the delete, though not at the same time: keep it at or below the server configuration's `MaxConcurrentConnections`, or the extra iterations only queue on the slot semaphore.
 
 ---
 
@@ -984,7 +992,7 @@ Uploads files to an SFTP server. Supports both binary files from MongoDB storage
 
 ##### SFTP server configuration entry
 
-All three SFTP nodes resolve their connection from the same global configuration entry:
+All four SFTP nodes resolve their connection from the same global configuration entry:
 
 ```json
 {
@@ -1014,6 +1022,24 @@ The values mean, once they are reachable:
 - `HostKeyFingerprint` — SHA-256 fingerprint of the expected host key, non-padded base64 exactly as `ssh-keygen -lf` prints it, with or without the `SHA256:` prefix. When set, a server presenting a different key is refused. When absent, any host key is accepted.
 
 All three timeouts are rejected when the settings are resolved if they are negative or beyond 2 147 483 seconds (about 24.8 days), which is the largest millisecond count the underlying timers accept.
+
+#### SftpDeleteNode
+
+Deletes exactly one file from an SFTP server: it removes the file `SftpDownload@1` read, once the content has been processed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ServerConfiguration` | string | Global config reference for SFTP server |
+| `RemotePath` | string | Static remote path (set this or `RemotePathPath`) |
+| `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
+| `OnMissingFile` | enum | `Fail` (default): a file that is not there any more fails the node. `Ignore`: log a warning and continue |
+
+**Features**:
+- One session per file, meant to run inside a `ForEach@1` over an `SftpList@1` result, the same wiring `SftpDownload@1` uses - `remotePathPath` names the loop's `keyPath`, which defaults to `$.key`
+- Honours dry run: the intent is recorded with host, port, user, path and the missing-file mode, and nothing is deleted
+- `OnMissingFile: Ignore` is what a repeated run wants: the goal state is that the file is gone, and whether this node removed it or someone else already did makes no difference to that. The default is the strict reading, so a pipeline states the tolerance rather than inheriting it. The tolerance covers what the server reports as a missing path; a server that answers with a generic failure instead is not distinguishable here and surfaces as a delete failure
+- A path ending in `/` is refused before connecting: this node deletes a file, not a directory
+- Deletion goes through the same session factory as the other SFTP nodes, so the per-server concurrency limit and the host key check apply here as well
 
 
 ### Trigger Nodes
@@ -1161,7 +1187,7 @@ IEtlDataOrchestrator.ExecutePipelineAsync()
 Execute Node Pipeline:
   ├─ Extract Nodes (GetRtEntities*, GetAssociationTargets, SftpList, SftpDownload, etc.)
   ├─ Transform Nodes (DataMapping, CreateUpdateInfo, MakeHttpRequest, etc.)
-  └─ Load Nodes (ApplyChanges, SaveStreamDataInArchive, EMailSender, SftpUpload)
+  └─ Load Nodes (ApplyChanges, SaveStreamDataInArchive, EMailSender, SftpUpload, SftpDelete)
         ↓
 Return Result / Store in Time-Series / Send Notifications
 ```

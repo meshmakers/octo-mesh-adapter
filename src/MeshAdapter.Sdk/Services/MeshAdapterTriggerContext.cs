@@ -2,6 +2,7 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -66,11 +67,33 @@ internal class MeshAdapterTriggerContext(
                 executePipelineOptions.InputData);
         }
 
+        // AB#5159: the dry-run flag arrives on the options (set by FromExecutePipelineCommand@1
+        // from the ExecutePipelineRequest) and only reaches the nodes as an execution mode on
+        // the orchestrator call. Mirrors the SDK host (AdapterTriggerContext); without it every
+        // Load node saw a null mode and ran for real.
+        IPipelineExecutionMode? executionMode = executePipelineOptions.IsDryRun
+            ? new DefaultPipelineExecutionMode { IsDryRun = true }
+            : null;
+
+        if (executePipelineOptions.IsDryRun && debugger == null)
+        {
+            // Dry-run intents are written to the debug stream; without a debugger
+            // the agent can't inspect them. Force-enable per-execution so the
+            // would-have-written record is captured - together with every node's
+            // input/output snapshot, as in any debug-enabled run. Real-effect runs
+            // are unchanged - debugger stays opt-in via IsDebuggingEnabled.
+            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+            _logger.LogInformation(
+                "[{TenantId}] Pipeline {PipelineRtEntityId} dry-run execution {PipelineExecutionId}: forced debugger on so intent payloads are captured",
+                TenantId, PipelineRtEntityId, pipelineExecutionId);
+        }
+
         Task<object?> task = Task.Run(async () =>
         {
             var r = await _etlDataOrchestrator.ExecutePipelineAsync(
                 pipelineRegistration.NodeDefinitionRoot,
-                etlContext, debugger, value);
+                etlContext, debugger, value, executionMode);
 
             return r;
         });

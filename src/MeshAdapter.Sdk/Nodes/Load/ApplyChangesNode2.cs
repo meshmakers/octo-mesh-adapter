@@ -82,9 +82,10 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                 while (count <= 5)
                 {
                     count++;
+                    IOctoSession? session = null;
                     try
                     {
-                        var session = await etlContext.TenantRepository.GetSessionAsync();
+                        session = await etlContext.TenantRepository.GetSessionAsync();
                         session.StartTransaction();
 
                         OperationResult operationResult = new();
@@ -109,6 +110,33 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
 
                         throw;
                     }
+                    catch (Exception e) when (
+                        c.OnDuplicateKey == DuplicateKeyHandling.Report && IsDuplicateKey(e))
+                    {
+                        // A unique index refused the write. Not a retry case: the conflicting
+                        // document is committed, so every attempt would fail the same way. The
+                        // pipeline asked to hear about it rather than to fail, so roll back and
+                        // hand it a flag - see DuplicateKeyHandling.Report.
+                        if (session != null)
+                        {
+                            await session.AbortTransactionAsync();
+                        }
+
+                        nodeContext.Warning(
+                            $"A unique index refused the write, reporting it as configured: {DescribeDuplicates(e)}");
+
+                        if (c.DuplicateKeyTargetPath != null)
+                        {
+                            dataContext.Set(c.DuplicateKeyTargetPath, true, DocumentModes.Extend,
+                                ValueKinds.Simple, TargetValueWriteModes.Overwrite);
+                        }
+                        else
+                        {
+                            nodeContext.Warning(
+                                "OnDuplicateKey is Report but no DuplicateKeyTargetPath is configured, so the " +
+                                "pipeline cannot tell the refusal from a successful write.");
+                        }
+                    }
 
                     break;
                 }
@@ -127,6 +155,53 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
         await next(dataContext, nodeContext);
     }
     
+    /// <summary>
+    /// Walks the inner-exception chain: the repository wraps the driver failure in an
+    /// OperationFailedException, so the bulk-write exception is never the one that arrives here.
+    /// </summary>
+    private static bool IsDuplicateKey(Exception? e)
+    {
+        for (; e != null; e = e.InnerException)
+        {
+            if (e is MongoBulkWriteException bulk &&
+                bulk.WriteErrors.Any(error => error.Category == ServerErrorCategory.DuplicateKey))
+            {
+                return true;
+            }
+
+            if (e is MongoWriteException { WriteError.Category: ServerErrorCategory.DuplicateKey })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The index and key that collided, for the log. The document itself is not written out: on a
+    /// public endpoint it is the caller's own payload and has no business in our logs twice.
+    /// </summary>
+    private static string DescribeDuplicates(Exception? e)
+    {
+        for (; e != null; e = e.InnerException)
+        {
+            if (e is MongoBulkWriteException bulk)
+            {
+                return string.Join("; ", bulk.WriteErrors
+                    .Where(error => error.Category == ServerErrorCategory.DuplicateKey)
+                    .Select(error => error.Message));
+            }
+
+            if (e is MongoWriteException { WriteError.Category: ServerErrorCategory.DuplicateKey } single)
+            {
+                return single.WriteError.Message;
+            }
+        }
+
+        return "no duplicate-key detail found in the exception chain";
+    }
+
     private static string ConcatOriginAndTarget(AssociationUpdateInfo updateInfo)
     {
         return string.Format($"{updateInfo.Origin}{updateInfo.Target}");

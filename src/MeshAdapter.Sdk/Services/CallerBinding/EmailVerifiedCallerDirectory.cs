@@ -67,7 +67,8 @@ internal sealed class EmailVerifiedCallerDirectory(
             record.HomeTenantId,
             record.Email,
             record.Name,
-            record.Roles);
+            record.Roles,
+            record.PreferredChannel);
 
         logger.LogDebug(
             "[{TenantId}] Resolved e-mail sender to caller '{SubjectId}' with {RoleCount} role(s) (enrollment {Enrollment}, message {Message} ⇒ effective {Effective})",

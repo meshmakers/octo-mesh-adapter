@@ -40,10 +40,14 @@ internal interface IEntraIdUserLookup
 /// <param name="Name">The user's display name (user name), when set.</param>
 /// <param name="Roles">The user's assigned role names.</param>
 /// <param name="EnrollmentTrust">The stored enrollment trust of the binding (IdP-provisioned = Strong).</param>
+/// <param name="PreferredChannel">
+///     The user's preferred outbound channel ("TEAMS" | "SIGNAL", AB#5149), or null without one.
+/// </param>
 internal sealed record EntraIdCallerRecord(
     string SubjectId,
     string? HomeTenantId,
     string? Email,
     string? Name,
     IReadOnlyList<string> Roles,
-    CallerTrustLevel EnrollmentTrust);
+    CallerTrustLevel EnrollmentTrust,
+    string? PreferredChannel = null);

@@ -85,7 +85,8 @@ internal sealed class CkEntraIdUserLookup(
                 userEntity.GetAttributeValueOrDefault("Email") as string,
                 userEntity.GetAttributeValueOrDefault("UserName") as string,
                 roles,
-                enrollmentTrust);
+                enrollmentTrust,
+                ReadPreferredChannel(userEntity));
         }
         catch (CkCacheException ex)
         {
@@ -152,6 +153,18 @@ internal sealed class CkEntraIdUserLookup(
         }
 
         return roleNames;
+    }
+
+    /// <summary>
+    ///     The user's preferred outbound channel (AB#5149), stored by identity self-service on the
+    ///     user entity as a canonical uppercase channel name ("TEAMS" | "SIGNAL"). Propagated verbatim
+    ///     — validation (only bound channels are settable) lives on the identity write side. A user
+    ///     that predates the attribute simply carries none: null.
+    /// </summary>
+    private static string? ReadPreferredChannel(RtEntity userEntity)
+    {
+        var preferredChannel = userEntity.GetAttributeValueOrDefault("PreferredChannel") as string;
+        return string.IsNullOrWhiteSpace(preferredChannel) ? null : preferredChannel;
     }
 
     /// <summary>

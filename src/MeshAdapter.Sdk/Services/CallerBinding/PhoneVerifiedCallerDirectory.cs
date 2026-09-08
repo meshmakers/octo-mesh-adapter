@@ -60,7 +60,8 @@ internal sealed class PhoneVerifiedCallerDirectory(
             record.HomeTenantId,
             record.Email,
             record.Name,
-            record.Roles);
+            record.Roles,
+            record.PreferredChannel);
 
         logger.LogDebug(
             "[{TenantId}] Resolved phone sender to caller '{SubjectId}' with {RoleCount} role(s) (enrollment {Enrollment}, message {Message} ⇒ effective {Effective})",

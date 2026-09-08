@@ -37,6 +37,30 @@ public class EntraIdVerifiedCallerDirectoryTests
         => new(ChannelIdentifierKind.EntraIdObjectId, ObjectId, messageTrust);
 
     [Fact]
+    public async Task Preferred_channel_is_propagated_verbatim_onto_the_principal()
+    {
+        // AB#5149: the stored outbound preference travels with the principal; a record without one
+        // (the pre-AB#5149 shape) yields null — never a throw.
+        LookupReturns(Record(CallerTrustLevel.Strong) with { PreferredChannel = "SIGNAL" });
+
+        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("SIGNAL", result!.Principal.PreferredChannel);
+    }
+
+    [Fact]
+    public async Task A_record_without_a_preference_yields_a_null_preferred_channel()
+    {
+        LookupReturns(Record(CallerTrustLevel.Strong));
+
+        var result = await _directory.ResolveAsync(TenantId, EntraIdSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(result!.Principal.PreferredChannel);
+    }
+
+    [Fact]
     public async Task Non_EntraId_kind_is_unresolved_and_never_hits_the_lookup()
     {
         var result = await _directory.ResolveAsync(TenantId,

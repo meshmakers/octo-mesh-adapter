@@ -96,6 +96,31 @@ public class PhoneVerifiedCallerDirectoryTests
     }
 
     [Fact]
+    public async Task Preferred_channel_is_propagated_verbatim_onto_the_principal()
+    {
+        // AB#5149: the user's stored outbound preference travels with the principal so
+        // WriteVerifiedCaller@1 can emit it — spellings are the cross-repo contract.
+        LookupReturns(Record(CallerTrustLevel.Strong) with { PreferredChannel = "TEAMS" });
+
+        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("TEAMS", result!.Principal.PreferredChannel);
+    }
+
+    [Fact]
+    public async Task A_record_without_a_preference_yields_a_null_preferred_channel()
+    {
+        // Absent-field tolerance: a pre-AB#5149 lookup result (default record) carries none.
+        LookupReturns(Record(CallerTrustLevel.Strong));
+
+        var result = await _directory.ResolveAsync(TenantId, PhoneSender(CallerTrustLevel.Strong),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(result!.Principal.PreferredChannel);
+    }
+
+    [Fact]
     public async Task Signal_verified_message_from_an_enrolled_number_is_Strong_on_both_dimensions()
     {
         // The AB#5123 goal: OTP-enrolled (enrollment Strong) + Signal-verified message (message Strong).

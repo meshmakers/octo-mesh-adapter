@@ -40,4 +40,5 @@ internal sealed record PhoneCallerRecord(
     string? Email,
     string? Name,
     IReadOnlyList<string> Roles,
-    CallerTrustLevel EnrollmentTrust);
+    CallerTrustLevel EnrollmentTrust,
+    string? PreferredChannel = null);

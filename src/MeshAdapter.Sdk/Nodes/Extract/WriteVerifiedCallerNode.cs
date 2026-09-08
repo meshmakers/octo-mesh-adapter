@@ -31,6 +31,15 @@ public class WriteVerifiedCallerNode(NodeDelegate next, IMeshEtlContext etlConte
                 ["roles"] = new JsonArray(caller.Roles.Select(r => (JsonNode)r!).ToArray())
             };
 
+            // AB#5149 cross-repo contract: "preferredChannel" is "TEAMS" | "SIGNAL" — or ABSENT when
+            // the caller has no preference. Emitted only when set, so consumers can treat "field
+            // present" as "route here" without a null branch, and pre-AB#5149 pipelines see an
+            // unchanged object.
+            if (caller.PreferredChannel is { } preferredChannel)
+            {
+                obj["preferredChannel"] = preferredChannel;
+            }
+
             dataContext.Set(c.TargetPath, obj, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
             nodeContext.Info($"WriteVerifiedCaller: wrote verified caller '{caller.SubjectId}' to {c.TargetPath}");
         }

@@ -29,6 +29,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<WriteVerifiedCallerNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationChannelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetStreamDataNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SftpListNodeConfiguration>();

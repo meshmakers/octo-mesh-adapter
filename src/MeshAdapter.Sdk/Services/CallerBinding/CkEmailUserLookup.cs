@@ -92,6 +92,11 @@ internal sealed class CkEmailUserLookup(
             }
 
             var roles = await GetUserRoleNamesAsync(tenantRepository, session, userEntity);
+            // AB#5152 (System.Identity 2.18.0): the preference is binding-specific — derive the
+            // channel STRING for VerifiedPrincipal.PreferredChannel from the referenced binding
+            // (legacy kind-level string transitionally).
+            var preferredChannel = await PreferredChannelResolver.ResolveChannelAsync(
+                tenantRepository, session, userEntity, logger, tenantId);
             await session.CommitTransactionAsync();
 
             var enrollmentTrust = ToCallerTrustLevel(
@@ -104,7 +109,7 @@ internal sealed class CkEmailUserLookup(
                 userEntity.GetAttributeValueOrDefault("UserName") as string,
                 roles,
                 enrollmentTrust,
-                ReadPreferredChannel(userEntity));
+                preferredChannel);
         }
         catch (CkCacheException ex)
         {
@@ -177,18 +182,6 @@ internal sealed class CkEmailUserLookup(
     private static bool IsExpired(RtEntity binding)
         => binding.GetAttributeValueOrDefault<DateTime>("ValidUntil") is { } validUntil &&
            validUntil < DateTime.UtcNow;
-
-    /// <summary>
-    ///     The user's preferred outbound channel (AB#5149), stored by identity self-service on the
-    ///     user entity as a canonical uppercase channel name ("TEAMS" | "SIGNAL"). Propagated verbatim
-    ///     — validation (only bound channels are settable) lives on the identity write side. A user
-    ///     that predates the attribute simply carries none: null.
-    /// </summary>
-    private static string? ReadPreferredChannel(RtEntity userEntity)
-    {
-        var preferredChannel = userEntity.GetAttributeValueOrDefault("PreferredChannel") as string;
-        return string.IsNullOrWhiteSpace(preferredChannel) ? null : preferredChannel;
-    }
 
     /// <summary>
     ///     Trims and lower-cases an e-mail address for the (kind, value) lookup. Kept identical to the

@@ -43,6 +43,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetRtEntitiesByWellKnownNameTypeNode>()
             .RegisterNode<GetRtEntitiesByTypeNode>()
             .RegisterNode<WriteVerifiedCallerNode>()
+            .RegisterNode<ResolveNotificationChannelNode>()
             .RegisterNode<GetRtEntitiesByIdNode>()
             .RegisterNode<CheckDuplicateNode>()
             .RegisterNode<ComputeFileHashNode>()
@@ -136,6 +137,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEntraIdUserLookup, CkEntraIdUserLookup>();
         services.AddSingleton<IPhoneUserLookup, CkPhoneUserLookup>();
         services.AddSingleton<IEmailUserLookup, CkEmailUserLookup>();
+        // Reverse direction (AB#5152): subjectId → verified channel identifiers + preference, for
+        // ResolveNotificationChannel@1's system-initiated-message routing.
+        services.AddSingleton<ISubjectChannelLookup, CkSubjectChannelLookup>();
         services.AddSingleton<IKindVerifiedCallerDirectory, EntraIdVerifiedCallerDirectory>();
         services.AddSingleton<IKindVerifiedCallerDirectory, PhoneVerifiedCallerDirectory>();
         services.AddSingleton<IKindVerifiedCallerDirectory, EmailVerifiedCallerDirectory>();

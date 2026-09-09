@@ -1163,11 +1163,32 @@ Creates ETL and trigger contexts for pipeline execution.
 
 **File**: `src/MeshAdapter.Sdk/Services/MeshAdapterTriggerContext.cs`
 
-Manages trigger-initiated pipeline execution.
+Manages trigger-initiated pipeline execution. Adapter-specific twin of the SDK's
+`AdapterTriggerContext`; nothing enforces the parity, so a change to how the SDK host
+starts an execution has to be mirrored here by hand.
 
 | Method | Description |
 |--------|-------------|
 | `StartExecutePipelineAsync()` | Begin pipeline run |
+| `EndExecutePipelineAsync()` | Await the run, report status and output data to the controller |
+
+**Dry run (AB#5159)**: `ExecutePipelineOptions.IsDryRun` (set by `FromExecutePipelineCommand@1`
+from the `ExecutePipelineRequest` the controller sends for
+`POST /{tenant}/v1/pipeline/execute?pipelineRtId=<id>&isDryRun=true`) is turned into a
+`DefaultPipelineExecutionMode { IsDryRun = true }` on the orchestrator call, which is the only
+way it reaches `INodeContext.PipelineExecutionMode` in the nodes. With debugging off on the
+pipeline, the registered `IPipelineDebugger` is forced on for that execution so the intents the
+dry-run-honouring Load nodes record (`DryRunHonouredLoadNodes`) have somewhere to go; like any
+debug-enabled run, that also captures every node's input and output snapshot. Before the fix
+the host dropped the flag and the dry-run-honouring Load nodes ran for real in a dry run.
+Pinned by `MeshAdapterTriggerContextDryRunTests` (runs `SftpDelete@1` through the real
+orchestrator) and the dry-run tests in `MeshAdapterTriggerContextTests` (the orchestrator
+contract). **Boundary**: only nodes that check `PipelineExecutionMode?.IsDryRun` suppress
+their side effect; every other node (e.g. `MakeHttpRequest@1`) runs for real. The mode is
+threaded onto the top-level orchestrator call only: a pipeline started by
+`ToPipelineDataEvent@1` / `FromPipelineDataEvent@1` builds its own `ExecutePipelineOptions`
+without `IsDryRun`, and the flush sub-pipeline of `BufferData@1` forwards the debugger but not
+the mode (both in the SDK), so Load nodes there still run for real.
 
 ---
 

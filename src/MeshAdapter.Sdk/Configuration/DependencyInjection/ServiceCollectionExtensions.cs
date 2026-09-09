@@ -1,4 +1,5 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
+using Meshmakers.Octo.Runtime.Engine.CrateDb.Configuration;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Meshmakers.Octo.Sdk.Common.Adapters;
@@ -168,6 +169,11 @@ public static class ServiceCollectionExtensions
         // replace the runtime engine's audit sink, none of which an adapter needs.
         services.AddScoped<IEventRepository, EventRepository>();
         services.AddSingleton<IAdapterEventService, AdapterEventService>();
+
+        // AB#5157: the coverage memo the resolution-aware archive selection reads is built from these
+        // options when the stream-data registration below resolves it, so the TTL is configurable from
+        // the adapter's own section instead of being fixed at the engine default.
+        services.AddSingleton<IConfigureOptions<ArchiveCoverageOptions>, ConfigureArchiveCoverageOptions>();
 
         services.AddRuntimeEngine()
             .AddMongoDbRuntimeRepository()

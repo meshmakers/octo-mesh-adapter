@@ -57,6 +57,7 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
     private readonly IStreamDataRepository _streamDataRepository;
     private readonly IArchiveRuntimeStore _archiveStore;
     private readonly IRollupArchiveRuntimeStore _rollupStore;
+    private readonly IArchiveCoverageProvider _coverageProvider;
 
     public GetQueryByIdNodeTests()
     {
@@ -66,6 +67,7 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
         _streamDataRepository = A.Fake<IStreamDataRepository>();
         _archiveStore = A.Fake<IArchiveRuntimeStore>();
         _rollupStore = A.Fake<IRollupArchiveRuntimeStore>();
+        _coverageProvider = A.Fake<IArchiveCoverageProvider>();
 
         A.CallTo(() => EtlContext.TenantId).Returns(TestTenantId);
         A.CallTo(() => TenantRepository.TenantId).Returns(TestTenantId);
@@ -76,6 +78,10 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
         A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
         A.CallTo(() => _tenantContext.GetArchiveRuntimeStore()).Returns(_archiveStore);
         A.CallTo(() => _tenantContext.GetRollupArchiveRuntimeStore()).Returns(_rollupStore);
+        // AB#5157: the node hands the tenant's coverage provider to the resolver. The default answer is
+        // "no coverage" for every archive, which keeps the measured-coverage filter inert — only the
+        // tests that set a coverage up exercise it.
+        A.CallTo(() => _tenantContext.GetArchiveCoverageProvider()).Returns(_coverageProvider);
         // Resolution-aware tests drive the real SeriesResolutionService; the default is an empty
         // ladder (no base archive, no rollups) so a test only sets up what it exercises.
         A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._))
@@ -1306,6 +1312,12 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
 
     private static readonly OctoObjectId TestRollupRtId = new("000000000000000000000777");
 
+    /// <summary>Calendar-aligned rung, used by the coverage-filter tests (AB#5157).</summary>
+    private static readonly OctoObjectId TestCalendarRollupRtId = new("000000000000000000000778");
+
+    /// <summary>A rung coarser than <see cref="TestRollupRtId" />, used by the coverage-filter tests.</summary>
+    private static readonly OctoObjectId TestCoarseRollupRtId = new("000000000000000000000779");
+
     /// <summary>
     /// The rollup store's enumeration is an <see cref="IAsyncEnumerable{T}" />; the test project does
     /// not reference System.Linq.Async, so it is materialised here.
@@ -1346,7 +1358,9 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
 
     /// <summary>
     /// A rollup rung. The watermark defaults to a date past every window used here, so a test only has
-    /// to state it when it exercises the "rollup has not caught up" branch.
+    /// to state it when it exercises the "rollup has not caught up" branch. The rung declares its source
+    /// as a single unbounded <see cref="RollupSourceReference" /> (AB#5157), which is what the dependency
+    /// graph walks to build the ladder.
     /// </summary>
     private static RollupArchiveSnapshot CreateRollup(OctoObjectId rtId, TimeSpan bucketSize,
         string sourcePath, CkRollupFunction function, OctoObjectId? sourceArchiveRtId = null,
@@ -1357,7 +1371,7 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
             new RtCkId<CkTypeId>("TestModel/TestType"),
             CkArchiveStatus.Activated,
             "rollup",
-            sourceArchiveRtId ?? TestArchiveRtId,
+            [new RollupSourceReference(sourceArchiveRtId ?? TestArchiveRtId)],
             bucketSize,
             TimeSpan.FromMinutes(5),
             lastAggregatedBucketEnd ?? new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc),
@@ -1379,6 +1393,16 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
             A.CallTo(() => _rollupStore.GetAsync(rollup.RtId))
                 .Returns(Task.FromResult<RollupArchiveSnapshot?>(rollup));
         }
+    }
+
+    /// <summary>
+    /// Measured coverage of one rung (AB#5157). A rung left without one reports "no data" and is
+    /// therefore never a coverage candidate once any other rung reports some.
+    /// </summary>
+    private void SetupCoverage(OctoObjectId archiveRtId, DateTime availableFrom, DateTime availableTo)
+    {
+        A.CallTo(() => _coverageProvider.GetCoverageAsync(archiveRtId, A<CancellationToken>._))
+            .Returns(Task.FromResult<ArchiveCoverage?>(new ArchiveCoverage(availableFrom, availableTo)));
     }
 
     /// <summary>
@@ -1726,6 +1750,114 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
         Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
         A.CallTo(() => logger.Warning(A<string>._, A<string>._,
                 A<string>.That.Contains("only aggregated up to"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    /// AB#5157: the coverage filter redirects to a rung the exactness gate then declines. The hourly
+    /// rung the resolver would have picked holds no data for the requested start, so the resolver falls
+    /// back to the calendar-day rung and signals <c>CoverageLimited</c> — but a calendar rung cannot line
+    /// up with fixed-width bins, so the query still reads the archive it names. Both the coarser answer
+    /// and the declined routing are reported.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_CoverageLimitedToCalendarRollup_WarnsAndReadsPersistedArchive()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc);
+        var to = from.AddDays(7);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(
+            CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum),
+            CreateRollup(TestCalendarRollupRtId, TimeSpan.FromDays(1), "Amount.Value",
+                CkRollupFunction.Sum, alignment: BucketAlignment.CalendarDay));
+
+        // 7 d / 168 points ⇒ 1 h ideal bins: without coverage the hourly rung is the exact fit. It only
+        // starts a day into the window, so the covering candidates are the base and the calendar-day rung.
+        SetupCoverage(TestArchiveRtId, from.AddDays(-30), to);
+        SetupCoverage(TestRollupRtId, from.AddDays(1), to);
+        SetupCoverage(TestCalendarRollupRtId, from.AddDays(-30), to);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, to, 168, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(TestArchiveRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(from, _capturedDownsamplingOptions!.From);
+        Assert.Equal(to, _capturedDownsamplingOptions.To);
+        Assert.Equal(168, _capturedDownsamplingOptions.Limit);
+        // The non-Ok signal is warned about, and the diagnostic names the rung the filter excluded.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("CoverageLimited"), A<object[]>._))
+            .MustHaveHappened();
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains(TestRollupRtId.ToString()), A<object[]>._))
+            .MustHaveHappened();
+        // Routing is decided by the exactness gate alone: a calendar rung is never read.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("CalendarDay-aligned"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    /// AB#5157, the other half of the decided semantics: a <c>CoverageLimited</c> fallback that passes
+    /// the exactness gate IS routed to — the warning says the answer is coarser than the resolver would
+    /// have delivered, it does not veto the rollup. Here the two-hour rung holds no data for the start,
+    /// and the hourly rung it falls back to answers the 14 h bins exactly.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_CoverageLimitedToBinCompatibleRollup_WarnsAndReadsRollup()
+    {
+        var config = CreateDownsamplingConfig();
+        var (dataContext, nodeContext, next, logger) =
+            PrepareTestWithLogger<GetQueryByIdNodeConfiguration>(config);
+
+        var from = new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc);
+        var to = from.AddDays(7);
+
+        SetupBaseArchive(TimeSpan.FromMinutes(15));
+        SetupRollups(
+            CreateRollup(TestCoarseRollupRtId, TimeSpan.FromHours(2), "Amount.Value", CkRollupFunction.Sum),
+            CreateRollup(TestRollupRtId, TimeSpan.FromHours(1), "Amount.Value", CkRollupFunction.Sum));
+
+        // 7 d / 12 buckets ⇒ 14 h bins: both rungs are fine enough, so without coverage the coarser
+        // two-hour rung wins (least scan). It starts a day into the window, so the hourly rung answers.
+        SetupCoverage(TestArchiveRtId, from.AddDays(-30), to);
+        SetupCoverage(TestCoarseRollupRtId, from.AddDays(1), to);
+        SetupCoverage(TestRollupRtId, from.AddDays(-30), to);
+
+        SetupPersistentQuery(CreateDownsamplingStreamDataQuery(
+            from, to, 12, ("Amount.Value", RtAggregationTypesEnum.Sum)));
+        SetupExecuteDownsamplingResult(new StreamDataQueryResult { Rows = [], TotalCount = 0 });
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // 14 h is a whole multiple of the hourly bucket and the range starts on the hour grid, so the
+        // fallback rung answers the query identically and is read.
+        Assert.Equal(TestRollupRtId, _capturedDownsamplingArchiveRtId);
+        Assert.Equal(from, _capturedDownsamplingOptions!.From);
+        Assert.Equal(to, _capturedDownsamplingOptions.To);
+        Assert.Equal(12, _capturedDownsamplingOptions.Limit);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("CoverageLimited"), A<object[]>._))
+            .MustHaveHappened();
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains(TestCoarseRollupRtId.ToString()), A<object[]>._))
+            .MustHaveHappened();
+        // Routed, not declined: no "would not return the same values" warning, and the read is reported.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("would not return the same values"), A<object[]>._))
+            .MustNotHaveHappened();
+        A.CallTo(() => logger.Info(A<string>._, A<string>._,
+                A<string>.That.Contains(TestRollupRtId.ToString()), A<object[]>._))
             .MustHaveHappened();
     }
 

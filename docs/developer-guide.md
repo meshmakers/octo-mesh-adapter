@@ -1231,6 +1231,7 @@ Return Result / Store in Time-Series / Send Notifications
 | `StreamDataHost` | string | `127.0.0.1` | CrateDB hostname |
 | `StreamDataUser` | string | `crate` | CrateDB user |
 | `StreamDataPassword` | string | (empty) | CrateDB password |
+| `StreamDataCoverageCacheTtlSeconds` | int | `60` | TTL of the measured archive-coverage memo used by `GetQueryById@1`'s resolution-aware archive selection (AB#5157); the adapter's equivalent of the platform services' `StreamData:Coverage:CacheTtlSeconds` (env `OCTO_ADAPTER__STREAMDATACOVERAGECACHETTLSECONDS`) |
 
 ### Build Configurations
 

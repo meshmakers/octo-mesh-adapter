@@ -60,4 +60,15 @@ public class MeshAdapterConfiguration
     /// Password for crate db
     /// </summary>
     public string? StreamDataPassword { get; set; }
+
+    /// <summary>
+    /// How long a measured archive coverage answer (AB#5157) is served without re-probing CrateDB, in
+    /// seconds. The adapter's equivalent of the platform-wide <c>StreamData:Coverage:CacheTtlSeconds</c>
+    /// setting — bound onto <c>ArchiveCoverageOptions</c> by
+    /// <see cref="ConfigureArchiveCoverageOptions"/>, so the whole adapter configuration keeps living in
+    /// the one <c>Adapter</c> section (<c>OCTO_ADAPTER__STREAMDATACOVERAGECACHETTLSECONDS</c>). Zero
+    /// disables memoisation and measures on every resolution; a negative value is a misconfiguration and
+    /// fails when the cache is created.
+    /// </summary>
+    public int StreamDataCoverageCacheTtlSeconds { get; set; } = 60;
 }

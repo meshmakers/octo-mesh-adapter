@@ -328,6 +328,12 @@ public class StreamDataFixture : SystemFixture
     /// </summary>
     private Task RefreshArchiveTableAsync() => RefreshTableAsync(ArchiveRtIdString);
 
+    /// <summary>
+    /// Forces read-after-write consistency on any archive table a test created itself (a rollup rung,
+    /// say) — the same refresh the fixture's own seeding does.
+    /// </summary>
+    public Task RefreshArchiveAsync(OctoObjectId archiveRtId) => RefreshTableAsync(archiveRtId.ToString());
+
     private async Task RefreshTableAsync(string archiveRtId)
     {
         var qualifiedTable = $"\"{StreamDataTenantId}\".\"archive_{archiveRtId}\"";

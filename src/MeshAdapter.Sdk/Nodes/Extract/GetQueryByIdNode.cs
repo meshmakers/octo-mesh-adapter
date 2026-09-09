@@ -654,9 +654,17 @@ public class GetQueryByIdNode(
     /// answered from a coarser rung had one been provisioned).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The resolution zone is always UTC: the node exposes no time-zone option, so a calendar-aligned
     /// rollup (day / week / month / year) whose stored reference zone is not UTC is excluded from the
     /// ladder by the resolver's per-query zone-match rule. Fixed-size (sub-day) rungs are unaffected.
+    /// </para>
+    /// <para>
+    /// The tenant's measured-coverage provider is handed to the resolver (AB#5157), so a rung that
+    /// holds no data for the requested start is not routed to just because its grain fits. Without a
+    /// provider — a tenant whose stream data is off — the coverage filter stays inert, which is why
+    /// it is passed explicitly rather than left at its default.
+    /// </para>
     /// </remarks>
     private static async Task<SeriesResolutionResult?> ResolveSeriesAsync(
         Enum aggregationType, string sourcePath, OctoObjectId baseArchiveRtId,
@@ -677,9 +685,10 @@ public class GetQueryByIdNode(
         var requiredAggregation = MapToRollupFunction(aggregationType);
 
         // Composed per tenant, exactly as the GraphQL and MCP consumers of the resolver do — the
-        // service is not registered in the container anywhere in the platform.
+        // service is not registered in the container anywhere in the platform. The coverage provider
+        // is null when stream data is off, which keeps the measured-coverage filter inert.
         var resolver = new SeriesResolutionService(tenantContext.GetArchiveRuntimeStore(),
-            new RollupDependencyGraph(rollupStore));
+            new RollupDependencyGraph(rollupStore), tenantContext.GetArchiveCoverageProvider());
 
         var request = new SeriesResolutionRequest(baseArchiveRtId, TargetCkTypeId: null, from, to,
             targetPoints, requiredAggregation, sourcePath)
@@ -722,6 +731,16 @@ public class GetQueryByIdNode(
     /// The rollup must also have aggregated the whole window already: a watermark short of <c>To</c>
     /// means the newest bins would read low. Calendar-aligned rollups (day / week / month / year) are
     /// never accepted, because a fixed-width bin cannot line up with civil buckets in general.
+    /// </para>
+    /// <para>
+    /// The resolver's signal governs reporting, not routing: <b>any</b> non-<see cref="SeriesResolutionSignal.Ok" />
+    /// signal is warned about — <see cref="SeriesResolutionSignal.CoverageLimited" /> (AB#5157) included,
+    /// where the rung the resolver would have picked holds no data for the requested start and a coarser,
+    /// covering rung was chosen instead. Which archive is actually read is decided by the exactness gate
+    /// above and by nothing else: a <c>CoverageLimited</c> fallback that passes the gate <b>is</b> routed
+    /// to (with the warning), and one that does not — a calendar-aligned rung, say — leaves the query on
+    /// the archive it names. So the warning tells the author that the answer is coarser than asked for,
+    /// while the values themselves stay identical to the persisted archive's either way.
     /// </para>
     /// </remarks>
     private static async Task<OctoObjectId> ResolveEffectiveArchiveAsync(SeriesResolutionResult resolution,

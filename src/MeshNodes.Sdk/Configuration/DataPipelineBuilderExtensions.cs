@@ -42,6 +42,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpDeleteNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SignalSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeStreamDataInArchiveNodeConfiguration>();

@@ -77,6 +77,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<EMailSenderNode>()
             .RegisterNode<EMailSenderNode2>()
             .RegisterNode<SftpUploadNode>()
+            .RegisterNode<SftpDeleteNode>()
             .RegisterNode<ToDiscordNode>()
             .RegisterNode<SignalSenderNode>()
             .RegisterNode<GetQueryByIdNode>()

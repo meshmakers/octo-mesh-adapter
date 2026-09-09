@@ -320,6 +320,22 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
             client.UploadFile(content, remotePath, true);
         }
 
+        public bool Delete(string remotePath)
+        {
+            try
+            {
+                client.DeleteFile(remotePath);
+                return true;
+            }
+            catch (SftpPathNotFoundException)
+            {
+                // Kept behind this seam the same way EnsureDirectory keeps it: an SSH.NET
+                // exception type in a node would tie the node to this implementation and
+                // leave the node's tests asserting against a library they never talk to.
+                return false;
+            }
+        }
+
         public void EnsureDirectory(string remoteDirectory)
         {
             var isAbsolute = remoteDirectory.StartsWith('/');

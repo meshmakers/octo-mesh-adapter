@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Sdk.Common.Services;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -678,9 +679,152 @@ public class HttpRequestServiceTests
         string[]? requiredRoles = null, bool receivesCredentialHeaders = false)
     {
         executeFunc ??= _ => Task.FromResult<JsonNode?>(null);
-        return new HttpRequestOptions(route, method, executeFunc, allowAnonymous, requiredRoles ?? [],
+        return new HttpRequestOptions(route, method, (input, _) => executeFunc(input), allowAnonymous,
+            requiredRoles ?? [],
             receivesCredentialHeaders);
     }
+
+    [Fact]
+    public async Task SendRequestAsync_AuthenticatedCaller_PassesVerifiedPrincipalAndDataRootSubset()
+    {
+        // AB#4975: the verified caller reaches the pipeline twice — as VerifiedPrincipal on the
+        // ExecuteFunc (server-side stamp) and as the safe $.principal subset in the data root.
+        VerifiedPrincipal? capturedPrincipal = null;
+        JsonNode? capturedInput = null;
+        _service.CreateRoute(new HttpRequestOptions("/upload", HttpMethod.Post, (input, caller) =>
+        {
+            capturedPrincipal = caller.Principal;
+            capturedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, []));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/upload");
+        context.User = CreateAuthenticatedUser("AccountingEmployee", "AccountingManagement");
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        Assert.NotNull(capturedPrincipal);
+        Assert.Equal("660000000000000000000042", capturedPrincipal!.SubjectId);
+        Assert.Equal(TenantId, capturedPrincipal.TenantId);
+        Assert.Equal(["AccountingEmployee", "AccountingManagement"], capturedPrincipal.Roles);
+
+        var principalNode = capturedInput?["principal"];
+        Assert.NotNull(principalNode);
+        Assert.Equal("660000000000000000000042", principalNode!["subjectId"]!.GetValue<string>());
+        Assert.Equal(2, principalNode["roles"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_AnonymousRoute_NoPrincipal()
+    {
+        VerifiedPrincipal? capturedPrincipal = new("sentinel", null, null, null, []);
+        var capturedToken = "sentinel";
+        JsonNode? capturedInput = null;
+        _service.CreateRoute(new HttpRequestOptions("/open", HttpMethod.Post, (input, caller) =>
+        {
+            capturedPrincipal = caller.Principal;
+            capturedToken = caller.RawAccessToken;
+            capturedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: true, []));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/open");
+
+        Assert.True(await _service.SendRequestAsync(context));
+        Assert.Null(capturedPrincipal);
+        Assert.Null(capturedToken);
+        Assert.Null(capturedInput?["principal"]);
+    }
+
+    #region Caller access token (AB#5031)
+
+    [Fact]
+    public async Task SendRequestAsync_AuthenticatedCaller_PassesRawTokenToExecuteFuncButNeverIntoTheDataRoot()
+    {
+        // AB#5031: a node acting on behalf of the caller (delegation grant) needs the raw bearer
+        // token as subject_token. It reaches the trigger's execute delegate ONLY — the data root is
+        // echoed back in the HTTP response, persisted by SetPipelineExecutionResult@1 and shown in
+        // the Studio debug panel, so the credential must not appear anywhere in it.
+        const string rawToken = "ey.super.secret-caller-token";
+
+        string? capturedToken = null;
+        JsonNode? capturedInput = null;
+        _service.CreateRoute(new HttpRequestOptions("/aiprompt", HttpMethod.Post, (input, caller) =>
+        {
+            capturedToken = caller.RawAccessToken;
+            capturedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, []));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/aiprompt");
+        context.User = CreateAuthenticatedUser("AccountingEmployee");
+        context.Request.Headers.Authorization = $"Bearer {rawToken}";
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        Assert.Equal(rawToken, capturedToken);
+
+        // Negative assertion 1: the Authorization header is still filtered out of $.headers.
+        Assert.NotNull(capturedInput);
+        var headers = capturedInput!["headers"];
+        Assert.NotNull(headers);
+        Assert.Null(headers!["Authorization"]);
+
+        // Negative assertion 2: the token appears NOWHERE in the whole data root — not under a
+        // differently named key, not inside $.principal, not in a body echo.
+        Assert.DoesNotContain(rawToken, capturedInput.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_CredentialHeaderRoute_StillKeepsTheTokenOutOfTheDataRootDecision()
+    {
+        // The credential-header opt-in (FromTeamsBot) is governed by ReceivesCredentialHeaders and is
+        // deliberately untouched by AB#5031: with it set, the header travels as before — the raw
+        // token on the caller context is an independent, additional channel.
+        const string rawToken = "ey.bot.token";
+
+        string? capturedToken = null;
+        JsonNode? capturedInput = null;
+        _service.CreateRoute(new HttpRequestOptions("/bot", HttpMethod.Post, (input, caller) =>
+        {
+            capturedToken = caller.RawAccessToken;
+            capturedInput = input;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, [], receivesCredentialHeaders: true));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/bot");
+        context.User = CreateAuthenticatedUser("AccountingEmployee");
+        context.Request.Headers.Authorization = $"Bearer {rawToken}";
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        Assert.Equal(rawToken, capturedToken);
+        Assert.Equal($"Bearer {rawToken}", capturedInput!["headers"]!["Authorization"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_NonBearerScheme_YieldsNoCallerToken()
+    {
+        // A credential the platform gate did not mint must never be handed on as if it were a bearer
+        // token — a delegation request built from it would fail at the identity service with an
+        // unhelpful error instead of never being attempted.
+        string? capturedToken = "sentinel";
+        _service.CreateRoute(new HttpRequestOptions("/basic", HttpMethod.Post, (_, caller) =>
+        {
+            capturedToken = caller.RawAccessToken;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, []));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/basic");
+        context.User = CreateAuthenticatedUser("AccountingEmployee");
+        context.Request.Headers.Authorization = "Basic dXNlcjpwYXNz";
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        Assert.Null(capturedToken);
+    }
+
+    #endregion
 
     private static ClaimsPrincipal CreateAuthenticatedUser(params string[] roles)
     {

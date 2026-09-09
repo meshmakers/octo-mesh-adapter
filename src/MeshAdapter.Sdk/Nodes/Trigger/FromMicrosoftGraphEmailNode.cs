@@ -7,8 +7,11 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using MimeKit;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
+
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
@@ -16,7 +19,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class FromMicrosoftGraphEmailNode(
     ILogger<FromMicrosoftGraphEmailNode> logger,
-    IHttpClientFactory httpClientFactory)
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder)
     : ITriggerPipelineNode
 {
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
@@ -48,12 +52,73 @@ internal class FromMicrosoftGraphEmailNode(
 
         var graphConfig = context.GlobalConfiguration.GetValue<GraphConfiguration>(c.ServerConfiguration);
 
+        // Mailbox / folders may live in a configuration entity instead of the pipeline
+        // definition (see SettingsConfiguration) so a redeploy never overwrites what an
+        // operator configured and nothing tenant-specific leaks into the seed. A value
+        // found in the settings configuration takes precedence over the node property.
+        var effectiveConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, c);
+
+        if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
+        {
+            logger.LogInformation(
+                "FromMicrosoftGraphEmail: resolved mailbox/folders from settings configuration '{Settings}' (folder='{Folder}', moveTo='{MoveTo}')",
+                c.SettingsConfiguration, effectiveConfig.FolderPath, effectiveConfig.MoveToFolderPathOnSuccess);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveConfig.Mailbox))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.Mailbox),
+                c.SettingsConfiguration ?? c.ServerConfiguration);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveConfig.FolderPath))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.FolderPath),
+                c.SettingsConfiguration ?? c.ServerConfiguration);
+        }
+
         _cancellationTokenSource = new CancellationTokenSource();
         _pollingTask = Task.Run(
-            async () => await PollForMessagesAsync(context, graphConfig, c),
+            async () => await PollForMessagesAsync(context, graphConfig, effectiveConfig),
             _cancellationTokenSource.Token);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="c"/> with Mailbox / FolderPath /
+    /// MoveToFolderPathOnSuccess / MoveToFolderPathOnFailure / PollingIntervalSeconds resolved from the optional
+    /// settings configuration (well-known name <see cref="FromMicrosoftGraphEmailNodeConfiguration.SettingsConfiguration"/>).
+    /// A non-empty settings value overrides the corresponding node property; anything
+    /// missing falls back to the node property. The node stays domain-agnostic: which
+    /// attributes to read is given by the *Attribute node properties.
+    /// </summary>
+    internal static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
+        IGlobalConfiguration globalConfiguration, FromMicrosoftGraphEmailNodeConfiguration c)
+    {
+        var attributes = ConfigurationSettingsReader.TryGetAttributes(
+            globalConfiguration, c.SettingsConfiguration);
+        if (attributes is null)
+        {
+            // No settings configuration, undefined, or a malformed payload — keep the
+            // node properties (validated by the caller).
+            return c;
+        }
+
+        var attrs = attributes.Value;
+        return c with
+        {
+            Mailbox = ConfigurationSettingsReader.ReadString(attrs, c.MailboxAttribute) ?? c.Mailbox,
+            FolderPath = ConfigurationSettingsReader.ReadString(attrs, c.SourceFolderAttribute) ?? c.FolderPath,
+            MoveToFolderPathOnSuccess =
+                ConfigurationSettingsReader.ReadString(attrs, c.DoneFolderAttribute) ?? c.MoveToFolderPathOnSuccess,
+            MoveToFolderPathOnFailure =
+                ConfigurationSettingsReader.ReadString(attrs, c.FailedFolderAttribute) ?? c.MoveToFolderPathOnFailure,
+            PollingIntervalSeconds =
+                ConfigurationSettingsReader.ReadPositiveInt(attrs, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds,
+        };
     }
 
     public async Task StopAsync(ITriggerContext context)
@@ -169,7 +234,7 @@ internal class FromMicrosoftGraphEmailNode(
                         continue;
                     }
 
-                    var emailData = await BuildEmailDataAsync(accessToken, nodeConfig.Mailbox, messageId, message);
+                    var emailData = await BuildEmailDataAsync(accessToken, nodeConfig, messageId, message);
 
                     var batch = new EmailBatch
                     {
@@ -178,9 +243,26 @@ internal class FromMicrosoftGraphEmailNode(
                         ProcessedAt = DateTime.UtcNow
                     };
 
+                    // AB#5126: one message → one execution, so the sender maps cleanly to a caller.
+                    // The From address is the identifier; AB#5125 derives the per-message trust from
+                    // the DKIM/DMARC (Authentication-Results) verdict — Strong only for a
+                    // dkim=pass + aligned dmarc=pass mail, Weak otherwise (fail-safe when unknown).
+                    var messageTrust = EmailMessageTrust.Evaluate(emailData.Authentication, fromAddress);
+                    var sender = string.IsNullOrWhiteSpace(fromAddress)
+                        ? null
+                        : new ChannelSender(ChannelIdentifierKind.EmailAddress, fromAddress, messageTrust);
+                    var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromMicrosoftGraphEmail: {Reason} Skipping message '{MessageId}'.",
+                            binding.RejectReason, messageId);
+                        continue;
+                    }
+
                     // Stamp the attempt BEFORE the run: a poison message can take the whole
                     // process down (OOM), in which case no catch block ever runs — only a
                     // marker persisted on the message itself makes that run count (AB#5142).
+                    // Stamped after the binding gate, so a rejected message is never counted.
                     var stamped = await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId,
                         WithAttemptCategory(categories, attempts + 1));
 
@@ -188,7 +270,11 @@ internal class FromMicrosoftGraphEmailNode(
                     {
                         // One pipeline run per message so the success/failure of a run maps
                         // 1:1 to the move decision for exactly that message.
-                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, batch);
                     }
                     catch (OperationCanceledException) when (_cancellationTokenSource.Token.IsCancellationRequested)
                     {
@@ -408,15 +494,34 @@ internal class FromMicrosoftGraphEmailNode(
         return doc.RootElement.GetProperty("id").GetString()!;
     }
 
+    /// <summary>
+    ///     The <c>$select</c> the message query asks for.
+    /// </summary>
+    /// <remarks>
+    ///     AB#5011: <c>internetMessageHeaders</c> is one of the properties Microsoft Graph returns
+    ///     <b>only</b> when it is named in <c>$select</c> — which is the whole reason
+    ///     <c>Authentication-Results</c> was not merely empty on the pipeline side but absent. Adding
+    ///     it costs the full Received chain plus the DKIM signatures on every message, so it stays
+    ///     opt-in and only the configured header names are surfaced downstream.
+    /// </remarks>
+    /// <param name="includeInternetMessageHeaders">Whether to request the internet message headers.</param>
+    internal static string BuildMessageSelect(bool includeInternetMessageHeaders)
+    {
+        return "id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId,categories"
+               + (includeInternetMessageHeaders ? ",internetMessageHeaders" : string.Empty);
+    }
+
     private async Task<List<JsonElement>> GetMessagesAsync(string accessToken,
         FromMicrosoftGraphEmailNodeConfiguration config, string folderId)
     {
         using var client = CreateGraphClient(accessToken);
 
+        var select = BuildMessageSelect(config.IncludeInternetMessageHeaders);
+
         var url =
             $"{GraphBaseUrl}/users/{Uri.EscapeDataString(config.Mailbox)}/mailFolders/{folderId}/messages" +
             $"?$top={config.MaxMessagesPerPoll}&$orderby=receivedDateTime asc" +
-            "&$select=id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId,categories";
+            $"&$select={select}";
 
         var response = await client.GetAsync(url, _cancellationTokenSource!.Token);
         response.EnsureSuccessStatusCode();
@@ -434,9 +539,10 @@ internal class FromMicrosoftGraphEmailNode(
         return messages;
     }
 
-    private async Task<EmailData> BuildEmailDataAsync(string accessToken, string mailbox, string messageId,
-        JsonElement message)
+    private async Task<EmailData> BuildEmailDataAsync(string accessToken,
+        FromMicrosoftGraphEmailNodeConfiguration config, string messageId, JsonElement message)
     {
+        var mailbox = config.Mailbox;
         var subject = message.TryGetProperty("subject", out var subj) ? subj.GetString() : null;
         var fromAddress = GetFromAddress(message);
         var fromName = GetFromName(message);
@@ -471,7 +577,7 @@ internal class FromMicrosoftGraphEmailNode(
         // cheaply when there is nothing to fetch.
         var attachments = await GetAttachmentsAsync(accessToken, mailbox, messageId);
 
-        return new EmailData
+        var emailData = new EmailData
         {
             Subject = subject,
             From = string.IsNullOrWhiteSpace(fromName) ? fromAddress : $"{fromName} <{fromAddress}>",
@@ -484,6 +590,100 @@ internal class FromMicrosoftGraphEmailNode(
             MessageId = message.TryGetProperty("internetMessageId", out var imi) ? imi.GetString() : messageId,
             Attachments = attachments
         };
+
+        if (config.IncludeInternetMessageHeaders)
+        {
+            ApplyInternetMessageHeaders(emailData, message, config.InternetMessageHeaderNames);
+        }
+
+        return emailData;
+    }
+
+    /// <summary>
+    ///     Header names surfaced when the node was not told which ones it wants. The set a sender gate
+    ///     needs and nothing else — the rest of the headers are kilobytes of Received chain and base64
+    ///     signatures that would land in the pipeline data context of every message. AB#5011.
+    /// </summary>
+    internal static readonly string[] DefaultInternetMessageHeaderNames =
+    [
+        AuthenticationResultsParser.HeaderName,
+        "Authentication-Results-Original",
+        "ARC-Authentication-Results",
+        "Received-SPF"
+    ];
+
+    /// <summary>
+    ///     Copies the selected internet message headers onto <paramref name="emailData" /> and parses
+    ///     the SPF/DKIM/DMARC verdicts out of <c>Authentication-Results</c>. AB#5011.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 <b>Only the first occurrence of a name is kept</b>, and the verdicts are parsed from the
+    ///     first <c>Authentication-Results</c> header alone. A sender can put such a header into the
+    ///     message they submit and the receiving server <i>prepends</i> its own rather than replacing
+    ///     it, so only the topmost one was written by infrastructure we trust. Joining the occurrences
+    ///     — the obvious way to "not lose data" — would put a forged <c>dmarc=pass</c> into the same
+    ///     string as the real verdict, where any downstream substring or regex check would find it.
+    ///     The number of occurrences is reported on
+    ///     <see cref="EmailAuthenticationResults.HeaderCount" /> instead, so a pipeline can treat a
+    ///     duplicated header as the anomaly it is.
+    ///     <para>
+    ///         Graph returns the headers in message order, i.e. most recently added first, which is why
+    ///         "first wins" is the right rule here and not merely the cheap one.
+    ///     </para>
+    /// </remarks>
+    internal static void ApplyInternetMessageHeaders(EmailData emailData, JsonElement message,
+        string[]? configuredNames)
+    {
+        if (!message.TryGetProperty("internetMessageHeaders", out var headers) ||
+            headers.ValueKind != JsonValueKind.Array)
+        {
+            // Graph omits the property entirely for a message that carries no internet headers (an
+            // internally generated or draft mail). Not an error, and deliberately not an empty
+            // Authentication record either: "no header" must stay distinguishable from "header said
+            // nothing", or a gate cannot tell "unknown" from "reported as none".
+            return;
+        }
+
+        // Authentication-Results is always collected, whatever the name filter says: it is what the
+        // verdicts are parsed from, and a list that omitted it would turn them off silently while the
+        // flag claims they are on.
+        var wanted = new HashSet<string>(
+            configuredNames is { Length: > 0 } ? configuredNames : DefaultInternetMessageHeaderNames,
+            StringComparer.OrdinalIgnoreCase) { AuthenticationResultsParser.HeaderName };
+
+        string? authenticationResults = null;
+        var authenticationResultsCount = 0;
+
+        foreach (var header in headers.EnumerateArray())
+        {
+            var name = header.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+
+            var value = header.TryGetProperty("value", out var v) ? v.GetString() ?? string.Empty : string.Empty;
+
+            if (string.Equals(name, AuthenticationResultsParser.HeaderName, StringComparison.OrdinalIgnoreCase))
+            {
+                authenticationResultsCount++;
+                authenticationResults ??= value;
+            }
+
+            if (!wanted.Contains(name))
+            {
+                continue;
+            }
+
+            // TryAdd, not the indexer: first occurrence wins — see the remarks.
+            emailData.Headers.TryAdd(name, value);
+        }
+
+        if (authenticationResultsCount > 0)
+        {
+            emailData.Authentication =
+                AuthenticationResultsParser.Parse(authenticationResults, authenticationResultsCount);
+        }
     }
 
     private async Task<List<AttachmentData>> GetAttachmentsAsync(string accessToken, string mailbox,

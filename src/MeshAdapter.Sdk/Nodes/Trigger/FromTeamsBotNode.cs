@@ -13,6 +13,8 @@ using Microsoft.Extensions.Logging;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 using HttpRequestOptions = Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests.HttpRequestOptions;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 /// <summary>
@@ -29,7 +31,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 internal class FromTeamsBotNode(
     ILogger<FromTeamsBotNode> logger,
     IHttpRequestService httpRequestService,
-    IHttpClientFactory httpClientFactory) : ITriggerPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder) : ITriggerPipelineNode
 {
     private HttpRouteHandle? _routeHandle;
 
@@ -56,7 +59,11 @@ internal class FromTeamsBotNode(
         var cfg = context.GlobalConfiguration.GetValue<GraphBotConfiguration>(c.ServerConfiguration);
         var expectedAudience = string.IsNullOrWhiteSpace(c.BotAppId) ? cfg.ClientId : c.BotAppId!;
 
-        var requestOptions = new HttpRequestOptions(c.Route, HttpMethod.Post, async input =>
+        // The caller context is discarded on purpose: the route is anonymous to the platform gate,
+        // so it carries no verified principal, and the Bot Framework credential in the Authorization
+        // header is not an OctoMesh token — nothing here may be delegated with it (AB#5031). The
+        // node reads that header itself via ReceivesCredentialHeaders, see ValidateInboundToken.
+        var requestOptions = new HttpRequestOptions(c.Route, HttpMethod.Post, async (input, _) =>
         {
             try
             {
@@ -107,9 +114,12 @@ internal class FromTeamsBotNode(
         if (c.ValidateInboundToken)
         {
             var authHeader = input["headers"]?["Authorization"]?.GetValue<string>();
-            if (!IsInboundTokenAcceptable(authHeader, expectedAudience))
+            var outcome = await TokenValidator.ValidateAsync(authHeader, expectedAudience,
+                c.OpenIdMetadataUrl, c.ValidTokenIssuers, CancellationToken.None);
+            if (!outcome.IsValid)
             {
-                logger.LogWarning("FromTeamsBot: rejected inbound activity (token check failed)");
+                logger.LogWarning("FromTeamsBot: rejected inbound activity ({Reason})",
+                    outcome.Reason);
                 return null;
             }
         }
@@ -155,7 +165,29 @@ internal class FromTeamsBotNode(
             ProcessedAt = DateTime.UtcNow
         };
 
-        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
+        // AB#5124/5126: resolve the sender to a verified caller under this trigger's binding policy.
+        // The EntraID object id is the stable per-user identity, mapped to the OctoMesh user by the
+        // EntraID directory (AB#5124). The MESSAGE-trust dimension is Strong only when the inbound
+        // Bot Framework token was cryptographically validated (AB#5010) — that is what lets the
+        // channel vouch that THIS activity really came from that aadObjectId; without validation the
+        // sender id is self-asserted, so it stays Weak. When the oid is absent there is no reliable
+        // identifier at all, so the sender is unresolvable.
+        var messageTrust = c.ValidateInboundToken ? CallerTrustLevel.Strong : CallerTrustLevel.Weak;
+        var sender = string.IsNullOrWhiteSpace(fromAad)
+            ? null
+            : new ChannelSender(ChannelIdentifierKind.EntraIdObjectId, fromAad, messageTrust);
+        var binding = await callerBinder.BindAsync(context.TenantId, c.CallerBinding, sender);
+        if (binding.Rejected)
+        {
+            logger.LogWarning("FromTeamsBot: {Reason}", binding.RejectReason);
+            return null;
+        }
+
+        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+        {
+            VerifiedPrincipal = binding.Principal,
+            CallerTrust = binding.Trust
+        }, batch);
         logger.LogInformation(
             "FromTeamsBot: processed activity from {From} with {AttachmentCount} attachment(s)",
             fromName ?? fromId ?? "unknown", attachments.Count);
@@ -287,65 +319,10 @@ internal class FromTeamsBotNode(
     }
 
     /// <summary>
-    /// Best-effort inbound-token check: verifies audience and expiry from the JWT payload.
-    /// NOTE: does NOT verify the cryptographic signature (see
-    /// <see cref="FromTeamsBotNodeConfiguration.ValidateInboundToken"/> remarks). Harden before
-    /// exposing publicly.
+    /// Full inbound-token validation incl. the cryptographic signature (AB#5010); shared
+    /// across activities so the signing-key metadata cache is reused.
     /// </summary>
-    private bool IsInboundTokenAcceptable(string? authHeader, string expectedAudience)
-    {
-        if (string.IsNullOrWhiteSpace(authHeader) ||
-            !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var token = authHeader["Bearer ".Length..].Trim();
-        var parts = token.Split('.');
-        if (parts.Length != 3)
-        {
-            return false;
-        }
-
-        try
-        {
-            var payloadJson = Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));
-            using var doc = JsonDocument.Parse(payloadJson);
-            var root = doc.RootElement;
-
-            var aud = root.TryGetProperty("aud", out var audEl) ? audEl.GetString() : null;
-            if (!string.Equals(aud, expectedAudience, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (root.TryGetProperty("exp", out var expEl) && expEl.TryGetInt64(out var exp))
-            {
-                var expiresAt = DateTimeOffset.FromUnixTimeSeconds(exp);
-                if (expiresAt < DateTimeOffset.UtcNow.AddMinutes(-5))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static byte[] Base64UrlDecode(string input)
-    {
-        var s = input.Replace('-', '+').Replace('_', '/');
-        switch (s.Length % 4)
-        {
-            case 2: s += "=="; break;
-            case 3: s += "="; break;
-        }
-        return Convert.FromBase64String(s);
-    }
+    private static readonly TeamsBotTokenValidator TokenValidator = new();
 
     private static string? StripHtml(string? html)
     {

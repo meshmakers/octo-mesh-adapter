@@ -1,6 +1,7 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -84,7 +85,12 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                     count++;
                     try
                     {
-                        var session = await etlContext.TenantRepository.GetSessionAsync();
+                        // AB#4975 / AB#5028 — scoped: the engine stamps RtCreatedBy and enforces data
+                        // permissions for whoever the execution acts as. The AB#4975 branch that fell
+                        // back to a system session without a verified caller is gone: the fallback is
+                        // now the adapter's service account and only then the system context, decided
+                        // once per execution rather than here (AB#5027 / AB#5028).
+                        var session = await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
 
                         OperationResult operationResult = new();

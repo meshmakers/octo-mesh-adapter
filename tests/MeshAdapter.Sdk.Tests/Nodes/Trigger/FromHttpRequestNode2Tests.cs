@@ -198,6 +198,70 @@ public class FromHttpRequestNode2Tests
         Assert.Empty(_eventService.Events);
     }
 
+    /// <remarks>
+    /// AB#5031: the caller's raw bearer token has to reach <see cref="ExecutePipelineOptions" />, the
+    /// per-execution side channel the delegation ("on-behalf-of") path in <c>AnthropicAiQuery@1</c>
+    /// reads as <c>subject_token</c>. Without this pass-through the token is collected by
+    /// <c>HttpRequestService</c> and then dropped, and every delegating node fails closed.
+    /// It must NOT travel in the pipeline data: that root is echoed back in the response,
+    /// persistable by <c>SetPipelineExecutionResult@1</c> and shown in the Studio debug panel.
+    /// </remarks>
+    [Fact]
+    public async Task StartAsync_AuthenticatedCaller_ForwardsTheRawTokenOnTheOptionsOnly()
+    {
+        const string rawToken = "ey.caller.token";
+
+        var captured = CaptureExecuteOptions();
+        var node = CreateNode(allowAnonymous: false);
+        var context = CreateHttpContext();
+        context.User = CreateAuthenticatedUser("TenantAdmin");
+        context.Request.Headers.Authorization = $"Bearer {rawToken}";
+
+        await node.StartAsync(_triggerContext);
+        Assert.True(await _httpRequestService.SendRequestAsync(context));
+
+        Assert.NotNull(captured.Options);
+        Assert.Equal(rawToken, captured.Options!.CallerAccessToken);
+        Assert.Equal("660000000000000000000042", captured.Options.VerifiedPrincipal?.SubjectId);
+
+        // Negative: nowhere in the data root the pipeline (and the HTTP response) sees.
+        Assert.NotNull(captured.Input);
+        Assert.DoesNotContain(rawToken, captured.Input!.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StartAsync_AnonymousRoute_LeavesTheCallerAccessTokenUnset()
+    {
+        var captured = CaptureExecuteOptions();
+        var node = CreateNode(allowAnonymous: true);
+
+        await node.StartAsync(_triggerContext);
+        Assert.True(await _httpRequestService.SendRequestAsync(CreateHttpContext()));
+
+        Assert.NotNull(captured.Options);
+        Assert.Null(captured.Options!.CallerAccessToken);
+        Assert.Null(captured.Options.VerifiedPrincipal);
+    }
+
+    private CapturedExecution CaptureExecuteOptions()
+    {
+        var captured = new CapturedExecution();
+        A.CallTo(() => _triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes(call =>
+            {
+                captured.Options = (ExecutePipelineOptions)call.Arguments[0]!;
+                captured.Input = call.Arguments[1] as JsonNode;
+            })
+            .Returns(Task.FromResult<object?>(null));
+        return captured;
+    }
+
+    private sealed class CapturedExecution
+    {
+        public ExecutePipelineOptions? Options { get; set; }
+        public JsonNode? Input { get; set; }
+    }
+
     [Fact]
     public async Task StopAsync_RemovesTheRoute()
     {

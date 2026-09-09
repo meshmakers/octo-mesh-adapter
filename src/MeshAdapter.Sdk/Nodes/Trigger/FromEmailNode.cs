@@ -12,11 +12,14 @@ using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 using MimeKit;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 [NodeConfiguration(typeof(FromEmailNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNode
+internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder callerBinder)
+    : ITriggerPipelineNode
 {
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
@@ -158,6 +161,10 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                         }).ToList() ?? new List<AttachmentData>()
                     };
                     
+                    // AB#5125: surface the receiving server's Authentication-Results (DKIM/DMARC)
+                    // verdict so the caller-binding can derive this mail's message trust.
+                    PopulateAuthentication(emailData, message);
+
                     newEmails.Add(emailData);
                     processedUids.Add(uid);
                     
@@ -184,9 +191,37 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
                         ProcessedAt = DateTime.UtcNow
                     };
                     
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), emailBatch);
-                    
-                    logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                    // AB#5126: one execution per batch. A caller is only unambiguous when the whole
+                    // batch shares one sender address; otherwise the execution has no single identity.
+                    // The From address is the identifier; AB#5125 derives the per-message trust from
+                    // each mail's DKIM/DMARC (Authentication-Results) verdict and takes the WEAKEST
+                    // over the batch (fail-safe: one unauthenticated mail caps the batch at Weak).
+                    var distinctSenders = newEmails
+                        .Select(e => e.FromAddress)
+                        .Where(a => !string.IsNullOrWhiteSpace(a))
+                        .Distinct()
+                        .ToList();
+                    var messageTrust = EmailMessageTrust.Min(
+                        newEmails.Select(e => EmailMessageTrust.Evaluate(e.Authentication, e.FromAddress)));
+                    var sender = distinctSenders.Count == 1
+                        ? new ChannelSender(ChannelIdentifierKind.EmailAddress, distinctSenders[0]!, messageTrust)
+                        : null;
+                    var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromEmail: {Reason} Skipping batch of {Count} email(s).",
+                            binding.RejectReason, newEmails.Count);
+                    }
+                    else
+                    {
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, emailBatch);
+
+                        logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                    }
                 }
                 
                 // Expunge deleted messages if any were deleted
@@ -238,6 +273,41 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger) : ITriggerPipelineNo
         
         _imapClient?.Dispose();
         _cancellationTokenSource?.Dispose();
+    }
+
+    /// <summary>
+    ///     Surfaces the mail's <c>Authentication-Results</c> (DKIM/DMARC) verdict onto
+    ///     <see cref="EmailData.Authentication" /> and <see cref="EmailData.Headers" /> (AB#5125).
+    ///     Only the FIRST occurrence is trusted — the receiving server PREPENDS its own header rather
+    ///     than replacing a sender-supplied one, so a later occurrence is sender-controlled text — and
+    ///     the count is passed to the parser so a second header defeats <c>IsDmarcPass</c>. Absent
+    ///     header ⇒ <see cref="EmailData.Authentication" /> stays null ("nothing known", NOT "failed"),
+    ///     which the trust mapper treats fail-safe as Weak.
+    /// </summary>
+    internal static void PopulateAuthentication(EmailData emailData, MimeMessage message)
+    {
+        string? firstValue = null;
+        var count = 0;
+        foreach (var header in message.Headers)
+        {
+            if (!string.Equals(header.Field, AuthenticationResultsParser.HeaderName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            count++;
+            firstValue ??= header.Value;
+        }
+
+        if (count == 0)
+        {
+            return;
+        }
+
+        // TryAdd: first occurrence wins, matching the Graph trigger's EmailData.Headers contract.
+        emailData.Headers.TryAdd(AuthenticationResultsParser.HeaderName, firstValue ?? string.Empty);
+        emailData.Authentication = AuthenticationResultsParser.Parse(firstValue, count);
     }
 }
 
@@ -295,6 +365,38 @@ public class EmailData
     /// List of email attachments
     /// </summary>
     public List<AttachmentData> Attachments { get; set; } = new();
+
+    /// <summary>
+    /// Selected internet message headers of the mail, keyed by header name (case insensitive).
+    /// Empty unless the trigger was configured to fetch them. AB#5011.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 Only the <b>first</b> occurrence of a name is kept. A header may legitimately appear
+    /// several times, but for the trust-bearing ones only the topmost was written by the receiving
+    /// infrastructure — a sender can put their own copy into the message they submit, and the server
+    /// prepends rather than replaces. Joining the occurrences would let a forged
+    /// <c>Authentication-Results: …; dmarc=pass</c> be found by any downstream substring or regex
+    /// check. <see cref="Authentication"/> reports how many there were.
+    /// <para>
+    /// Populated by <c>FromMicrosoftGraphEmail@1</c> (its configured header set) and by the IMAP
+    /// trigger (<c>FromEmail@1</c>), which surfaces the <c>Authentication-Results</c> header (AB#5125).
+    /// </para>
+    /// </remarks>
+    public Dictionary<string, string> Headers { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// SPF / DKIM / DMARC verdicts parsed out of the mail's <c>Authentication-Results</c> header —
+    /// the only evidence a pipeline has that the claimed sender really sent the mail. Null when the
+    /// trigger was not configured to fetch headers, or when the mail carried no such header
+    /// (an internally generated or relayed mail may not). AB#5011.
+    /// </summary>
+    /// <remarks>
+    /// A null here is <b>not</b> "authentication failed" and must not be treated as one — it means
+    /// nothing is known. A gate has to decide explicitly what to do with an unknown verdict, and
+    /// which way that falls is a tenant policy question, not something the trigger may decide.
+    /// </remarks>
+    public EmailAuthenticationResults? Authentication { get; set; }
 
     /// <summary>
     /// True when at least one attachment is a PDF. Lets a pipeline decide whether

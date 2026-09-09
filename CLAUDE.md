@@ -47,6 +47,9 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - **SftpDownloadNode** (`SftpDownload@1`) — Downloads exactly one file and writes its decoded content to `TargetPath`. Read counterpart of `SftpUpload@1`, which writes exactly one file; designed to run inside a `ForEach@1` over an `SftpList@1` result, one session per file. The remote path is static (`RemotePath`) or resolved from the data context (`RemotePathPath`, takes precedence). `Encoding` defaults to `utf-8` and is validated when the configuration is bound, so a typo fails the deployment rather than the first download; `OnEncodingError` chooses between a lossy read with a warning and failing the node (`SftpContentDecoder`, read counterpart of `SftpContentEncoder`). Single-byte code pages such as ISO-8859-1 map every byte, so the failure path is only reachable for multi-byte encodings. A leading **UTF-8 byte-order mark is stripped** from the decoded string: a BOM is valid UTF-8, so neither the strict pass nor `OnEncodingError` reports it, and kept it becomes an invisible first character that turns a downstream header comparison or split into a silent mismatch — stripped after decoding, not from the bytes, so under a single-byte code page the same three bytes stay the three ordinary characters they are there. **`MaxFileSizeBytes`** (default 100 MiB) bounds what the remote side can make the adapter allocate — the file is held in memory and then decoded to a string, so the peak is roughly 3x the file and a multi-gigabyte drop would take the pod down and repeat on every tick. Enforced twice: against the server's own `GetAttributes().Size` before a byte is transferred, and again while the bytes arrive (`OpenRead` + a hand-written copy rather than `DownloadFile`/`ReadAllBytes`), so a file that grows between the two — or a server that lies about the size — cannot get past it. Non-positive is rejected on the node; there is deliberately no unlimited setting, since the content becomes a `string`. No dry-run branch: reading has no side effects and the downstream chain must see the content in a dry run too. Wiring note: `ForEach@1` seeds the element under its `KeyPath` **default `$.key`**, so `RemotePathPath` reads `$.key.fullPath` unless the loop sets `keyPath` itself.
    - BackfillFromRtEntityNode
    - GetAssociationTargetsNode
+   - **WriteVerifiedCallerNode** (`WriteVerifiedCaller@1`) — materializes `etlContext.VerifiedPrincipal` (the AB#5136 verified caller resolved by a trigger's `callerBinding`) into the data context at `TargetPath` (default `$.caller`) as `{ subjectId, tenantId, name, email, roles }`. **`preferredChannel` (AB#5149):** when the caller's identity record carries a preferred outbound channel, the field is emitted VERBATIM — `"TEAMS"` | `"SIGNAL"` (extensible) — and is ABSENT (not null) when the user has none, so pre-AB#5149 pipelines see an unchanged object and consumers can gate on field presence. The value originates in the identity CK model — since System.Identity 2.18.0 (AB#5152) as the BINDING-SPECIFIC `User.PreferredChannelBindingId` (rtId of the chosen `VerifiedExternalIdentifier`), from which the three `Ck*UserLookup` classes in `Services/CallerBinding/` DERIVE the channel string via `PreferredChannelResolver` (referenced binding's kind → channel; dangling/expired reference warned and ignored; the legacy kind-level `PreferredChannel` string of 2.17.0 is honored transitionally) — and travels `*CallerRecord` → `VerifiedPrincipal.PreferredChannel` (octo-communication-sdk, still a channel string) → this node; validation ("only bound channels are settable") lives on the identity write side. Routing semantics: system-initiated messages only — synchronous replies keep using the channel the message came in on. Deliberately NOT injected into `AnthropicAiQueryNode`'s caller-context block (routing data, not identity-relevant for the LLM). Tests: `tests/MeshAdapter.Sdk.Tests/Nodes/Extract/WriteVerifiedCallerNodeTests.cs`.
+
+   - **ResolveNotificationChannelNode** (`ResolveNotificationChannel@1`, AB#5152) — reverse direction of the AB#5136 caller-binding lookups: resolves a recipient **subjectId** (runtime id of `System.Identity/User` = token `sub`) to the user's verified channel identifiers, preference and the deterministic `effectiveChannel` for **system-initiated** messages, via `ISubjectChannelLookup`/`CkSubjectChannelLookup` (`Services/CallerBinding/`, same generic CK access as the siblings; walks the INBOUND `IdentifiesUser` associations, surfaces only valid non-expired bindings). Output at `TargetPath` (default `$.recipient`): `{ found, subjectId, email?, name?, preferredChannel?, effectiveChannel, channelAddress?, identifiers[] }`. Fallback chain (never guesses, never multi-delivers): the user's BINDING-SPECIFIC preference `PreferredChannelBindingId` (System.Identity 2.18.0, rtId of the chosen `VerifiedExternalIdentifier`) wins when the referenced binding is valid — its kind yields the channel (PhoneNumber → SIGNAL, EntraIdObjectId → TEAMS, EmailAddress → EMAIL, mapping shared via `PreferredChannelResolver.ChannelForKind`) and its identifier value is the EXACT delivery target (`channelAddress`); a dangling/expired reference is warned and treated as no preference → `EMAIL`. TRANSITIONAL (pre-2.18.0 rollout skew): a legacy kind-level `PreferredChannel` string applies the old kind-level logic, disambiguating multiple bindings of the kind deterministically (most recently verified wins — `LastVerifiedAt` ?? `EnrolledAt`, tie-break lowest binding rtId — warned with the chosen identifier and alternative count). OTP/security messages stay channel-forced and never route through this node. The three forward `Ck*UserLookup`s derive `VerifiedPrincipal.PreferredChannel` (still a channel STRING — communication-sdk untouched) through the same `PreferredChannelResolver`. Consumed by the meshmakers-app Notify ToDo pipelines (Signal-or-e-mail; Teams proactive delivery deferred — no stored conversation reference mechanism). Tests: `tests/MeshAdapter.Sdk.Tests/Nodes/Extract/ResolveNotificationChannelNodeTests.cs`.
 
 2. **Transform Nodes** (`src/MeshAdapter.Sdk/Nodes/Transform/`): Data processing nodes
    - DataMappingNode
@@ -56,6 +59,7 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - **RenderDelimitedTextNode** (`RenderDelimitedText@1`) - Renders an array of records into ONE delimited-text document at `TargetPath`: one row per array element, one column per `Columns` entry, joined with `Delimiter` and `LineEnding`. Write counterpart of `ImportFromCsv@1` - though not a round trip: that reader treats an unescaped `"` as the start of a quoted field, so a value containing one comes back split differently than it went out, and this node emits no quoting to signal it. What could not be composed from existing nodes is the last mile: `Concat@1` already builds a single delimited *line* from relative `ValuePath`s, but nothing joins an array of strings into one document. A column is a constant (`Value`), a read (`ValuePath`, relative to the record) or - with neither set - **empty**, which is how a fixed layout expresses a reserved field; such layouts are mostly reserved fields, so the empty entry is the common case rather than an oddity. Setting both is a configuration error. **`Required`** turns an empty rendered value into a failure naming record and column, checked on the rendered text so absent, null and empty are one rule instead of three; unset it is inert. **Value to text follows the house rule** the other text-producing nodes use (`Concat@1`, `FormatString@1` via `JsonStringifyHelper`, which is `internal` to the SDK and had to be reproduced rather than reused): a number emits its **raw JSON token** so `0.00` stays `0.00` and no culture can reshape it, a boolean emits `True`/`False`, absent and null emit nothing. An object or array at a `ValuePath` is **refused**, because the same house rule would serialise it as indented multi-line JSON and destroy the record structure far more quietly than a stray delimiter would. **There is no quoting**, deliberately: fixed-layout delimited formats generally have no escaping convention, so emitting quotes would hand them to the receiver as payload. A value carrying the delimiter, CR or LF is refused (`OnDelimiterInValue: Fail`, the default) or rewritten (`Replace` / `Strip`, both warned) - never passed through, since it shifts every following column and the receiving side cannot tell. Constants are checked identically, and a `Replacement` containing the delimiter or a line break is rejected in the preflight because it would only move the problem. **The delimiter is exactly one character**, which is not a simplification but the condition under which the guarantee holds at all: cleaning can compose a longer delimiter out of the characters it leaves behind (removing `ab` from `aabb` yields `ab`), and a per-value check cannot see one that forms across the join between two columns; the counterpart reader splits on the first character only, so a longer one would not round-trip either. **An empty input array writes an empty string and never skips the write** - load-bearing rather than tidy: a downstream `If@1` guarding the delivery compares against `""`, and with the path absent that comparison reads `null`, so "not empty" is TRUE and exactly the empty delivery the guard exists to stop goes out. A `Path` that is not an array fails instead, since a silently one-row document from a mis-typed path is worse than a loud error, and so does a **record that is not an object** - every read column would render empty while the constants print, which is structurally valid output with nothing in it. If the source ever reports records that the iteration does not yield, that fails too rather than writing an empty document over them. `LineEnding` is `Lf` or `CrLf` and never `Environment.NewLine`, so the same definition produces the same bytes on every host. Configuration mistakes - empty/null `Columns`, a null entry, a column setting both, an unusable `Delimiter` or `Replacement`, an undefined `LineEnding`/`OnDelimiterInValue`, a `Path`/`ValuePath` that does not parse or that selects a set (wildcard, filter, recursive descent - a column holds one value, and such a path can resolve against one backing store and render empty against another), and a blank `Path`/`TargetPath` - **always** throw before anything is written or the chain continues. The blank target path matters more than it looks: the data context reads an empty path as the document ROOT, so the rendered document would replace the entire pipeline data while the chain carried on. **Explicit nulls:** `LineEnding`, `TrailingNewLine`, `OnDelimiterInValue` and `Replacement` are nullable with constant defaults resolved where they are read, because the pipeline deserializer is YamlDotNet and a present-but-null key overwrites a property initializer (`JsonNullAsDefaultAttribute` covers only the System.Text.Json path).
    - ImportFromExcelNode
    - **ImportFromCamt053Node** (`ImportFromCamt053@1`) — parses a camt.053.001.02 XML bank statement into an array of normalized booking objects (one per `Ntry`) written to `TargetPath`. **Namespace-agnostic** (resolves by local element name), so both the ISO standard namespace (`urn:iso:std:iso:20022:tech:xsd:camt.053.001.02`) and the Austrian STUZZA/APC variant (`ISO:camt.053.001.02:APC:STUZZA:payments:003`) are handled by the same node — a namespace-bound parser silently yields zero entries on the other dialect. Reads the base64 file from `$.files[FileIndex]` (FromHttpRequest upload). Emits per entry: composite `transactionId` (IBAN|AcctSvcrRef, else IBAN|LglSeqNb|position), signed `amount` (sign from CdtDbtInd), currency, booking/value dates, `direction` (0=Credit/1=Debit), direction-dependent counterpart name/iban/bic, concatenated `purpose` (Ustrd + structured CdtrRefInf/Ref), payment/E2E/mandate references, SEPA creditorId, `bankTransactionCode` (BkTxCd SubFmlyCd — ESCT/ESDD/CWDL/STDO/…), plus accountIban/lglSeqNb/position. Feeds the standard GetOrCreate→CreateUpdateInfo→ApplyChanges flow to create Basic.Accounting/BankTransaction (MatchState=Unreviewed). Parser core `ParseCamt053` is pure/static and unit-tested; the real-corpus regression test is gated on the `CAMT_CORPUS_DIR` env var (confidential data never enters VCS). Built for the accounting BelegCockpit camt import (AB epic Rechnungseingang/Bankabgleich).
+   - **AnthropicAiQueryNode** (`AnthropicAiQuery@1`) — queries Claude, optionally with MCP tools loaded from `{mcpServerUrl}/{tenantId}/mcp`. MCP auth normally uses a **service account** (`mcpServiceAccountConfigName` → `ServiceAccountTokenService.EnsureTokenAsync`), and deliberately **degrades**: a broken `ServiceAccountConfiguration` or a missing token only warns ("MCP calls will be sent unauthenticated") so the chat keeps working tool-lessly (AB#4541). **`mcpDelegateToCaller`** (AB#5031, default `false`) switches that identity: the node exchanges `IEtlContext.CallerAccessToken` for a delegated token via `AcquireDelegatedTokenAsync`, so the MCP server applies the **calling user's** roles and data permissions instead of the service account's full `octo_api` reach. 🔴 That mode is **fail-closed** — no caller token, no service-account config, or a failed acquisition all throw; neither degrade path applies, because continuing under another identity (or none) would defeat exactly the authorization the mode exists to enforce. Requires a trigger that carries a caller token (`FromHttpRequest@2`, not anonymous); channel assistants (Teams/Signal/e-mail) have no caller and must leave the flag off. Used by the accounting app's `/aiPrompt` Q&A pipeline.
    - PdfOcrExtractionNode — for PDF input, extracts the embedded text layer first (PdfPig) and falls back to raster+Tesseract OCR (IronOCR) only for scans/image PDFs or when the text layer is below `MinTextLayerChars`. The text layer is exact where OCR is lossy (separator-less codes like invoice numbers, non-German diacritics). `PreferTextLayer` (default on) is bypassed when `ExtractTables`/`ExtractBarcodes` is requested (those need the OCR path). AB#4528.
    - GenerateAndStoreReportNode
    - **RenderDataSheetPdfNode** (`RenderDataSheetPdf@1`) — renders a generic structured data sheet (title, subtitle, labelled sections, optional footer note) to a base64 PDF via QuestPDF (Community license set in the node). Domain-agnostic: the model is assembled by the pipeline. Used for the accounting BMD handover cover sheet.
@@ -82,17 +86,20 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
    - **SftpDeleteNode** (`SftpDelete@1`) - Deletes exactly one file over SFTP through the same `ISftpSessionFactory` as `SftpList@1` / `SftpDownload@1` / `SftpUpload@1`, so the per-server concurrency limit and the host key check apply to deletion as well. The path is static (`RemotePath`) or read from the data context (`RemotePathPath`, takes precedence), and a path ending in `/` is refused before connecting - this node removes a file, not a directory. `ISftpSession.Delete` returns **false** when the file was already gone rather than raising: that is a state, not a transport failure, and it keeps SSH.NET's `SftpPathNotFoundException` behind the seam the way `EnsureDirectory` already does. What to make of it is the pipeline's call: `OnMissingFile` defaults to **`Fail`**, while `Ignore` logs a warning and carries on, which is what a run repeated after a partial pass wants - and it covers what the server reports as a missing path, not a server that answers with a generic failure. Honours dry run (`DryRunHonouredLoadNodes.SftpDelete`): the intent carries host, port, user, path and the mode, and nothing is deleted. Every other failure becomes `CannotDeleteViaSftp` naming the node, while an exception the session factory already worded (host key mismatch, slot wait) passes through unwrapped. See AB#5105.
    - **DeployPipelineNode** — Deploys a specific pipeline within the same data flow via the Communication Controller REST API. Uses `ServiceAccountConfiguration` for OAuth2 authentication. Safety: cannot deploy self, must be in same data flow.
    - **TeamsBotReplyNode** (`TeamsBotReply@1`) — sends a reply into a Microsoft Teams conversation via the Bot Framework REST API (`POST {serviceUrl}/v3/conversations/{conversationId}/activities`). Bot token via client-credentials against the `botframework.com` authority; credentials read from a `MicrosoftGraphConfiguration` (its ClientId/ClientSecret double as the bot App ID/secret). Outbound counterpart of `FromTeamsBot@1`.
+   - **SignalSenderNode** (`SignalSender@1`) — sends a Signal message (optional base64 attachment as a `data:` URI) through a signal-cli-rest-api bridge (`POST {apiUrl}/v2/send`). Outbound counterpart of `FromSignal@1`. **Number/ApiUrl resolution (AB#5145)** is shared with the trigger via `SignalChannelEndpointResolver`: (1) the tenant's `System.Communication/SignalChannel` singleton — the communication controller ALWAYS projects it into every pipeline's GlobalConfiguration under the key `"signal-channel"` (contract doc: `AdapterService.AddSignalChannelConfigurationAsync` in octo-communication-controller-services), used ONLY while `RegistrationState == Registered (2)`, otherwise warned and treated as unconfigured; (2) the DEPRECATED legacy settingsConfiguration/numberAttribute/apiUrlAttribute mechanism plus the literal node properties (deprecation warning when it supplies the endpoint — existing pipeline definitions keep working, new-style ones omit all of it); (3) neither → the sender reports and stops, the trigger stays idle with one clear log line (no crash, no error-state loop). The reply/appUrl concern (`SignalAppUrl`) stays app-level and untouched.
 
 4. **Trigger Nodes** (`src/MeshAdapter.Sdk/Nodes/Trigger/`): Pipeline initiation nodes
    - FromHttpRequestNode/FromHttpRequestNode2 (version 1 is deprecated; version 2 rejects callers without a valid access token unless `AllowAnonymous` is set, from another tenant, and without one of `RequiredRoles` when configured). Neither version lets the caller's `Authorization`/`Proxy-Authorization`/`Cookie` headers into `input["headers"]`: that is governed by the separate `ReceivesCredentialHeaders` flag on the route, **not** by `AllowAnonymous`. Conflating the two was a defect — apps attach the operator's token per host, not per route, so an anonymous route receives tokens it never asked for, and the data root is echoed back in the response, persistable by `SetPipelineExecutionResult@1` and visible in the Studio debug panel.
+     **Caller side channel (AB#5031).** `HttpRequestService` hands the trigger's execute delegate a `TriggerCallerContext(Principal, RawAccessToken)` instead of a bare `VerifiedPrincipal`; `FromHttpRequest@2` puts the raw token on `ExecutePipelineOptions.CallerAccessToken`, which `MeshContextCreatorService` forwards to `MeshEtlContext.CallerAccessToken`. That is the ONLY route the caller's credential travels: 🔴 it must never reach `input`/the data root (echoed + persistable — the `CredentialHeaders` filter is unchanged and independent), never `VerifiedPrincipal` (projected into that same data root) and never `IEtlContext.Properties` (that dictionary hangs on the `PipelineRegistration` and is shared across **all runs**, so a token left there would outlive its request). Only a `Bearer` scheme is accepted; `FromHttpRequest@1` and `FromTeamsBot@1` discard the context.
    - FromWatchRtEntityNode
    - FromExecutePipelineCommandNode
    - FromSendNotificationNode
    - FromEmailNode (IMAP folder polling via MailKit)
+   - **FromSignalNode** (`FromSignal@1`) — polls a signal-cli-rest-api bridge (`GET {apiUrl}/v1/receive/{number}`) and fires the pipeline with a batch of normalized messages incl. downloaded attachment bytes (same `AttachmentData` shape as `FromEmail@1`). Number/ApiUrl resolution per AB#5145 — see `SignalSender@1` above for the shared three-step order (registered `SignalChannel` singleton → deprecated legacy settings → idle); with nothing configured the trigger does NOT throw, it logs one clear line and stays idle, so a tenant without an activated Signal number never ends up in a deploy-error loop.
    - FromMicrosoftGraphNode (Teams channel polling via Microsoft Graph)
    - **FromTeamsBotNode** (`FromTeamsBot@1`) — hosts the Bot Framework messaging endpoint `POST /{tenant}/teamsBot` (via `IHttpRequestService`), parses the inbound Teams activity, downloads file attachments (1:1 `application/vnd.microsoft.teams.file.download.info` via pre-authenticated URL; channel `reference` via Microsoft Graph SharePoint share), and emits the `EmailData`/`AttachmentData` shape at `$.Emails` plus conversation routing at `$.Conversation` (serviceUrl/conversationId/activityId/from) for `TeamsBotReply@1`. Credentials read from `MicrosoftGraphConfiguration`. Inbound JWT check via `ValidateInboundToken` (default false; validates aud+exp only — NOT the signature yet, harden before public exposure). Requires `HttpRequestService` to surface request headers (`input["headers"]`) **and** is the only trigger registering with `receivesCredentialHeaders: true`, because a Bot Framework token cannot be validated by the platform gate and the node has to read the raw `Authorization` header itself.
    - **FromMicrosoftGraphEmailNode** — Polls an Office 365 mailbox FOLDER (path like `Archive/Invoices/ToDo`, '/'-separated, resolved from the mailbox root — never the inbox unless configured) via Microsoft Graph client credentials. Executes the pipeline ONCE PER MESSAGE (batch of one `EmailData`) so success maps 1:1 to the per-message action: on success the mail is moved to `moveToFolderPathOnSuccess` (leaf folder auto-created); on failure it stays in the source folder and is retried up to `maxAttemptsPerMessage` times. **The attempt count is persisted ON the message as an Outlook category marker (`OctoMesh-Import-Attempt-N`), stamped BEFORE each run and cleared on success against the message's current categories (AB#5142)** — so it survives adapter restarts and counts runs that killed the process (an OOM in a downstream node never reaches any failure handler, which an in-memory counter cannot survive). A message that exhausted its attempts is moved to the optional `moveToFolderPathOnFailure` (leaf auto-created), or skipped with a one-time warning when unset. A mailbox where the category PATCH fails degrades to in-process counting (warned, never blocks the import). Only `fileAttachment` contents are downloaded (item/reference attachments skipped). Requires Graph application permission `Mail.ReadWrite`.
-
+     **Sender authenticity — `Authentication-Results` (AB#5011).** `IncludeInternetMessageHeaders` (default off, inert when off) adds `internetMessageHeaders` to the `$select` and surfaces the headers named in `InternetMessageHeaderNames` (default `Authentication-Results`, `Authentication-Results-Original`, `ARC-Authentication-Results`, `Received-SPF`) on `EmailData.Headers`, plus the parsed SPF/DKIM/DMARC/compauth verdicts on `EmailData.Authentication`. The header was not empty before — Graph returns `internetMessageHeaders` **only** when it is selected explicitly, so it was never fetched; that one word in the `$select` is the whole feature. It stays opt-in because selecting it drags the full Received chain and the DKIM signatures onto every message, and only the named headers are surfaced because they land in the data context (echoed into every debug view, persisted by `SetPipelineExecutionResult@1`). 🔴 **Gate on DMARC, not on SPF.** SPF authenticates the envelope sender and DKIM the signing domain; neither has to match the `From:` the pipeline reads. Only `dmarc=pass` requires that alignment, so `spf=pass` alone accepts a mail whose envelope sender is the attacker's own (perfectly SPF-valid) domain while `From:` claims the vendor's — `EmailAuthenticationResults.IsDmarcPass` is the one verdict a rule may be built on. 🔴 **Only the FIRST occurrence of each header is kept.** A sender can put an `Authentication-Results` header into the message they submit and the receiving server *prepends* its own rather than replacing it, so only the topmost was written by infrastructure we trust; joining the occurrences would put a forged `dmarc=pass` into the same string as the real `dmarc=fail`, where any downstream substring or `MatchRegEx` check finds it. The occurrence count is reported as `HeaderCount` and anything above 1 makes `IsDmarcPass` false. A **null** `Authentication` means *nothing is known* (an internally generated mail carries no such header), never "authentication failed" — which way an unknown verdict falls is tenant policy, not the trigger's call. Result keywords are lower-cased because `MatchRegEx` is case sensitive; an absent method stays `null` rather than becoming `none`, so "never checked" stays distinguishable from "checked, no policy". The parser (`AuthenticationResultsParser`, RFC 8601) is pure/static and strips RFC 5322 comments from the **whole** value before splitting — Exchange writes `(client-ip=1.2.3.4; helo=mail.example)`, and splitting first tears the entry in two and reads the comment's own `key=value` pairs as method results.
 ### Core Services
 
 - **MeshAdapterService**: Main service handling adapter startup/shutdown and pipeline registration.
@@ -105,8 +112,190 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 - **HttpRequestService**: Handles dynamic HTTP routing and request processing
 - **MeshContextCreatorService**: Creates contexts for pipeline execution
 - **MeshAdapterTriggerContext**: The mesh adapter's `ITriggerContext` — starts and ends one pipeline execution per trigger event. A hand-maintained copy of the SDK's `internal` `AdapterTriggerContext` (not subclassable from here), kept because the ETL context type argument is `IMeshEtlContext`, with deliberate deltas the SDK lacks: when the registration vanished while the adapter reconfigures, `Start` logs a warning instead of an error but still throws `PipelineNotFound`, `End` returns null instead of throwing, and a failed execution is logged before the rethrow. **Dry run (AB#5159):** `ExecutePipelineOptions.IsDryRun` — set by `FromExecutePipelineCommand@1` from an `ExecutePipelineRequest` — only reaches the nodes if the host turns it into a `DefaultPipelineExecutionMode { IsDryRun = true }` on the orchestrator call and, when the pipeline has debugging off, forces the registered `IPipelineDebugger` on so the recorded intents have somewhere to go (that also captures every node's input/output snapshot, as any debug-enabled run does). The SDK host gained that threading in r3.4.18; this host was never updated, so the dry-run-honouring Load nodes (`DryRunHonouredLoadNodes`) saw a null mode and ran for real. Only the top-level orchestrator call carries the mode: pipelines started by `ToPipelineDataEvent@1`/`FromPipelineDataEvent@1` and the `BufferData@1` flush sub-pipeline do not (SDK). When the SDK host changes how it hands an execution to the orchestrator, mirror that handoff here and keep the deltas above — nothing in the type system enforces the parity; `MeshAdapterTriggerContextTests` pins the orchestrator contract and `MeshAdapterTriggerContextDryRunTests` proves the mode reaches a real node.
-- **ServiceAccountTokenService**: Acquires OAuth2 tokens from `ServiceAccountConfiguration` entities for service-to-service REST calls (used by `DeployPipelineNode`)
+- **ServiceAccountTokenService**: Acquires OAuth2 tokens from `ServiceAccountConfiguration` entities for service-to-service REST calls (used by `DeployPipelineNode`).
+  `EnsureTokenAsync` runs the **client-credentials** grant and writes the result into the process-wide
+  `IServiceClientAccessToken` — that instance *is* the adapter's service identity (it doubles as
+  `ICommunicationServiceClientAccessToken` towards the communication controller).
+  `AcquireDelegatedTokenAsync` (AB#5031) runs the OctoMesh **delegation grant**
+  (`grant_type=urn:meshmakers:params:oauth:grant-type:on-behalf-of`, AB#5026 in
+  `octo-identity-services`): the service account authenticates with its own credentials and presents
+  the end user's token as `subject_token`, so the issued token runs on the **user's** `sub` with the
+  intersection of both parties' roles. 🔴 It **returns** that token instead of storing it — writing a
+  user-bound token into the process-wide singleton would leak one caller's identity into every
+  concurrent request. Same-tenant only, so the configuration's `TenantId` is required
+  (`acr_values=tenant:X`); `offline_access` is never requested (the identity service rejects it —
+  a refresh token would freeze the role intersection). Delegated tokens are deliberately **not
+  cached**: any cache would have to be keyed by subject, and the only key material is the caller's
+  own token.
 - **AdapterEventService**: Writes `System.Notification/Event` entries tagged with the `MeshAdapter` source into the tenant's event log, the audit trail Studio shows under Repository → Events. Used to record authorization decisions on secured trigger routes; failures degrade to a log warning so auditing can never fail a request
+
+## Pipeline execution identity — every session is classified (AB#5028)
+
+Pipeline execution runs under a real identity instead of anonymous, parameterless system sessions.
+The mechanism is a single resolution point, two methods on the context, and a classification that is
+written down at every call site.
+
+### Resolution — once per execution, lazily
+
+`MeshContextCreatorService.CreateEtlContext` is the one point every execution flows through, so it
+builds one `PipelineIdentityResolver` per execution and hands it to `MeshEtlContext`. Precedence:
+
+1. **`ExecutePipelineOptions.VerifiedPrincipal`** (AB#4975) → `RtSecurityContext.ForUser(sub, roles)`.
+   Free: it is already on the options.
+2. **The adapter's / pipeline's service account** (AB#5027). The communication controller projects
+   the `ServiceAccountConfiguration` into the pipeline's configuration list, so the credentials come
+   out of `IGlobalConfiguration.GetAllRawJsonByCkTypeId("System.Communication/ServiceAccountConfiguration")`
+   with no repository read. The **roles** are the expensive half — they are not on the entity, only
+   as `role` claims on the issued token — so `IServiceAccountTokenService.AcquireServiceAccountIdentityAsync`
+   requests a client-credentials token, parses it locally (`JwtPayloadReader`, no signature check:
+   the token is the answer to our own request over TLS and never passed through a caller) and caches
+   the result per `(TenantId, ClientId)` until shortly before the token's own `exp`.
+3. Otherwise `RtSecurityContext.System`.
+
+Resolution is **lazy and memoised**: many executions never open a session at all (high-frequency
+event triggers), and they must not pay a token round trip. The identity cache is deliberately NOT the
+`_tokenExpiresAt` field `EnsureTokenAsync` uses — that one is not keyed by configuration and belongs
+to the adapter's own service identity, so sharing it would let one path suppress the other's refresh.
+
+🔴 **Fail-closed once an account is configured.** A failed acquisition throws
+(`MeshAdapterPipelineExecutionException.ServiceAccountIdentityUnavailable`) instead of falling back to
+the system context. The system context bypasses data-level permissions entirely (AB#4969), so a
+fallback would fail *open*: an identity-service outage would silently widen every read and leave every
+write unstamped, indistinguishable from a correctly restricted run. The System path survives only
+where **nothing** is configured — the pre-AB#5027 fleet and every tenant until provisioning has run —
+because changing behaviour there would take the whole fleet down.
+
+⚠️ **Two caveats.** `GetAllRawJsonByCkTypeId` matches `ConfigurationTypeId.SemanticVersionedFullName`,
+which appends `-N` as soon as the CK **type** version passes 1: a type bump makes the match go quiet
+and every pipeline fall back to the system context, and that failure looks like "nothing happened",
+not like an error — a bump has to be paired with a change to
+`PipelineIdentityResolver.ServiceAccountConfigurationCkTypeId`. And the adapter caches
+`GlobalConfiguration` at pipeline **registration**, so changing the linked service account only takes
+effect after the pipeline / data flow is redeployed.
+
+### Distribution — `IMeshEtlContext`
+
+| Method | Meaning |
+|---|---|
+| `GetScopedSessionAsync()` / `GetScopedSession()` | The effective identity. Stamps `RtCreatedBy`, subject to data permissions. |
+| `GetSystemSessionAsync()` / `GetSystemSession()` | **Explicitly** `RtSecurityContext.System`. |
+
+The second is the more important one. Its existence is what turns "which identity does this node use"
+from an accident of who last touched the call site into a decision written down in the code: a node
+either says scoped or it says system, and a new node has to choose. **No node calls
+`TenantRepository.GetSessionAsync()` any more** — `TenantRepositorySecurityExtensions` degrades into
+that overload *silently* for a repository without `ISecureSessionFactory`, which is exactly the trap
+this closes. The only remaining parameterless system session in the SDK is
+`ServiceAccountTokenService.ReadConfigurationAsync`, which is circular by nature: it is the read that
+*answers* the identity question.
+
+### Classification (32 call sites: 15 scoped, 17 system)
+
+**System by decision** — each carries a code comment saying what breaks if it were scoped:
+
+| Node | Why system |
+|---|---|
+| `ImportFromExcel@1` (sync) + its `WellKnownNameLoader` (sync) | An import is a bulk load belonging to the tenant; a creator stamp makes every imported row invisible to an OwnedOnly reader, and a filtered name lookup re-creates existing entities as duplicates. |
+| `ImportDataPointMappings@1` / `ExportDataPointMappings@1` | Backup/restore pair. A read filter writes a *shorter* export file that looks complete, and the loss only surfaces on restore. |
+| `DeployPipeline@1` | Reads pure platform types and calls the controller as the adapter's service identity — a service-identity node by construction. |
+| `GetNotificationTemplate@1` | Platform configuration; a filter turns "may not see" into the same hard `TemplateNotFound` as "does not exist". |
+| `CheckDuplicate@1` | Must see other people's documents, or it reports "no duplicate" and the record is created twice — silently, in exactly the case the node exists to prevent. |
+| `BackfillFromRtEntity@1` | Would not find the entity and backfill nothing, with a green execution. |
+| `SaveTimeRangeStreamDataInArchive@1` | The read is an orphan guard; a filter turns it into a hard "refusing to insert". |
+| `GetFileSystemContent@1`, `SendEMail@1`, `SftpUpload@1`, `ToDiscord@1` (×2) | Binary download for outgoing channels: attachments regularly belong to somebody else, and a filter does not fail the node — the message goes out without its attachment. |
+| `ApplyChanges@1` | Frozen: the deprecated twin of `@2`. A pipeline still on `@1` must not start stamping or filtering because the adapter was upgraded. Migrate to `@2` to get an identity. |
+| `CreateZipArchive@1` / `CreateFileSystemUpdate@1` — their `GetFolderRootAsync` helpers | `System.Reporting/FolderRoot` is platform configuration; a filtered root reads as missing and the artefact is never written at all. |
+
+**Two identities in one node:** `CreateZipArchive@1` and `CreateFileSystemUpdate@1` write real user
+artefacts (scoped, stamped) but resolve their FolderRoot as system. Keep the split.
+
+**Everything else is scoped**, including `ApplyChanges@2` (its AB#4975 branch no longer falls back to
+a system session when there is no verified caller — the fallback is now the service account) and
+`UpdateRtEntityIfNewer@1`. Two of them carry a warning in the comment: `ValidateDataPointCoverage@1`
+produces **false positives** ("coverage missing") under a narrow identity, and
+`GenerateDataPointMappings@1` can propose duplicates of mappings it cannot see.
+
+**Not touched:** the session-less CrateDB / stream-data paths (`SaveStreamDataInArchive@1`,
+`GetStreamData@1`, `AggregateStreamData@1` — they go through `IStreamDataRepository`, which opens its
+own sessions internally) and `AdapterEventService`. No session is in play there.
+
+### The test guard
+
+`SessionNodeTestBase` (unit tests) is the reason this stays true. It fakes the repository as
+`A.Fake<ITenantRepository>(o => o.Implements<ISecureSessionFactory>())` — without that face the
+security-context extension falls back to the parameterless system session **in silence**, which is
+why the caller-scoped branch AB#4975 added to `ApplyChanges@2` was green for months without ever
+enforcing anything. Two guards are armed: the parameterless overloads throw, and a system session
+throws until a test declares `GivenSystemSessionIsExpected()`. After every test, any caller-scoped
+session is checked to have carried the full identity (subject *and* roles) — a `ForUser(null, [])`
+context is not the system context and would otherwise sail through.
+
+`PipelineIdentityMatrixTests` is its sibling for the entry points — see the AB#5029 section below.
+
+`SessionIdentityClassificationTests` scans `src/MeshAdapter.Sdk/Nodes` (located via
+`[CallerFilePath]`) and pins the table above file by file, that no node reaches the repository
+directly, that every call site carries its `AB#5028` reasoning, and that exactly the two known
+synchronous sites are synchronous. `SessionIdentityBehaviourTests` drives the nodes that had no suite
+of their own. `SessionIdentityIntegrationTests` verifies the same contract against the **real**
+`TenantRepository`, where `session.GetSecurityContext()` is the truth.
+
+### The identity ends at a pipeline chain — by decision, and visibly (AB#5045)
+
+`ToPipelineDataEvent@1` → `FromPipelineDataEvent@1` (both in `octo-communication-sdk`) crosses the
+message bus, and the trigger on the far side builds its `ExecutePipelineOptions` **without** a
+`VerifiedPrincipal` and **without** a caller token. So an HTTP-triggered pipeline that chains to a
+second one runs the first half as the user and the second half as the service account.
+
+🔴 **That is the decision, not a gap.** Forwarding the identity would let a pipeline act as a caller
+the *target* never authenticated: the sender picks the routing key, so whoever may enqueue into the
+data flow would inherit whoever last triggered the sending pipeline — and on the fire-and-forget path
+the message has no bounded lifetime, so the identity would stay usable for as long as it sits in the
+queue. A privilege escalation is not something to introduce as a side effect of a chaining node. If a
+chained execution should ever run as the user, the identity has to be **established** on the far side
+(verified), never relayed.
+
+What the decision costs is that one logical request runs under two identities, so the transition is
+made visible instead of silent: `ToPipelineDataEvent@1` records the hand-off on the **execution log**
+(`INodeContext.Info`, the channel the adapter and the Studio debug panel already surface) naming the
+subject whose identity ends there and the target pipeline that will resolve its own. Deliberately not
+on the message — its payload is pipeline data, and no credential may travel on it — and deliberately
+not a new audit channel. Without a caller identity the same site logs at debug level: the overwhelming
+majority of chains are service-to-service and an info line for each would drown the case that matters.
+
+`FromPipelineDataEventNodeTests` and `FromExecutePipelineCommandNodeTests` (in the SDK repo) pin that
+the second execution really starts with neither value, so a well-meant "the identity should survive
+the chain" change fails a test rather than shipping.
+
+### The delegation matrix — one place where the rules are proven together (AB#5029)
+
+`PipelineIdentityMatrixTests` joins what the individual suites cover into the statement the platform
+actually makes, across every trigger kind (HTTP with a verified caller, HTTP anonymous,
+cron/`FromPipelineTriggerEvent@1`, `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, and the
+channel triggers) and every identity situation:
+
+| Rule | Where it is pinned |
+|---|---|
+| Precedence: verified caller ▶ service account ▶ system | `PipelineIdentityMatrixTests` (per trigger kind), `PipelineIdentityResolverTests` |
+| Intersection is over **role names**; the **subject is the caller**, so owner-scoped checks (`RtCreatedBy`, `ownerAttributePath` — AB#4978) are about the human | `ServiceAccountTokenServiceTests.AcquireDelegatedTokenAsync_TheSubjectStaysTheCaller…`, `SessionIdentityIntegrationTests.WithBothACallerAndAServiceAccount_TheSessionActsAsTheCaller` |
+| 🔴 An **empty intersection is fail-closed and identity-side a SUCCESS** — a valid token that simply carries no roles, whose only symptom is that nothing comes back | `ServiceAccountTokenServiceTests.AcquireDelegatedTokenAsync_AnEmptyRoleIntersectionIsASuccess…`, `PipelineIdentityMatrixTests.AnEmptyRoleIntersectionResolvesQuietlyToAnIdentityWithNoRoles` |
+| A caller **with** an identity but **no roles** sees nothing on a protected type — `ForUser(sub, [])` is not the system context | `SessionIdentityIntegrationTests.ACallerWithoutRolesProducesANonSystemSessionWithNoRoles` |
+| **No service account configured** ⇒ the System path, unchanged (the fleet before provisioning) | `PipelineIdentityMatrixTests.WithoutAServiceAccount_ATriggerWithoutACallerKeepsTheSystemPath` |
+| **Configured account whose token cannot be had** ⇒ abort, never a System fallback | `PipelineIdentityMatrixTests`, `SessionIdentityIntegrationTests.AConfiguredServiceAccountWhoseTokenIsUnavailableOpensNoSessionAtAll` |
+
+Two of these deserve their own warning. The **empty intersection** looks like a bug from the outside —
+the assistant answers "I found nothing" — and the obvious repair is to treat a role-less delegated
+token as a failed acquisition. That must never happen: `AnthropicAiQuery@1` turns a null token into a
+hard failure, so rejecting a role-less one would turn a correctly restricted answer into an outage,
+and the pressure to relax it back towards the service account's own reach is exactly how a delegation
+feature loses its point. And **no caller must ever fall back to the service account because the caller
+has no roles** — that would hand a role-less user the account's full reach.
+
+`PipelineIdentityMatrixTests` also scans `src/MeshAdapter.Sdk/Nodes/Trigger` and pins that
+**`FromHttpRequestNode2.cs` is the only trigger that sets `VerifiedPrincipal` / `CallerAccessToken`**,
+plus the list of triggers that start an execution at all — the same house pattern
+`SessionIdentityClassificationTests` uses for the session call sites. A trigger that starts forwarding
+a principal changes the identity every pipeline behind it runs as, and does so invisibly: nothing
+fails, the execution just sees different data.
 
 ### JSON / Serialization (System.Text.Json)
 
@@ -148,6 +337,38 @@ The build automatically generates a `pipeline-schema.json` file in the build out
 - **Trigger**: The `GeneratePipelineSchema` MSBuild target runs after Build via `dotnet exec "$(TargetPath)" --generate-pipeline-schema <output-path>`
 - **Incremental**: Only regenerates when the binary changes
 - **Opt-out**: Set MSBuild property `GeneratePipelineSchema=false` to disable
+
+## The adapter's own credential in the chart (AB#5072)
+
+`src/charts/octo-mesh-adapter` carries the three env vars the SDK's
+`AdapterAccessTokenService` needs to log the adapter in **before** it connects to
+`/{tenantId}/adapterHub`. All three are optional and inert when unset — an unconfigured adapter
+acquires no token and connects anonymously, which is what the whole fleet does today.
+
+| Env var | Chart value | Notes |
+|---|---|---|
+| `OCTO_ADAPTER__ISSUERURI` | `.Values.authUri` | **Same value as `OCTO_ADAPTER__AUTHORITYURL`, by decision.** |
+| `OCTO_ADAPTER__CLIENTID` | `.Values.serviceAccountClientId` | Non-secret. Written by the communication controller as a `ValueOverride` at deploy time. |
+| `OCTO_ADAPTER__CLIENTSECRET` | `.Values.secrets.serviceAccountClientSecret` via `octo-mesh.secretEnv` | 🔴 Secret-flagged; accepts a plaintext string **or** the `{valueFrom: {secretKeyRef: …}}` map the operator produces from `{release}-octo-secrets`, exactly like `secrets.rabbitmq`. |
+
+🔴 **`AUTHORITYURL` and `ISSUERURI` are two keys for two directions, fed from one value.**
+`AuthorityUrl` (`MeshAdapterConfiguration`, this repo) is **inbound** — the issuer secured
+`FromHttpRequest@2` routes accept on tokens presented *to* the adapter. `IssuerUri`
+(`AdapterOptions`, octo-communication-sdk) is **outbound** — the identity service the adapter
+authenticates *itself* against. Two config keys exist because `AdapterOptions` lives in the SDK and
+must also serve adapters with no `MeshAdapterConfiguration` (Loxone, Modbus, Zenon, the simulation
+plug). They always name the same identity service, so the chart feeds both from `authUri`; a second
+chart value could only ever drift. It must be the **public** issuer address — OIDC discovery runs
+against it and the communication controller validates the issuer of the resulting token.
+
+⚠️ **`octo-mesh.secretEnv` fails on an empty value**, which is deliberate for the four mandatory
+cluster secrets. The client secret is optional, so its `include` sits behind an `if`; dropping that
+guard makes every adapter without credentials fail to render.
+
+The controller side of the wire (which `ValueOverride` paths are projected, why they are not gated on
+`ReceivesClusterSecrets`, and why provisioning had to move before the deploy notification) is
+documented in `octo-communication-controller-services/CLAUDE.md` → "Phase 4 — the credentials reach
+the adapter pod (AB#5072)".
 
 ## Helm chart publishing (AB#4948)
 

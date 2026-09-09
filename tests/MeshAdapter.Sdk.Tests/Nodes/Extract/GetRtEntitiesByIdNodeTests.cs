@@ -15,27 +15,19 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetRtEntitiesByIdNodeTests : NodeTestBase
+public class GetRtEntitiesByIdNodeTests : SessionNodeTestBase
 {
     private static readonly RtCkId<CkTypeId> TestCkTypeId = new("TestModel/TestType");
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public GetRtEntitiesByIdNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
     }
 
     private GetRtEntitiesByIdNode CreateNode(NodeDelegate next)
     {
-        return new GetRtEntitiesByIdNode(next, _etlContext);
+        return new GetRtEntitiesByIdNode(next, EtlContext);
     }
 
     private static IResultSet<RtEntity> CreateResultSet(params RtEntity[] entities)
@@ -48,7 +40,7 @@ public class GetRtEntitiesByIdNodeTests : NodeTestBase
 
     private void SetupGetRtEntitiesById(IResultSet<RtEntity> resultSet)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<IReadOnlyList<OctoObjectId>>._,
@@ -81,7 +73,7 @@ public class GetRtEntitiesByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 TestCkTypeId,
                 A<IReadOnlyList<OctoObjectId>>.That.Matches(ids => ids.Count == 1),
@@ -159,7 +151,7 @@ public class GetRtEntitiesByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 TestCkTypeId,
                 A<IReadOnlyList<OctoObjectId>>.That.Matches(ids => ids.Count == 2),
@@ -220,7 +212,7 @@ public class GetRtEntitiesByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 new RtCkId<CkTypeId>("TestModel/ResolvedType"),
                 A<IReadOnlyList<OctoObjectId>>._,
@@ -284,7 +276,7 @@ public class GetRtEntitiesByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 TestCkTypeId,
                 A<IReadOnlyList<OctoObjectId>>._,
@@ -311,7 +303,7 @@ public class GetRtEntitiesByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.StartTransaction()).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.StartTransaction()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
     }
 }

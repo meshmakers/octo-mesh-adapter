@@ -37,7 +37,10 @@ internal class ExportDataPointMappingsNode(NodeDelegate next, IMeshEtlContext et
             .Where(i => !string.IsNullOrWhiteSpace(i.CkTypeId) && !string.IsNullOrWhiteSpace(i.Attribute))
             .ToDictionary(i => i.CkTypeId, i => i.Attribute, StringComparer.Ordinal);
 
-        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: the export half of the backup/restore pair. A read filter
+        // would not fail anything — it would write a SHORTER export file that looks complete, and
+        // the loss only surfaces when somebody restores from it.
+        using var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
 
         var mappings = (await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(

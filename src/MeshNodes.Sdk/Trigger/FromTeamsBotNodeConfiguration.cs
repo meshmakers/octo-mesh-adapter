@@ -40,19 +40,16 @@ public record FromTeamsBotNodeConfiguration : TriggerNodeConfiguration
     public string Route { get; set; } = "/teamsBot";
 
     /// <summary>
-    /// When true, the inbound Bot Framework JWT (Authorization header) is validated before the
-    /// pipeline runs. Default <c>false</c> for local development against the Bot Framework
-    /// Emulator / a private dev tunnel.
+    /// When true (the default, AB#5010), the inbound Bot Framework JWT (Authorization header)
+    /// is fully validated before the pipeline runs: cryptographic signature against the Bot
+    /// Framework's published signing keys (<see cref="OpenIdMetadataUrl"/>), issuer, audience
+    /// (the bot App ID) and lifetime. Set to <c>false</c> ONLY for local development against
+    /// the Bot Framework Emulator, which sends no token — never on a publicly reachable
+    /// messaging endpoint: without validation anyone who can reach the route can inject
+    /// documents and query the assistant.
     /// </summary>
-    /// <remarks>
-    /// HARDENING: the current check validates the token's issuer, audience and expiry claims
-    /// but does NOT yet verify the cryptographic signature against the Bot Framework signing
-    /// keys (that requires an OpenID/JWKS dependency and the ability to return HTTP 401, which
-    /// the adapter's HTTP hosting does not expose yet). Enable full signature validation before
-    /// exposing this endpoint publicly (test-2/prod).
-    /// </remarks>
     [PropertyGroup("Security", 0)]
-    public bool ValidateInboundToken { get; set; } = false;
+    public bool ValidateInboundToken { get; set; } = true;
 
     /// <summary>
     /// Expected audience of the inbound token (the bot App ID). When empty, the resolved
@@ -61,4 +58,22 @@ public record FromTeamsBotNodeConfiguration : TriggerNodeConfiguration
     /// </summary>
     [PropertyGroup("Security", 1)]
     public string? BotAppId { get; set; }
+
+    /// <summary>
+    /// OpenID metadata document the Bot Framework signing keys are resolved from. The default
+    /// is the public-cloud endpoint; override for sovereign clouds (e.g. Azure Government)
+    /// or tests. Only relevant when <see cref="ValidateInboundToken"/> is true.
+    /// </summary>
+    [PropertyGroup("Security", 2)]
+    public string OpenIdMetadataUrl { get; set; } =
+        "https://login.botframework.com/v1/.well-known/openidconfiguration";
+
+    /// <summary>
+    /// Accepted token issuers. Empty = the Bot Framework public-cloud issuer
+    /// (<c>https://api.botframework.com</c>). Override together with
+    /// <see cref="OpenIdMetadataUrl"/> for sovereign clouds. Only relevant when
+    /// <see cref="ValidateInboundToken"/> is true.
+    /// </summary>
+    [PropertyGroup("Security", 3)]
+    public string[]? ValidTokenIssuers { get; set; }
 }

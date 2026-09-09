@@ -23,7 +23,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class GetQueryByIdNodeTests : NodeTestBase
+public class GetQueryByIdNodeTests : SessionNodeTestBase
 {
     private static readonly OctoObjectId TestQueryRtId = new("000000000000000000000099");
     private static readonly CkId<CkTypeId> TestCkTypeId = new("TestModel", new CkTypeId("TestType-1"));
@@ -51,9 +51,6 @@ public class GetQueryByIdNodeTests : NodeTestBase
     };
     private const string TestTenantId = "test-tenant";
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
     private readonly ICkCacheService _ckCacheService;
     private readonly ISystemContext _systemContext;
     private readonly ITenantContext _tenantContext;
@@ -63,9 +60,6 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     public GetQueryByIdNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
         _ckCacheService = A.Fake<ICkCacheService>();
         _systemContext = A.Fake<ISystemContext>();
         _tenantContext = A.Fake<ITenantContext>();
@@ -73,10 +67,8 @@ public class GetQueryByIdNodeTests : NodeTestBase
         _archiveStore = A.Fake<IArchiveRuntimeStore>();
         _rollupStore = A.Fake<IRollupArchiveRuntimeStore>();
 
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _etlContext.TenantId).Returns(TestTenantId);
-        A.CallTo(() => _tenantRepository.TenantId).Returns(TestTenantId);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        A.CallTo(() => EtlContext.TenantId).Returns(TestTenantId);
+        A.CallTo(() => TenantRepository.TenantId).Returns(TestTenantId);
 
         A.CallTo(() => _systemContext.FindTenantContextAsync(TestTenantId))
             .Returns(Task.FromResult(_tenantContext));
@@ -107,40 +99,40 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     private GetQueryByIdNode CreateNode(NodeDelegate next)
     {
-        return new GetQueryByIdNode(next, _etlContext, _ckCacheService, _systemContext);
+        return new GetQueryByIdNode(next, EtlContext, _ckCacheService, _systemContext);
     }
 
     private void SetupQueryEntityNotFound()
     {
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
                 A<IOctoSession>._, A<OctoObjectId>._))
             .Returns(Task.FromResult<RtPersistentQuery?>(null));
     }
 
     private void SetupSimpleQuery(RtSimpleRtQuery simpleQuery)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
                 A<IOctoSession>._, A<OctoObjectId>._))
             .Returns(Task.FromResult<RtPersistentQuery?>(simpleQuery));
     }
 
     private void SetupAggregationQuery(RtAggregationRtQuery aggregationQuery)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
                 A<IOctoSession>._, A<OctoObjectId>._))
             .Returns(Task.FromResult<RtPersistentQuery?>(aggregationQuery));
     }
 
     private void SetupGroupingAggregationQuery(RtGroupingAggregationRtQuery groupedQuery)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
                 A<IOctoSession>._, A<OctoObjectId>._))
             .Returns(Task.FromResult<RtPersistentQuery?>(groupedQuery));
     }
 
     private void SetupGraphByTypeResult(IResultSet<RtEntityGraphItem> resultSet)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntitiesGraphByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesGraphByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
@@ -244,7 +236,7 @@ public class GetQueryByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesGraphByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesGraphByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
@@ -319,7 +311,7 @@ public class GetQueryByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesGraphByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesGraphByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
@@ -469,7 +461,7 @@ public class GetQueryByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesGraphByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesGraphByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
@@ -612,7 +604,7 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     private void SetupSimpleStreamDataQuery(RtSimpleSdQuery simpleSdQuery)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
                 A<IOctoSession>._, A<OctoObjectId>._))
             .Returns(Task.FromResult<RtPersistentQuery?>(simpleSdQuery));
     }
@@ -828,7 +820,7 @@ public class GetQueryByIdNodeTests : NodeTestBase
 
     private void SetupPersistentQuery(RtPersistentQuery query)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
                 A<IOctoSession>._, A<OctoObjectId>._))
             .Returns(Task.FromResult<RtPersistentQuery?>(query));
     }
@@ -2278,8 +2270,8 @@ public class GetQueryByIdNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.StartTransaction()).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.StartTransaction()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
     }
 
     #endregion

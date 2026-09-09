@@ -38,7 +38,11 @@ public class CheckDuplicateNode(NodeDelegate next, IMeshEtlContext etlContext) :
         var queryOptions = RtEntityQueryOptions.Create()
             .FieldFilter(config.AttributeName, FieldFilterOperator.Equals, value);
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: the node MUST see other people's documents. Scoped, an
+        // existing duplicate the caller may not read simply does not come back, the node reports
+        // "no duplicate" and the pipeline creates the record a second time — silently, and exactly
+        // in the case the node exists to prevent.
+        var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
         var result = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
             session, config.CkTypeId, queryOptions, 0, 1);

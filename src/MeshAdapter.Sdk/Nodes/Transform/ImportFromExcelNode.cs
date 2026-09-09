@@ -325,7 +325,11 @@ public class ImportFromExcelNode(
     private async Task ApplyChangesInRepositoryAsync(INodeContext nodeContext,
         List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> assocs)
     {
-        using var session = etlContext.TenantRepository.GetSession();
+        // AB#5028 — SYSTEM by decision, and SYNCHRONOUS (one of only two such call sites): an import
+        // is a bulk load of records that belong to the tenant, not to whoever happened to trigger it.
+        // A creator stamp here would make every imported row invisible to an OwnedOnly reader
+        // (AB#4969) — the data would be there and nobody would see it.
+        using var session = etlContext.GetSystemSession();
 
         try
         {

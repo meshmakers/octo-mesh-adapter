@@ -3,6 +3,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -53,7 +54,7 @@ public class FromMicrosoftGraphEmailNodeLifecycleTests
             .Throws(new HttpRequestException("simulated Graph outage"));
         var logger = NullLogger<FromMicrosoftGraphEmailNode>.Instance;
 
-        var node = new FromMicrosoftGraphEmailNode(logger, httpClientFactory);
+        var node = new FromMicrosoftGraphEmailNode(logger, httpClientFactory, A.Fake<IChannelCallerBinder>());
         var context = BuildContext();
 
         await node.StartAsync(context);
@@ -76,7 +77,7 @@ public class FromMicrosoftGraphEmailNodeLifecycleTests
             .Throws(new HttpRequestException("simulated Graph outage"));
         var logger = NullLogger<FromMicrosoftGraphEmailNode>.Instance;
 
-        var node = new FromMicrosoftGraphEmailNode(logger, httpClientFactory);
+        var node = new FromMicrosoftGraphEmailNode(logger, httpClientFactory, A.Fake<IChannelCallerBinder>());
         var context = BuildContext();
 
         await node.StartAsync(context);

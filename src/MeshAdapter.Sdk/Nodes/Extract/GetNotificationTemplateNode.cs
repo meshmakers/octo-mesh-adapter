@@ -27,7 +27,10 @@ public class GetNotificationTemplateNode(NodeDelegate next, IMeshEtlContext etlC
         var queryOptions = RtEntityQueryOptions.Create();
         queryOptions.AddFieldFilter(nameof(RtEntity.RtWellKnownName), FieldFilterOperator.Equals, notificationTemplateName);
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: a notification template is platform configuration, not the
+        // caller's data. Under a read filter "you may not see it" and "it does not exist" collapse
+        // into the same hard TemplateNotFound error.
+        var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync<RtNotificationTemplate>(session, queryOptions);
         await session.CommitTransactionAsync();

@@ -52,7 +52,10 @@ internal class BackfillFromRtEntityNode(
 
         var columnPaths = archive.Columns.Select(col => col.Path).ToArray();
 
-        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: the node backfills archive rows from the entity behind each
+        // row's rtId. A read filter would simply not find that entity and the node would backfill
+        // nothing, silently and with a green execution.
+        using var session = await etlContext.GetSystemSessionAsync();
         var entityCache = new Dictionary<OctoObjectId, RtEntity?>();
         var loadedCount = 0;
         var filledCount = 0;

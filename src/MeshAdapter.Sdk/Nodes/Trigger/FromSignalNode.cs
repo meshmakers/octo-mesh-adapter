@@ -6,6 +6,8 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 /// <summary>
@@ -14,12 +16,16 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 /// from <c>GET {ApiUrl}/v1/attachments/{id}</c> and exposed as base64 in
 /// <c>$.Messages[].Attachments[].Data</c> — the same shape the E-Mail assistant produces —
 /// so the invoice OCR flow works unchanged. Prototype context: AB#4406 (Epic AB#3295).
+/// Number/ApiUrl resolution (AB#5145): the tenant's registered
+/// <c>System.Communication/SignalChannel</c> singleton wins over the deprecated legacy settings;
+/// with neither, the trigger stays idle — see <see cref="SignalChannelEndpointResolver"/>.
 /// </summary>
 [NodeConfiguration(typeof(FromSignalNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class FromSignalNode(
     ILogger<FromSignalNode> logger,
-    IHttpClientFactory httpClientFactory) : ITriggerPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder) : ITriggerPipelineNode
 {
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
@@ -28,8 +34,31 @@ internal class FromSignalNode(
     {
         var c = context.NodeContext.GetNodeConfiguration<FromSignalNodeConfiguration>();
 
+        // AB#5145 resolution order (see SignalChannelEndpointResolver): the tenant's registered
+        // SignalChannel singleton wins; the legacy settingsConfiguration/node-property mechanism
+        // is the deprecated fallback so existing pipeline definitions keep working.
+        var resolution = SignalChannelEndpointResolver.Resolve(context.GlobalConfiguration,
+            c.SettingsConfiguration, c.NumberAttribute, c.ApiUrlAttribute, c.Number, c.ApiUrl);
+        foreach (var warning in resolution.Warnings)
+        {
+            logger.LogWarning("FromSignal: {Warning}", warning);
+        }
+
+        if (!resolution.IsConfigured)
+        {
+            // Unconfigured is IDLE, not an error: throwing here would flip the pipeline (and with
+            // it the adapter's configuration state) into an error loop on every tenant that simply
+            // has not activated a Signal number yet.
+            logger.LogInformation(
+                "FromSignal: no Signal channel is configured for this tenant (no registered System.Communication/SignalChannel and no legacy number/apiUrl settings) — the trigger stays idle.");
+            return Task.CompletedTask;
+        }
+
+        var effectiveConfig = c with { ApiUrl = resolution.ApiUrl!, Number = resolution.Number! };
+
         _cancellationTokenSource = new CancellationTokenSource();
-        _pollingTask = Task.Run(() => PollForMessagesAsync(context, c), _cancellationTokenSource.Token);
+        _pollingTask = Task.Run(
+            () => PollForMessagesAsync(context, effectiveConfig), _cancellationTokenSource.Token);
         return Task.CompletedTask;
     }
 
@@ -71,8 +100,35 @@ internal class FromSignalNode(
                         ProcessedAt = DateTime.UtcNow
                     };
 
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
-                    logger.LogInformation("Processed {Count} new Signal messages", messages.Count);
+                    // AB#5126: this trigger fires one execution for a batch of messages. A caller is
+                    // only unambiguous when the whole batch shares one sender number; otherwise the
+                    // execution has no single identity and is treated as unresolved. True per-message
+                    // identity (per-sender execution) is the per-channel WI's job (AB#5123 — phone/OTP,
+                    // which also sets the real message trust). The phone number is the identifier.
+                    var distinctSources = messages
+                        .Select(m => m.Source)
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .Distinct()
+                        .ToList();
+                    var sender = distinctSources.Count == 1
+                        ? new ChannelSender(ChannelIdentifierKind.PhoneNumber, distinctSources[0]!, CallerTrustLevel.Weak)
+                        : null;
+                    var binding = await callerBinder.BindAsync(context.TenantId, c.CallerBinding, sender,
+                        _cancellationTokenSource!.Token);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromSignal: {Reason} Skipping batch of {Count} message(s).",
+                            binding.RejectReason, messages.Count);
+                    }
+                    else
+                    {
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, batch);
+                        logger.LogInformation("Processed {Count} new Signal messages", messages.Count);
+                    }
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(c.PollingIntervalSeconds), _cancellationTokenSource.Token);

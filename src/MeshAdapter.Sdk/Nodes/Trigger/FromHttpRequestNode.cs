@@ -23,7 +23,7 @@ internal class FromHttpRequestNode(ILogger<FromHttpRequestNode> logger, IHttpReq
     {
         var c = context.NodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration>();
 
-        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async input =>
+        var requestOptions = new HttpRequestOptions(c.Path, c.Method, async (input, _) =>
         {
             try
             {

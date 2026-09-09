@@ -11,6 +11,15 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 public record ApplyDataPointMappingsNodeConfiguration : TargetPathNodeConfiguration
 {
     /// <summary>
+    /// Identity this node runs as: <c>Caller</c> (default), <c>ServiceAccount</c> (the pipeline's
+    /// service account with its full roles, even when a caller is present), or <c>System</c>
+    /// (unfiltered, bypasses data permissions). A missing value resolves to <c>Caller</c> so existing
+    /// pipelines are unchanged (AB#5127).
+    /// </summary>
+    [PropertyGroup("Execution", 100)]
+    public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.Caller;
+
+    /// <summary>
     /// JSON path to the source entity's RtId
     /// </summary>
     [PropertyGroup("Source Entity", 0, "jsonpath")]

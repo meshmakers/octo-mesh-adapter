@@ -46,7 +46,11 @@ internal class ImportDataPointMappingsNode(NodeDelegate next, IMeshEtlContext et
             return;
         }
 
-        using var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: the import half of the backup/restore pair (see
+        // ExportDataPointMappings@1). It resolves every exported endpoint back to an entity; an
+        // endpoint the identity may not read lands in the unresolved report as if it were gone,
+        // turning a restore into a silently partial one.
+        using var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
 
         // Load every CK type referenced by any endpoint exactly once and index it.

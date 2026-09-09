@@ -72,6 +72,15 @@ public record RequiredAssociation
 public record ValidateDataPointCoverageNodeConfiguration : TargetPathNodeConfiguration
 {
     /// <summary>
+    /// Identity this node runs as: <c>Caller</c> (default), <c>ServiceAccount</c> (the pipeline's
+    /// service account with its full roles, even when a caller is present), or <c>System</c>
+    /// (unfiltered, bypasses data permissions). A missing value resolves to <c>Caller</c> so existing
+    /// pipelines are unchanged (AB#5127).
+    /// </summary>
+    [PropertyGroup("Execution", 100)]
+    public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.Caller;
+
+    /// <summary>
     /// RtId of the tree root entity to validate. Leave empty to read from the data
     /// context at <see cref="RootRtIdPath"/>.
     /// </summary>

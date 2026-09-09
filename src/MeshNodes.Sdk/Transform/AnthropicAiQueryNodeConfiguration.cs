@@ -120,6 +120,58 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public string? McpServiceAccountConfigName { get; set; }
 
     /// <summary>
+    ///     When <c>true</c>, the MCP calls run under the <b>end user's</b> identity instead of the
+    ///     service account's: the node exchanges the caller's access token for a delegated one
+    ///     (OctoMesh on-behalf-of grant, AB#5026/AB#5031) via
+    ///     <see cref="McpServiceAccountConfigName" />, so the MCP server sees the user's own roles
+    ///     and data permissions rather than the service account's full <c>octo_api</c> reach.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Requires a trigger that carries a caller token — today <c>FromHttpRequest@2</c> with
+    ///         <c>allowAnonymous: false</c>. <b>Fail-closed:</b> with no caller token, or when the
+    ///         delegated token cannot be acquired, the node fails; it never falls back to the service
+    ///         account and never sends an unauthenticated MCP request. Channel assistants (Teams,
+    ///         Signal, e-mail) have no caller and must leave this off.
+    ///     </para>
+    ///     <para>
+    ///         Default <c>false</c> keeps the existing service-account behaviour byte for byte,
+    ///         including its degrade-to-unauthenticated paths.
+    ///     </para>
+    /// </remarks>
+    [PropertyGroup("Connection", 4)]
+    public bool McpDelegateToCaller { get; set; }
+
+    /// <summary>
+    ///     The general execution-identity property (AB#5127). On this node it drives the MCP call
+    ///     identity rather than a repository session: <see cref="NodeExecutionIdentity.Caller" />
+    ///     delegates to the calling user (on-behalf-of, the same as legacy
+    ///     <see cref="McpDelegateToCaller" /> = <c>true</c>); <see cref="NodeExecutionIdentity.ServiceAccount" />
+    ///     and <see cref="NodeExecutionIdentity.System" /> use the service account's own token.
+    /// </summary>
+    /// <remarks>
+    ///     The default is <see cref="NodeExecutionIdentity.ServiceAccount" /> — <b>not</b> the
+    ///     <see cref="NodeExecutionIdentity.Caller" /> default of the data nodes — because the AI
+    ///     node's historical behaviour (<see cref="McpDelegateToCaller" /> absent) is to call MCP as
+    ///     the service account. <see cref="McpDelegateToCaller" /> stays supported as an alias:
+    ///     setting either it or <c>identity: Caller</c> selects delegation, so both spellings keep
+    ///     working.
+    /// </remarks>
+    [PropertyGroup("Connection", 5)]
+    public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.ServiceAccount;
+
+    /// <summary>
+    ///     Whether this node's MCP calls run on the caller's identity (AB#5127 alias resolution):
+    ///     <c>true</c> when either the legacy <see cref="McpDelegateToCaller" /> flag is set or
+    ///     <see cref="Identity" /> is <see cref="NodeExecutionIdentity.Caller" />. Either "caller"
+    ///     spelling wins, so a pipeline can use whichever it likes.
+    /// </summary>
+    [YamlDotNet.Serialization.YamlIgnore]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool DelegatesToCaller =>
+        McpDelegateToCaller || Identity == NodeExecutionIdentity.Caller;
+
+    /// <summary>
     /// Optional JSON path to conversation history array.
     /// Each entry should have "role" (user/assistant) and "content" fields.
     /// When set, previous messages are included for multi-turn conversations.

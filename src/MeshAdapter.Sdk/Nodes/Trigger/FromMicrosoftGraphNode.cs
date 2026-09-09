@@ -6,11 +6,14 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
 [NodeConfiguration(typeof(FromMicrosoftGraphNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class FromMicrosoftGraphNode(ILogger<FromMicrosoftGraphNode> logger, IHttpClientFactory httpClientFactory)
+internal class FromMicrosoftGraphNode(ILogger<FromMicrosoftGraphNode> logger, IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder)
     : ITriggerPipelineNode
 {
     private CancellationTokenSource? _cancellationTokenSource;
@@ -145,9 +148,26 @@ internal class FromMicrosoftGraphNode(ILogger<FromMicrosoftGraphNode> logger, IH
                         ProcessedAt = DateTime.UtcNow
                     };
 
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
-                    logger.LogInformation("Processed {Count} new Teams channel messages with attachments",
-                        newMessages.Count);
+                    // AB#5126: this batch trigger carries no stable per-user external identifier today
+                    // (only a display name is surfaced), so the sender is unresolvable here and the
+                    // binding policy is enforced over "no caller". Extracting the Graph/EntraID user
+                    // id for a per-sender binding is the per-channel WI's job (AB#5124).
+                    var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender: null);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromMicrosoftGraph: {Reason} Skipping batch of {Count} message(s).",
+                            binding.RejectReason, newMessages.Count);
+                    }
+                    else
+                    {
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        {
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, batch);
+                        logger.LogInformation("Processed {Count} new Teams channel messages with attachments",
+                            newMessages.Count);
+                    }
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),

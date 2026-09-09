@@ -21,8 +21,21 @@ communicationControllerServiceUri: ""
 # The URI of the reporting service - when possible use the internal service name of kubernetes
 reportingServiceUri: ""
 
-# The public uri of the oauth service - issues the access tokens accepted by secured trigger nodes
+# The public uri of the oauth service. Feeds BOTH directions (AB#5072):
+#  - OCTO_ADAPTER__AUTHORITYURL: the issuer secured trigger nodes accept on
+#    tokens presented TO the adapter (inbound),
+#  - OCTO_ADAPTER__ISSUERURI: the identity service the adapter authenticates
+#    ITSELF against before connecting to the adapter hub (outbound).
+# One identity service serves both, so there is deliberately no second value.
 authUri: ""
+
+# Client id of the adapter's own confidential OAuth client (AB#5072). Written
+# by the communication controller as a `ValueOverride` at deploy time from the
+# `ServiceAccountConfiguration` it provisions per adapter (AB#5027). Empty =
+# the adapter acquires no token and connects to the adapter hub anonymously,
+# which is what the whole fleet does today. Its secret lives under
+# `secrets.serviceAccountClientSecret`.
+serviceAccountClientId: ""
 
 # The public uri of the adapter
 publicUri: ""
@@ -35,6 +48,13 @@ secrets:
   databaseAdmin: ""
   streamDataPassword: ""  
   rabbitmq: ""
+  # Client secret of `serviceAccountClientId` (AB#5072). Accepts a plaintext
+  # string (packed into the chart-owned `<fullname>-backend` Secret) or a
+  # `{valueFrom: {secretKeyRef: ...}}` map — the latter is what the communication
+  # operator supplies from `{release}-octo-secrets` for the secret-flagged
+  # `ValueOverride` the controller sends. Unlike the four cluster secrets this
+  # one is OPTIONAL: unset means the adapter connects anonymously.
+  serviceAccountClientSecret: ""
   # content of the root ca certificate chain
   rootCa: ""
 

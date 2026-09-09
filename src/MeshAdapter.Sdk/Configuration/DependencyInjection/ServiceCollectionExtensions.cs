@@ -14,6 +14,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Meshmakers.Octo.Services.Notifications.Services;
@@ -41,6 +42,8 @@ public static class ServiceCollectionExtensions
             .AddSimulationNodes()
             .RegisterNode<GetRtEntitiesByWellKnownNameTypeNode>()
             .RegisterNode<GetRtEntitiesByTypeNode>()
+            .RegisterNode<WriteVerifiedCallerNode>()
+            .RegisterNode<ResolveNotificationChannelNode>()
             .RegisterNode<GetRtEntitiesByIdNode>()
             .RegisterNode<CheckDuplicateNode>()
             .RegisterNode<ComputeFileHashNode>()
@@ -120,6 +123,29 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+
+        // AB#5126 caller-binding seam. The binder enforces the per-trigger three-state policy for
+        // every channel trigger and consumes a single IVerifiedCallerDirectory. That directory is now
+        // a COMPOSITE (AB#5123) that dispatches a sender by its kind to per-kind leaf directories
+        // (IKindVerifiedCallerDirectory), so the channels coexist:
+        //   • EntraID (AB#5124): resolves a Teams sender's AAD object id to the IdP-provisioned user.
+        //   • Phone  (AB#5123): resolves a Signal sender's number to the self-service-enrolled user.
+        //   • E-mail (AB#5125): resolves an inbound mail's From to the admin-whitelisted user; its
+        //     message trust is the DKIM/DMARC verdict the e-mail trigger derived.
+        // All read the AB#5122 verified-identifier directory through generic CK access over the
+        // tenant repository, and all stay fail-closed for kinds they do not own. A new channel adds
+        // one leaf and one registration line with no change to the binder or the composite.
+        services.AddSingleton<IEntraIdUserLookup, CkEntraIdUserLookup>();
+        services.AddSingleton<IPhoneUserLookup, CkPhoneUserLookup>();
+        services.AddSingleton<IEmailUserLookup, CkEmailUserLookup>();
+        // Reverse direction (AB#5152): subjectId → verified channel identifiers + preference, for
+        // ResolveNotificationChannel@1's system-initiated-message routing.
+        services.AddSingleton<ISubjectChannelLookup, CkSubjectChannelLookup>();
+        services.AddSingleton<IKindVerifiedCallerDirectory, EntraIdVerifiedCallerDirectory>();
+        services.AddSingleton<IKindVerifiedCallerDirectory, PhoneVerifiedCallerDirectory>();
+        services.AddSingleton<IKindVerifiedCallerDirectory, EmailVerifiedCallerDirectory>();
+        services.AddSingleton<IVerifiedCallerDirectory, CompositeVerifiedCallerDirectory>();
+        services.AddSingleton<IChannelCallerBinder, ChannelCallerBinder>();
 
         // Shared by every SFTP node. Stateless: the per-server concurrency counters live on
         // the ETL context, so a redeployed pipeline picks up a changed limit.

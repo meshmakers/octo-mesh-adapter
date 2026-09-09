@@ -18,7 +18,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 /// EnergyMeasurement entities (keyed by their stable rtId), derives the profile family from the
 /// parent MeteringPoint type, and emits ONLY datapoints (no entity/association creation).
 /// </summary>
-public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
+public class SimulateEnergyMeasurementsNodeTests : SessionNodeTestBase
 {
     private const string EmCkTypeId = "Basic.Energy/EnergyMeasurement";
     private const string MeteringPointCkTypeId = "Basic.Energy/MeteringPoint";
@@ -30,18 +30,10 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
     private static readonly OctoObjectId ProducerEmRtId = new("000000000000000000000001");
     private static readonly OctoObjectId ConsumerEmRtId = new("000000000000000000000002");
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public SimulateEnergyMeasurementsNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
     }
 
     private static RtEntity CreateEm(OctoObjectId rtId, string wkn, string obisCode)
@@ -66,7 +58,7 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
 
     private void SetupExistingEms(params RtEntity[] ems)
     {
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
@@ -89,8 +81,8 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
 
         A.CallTo(() => multi.GetEnumerator()).ReturnsLazily(() => pairs.GetEnumerator());
 
-        A.CallTo(() => _tenantRepository.GetRtAssociationTargetsAsync(
-                _session,
+        A.CallTo(() => TenantRepository.GetRtAssociationTargetsAsync(
+                Session,
                 A<IEnumerable<OctoObjectId>>._,
                 A<RtCkId<CkTypeId>>._,
                 A<RtCkId<CkAssociationRoleId>>._,
@@ -139,7 +131,7 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
                 A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
             .Invokes(call => captured = call.Arguments.Get<List<EntityUpdateInfo<RtEntity>>>(1));
 
-        await new SimulateEnergyMeasurementsNode(next, _etlContext)
+        await new SimulateEnergyMeasurementsNode(next, EtlContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured);
@@ -197,7 +189,7 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
                 A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
             .Invokes(call => captured = call.Arguments.Get<List<EntityUpdateInfo<RtEntity>>>(1));
 
-        await new SimulateEnergyMeasurementsNode(next, _etlContext)
+        await new SimulateEnergyMeasurementsNode(next, EtlContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured);
@@ -229,7 +221,7 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
                 A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
             .Invokes(call => captured = call.Arguments.Get<List<EntityUpdateInfo<RtEntity>>>(1));
 
-        await new SimulateEnergyMeasurementsNode(next, _etlContext)
+        await new SimulateEnergyMeasurementsNode(next, EtlContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured);
@@ -271,7 +263,7 @@ public class SimulateEnergyMeasurementsNodeTests : NodeTestBase
                 A<DocumentModes>._, A<ValueKinds>._, A<TargetValueWriteModes>._))
             .Invokes(call => captured = call.Arguments.Get<List<EntityUpdateInfo<RtEntity>>>(1));
 
-        await new SimulateEnergyMeasurementsNode(next, _etlContext)
+        await new SimulateEnergyMeasurementsNode(next, EtlContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured);

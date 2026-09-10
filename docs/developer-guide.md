@@ -187,9 +187,10 @@ range (AB#4246), so a sparsely-populated window can return fewer bins than reque
 **Resolution-aware archive selection** (AB#4290). Inherent to a downsampling query — there is no
 switch to turn it on or off, because choosing the archive is part of answering the query. Instead of
 reading the archive persisted on the query, the node asks `SeriesResolutionService` — composed per
-tenant from `GetArchiveRuntimeStore()` and a `RollupDependencyGraph` over
-`GetRollupArchiveRuntimeStore()`, the same way the asset-repository GraphQL field
-`streamData.resolveSeriesQuery` and the MCP tool `resolve_series_query` do — which archive of the
+tenant from `GetArchiveRuntimeStore()`, a `RollupDependencyGraph` over
+`GetRollupArchiveRuntimeStore()` and `GetArchiveCoverageProvider()`, the same way the
+asset-repository GraphQL field `streamData.resolveSeriesQuery` and the MCP tool
+`resolve_series_query` do — which archive of the
 family (the persisted base archive plus its transitive rollups) can answer the window at the
 requested number of points. Whether that archive is then actually read is decided by the exactness
 check further down. The effective `Limit` doubles as the target point count and the first column's
@@ -231,8 +232,13 @@ rollup is used, and the values match the base archive to the last digit. As a ru
 The archive actually queried is reported at info level together with the bin width and the rollup's
 bucket size, so the origin of the numbers is visible without guesswork.
 
-Every non-`Ok` signal (`ResolutionLimited`, `NoSuitableRollup`, `UnknownBaseGrain`, `EmptyLadder`) is
-reported as a warning as well. The resolver's own point count is informational only and never overrides
+Every non-`Ok` signal (`ResolutionLimited`, `NoSuitableRollup`, `UnknownBaseGrain`, `EmptyLadder`,
+`CoverageLimited`) is reported as a warning as well. `CoverageLimited` (AB#5157) says the finest
+matching rung holds no data as far back as the requested start, so the resolver named a coarser rung
+whose history does reach it; whether that rung is then read is still the exactness check's decision
+alone, so a bin-compatible `FixedSize` fallback is used and a calendar-aligned one is not. The
+coverage the filter reasons about is measured, and memoised for `StreamDataCoverageCacheTtlSeconds`
+(60 s by default) so the resolution does not re-probe CrateDB on every pipeline run. The resolver's own point count is informational only and never overrides
 the query's bucket count. `EmptyLadder` and a tenant without a rollup-archive store fall back to the
 persisted archive, which is why a plain raw archive without rollups behaves exactly as it would without
 any selection at all.

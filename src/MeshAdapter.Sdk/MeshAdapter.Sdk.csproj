@@ -51,7 +51,7 @@
         <PackageReference Include="PdfPig" Version="0.1.16" />
         <!-- HTML parsing for RenderHtmlPdf (browser-free, cross-platform). Turns a
              forwarded e-mail body (HTML or plain text) into a receipt PDF via QuestPDF. -->
-        <PackageReference Include="AngleSharp" Version="1.7.3" />
+        <PackageReference Include="AngleSharp" Version="1.8.0" />
         <PackageReference Include="IronOcr.Languages.German" Version="2020.11.2" />
         <PackageReference Include="IronOcr.Linux" Version="2026.9.4" />
         <PackageReference Include="IronOcr.MacOs" Version="2026.9.4" />

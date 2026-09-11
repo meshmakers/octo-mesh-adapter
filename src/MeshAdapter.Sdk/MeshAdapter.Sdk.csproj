@@ -63,7 +63,7 @@
         <PackageReference Include="Meshmakers.Octo.Sdk.Pipeline" Version="$(OctoCommVersion)" />
         <!-- Direct reference: the released SDK still ships the legacy IdentityModel until the next libs train. -->
         <PackageReference Include="Duende.IdentityModel" Version="8.1.0" />
-        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />

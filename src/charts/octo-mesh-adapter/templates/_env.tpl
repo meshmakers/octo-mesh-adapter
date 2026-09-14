@@ -107,6 +107,18 @@
   value: {{ .Values.authUri | quote }}
 {{- end }}
 {{/*
+  AB#5232 — split-horizon issuer widening. Indexed env vars because
+  MeshAdapterConfiguration.AdditionalValidIssuers is a string array
+  (OCTO_ADAPTER__ADDITIONALVALIDISSUERS__0, __1, ...). Rendered independently
+  of authUri: the entries only widen the issuer string comparison, and an
+  adapter whose authority comes from its compiled-in default (local dev) must
+  still be able to accept extra issuers.
+*/}}
+{{- range $i, $issuer := .Values.additionalValidIssuers }}
+- name: OCTO_ADAPTER__ADDITIONALVALIDISSUERS__{{ $i }}
+  value: {{ $issuer | quote }}
+{{- end }}
+{{/*
   Client id of the adapter's own confidential OAuth client — the
   `ServiceAccountConfiguration` the communication controller provisions per
   adapter (AB#5027) and projects onto this path as a `ValueOverride` at deploy

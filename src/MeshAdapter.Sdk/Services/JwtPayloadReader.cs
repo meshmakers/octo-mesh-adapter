@@ -62,7 +62,12 @@ internal static class JwtPayloadReader
             ReadString(payload, "sub"),
             ReadString(payload, "client_id"),
             ReadRoles(payload),
-            ReadExpiry(payload));
+            ReadExpiry(payload),
+            // AB#4924: the tenant the token was actually issued for. A pool member has to be able to
+            // verify it before acting as a borrower — since AB#5077 a request without acr_values is
+            // issued for the SYSTEM tenant, which is a 403 if you are lucky and a cross-tenant read if
+            // you are not.
+            ReadString(payload, "tenant_id"));
         return true;
     }
 
@@ -130,11 +135,17 @@ internal static class JwtPayloadReader
     /// <param name="ClientId"><c>client_id</c>.</param>
     /// <param name="Roles"><c>role</c>, normalised to a list.</param>
     /// <param name="ExpiresAtUtc"><c>exp</c> as UTC.</param>
+    /// <param name="TenantId">
+    ///     <c>tenant_id</c> — the tenant the token was issued for (AB#5032 stamps it on
+    ///     client-credentials tokens too). Absent when the request carried no
+    ///     <c>acr_values=tenant:X</c>, in which case the identity service issued for the system tenant.
+    /// </param>
     internal sealed record JwtClaims(
         string? Subject,
         string? ClientId,
         IReadOnlyList<string> Roles,
-        DateTime? ExpiresAtUtc)
+        DateTime? ExpiresAtUtc,
+        string? TenantId = null)
     {
         internal static readonly JwtClaims Empty = new(null, null, [], null);
     }

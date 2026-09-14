@@ -391,12 +391,58 @@ Anything on the **execution** path must use `IEtlContext.TenantId` inside a node
 `IAdapterTenantScope` (SDK, `Meshmakers.Octo.Sdk.Common.Services`) in the services around the node
 layer. `EtlDataOrchestrator` enters that scope once per execution.
 
-🔴 **A DI sweep is still missing on this side, and this is where it matters most.** The SDK's sweep
-(`Sdk.Common.Tests/TenantIsolation/SingletonTenantFreedomSweepTests`) can only see singletons the SDK
-registers — it cannot see this repo's domain services, and this repo is where the caches are
-(`ICkCacheService`, `ServiceAccountTokenService`'s token cache, the mesh context creator). Writing
-the equivalent sweep over `ServiceCollectionExtensions` is an **entry criterion for enabling
-leasing**, not an optional follow-up.
+✅ **The DI sweep on this side exists since increment 6** —
+`tests/MeshAdapter.Sdk.Tests/Leasing/MeshAdapterSingletonTenantFreedomSweepTests`, over
+`AddOctoMeshAdapterPoolMember()` **and** `AddOctoMeshAdapter()`. The SDK's own sweep is structurally
+blind to this repo's domain services, and this repo is where the caches are. The rule is inverted on
+purpose: a singleton whose surface mentions a tenant is **guilty until somebody has looked at it**,
+so adding one fails the build until a human has written down why it is safe.
+
+The one entry worth knowing about is `CrateDbConnectionAccess`: it caches a CrateDB datasource **per
+tenant schema**. Keyed, so isolation-safe by construction — but **unbounded across leases**, exactly
+the shape `ICkCacheService` had before this increment. Sockets and memory, not leakage; the next
+candidate for a lease participant if a member ever leases stream-data tenants at scale.
+
+## Adapter pool membership (AB#4924, increment 6)
+
+`AddOctoMeshAdapterPoolMember()` (`src/MeshAdapter.Sdk/Leasing/`) makes this adapter a **pool
+member**: a process handed one borrowing tenant per lease. 🔴 **Call it before
+`AddOctoMeshAdapter()`** — the SDK registers `IAdapterTenantScope` with `TryAddSingleton`, and on a
+pool member the winner must be the lease-aware scope. Getting that order wrong fails nowhere; it
+simply never enforces the lease.
+
+It registers three `IAdapterLeaseParticipant`s, and **the order is the order they are entered; its
+reverse is the order they are left**:
+
+| Participant | Enter | Leave |
+|---|---|---|
+| `BorrowerIdentityLeaseParticipant` | exchanges the lease's credential for a token and publishes it as the process identity | empties `IServiceClientAccessToken` |
+| `CkModelCacheLeaseParticipant` | warms the borrower's CK model | `ICkCacheService.Unload` + `InvalidateTenantResolveImportGuards` |
+| `PipelineRegistryLeaseParticipant` | — | `UnregisterAllPipelinesAsync` |
+
+Identity first, because a member that cannot become the borrower must not touch its data at all; the
+registry last, because it is the one holding the borrower's credentials once a pipeline is deployed
+(`PipelineRegistration.GlobalConfiguration`, AB#5027) and therefore has to be the **first** thing
+dropped.
+
+🔴 **`acr_values=tenant:{borrower}` is not optional, and the result is verified.** Since AB#5077 a
+token request without it is issued for the **system** tenant — a 403 if you are lucky and a
+cross-tenant read if you are not. `BorrowerIdentityLeaseParticipant` therefore reads the issued
+token's own `tenant_id` claim (hence the field added to `JwtPayloadReader`) and **fails the lease**
+on absence or mismatch. Asserting that a token exists proves nothing; asserting whose it is does.
+
+🔴 **The concept's "`FindTenantRepositoryAsync` caches per process" is wrong about *which* cache.**
+Both the tenant context and the tenant repository are constructed fresh on every call. What is
+process-wide is `ICkCacheService`. Somebody hunting for a repository cache will not find one and may
+conclude the invariant is already satisfied — it is not.
+
+Tests: `tests/MeshAdapter.Sdk.Tests/Leasing/` (identity + sweep) and
+`tests/MeshAdapter.Sdk.IntegrationTests/Leasing/LeasedTenantIsolationTests` — the increment-6 entry
+criteria over **two real tenant databases**: the interleave on pipeline output, the poison canary,
+randomised interleavings, the post-release state (CK cache unloaded, token holder empty, scope left,
+no registration behind), the rendered-log assertion and the identity assertion. 🔴 Its work item
+resolves the tenant from `IAdapterTenantScope`, **never** from the lease it was handed — otherwise
+every assertion would be a tautology about passing the right argument.
 
 ⚠️ The chart still sets the deprecated `OCTO_ADAPTER__TENANTID`. It is bound for one release with a
 warning; move it to `OCTO_ADAPTER__DEDICATEDTENANTID` before the shim is removed.

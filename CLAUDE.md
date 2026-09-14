@@ -365,6 +365,15 @@ against it and the communication controller validates the issuer of the resultin
 cluster secrets. The client secret is optional, so its `include` sits behind an `if`; dropping that
 guard makes every adapter without credentials fail to render.
 
+**Split-horizon issuers (AB#5232):** `.Values.additionalValidIssuers` (a string list) renders as
+`OCTO_ADAPTER__ADDITIONALVALIDISSUERS__<n>` and feeds
+`MeshAdapterConfiguration.AdditionalValidIssuers` — extra issuer values accepted on top of
+`authUri` in the inbound JWT validation (issuer STRING comparison only; signing keys still come
+from `authUri`'s discovery document). Canonical use: the local kind dev cluster, where adapters
+reach the host identity service as `https://host.docker.internal:5003` while callers mint tokens
+via `https://localhost:5003/`. Normally projected cluster-wide by the communication operator's
+context values layer (`OPERATOR__ADDITIONALVALIDISSUERS__<n>`, see octo-communication-operator).
+
 The controller side of the wire (which `ValueOverride` paths are projected, why they are not gated on
 `ReceivesClusterSecrets`, and why provisioning had to move before the deploy notification) is
 documented in `octo-communication-controller-services/CLAUDE.md` → "Phase 4 — the credentials reach

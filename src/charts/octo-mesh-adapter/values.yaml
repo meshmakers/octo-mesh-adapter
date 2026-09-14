@@ -29,6 +29,17 @@ reportingServiceUri: ""
 # One identity service serves both, so there is deliberately no second value.
 authUri: ""
 
+# Additional token issuer values accepted on top of authUri (AB#5232).
+# Split-horizon setups: the adapter reaches the identity service under one
+# host name (authUri) while callers' tokens carry another issuer — e.g. the
+# local kind dev cluster, where authUri is https://host.docker.internal:5003
+# but tokens are minted via https://localhost:5003/. Entries widen ONLY the
+# issuer string comparison (MeshAdapterConfiguration.AdditionalValidIssuers);
+# signing keys still come from authUri's discovery document. Normally
+# projected by the communication operator's context values layer
+# (OPERATOR__ADDITIONALVALIDISSUERS__<n>). Empty = only authUri is accepted.
+additionalValidIssuers: []
+
 # Client id of the adapter's own confidential OAuth client (AB#5072). Written
 # by the communication controller as a `ValueOverride` at deploy time from the
 # `ServiceAccountConfiguration` it provisions per adapter (AB#5027). Empty =

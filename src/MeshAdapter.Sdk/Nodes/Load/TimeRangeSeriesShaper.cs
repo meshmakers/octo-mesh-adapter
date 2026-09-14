@@ -175,6 +175,12 @@ internal static class TimeRangeSeriesShaper
     /// <param name="series">The shaped series, each already carrying its resolved anchor RtId.</param>
     /// <param name="ckTypeId">CK type of the anchor entity, stamped onto every row.</param>
     /// <param name="c">The node configuration naming the window properties and the columns.</param>
+    /// <param name="convert">
+    /// Maps a raw JSON scalar onto the value the archive column stores, given the column's attribute
+    /// path. Supplied by the node because it needs the CK model: an Enum attribute is stored as its
+    /// integer KEY, so a raw <c>"L1"</c> has to become <c>1</c> or CrateDB rejects the write against
+    /// an integer column. Everything else passes through.
+    /// </param>
     /// <param name="skippedNoWindow">
     /// Values dropped for lacking a usable <c>[from, to)</c> window. One malformed slot must not cost
     /// the rest of a bulk replay, so they are counted and reported rather than thrown on.
@@ -183,6 +189,7 @@ internal static class TimeRangeSeriesShaper
         IReadOnlyList<ShapedSeries> series,
         RtCkId<CkTypeId> ckTypeId,
         SaveTimeRangeSeriesInArchiveNodeConfiguration c,
+        Func<string, object?, object?> convert,
         out int skippedNoWindow)
     {
         var points = new List<TimeRangeStreamDataPoint>(series.Sum(s => s.Values.Count));
@@ -195,7 +202,7 @@ internal static class TimeRangeSeriesShaper
             var seriesValues = new List<KeyValuePair<string, object?>>();
             foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Series))
             {
-                var scalar = ToScalar(shaped.Series[column.ValueProperty]);
+                var scalar = convert(column.Name, ToScalar(shaped.Series[column.ValueProperty]));
                 if (scalar is not null)
                 {
                     seriesValues.Add(new KeyValuePair<string, object?>(column.Name, scalar));
@@ -220,7 +227,7 @@ internal static class TimeRangeSeriesShaper
 
                 foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Value))
                 {
-                    var scalar = ToScalar(value[column.ValueProperty]);
+                    var scalar = convert(column.Name, ToScalar(value[column.ValueProperty]));
                     if (scalar is not null)
                     {
                         attributes[column.Name] = scalar;

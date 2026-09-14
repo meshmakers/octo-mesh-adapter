@@ -44,6 +44,9 @@ public class TimeRangeSeriesShaperTests
 
     private static JsonArray Parse(string json) => (JsonArray)JsonNode.Parse(json)!;
 
+    /// <summary>Identity conversion — the node supplies the CK-model-backed one in production.</summary>
+    private static object? PassThrough(string column, object? raw) => raw;
+
     private static string SeriesJson(string meterCode, int slots, DateTime start) =>
         $$"""
           [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "{{meterCode}}", "QuantityUnit": "kWh",
@@ -70,7 +73,7 @@ public class TimeRangeSeriesShaperTests
         Assert.Equal(0, unresolved);
 
         series[0].RtId = OctoObjectId.GenerateNewId();
-        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, out var skipped);
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out var skipped);
 
         Assert.Equal(96, rows.Count);
         Assert.Equal(0, skipped);
@@ -157,7 +160,7 @@ public class TimeRangeSeriesShaperTests
         var c = Config();
         var series = TimeRangeSeriesShaper.Shape(
             Parse(SeriesJson("G.03", 3, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))), c, out _);
-        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, out _);
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out _);
 
         Assert.All(rows, r => Assert.Equal("kWh", r.Attributes["Amount.Unit"]));
         Assert.Equal([1.5, 2.5, 3.5], rows.Select(r => r.Attributes["Amount.Value"]).ToArray());
@@ -178,7 +181,7 @@ public class TimeRangeSeriesShaperTests
                     { "From": "2026-01-01T00:30:00Z", "To": "2026-01-01T00:45:00Z", "Quantity": 4.0 } ] } ]
               """), c, out _);
 
-        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, out var skipped);
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out var skipped);
 
         Assert.Equal(2, rows.Count);
         Assert.Equal(2, skipped);
@@ -198,7 +201,7 @@ public class TimeRangeSeriesShaperTests
                     { "From": "2026-01-01T00:00:00+02:00", "To": "2026-01-01T00:15:00+02:00", "Quantity": 1.0 } ] } ]
               """), c, out _);
 
-        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, out _);
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out _);
 
         Assert.Equal(new DateTime(2025, 12, 31, 22, 0, 0, DateTimeKind.Utc), rows[0].From);
         Assert.Equal(DateTimeKind.Utc, rows[0].From.Kind);
@@ -233,6 +236,37 @@ public class TimeRangeSeriesShaperTests
         var winner = TimeRangeSeriesShaper.SelectAnchorValue(series[0].Values, c);
 
         Assert.Equal(3.5, TimeRangeSeriesShaper.ToScalar(winner["Quantity"]));
+    }
+
+    [Fact]
+    public void EveryColumnValueGoesThroughTheConverter()
+    {
+        // Load-bearing, and the reason this is a parameter rather than a pass-through: the archive
+        // stores an Enum attribute as its integer KEY, so the raw "L1" in the document has to become
+        // 1 before it reaches an integer CrateDB column. The composition this node replaces got that
+        // for free by routing every value through an RtEntity — exactly the round trip being removed
+        // — so without the converter every write to the archive fails on a cast.
+        var c = Config();
+        var series = TimeRangeSeriesShaper.Shape(Parse(
+            $$"""
+              [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03", "QuantityUnit": "KWh",
+                  "EnergyQuantities": [
+                    { "From": "2026-01-01T00:00:00Z", "To": "2026-01-01T00:15:00Z", "Quantity": 1.0 } ] } ]
+              """), c, out _);
+
+        var seen = new List<(string Column, object? Raw)>();
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c,
+            (column, raw) =>
+            {
+                seen.Add((column, raw));
+                return raw is string s ? 1 : raw;   // stand-in for the enum name-to-key mapping
+            },
+            out _);
+
+        Assert.Contains(("Amount.Unit", (object?)"KWh"), seen);
+        Assert.Contains(("Amount.Value", (object?)1.0), seen);
+        Assert.Equal(1, rows[0].Attributes["Amount.Unit"]);
+        Assert.Equal(1.0, rows[0].Attributes["Amount.Value"]);
     }
 
     [Theory]

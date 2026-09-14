@@ -315,6 +315,40 @@ internal class SaveTimeRangeSeriesInArchiveNode(
     }
 
     /// <summary>
+    /// Maps a raw JSON scalar onto the value the archive column stores, using the CK model rather
+    /// than a second copy of its rules.
+    /// </summary>
+    /// <remarks>
+    /// Conversion goes through <see cref="RtPathEvaluator" /> on a scratch entity — the same code
+    /// that decides what an attribute value becomes everywhere else — so the enum name-to-key rule
+    /// cannot drift away from it. Non-string scalars are returned untouched: a double, a timestamp
+    /// or a boolean is already what the column wants, and only a string can be an enum name.
+    /// </remarks>
+    private object? ConvertColumnValue(
+        RtCkId<CkTypeId> ckTypeId,
+        string columnName,
+        object? raw,
+        Dictionary<(string Column, string Raw), object?> cache)
+    {
+        if (raw is not string text)
+        {
+            return raw;
+        }
+
+        var key = (columnName, text);
+        if (cache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var scratch = new RtEntity { CkTypeId = ckTypeId };
+        RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, scratch, columnName, text);
+        var converted = RtPathEvaluator.GetValue(ckCacheService, etlContext.TenantId, scratch, columnName);
+        cache[key] = converted;
+        return converted;
+    }
+
+    /// <summary>
     /// Writes every value of every series in a single bulk insert. Ordering between competing writes
     /// for the same window is the archive's business, not this node's — see the archive's
     /// <c>ConflictVersionColumn</c>.
@@ -325,7 +359,17 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         SaveTimeRangeSeriesInArchiveNodeConfiguration c,
         INodeContext nodeContext)
     {
-        var points = TimeRangeSeriesShaper.BuildRows(series, ckTypeId, c, out var skippedNoWindow);
+        // The archive stores an Enum attribute as its integer KEY, so the raw "L1" that arrives in
+        // the document has to become 1 before it reaches an integer column — the composition this
+        // node replaces got that for free by routing every value through an RtEntity, which is
+        // exactly the round trip being removed here. Only a string can be an enum name, so only
+        // strings are converted, and the conversion is memoised per (column, value): the distinct
+        // set is a handful of OBIS codes, units and quality codes, while the doubles and timestamps
+        // that make up the bulk never touch the CK model at all.
+        var conversions = new Dictionary<(string Column, string Raw), object?>();
+        var points = TimeRangeSeriesShaper.BuildRows(series, ckTypeId, c,
+            (column, raw) => ConvertColumnValue(ckTypeId, column, raw, conversions),
+            out var skippedNoWindow);
 
         if (skippedNoWindow > 0)
         {

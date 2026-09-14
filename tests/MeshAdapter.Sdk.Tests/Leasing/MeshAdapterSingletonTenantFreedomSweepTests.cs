@@ -53,6 +53,14 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
             ["CkModelCacheLeaseParticipant"] =
                 "AB#4924. Exists precisely to unload the released tenant's CK model; it holds no "
                 + "state of its own.",
+            ["LeasedPipelineWorkItem"] =
+                "AB#4924 §9.9 / D4. Resolves the tenant from IAdapterTenantScope on every call and "
+                + "keeps nothing between leases: the lease, its pipeline configuration and the "
+                + "registration it produces are all locals. It deliberately does NOT read "
+                + "LeaseDto.TenantId as its tenant - it checks the lease AGAINST the scope and fails "
+                + "the lease on a disagreement, which is the same rule every service around the node "
+                + "layer follows since increment 3. The registration it creates is dropped on release "
+                + "by PipelineRegistryLeaseParticipant.",
             ["PipelineRegistryLeaseParticipant"] =
                 "AB#4924. Exists precisely to drop the released tenant's pipeline registrations - "
                 + "which is where the borrower's credentials live once a pipeline is deployed.",

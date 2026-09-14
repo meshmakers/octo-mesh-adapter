@@ -506,7 +506,9 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
     ///     <c>acr_values</c> named — the same behaviour the real one has, which is what makes the
     ///     identity assertion meaningful.
     /// </summary>
-    private sealed class FakeIdentityService : HttpMessageHandler
+    // internal, not private: AB#4924 §9.9 / D4's LeasedPipelineWorkItemTests composes a pool
+    // member the same way and must not fork a second copy of these two fakes.
+    internal sealed class FakeIdentityService : HttpMessageHandler
     {
         /// <summary>The tenant the next token is expected to be requested for.</summary>
         public string? NextTenantId { get; set; }
@@ -573,7 +575,7 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
     }
 
     /// <summary>Records what the member reported to the controller, without a network.</summary>
-    private sealed class RecordingHubClient : IAdapterPoolHubClient
+    internal sealed class RecordingHubClient : IAdapterPoolHubClient
     {
         public List<LeaseResultDto> Releases { get; } = [];
 

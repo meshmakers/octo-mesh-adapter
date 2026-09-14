@@ -1,4 +1,6 @@
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -22,6 +24,18 @@ public static class MeshAdapterPoolServiceCollectionExtensions
     ///         fine.
     ///     </para>
     ///     <para>
+    ///         🔴 <b>And <c>IContextCreatorService</c> must be the mesh one, which this method cannot
+    ///         guarantee.</b> <c>AddDataPipeline()</c> registers the SDK's
+    ///         <c>DefaultContextCreatorService</c> with a plain <c>AddSingleton</c>, so the last
+    ///         registration wins — and this method has to run <i>before</i> it, for the reason above.
+    ///         <c>AddOctoMeshAdapter()</c> registers <c>MeshContextCreatorService</c> after
+    ///         <c>AddDataPipeline()</c> and therefore settles it for every real host. A composition that
+    ///         skips <c>AddOctoMeshAdapter()</c> has to register it itself, after the pipeline, or every
+    ///         lease fails with <i>"Etl context type mismatch. Expected IMeshEtlContext"</i> —
+    ///         <c>LeasedPipelineWorkItem</c> builds an <c>IMeshEtlContext</c> and the default creator
+    ///         cannot produce one.
+    ///     </para>
+    ///     <para>
     ///         <b>The participant order is the order things are entered, and its reverse is the order
     ///         they are left.</b> Identity first, because the CK cache warm-up reads the tenant and a
     ///         member that cannot become the borrower must not touch its data at all; the pipeline
@@ -31,13 +45,25 @@ public static class MeshAdapterPoolServiceCollectionExtensions
     /// </remarks>
     public static IServiceCollection AddOctoMeshAdapterPoolMember(this IServiceCollection services)
     {
+        // 🔴 AB#4924 §9.9 / D4 — what a leased member actually runs, and it MUST be registered BEFORE
+        // AddAdapterPoolMember(). That call TryAdds the SDK's NoAdapterLeaseWorkItem, and TryAdd means
+        // whichever ran first wins: registering afterwards is a silent no-op that leaves every lease
+        // reporting "nothing to run" while looking perfectly healthy. Same trap, same shape, as the
+        // IAdapterTenantScope ordering documented above. TryAdd here rather than Add so a host or a
+        // test that registered its own work item before calling this still keeps it.
+        services.TryAddSingleton<IAdapterLeaseWorkItem, LeasedPipelineWorkItem>();
+
         services.AddAdapterPoolMember();
 
         services.AddSingleton<IAdapterLeaseParticipant, BorrowerIdentityLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, CkModelCacheLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, PipelineRegistryLeaseParticipant>();
 
-        services.TryAddSingleton<IAdapterLeaseWorkItem, NoAdapterLeaseWorkItem>();
+        // 🔴 A pool member is a composition in its own right — the same finding increment 6 recorded
+        // when AddAdapterPoolMember() had to register IPipelineRegistryService itself. The token
+        // service normally arrives with AddOctoMeshAdapter(), which a pool member need not run, and
+        // MeshContextCreatorService resolves it while building the per-execution identity resolver.
+        services.TryAddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
 
         return services;
     }

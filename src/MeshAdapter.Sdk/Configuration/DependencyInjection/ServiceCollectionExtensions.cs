@@ -157,7 +157,10 @@ public static class ServiceCollectionExtensions
             .Configure<IOptions<AdapterOptions>>((options, adapterOptions) =>
             {
                 options.EndpointUri = adapterOptions.Value.CommunicationControllerServicesUri;
-                options.TenantId = adapterOptions.Value.TenantId;
+                // AB#4924: the DeployDataFlow/DeployPipeline node's client talks to the
+                // controller as THIS adapter, on its own tenant route — process-level, not
+                // execution-level.
+                options.TenantId = adapterOptions.Value.DedicatedTenantId;
             });
         services.AddSingleton<ICommunicationServicesClient, CommunicationServicesClient>();
         services.AddSingleton<ICommunicationServiceClientAccessToken>(provider =>

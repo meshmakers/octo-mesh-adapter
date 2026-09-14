@@ -33,7 +33,7 @@ public class FromHttpRequestNode2Tests
     public FromHttpRequestNode2Tests()
     {
         _httpRequestService = new HttpRequestService(
-            Options.Create(new AdapterOptions { TenantId = TenantId }),
+            Options.Create(new AdapterOptions { DedicatedTenantId = TenantId }),
             Options.Create(new MeshAdapterConfiguration { AuditAnonymousInvocations = false }),
             _eventService, NullLogger<HttpRequestService>.Instance);
 

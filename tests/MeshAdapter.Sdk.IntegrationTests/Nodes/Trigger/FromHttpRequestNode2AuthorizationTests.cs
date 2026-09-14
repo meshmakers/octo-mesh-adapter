@@ -279,7 +279,7 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
                 .UseTestServer()
                 .ConfigureServices(services =>
                 {
-                    services.Configure<AdapterOptions>(options => options.TenantId = TenantId);
+                    services.Configure<AdapterOptions>(options => options.DedicatedTenantId = TenantId);
                     services.Configure<MeshAdapterConfiguration>(options => options.AuthorityUrl = Authority);
                     services.AddCors();
                     services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();

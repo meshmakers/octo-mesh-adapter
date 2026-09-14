@@ -31,7 +31,7 @@ public class HttpRequestServiceTests
     private HttpRequestService CreateService(bool auditAnonymousInvocations)
     {
         return new HttpRequestService(
-            Options.Create(new AdapterOptions { TenantId = TenantId }),
+            Options.Create(new AdapterOptions { DedicatedTenantId = TenantId }),
             Options.Create(new MeshAdapterConfiguration
             {
                 AuditAnonymousInvocations = auditAnonymousInvocations

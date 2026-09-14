@@ -318,7 +318,11 @@ internal class HttpRequestService(
     /// </summary>
     private async Task<bool> IsCallerAuthorizedAsync(HttpContext context, HttpRequestOptions route)
     {
-        var tenantOfAdapter = adapterOptions.Value.TenantId;
+        // AB#4924: inbound HTTP routes are published under the adapter's OWN tenant prefix, so
+        // this is a process-level fact and DedicatedTenantId is the right source. A pool member
+        // publishes no tenant-prefixed routes at all — it has no tenant of its own — so this
+        // read yields null there rather than another tenant's id.
+        var tenantOfAdapter = adapterOptions.Value.DedicatedTenantId;
 
         if (route.AllowAnonymous)
         {
@@ -452,7 +456,8 @@ internal class HttpRequestService(
 
     private string GetUri(string uri)
     {
-        return $"/{adapterOptions.Value.TenantId?.ToLower()}{uri.ToLower()}";
+        // AB#4924: the route prefix is the adapter's OWN tenant — see IsCallerAuthorizedAsync.
+        return $"/{adapterOptions.Value.DedicatedTenantId?.ToLower()}{uri.ToLower()}";
     }
     
     private static bool IsTextBasedContentType(string contentType)

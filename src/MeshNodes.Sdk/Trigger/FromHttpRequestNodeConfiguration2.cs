@@ -5,7 +5,11 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// <summary>
 /// Configuration for node FromHttpRequest
 /// </summary>
+// AB#4924: Interactive. An HTTP caller is blocked on the response — this is the clearest
+// case of work somebody is waiting for, and the scenario §5 of the leasing concept names:
+// a "generate billing" click must not queue behind 40 nightly batch entries.
 [NodeName("FromHttpRequest", 2)]
+[NodeExecutionClass(PipelineExecutionClass.Interactive)]
 public record FromHttpRequestNodeConfiguration2 : TriggerNodeConfiguration
 {
     /// <summary>

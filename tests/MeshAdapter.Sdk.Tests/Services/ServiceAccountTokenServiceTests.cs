@@ -92,7 +92,7 @@ public class ServiceAccountTokenServiceTests
             ClientId = OwnClientId,
             ClientSecret = OwnClientSecret,
             IssuerUri = issuerUri,
-            TenantId = null
+            DedicatedTenantId = null
         };
     }
 
@@ -228,7 +228,7 @@ public class ServiceAccountTokenServiceTests
         SetupConfiguration(tenantId: null);
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
-        var service = CreateService(handler, new AdapterOptions { TenantId = null });
+        var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = null });
 
         Assert.Null(await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
             TestContext.Current.CancellationToken));
@@ -564,7 +564,7 @@ public class ServiceAccountTokenServiceTests
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
         var logger = new CapturingLogger();
-        var service = CreateService(handler, new AdapterOptions { TenantId = null },
+        var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = null },
             new MeshAdapterConfiguration { AuthorityUrl = "" }, logger);
 
         await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
@@ -692,7 +692,7 @@ public class ServiceAccountTokenServiceTests
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
         var logger = new CapturingLogger();
-        var service = CreateService(handler, new AdapterOptions { TenantId = null }, logger: logger);
+        var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = null }, logger: logger);
 
         await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
 
@@ -788,7 +788,7 @@ public class ServiceAccountTokenServiceTests
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
         var logger = new CapturingLogger();
-        var service = CreateService(handler, new AdapterOptions { TenantId = null }, logger: logger);
+        var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = null }, logger: logger);
 
         Assert.Null(await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
             TestContext.Current.CancellationToken));

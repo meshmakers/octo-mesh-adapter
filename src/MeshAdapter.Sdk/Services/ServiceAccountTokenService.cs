@@ -710,7 +710,13 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return configuredTenantId;
         }
 
-        var ownTenantId = !string.IsNullOrWhiteSpace(adapterTenantId) ? adapterTenantId : _adapterOptions.TenantId;
+        // AB#4924: the adapter's OWN tenant, which is a process-level fact — this is the
+        // AB#5115 fallback for a service-account configuration that names no tenant, not the
+        // tenant of any execution. Null on a pool member, which has no tenant of its own, so the
+        // fallback below correctly declines rather than silently picking somebody else's tenant.
+        var ownTenantId = !string.IsNullOrWhiteSpace(adapterTenantId)
+            ? adapterTenantId
+            : _adapterOptions.DedicatedTenantId;
         if (!string.IsNullOrWhiteSpace(ownTenantId))
         {
             _logger.LogDebug(

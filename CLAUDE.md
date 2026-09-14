@@ -370,6 +370,37 @@ The controller side of the wire (which `ValueOverride` paths are projected, why 
 documented in `octo-communication-controller-services/CLAUDE.md` → "Phase 4 — the credentials reach
 the adapter pod (AB#5072)".
 
+## Tenant isolation — `AdapterOptions.TenantId` is gone (AB#4924, increment 3)
+
+The SDK deleted `AdapterOptions.TenantId` so that shared adapter leasing cannot read a process-wide
+tenant where it needs the tenant of the current work item. Full rationale in
+`octo-communication-sdk/CLAUDE.md`; what changed **here** is four call sites, all of which are
+genuinely process-level and now say so:
+
+| Site | Why `DedicatedTenantId` is correct |
+|---|---|
+| `Services/ServiceAccountTokenService.ResolveTenantId` | The AB#5115 fallback for a service-account configuration that names no tenant — the adapter's *own* tenant, not any execution's. |
+| `Services/HttpRequests/HttpRequestService.IsCallerAuthorizedAsync` | Inbound routes are published under the adapter's own tenant prefix. |
+| `Services/HttpRequests/HttpRequestService.GetUri` | The `/{tenant}` route prefix itself. |
+| `Configuration/DependencyInjection/ServiceCollectionExtensions` | `CommunicationServiceClientOptions` — the `DeployDataFlow`/`DeployPipeline` node's client talks to the controller *as this adapter*, on its own tenant route. |
+
+All four are **null on a pool member**, which has no tenant of its own — so a mistaken read there
+fails loudly instead of returning another tenant's id. That is the point of the rename.
+
+Anything on the **execution** path must use `IEtlContext.TenantId` inside a node, or
+`IAdapterTenantScope` (SDK, `Meshmakers.Octo.Sdk.Common.Services`) in the services around the node
+layer. `EtlDataOrchestrator` enters that scope once per execution.
+
+🔴 **A DI sweep is still missing on this side, and this is where it matters most.** The SDK's sweep
+(`Sdk.Common.Tests/TenantIsolation/SingletonTenantFreedomSweepTests`) can only see singletons the SDK
+registers — it cannot see this repo's domain services, and this repo is where the caches are
+(`ICkCacheService`, `ServiceAccountTokenService`'s token cache, the mesh context creator). Writing
+the equivalent sweep over `ServiceCollectionExtensions` is an **entry criterion for enabling
+leasing**, not an optional follow-up.
+
+⚠️ The chart still sets the deprecated `OCTO_ADAPTER__TENANTID`. It is bound for one release with a
+warning; move it to `OCTO_ADAPTER__DEDICATEDTENANTID` before the shim is removed.
+
 ## Helm chart publishing (AB#4948)
 
 `src/charts/octo-mesh-adapter` is packaged on every build and published to two

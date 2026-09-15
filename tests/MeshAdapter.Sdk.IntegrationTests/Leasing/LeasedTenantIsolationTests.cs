@@ -282,6 +282,53 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
     }
 
     /// <summary>
+    ///     🔴 <b>The second secret must not reach a log target on the member either.</b> The controller
+    ///     half of this guard is <c>GrantLeaseAsync_NeverWritesTheDatabasePasswordToAnyLogTarget</c>;
+    ///     this is the half that belongs to the process that actually uses the value. It runs a real
+    ///     lease with a password no other tenant has, so a leak has a unique string to be found by —
+    ///     and it asserts that the database and the user ARE logged, because a lease line that named
+    ///     no database could not be used to recognise a cross-tenant read.
+    /// </summary>
+    [Fact]
+    public async Task TheMembersRenderedLogNeverContainsTheDatabasePassword()
+    {
+        fixture.EnsureInitialized();
+
+        var memoryTarget = new NLog.Targets.MemoryTarget("leased-db-secret-probe")
+        {
+            Layout = "${level}|${logger}|${message}|${exception:format=ToString}"
+        };
+        var previousConfiguration = NLog.LogManager.Configuration;
+        var probeConfiguration = new NLog.Config.LoggingConfiguration();
+        probeConfiguration.AddRule(NLog.LogLevel.Trace, NLog.LogLevel.Fatal, memoryTarget);
+        NLog.LogManager.Configuration = probeConfiguration;
+        try
+        {
+            await using var member = await PoolMember.CreateAsync(fixture);
+            await member.LeaseAndRunAsync(TwoTenantLeaseFixture.RotatedTenant,
+                TwoTenantLeaseFixture.RotatedDatabasePassword);
+
+            // Locals, not expressions: FluentAssertions builds an expression tree from the predicate
+            // and a range expression cannot live in one.
+            var password = TwoTenantLeaseFixture.RotatedDatabasePassword;
+            var passwordPrefix = password[..8];
+            var databaseUser = fixture.DatabaseUserOf(TwoTenantLeaseFixture.RotatedTenant);
+
+            using var _ = new AssertionScope();
+            memoryTarget.Logs.Should().NotBeEmpty("an empty probe would make this vacuous");
+            memoryTarget.Logs.Should().NotContain(l => l.Contains(password, StringComparison.Ordinal));
+            // Not truncated either — a prefix is still secret material.
+            memoryTarget.Logs.Should().NotContain(l => l.Contains(passwordPrefix, StringComparison.Ordinal));
+            // The identities are the diagnosable half and stay.
+            memoryTarget.Logs.Should().Contain(l => l.Contains(databaseUser, StringComparison.Ordinal));
+        }
+        finally
+        {
+            NLog.LogManager.Configuration = previousConfiguration;
+        }
+    }
+
+    /// <summary>
     ///     🔴 Held during the lease, for the borrower's database and for no other — the same assertion
     ///     as the unit suite's, made here on the composition a real member actually runs, where the
     ///     holder is reached through the interface the <b>runtime engine</b> resolves rather than

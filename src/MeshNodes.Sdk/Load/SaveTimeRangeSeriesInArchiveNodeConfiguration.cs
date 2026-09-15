@@ -57,14 +57,18 @@ public record TimeRangeSeriesColumn
 /// (one batched query for all series), creates the ones that do not exist yet together with their
 /// parent association, advances the anchor's own attributes to the series' newest value, persists
 /// that small set of entities, and only then writes every windowed value to the archive in one
-/// bulk insert. The anchor write happens first on purpose: the archive's orphan guard rejects rows
-/// whose source entity does not exist.
+/// bulk insert. The anchor write happens first on purpose, and that order is what keeps the archive
+/// free of rows whose source entity does not exist: every RtId handed to the archive was either read
+/// from the runtime store or written and confirmed, and a failed anchor write throws instead of
+/// continuing. It is an invariant of this node, not a check performed afterwards — the post-hoc
+/// orphan guard in <c>SaveTimeRangeStreamDataInArchive@1</c> does not apply here.
 /// </para>
 /// <para>
 /// <b>Ordering.</b> This node does not decide which of two deliveries for the same window wins —
-/// the archive does, via its opt-in <c>ConflictVersionColumn</c> (System.StreamData 1.10.0). Map
-/// the source document's own date into that column via <see cref="Columns" /> and the archive will
-/// keep the newer of two competing writes regardless of the order they arrive in.
+/// the archive does, via its opt-in <c>ConflictPrecedence</c> (System.StreamData 1.11.0), an ordered
+/// list of keys compared lexicographically. Map the columns that rank a delivery — a quality code,
+/// the source document's own date — into the archive via <see cref="Columns" />, declare them as the
+/// archive's precedence keys, and the surviving value is the same whichever write arrives first.
 /// </para>
 /// </remarks>
 [NodeName("SaveTimeRangeSeriesInArchive", 1)]

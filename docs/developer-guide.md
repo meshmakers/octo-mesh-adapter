@@ -919,6 +919,78 @@ Persists entity data to CrateDB time-series database.
 - CkTypeId (type identifier)
 - Attributes (entity field values)
 
+#### SaveTimeRangeStreamDataInArchiveNode (`SaveTimeRangeStreamDataInArchive@1`)
+
+Writes rows that **already carry an `rtid`** to a windowed (`TimeRangeArchive`) archive. The window
+boundaries are read from the attribute paths named by `FromAttributePath` / `ToAttributePath` and
+removed from the attribute set so they do not reappear as user columns; a row without a usable
+window is skipped with a debug note.
+
+Before inserting it runs an **orphan guard**: the distinct source rtIds of the batch are grouped by
+CkTypeId and looked up, and the whole insert is refused naming the missing ids. That read uses a
+**system** session by decision (AB#5028) — under a narrow identity "you may not see it" would read as
+"it does not exist" and the node would refuse perfectly good measurements.
+
+Use `SaveTimeRangeSeriesInArchive@1` below instead when the pipeline would have to create a runtime
+entity per window just to satisfy this node's `rtid` requirement.
+
+#### SaveTimeRangeSeriesInArchiveNode (`SaveTimeRangeSeriesInArchive@1`)
+
+Ingests a whole series of windowed measurements into a `TimeRangeArchive`: **one anchor entity per
+series** plus one archive row per value, in a single node.
+
+It replaces a node composition that materialises one runtime entity per measured window
+(`CreateUpdateInfo@1` + `CreateAssociationUpdate@1` per window, two wildcard flattens,
+`UpdateRtEntityIfNewer@1`, `ApplyChanges@2`) in order to write one row. Measured on a real EDA
+replay: 316,268 windows in 4,530 s — 78 rows/s, 12.8 ms per window — with the database nowhere near
+the bottleneck. The runtime model only ever needs one anchor per series; on the same corpus that is
+16 entities instead of 316,268 candidates, at 0.79 ms per row.
+
+Input shape at `Path`: an array of series objects, each carrying the key fields plus an array of
+windowed values at `ValuesProperty`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Path` | string | JSONPath to the array of series |
+| `ArchiveRtId` | string | Target archive |
+| `CkTypeId` | string | CK type of the anchor entities |
+| `ValuesProperty` | string | Property on a series holding its array of windowed values |
+| `WellKnownNameFormat` | string | Anchor key, e.g. `"{MeteringPointRtId}_{MeterCode}"` — placeholders read series fields |
+| `FromProperty` / `ToProperty` | string | Window boundaries on a value |
+| `Columns` | list | `{ name, valueProperty, scope }` — `name` is the archive column / attribute path, `scope` is `Value` (default, read per window) or `Series` (read once from the series) |
+| `AnchorWindowFromAttribute` / `AnchorWindowToAttribute` | string? | Attribute paths the anchor's own window is written to; the `To` attribute also decides whether an existing anchor is advanced |
+| `ParentRtIdProperty` / `ParentCkTypeId` / `ParentAssociationRoleId` | string? | Parent association for newly created anchors — **all three or none** |
+| `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` (AB#5127) |
+
+**Order of operations, and why it is load-bearing:**
+
+1. Shape the series (pure `TimeRangeSeriesShaper`) and build the well-known names.
+2. Resolve every anchor in **one** query (`FieldIn(RtWellKnownName, …)`).
+3. Insert the missing anchors + parent associations, advance the existing ones, commit. A failed
+   write aborts the transaction and **throws**.
+4. Bulk-insert every value as an archive row.
+
+🔴 That order is what keeps the archive free of rows referencing entities that do not exist: every
+`rtid` handed to the archive was either read from the runtime store or written and confirmed. It is
+an invariant of the node, **not** a check performed afterwards — the post-hoc orphan guard in
+`SaveTimeRangeStreamDataInArchive@1` does not apply, because this node calls `InsertTimeRangeAsync`
+directly. The **parent** rtId is parsed from the document and not checked; a pipeline that does not
+read it from the store upstream has to establish that itself.
+
+**Ordering between competing deliveries is the archive's job**, via its opt-in
+`Archive.ConflictPrecedence` (System.StreamData 1.11.0). Map the ranking columns — a quality code,
+the source document's own date — into the archive through `Columns` and declare them as the
+archive's precedence keys; the stored value is then independent of the order rows arrive in.
+
+**Enum columns store the integer CK key, not the name.** Nodes that go through `CreateUpdateInfo@1`
+get the mapping for free from `RtPathEvaluator.SetValue`; this node skips the RtEntity round trip and
+therefore converts itself, routing through `RtPathEvaluator` on a scratch entity (memoised per
+column+value) rather than re-implementing the name→key rule. Without it every write fails on a
+CrateDB cast.
+
+Honours dry run (`DryRunHonouredLoadNodes.SaveTimeRangeSeriesInArchive`): the recorded intent carries
+the archive, the series and value counts and the anchors that would be written; nothing is persisted.
+
 #### EMailSenderNode
 
 Sends emails with optional Markdown-to-HTML conversion.

@@ -359,7 +359,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
     /// <summary>
     /// Writes every value of every series in a single bulk insert. Ordering between competing writes
     /// for the same window is the archive's business, not this node's — see the archive's
-    /// <c>ConflictVersionColumn</c>.
+    /// <c>ConflictPrecedence</c>.
     /// </summary>
     private async Task WriteArchiveRowsAsync(
         IReadOnlyList<ShapedSeries> series,

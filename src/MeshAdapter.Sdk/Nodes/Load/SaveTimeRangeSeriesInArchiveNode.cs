@@ -120,8 +120,15 @@ internal class SaveTimeRangeSeriesInArchiveNode(
     /// and persists the new and advanced anchors plus their parent associations.
     /// </summary>
     /// <remarks>
-    /// This runs before the archive write on purpose: the archive's orphan guard rejects rows whose
-    /// source entity does not exist, so the anchors have to be committed first.
+    /// This runs before the archive write on purpose, and it is what keeps the archive free of orphan
+    /// rows — rows whose <c>rtid</c> names an entity that does not exist. Every RtId handed to the
+    /// archive below is therefore either one this method READ from the runtime store, or one it wrote
+    /// and confirmed: a failed anchor write throws rather than continuing. That is an invariant of
+    /// this node, not a check performed later — the post-hoc guard in
+    /// <see cref="SaveTimeRangeStreamDataInArchiveNode" /> does not apply here, because this node
+    /// calls <c>InsertTimeRangeAsync</c> directly. Keep the order and keep the failure hard; the
+    /// orphan-row class of bug has happened before and is invisible until somebody joins the archive
+    /// back to the runtime model.
     /// </remarks>
     private async Task ResolveAndPersistAnchorsAsync(
         IReadOnlyList<ShapedSeries> series,
@@ -205,8 +212,9 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         if (operationResult.HasErrors || operationResult.HasFatalErrors)
         {
             await writeSession.AbortTransactionAsync();
-            // Aborting leaves the freshly generated RtIds uncommitted, so the archive write that
-            // follows would produce orphan rows. Fail the node instead.
+            // Aborting leaves the freshly generated RtIds uncommitted, so continuing would write rows
+            // referencing entities that do not exist — and nothing downstream would catch it. Failing
+            // here is what makes the no-orphan invariant hold.
             throw new InvalidOperationException(
                 $"SaveTimeRangeSeriesInArchive: persisting {entityUpdates.Count} anchor entity/entities " +
                 $"failed ({operationResult.GetMessages()}); refusing to write archive rows that would " +

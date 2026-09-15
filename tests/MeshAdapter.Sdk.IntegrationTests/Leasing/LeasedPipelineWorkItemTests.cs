@@ -160,8 +160,13 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
     {
         private readonly ServiceProvider _services;
 
-        private PoolMember(ServiceProvider services, LeasedTenantIsolationTests.RecordingHubClient hubClient, LeasedTenantIsolationTests.FakeIdentityService identity)
+        private readonly TwoTenantLeaseFixture _fixture;
+
+        private PoolMember(TwoTenantLeaseFixture fixture, ServiceProvider services,
+            LeasedTenantIsolationTests.RecordingHubClient hubClient,
+            LeasedTenantIsolationTests.FakeIdentityService identity)
         {
+            _fixture = fixture;
             _services = services;
             HubClient = hubClient;
             Identity = identity;
@@ -230,7 +235,7 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
 
             var provider = services.BuildServiceProvider();
             await Task.CompletedTask;
-            return new PoolMember(provider, hubClient, identity);
+            return new PoolMember(fixture, provider, hubClient, identity);
         }
 
         /// <summary>
@@ -301,6 +306,12 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
                 Pipeline = pipeline,
                 ClientId = $"octo-pipeline-sa-{tenantId}",
                 ClientSecret = BorrowerSecret,
+                // 🔴 AB#4924 — the lease carries the borrower's DATABASE credential too, and a member
+                // refuses a lease without one. Filling it here is not test scaffolding: it is what the
+                // controller does, and a lease built without it is not a lease any controller grants.
+                DatabaseName = TwoTenantLeaseFixture.DatabaseNameOf(tenantId),
+                DatabaseUser = _fixture.DatabaseUserOf(tenantId),
+                DatabasePassword = _fixture.InstallationDatabasePassword,
                 GrantedAtUtc = DateTime.UtcNow,
                 ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15)
             });

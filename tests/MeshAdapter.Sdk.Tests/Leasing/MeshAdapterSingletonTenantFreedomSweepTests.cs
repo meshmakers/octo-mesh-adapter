@@ -50,6 +50,22 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 "AB#4924. Holds the borrower credential only as a method parameter for the length of "
                 + "EnterLeaseAsync, and empties the token holder on leave. "
                 + "BorrowerIdentityLeaseParticipantTests pins both.",
+            ["BorrowerDatabaseLeaseParticipant"] =
+                "AB#4924. Holds the borrower's database credential only as a method parameter for the "
+                + "length of EnterLeaseAsync; what retains it is LeasedDatabaseCredentialSource, "
+                + "cleared below. On leave it drops that credential AND evicts the engine's cached "
+                + "repository clients for the released tenant's database, so no authenticated "
+                + "connection pool survives the release. BorrowerDatabaseLeaseParticipantTests pins "
+                + "both edges. NOTE: neither this type nor the source below is flagged by the sweep - "
+                + "no member of either mentions a tenant - which is exactly why they are named here "
+                + "explicitly rather than left to it.",
+            ["LeasedDatabaseCredentialSource"] =
+                "AB#4924. DOES retain tenant-scoped state, by design: the credential of the tenant "
+                + "currently leased. It is scoped by DATABASE - TryGetCredential answers only for the "
+                + "one database the lease named - and it is null between leases, dropped by "
+                + "BorrowerDatabaseLeaseParticipant on every release path. Process-wide rather than "
+                + "AsyncLocal for the same reason the lease tenant is: the lease arrives on a hub "
+                + "callback and executions run on other async chains.",
             ["CkModelCacheLeaseParticipant"] =
                 "AB#4924. Exists precisely to unload the released tenant's CK model; it holds no "
                 + "state of its own.",
@@ -87,7 +103,15 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 + "leases in the same way the CK cache was before this increment - a sockets/memory "
                 + "question, not a leakage one. Noted in the increment 6 report as the next "
                 + "candidate for a lease participant if a member ever leases stream-data tenants at "
-                + "scale.",
+                + "scale. AB#4924 (database credential) deliberately did NOT give it one: every one "
+                + "of those datasources is built from the SAME installation-wide connection string, "
+                + "because CrateDB has no per-tenant principal at all - tenants are separated by "
+                + "schema, not by credential. Carrying that one credential on the lease would be "
+                + "time-scoped and not tenant-scoped, which is the shape of the Mongo mechanism "
+                + "without its substance. A pool member is given no stream-data password, so a "
+                + "leased pipeline that writes an archive fails to connect rather than reaching "
+                + "another tenant's schema. The prerequisite is a per-tenant CrateDB user - the "
+                + "stream-data sibling of AB#5255.",
             ["CrateDatabaseClient"] =
                 "Derives the schema name from the tenantId ARGUMENT on every call (TenantSchema."
                 + "SchemaName(tenantId)); it holds an instance prefix, never a tenant.",

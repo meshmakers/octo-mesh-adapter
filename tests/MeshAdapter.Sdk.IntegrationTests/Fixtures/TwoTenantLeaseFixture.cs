@@ -2,8 +2,12 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using MongoDB.Bson;
+using MongoDB.Driver;
 
 namespace MeshAdapter.Sdk.IntegrationTests.Fixtures;
 
@@ -47,8 +51,50 @@ public class TwoTenantLeaseFixture : SystemFixture
     /// </summary>
     public const string PoisonCanary = "POISON-CANARY-NEVER-CROSSES-A-TENANT-BOUNDARY";
 
-    /// <summary>Every tenant this fixture creates.</summary>
+    /// <summary>
+    ///     🔴 AB#4924 — <b>the tenant whose datasource password is not the installation's.</b>
+    /// </summary>
+    /// <remarks>
+    ///     Its database user's password is rotated to <see cref="RotatedDatabasePassword" /> after the
+    ///     tenant is created and seeded. A pool member configured with the installation-wide password —
+    ///     which is what every other tenant here opens with, and what a member needs in order to read
+    ///     the tenant registry at all — therefore <b>cannot</b> open this tenant's database. Only the
+    ///     credential the lease carries can.
+    ///     <para>
+    ///         That is what turns "the lease has a database user on it" into "the lease is what opened
+    ///         the database". Without the rotation the member would succeed either way and the test
+    ///         would pass with the whole mechanism removed. It is also a preview of AB#5255, where
+    ///         every database's password is its own.
+    ///     </para>
+    ///     <para>
+    ///         Deliberately NOT a member of <see cref="Tenants" />: the isolation suite leases those
+    ///         with the installation credential, and adding an unopenable one to that list would fail
+    ///         those tests for a reason they are not about.
+    ///     </para>
+    /// </remarks>
+    public const string RotatedTenant = "leasetenantrot";
+
+    /// <summary>The password <see cref="RotatedTenant" />'s datasource user actually has.</summary>
+    public const string RotatedDatabasePassword = "rotated-3fPq9Zx2Kd7Wm1Ln6Tr8Yb0Vc5Hs4Ja";
+
+    /// <summary>Every tenant this fixture creates and leases with the installation credential.</summary>
     public static IReadOnlyList<string> Tenants { get; } = [TenantA, TenantB, TenantC];
+
+    /// <summary>The database name this fixture gives a tenant — the same one the tenant record holds.</summary>
+    public static string DatabaseNameOf(string tenantId) => $"db{tenantId}";
+
+    /// <summary>
+    ///     The datasource user of a tenant's database, formatted the way the engine formats it when it
+    ///     creates the user. This is the CONTROLLER's job in production; the fixture stands in for it.
+    /// </summary>
+    public string DatabaseUserOf(string tenantId) =>
+        string.Format(SystemConfiguration.DatabaseUser, DatabaseNameOf(tenantId));
+
+    /// <summary>The installation-wide datasource password — what every tenant but the rotated one has.</summary>
+    public string InstallationDatabasePassword => SystemConfiguration.DatabaseUserPassword!;
+
+    private OctoSystemConfiguration SystemConfiguration =>
+        GetService<IOptions<OctoSystemConfiguration>>().Value;
 
     /// <summary>The marker only tenant <paramref name="tenantId" />'s database holds.</summary>
     public static string MarkerOf(string tenantId) => $"MARKER-OF-{tenantId.ToUpperInvariant()}";
@@ -95,12 +141,80 @@ public class TwoTenantLeaseFixture : SystemFixture
             await SeedMarkerAsync(systemContext, ckCacheService, tenantId);
         }
 
+        await CreateRotatedCredentialTenantAsync(systemContext, ckCacheService);
+
         // 🔴 Leave the caches cold. A fixture that left every tenant's model loaded would hide
         // exactly the state the post-release assertions are about.
-        foreach (var tenantId in Tenants.Where(ckCacheService.IsTenantLoaded))
+        foreach (var tenantId in Tenants.Append(RotatedTenant).Where(ckCacheService.IsTenantLoaded))
         {
             ckCacheService.Unload(tenantId);
         }
+    }
+
+    /// <summary>
+    ///     Creates <see cref="RotatedTenant" /> like any other, seeds it, and then changes its
+    ///     datasource user's password so that the installation-wide one no longer opens it.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 The order matters: seed first, rotate second. The seeding runs on the fixture's own
+    ///     provider, which authenticates with the installation password — after the rotation it could
+    ///     not write a thing.
+    /// </remarks>
+    private async Task CreateRotatedCredentialTenantAsync(ISystemContext systemContext,
+        ICkCacheService ckCacheService)
+    {
+        using (var adminSession = await systemContext.GetAdminSessionAsync())
+        {
+            if (await systemContext.IsChildTenantExistingAsync(adminSession, RotatedTenant))
+            {
+                await systemContext.DropChildTenantAsync(adminSession, RotatedTenant);
+            }
+
+            await systemContext.CreateChildTenantAsync(adminSession, DatabaseNameOf(RotatedTenant),
+                RotatedTenant);
+        }
+
+        var operationResult = new OperationResult();
+        var tenantContext = await systemContext.FindTenantContextAsync(RotatedTenant);
+        await tenantContext.ImportCkModelAsync(new CkModelId("MeshAdapterIntegrationTest"), operationResult);
+        if (operationResult.HasErrors || operationResult.HasFatalErrors)
+        {
+            throw new InvalidOperationException(
+                $"Failed to import the test CK model into tenant '{RotatedTenant}': " +
+                string.Join(", ", operationResult.Messages.Select(m => m.MessageText)));
+        }
+
+        await SeedMarkerAsync(systemContext, ckCacheService, RotatedTenant);
+
+        await RotateDatasourcePasswordAsync(DatabaseUserOf(RotatedTenant), RotatedDatabasePassword);
+    }
+
+    /// <summary>
+    ///     Changes one database user's password, as the MongoDB root user.
+    /// </summary>
+    /// <remarks>
+    ///     Straight to the driver rather than through the engine: the engine creates users and drops
+    ///     them, it has no notion of rotating one, because in this installation there is nothing to
+    ///     rotate — one password stands behind every user. That is the state AB#5255 changes, and this
+    ///     is the fixture standing in for it.
+    /// </remarks>
+    private async Task RotateDatasourcePasswordAsync(string user, string password)
+    {
+        var configuration = SystemConfiguration;
+        var urlBuilder = new MongoUrlBuilder
+        {
+            Server = MongoServerAddress.Parse(configuration.DatabaseHost),
+            Username = configuration.AdminUser,
+            Password = configuration.AdminUserPassword,
+            AuthenticationSource = configuration.AuthenticationDatabaseName,
+            DatabaseName = configuration.AuthenticationDatabaseName,
+            DirectConnection = configuration.UseDirectConnection
+        };
+
+        var client = new MongoClient(MongoClientSettings.FromUrl(urlBuilder.ToMongoUrl()));
+        await client.GetDatabase(configuration.AuthenticationDatabaseName)
+            .RunCommandAsync<BsonDocument>(new BsonDocumentCommand<BsonDocument>(
+                new BsonDocument { { "updateUser", user }, { "pwd", password } }));
     }
 
     private static async Task SeedMarkerAsync(ISystemContext systemContext, ICkCacheService ckCacheService,

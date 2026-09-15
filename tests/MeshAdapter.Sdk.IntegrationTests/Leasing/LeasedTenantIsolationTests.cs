@@ -12,6 +12,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
+// ReSharper disable once RedundantUsingDirective
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -180,6 +181,139 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
         leaseScope.HasTenant.Should().BeFalse();
         registry.GetRegisteredPipelines(TwoTenantLeaseFixture.TenantA).Should().BeEmpty(
             "a registration carries the borrower's GlobalConfiguration, credentials included");
+
+        // 🔴 AB#4924 — and the database credential, which is the item that made the operator's
+        // "tenant-scoped data access arrives with the lease and leaves with it" true in the first
+        // place. Asked for by database name, exactly as the runtime engine asks for it.
+        var databaseCredentials = member.Services.GetRequiredService<ITenantDatabaseCredentialSource>();
+        databaseCredentials.TryGetCredential(
+                TwoTenantLeaseFixture.DatabaseNameOf(TwoTenantLeaseFixture.TenantA),
+                out var _unusedUser, out var _unusedPassword)
+            .Should().BeFalse(
+                "a member that still held the released tenant's database credential could open its "
+                + "data while serving another tenant");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 6 — AB#4924: the database credential the lease carries is what opens the borrower's data.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    ///     🔴 <b>The whole point, proved against a real MongoDB.</b> This tenant's datasource user has a
+    ///     password of its own — not the installation-wide one the member is configured with, and which
+    ///     it needs in order to read the tenant registry at all. So the only way this execution can see
+    ///     the tenant's marker is if the credential the <b>lease</b> carried is what opened the
+    ///     database.
+    /// </summary>
+    /// <remarks>
+    ///     Before AB#4924 the lease carried an OAuth credential and nothing else. A mesh-adapter pool
+    ///     member opens MongoDB directly, and the operator deliberately withholds the cluster's shared
+    ///     data-store credentials from a pool — so in a real cluster the member could execute no
+    ///     pipeline that touched an RT entity. The one end-to-end run that appeared to work did so only
+    ///     because the process had been started by hand and had inherited a developer's Mongo
+    ///     credentials from its environment. The rotated password here is what removes that possibility
+    ///     from this test, and it is a preview of AB#5255.
+    /// </remarks>
+    [Fact]
+    public async Task TheDatabaseCredentialOnTheLeaseIsWhatOpensTheBorrowersDatabase()
+    {
+        fixture.EnsureInitialized();
+        await using var member = await PoolMember.CreateAsync(fixture);
+
+        var output = await member.LeaseAndRunAsync(TwoTenantLeaseFixture.RotatedTenant,
+            TwoTenantLeaseFixture.RotatedDatabasePassword);
+
+        output.Should().Contain(TwoTenantLeaseFixture.MarkerOf(TwoTenantLeaseFixture.RotatedTenant),
+            "the execution can only have read this tenant's data with the credential the lease carried");
+    }
+
+    /// <summary>
+    ///     🔴 The falsification of the test above. The same tenant, the same member, the same everything
+    ///     — except the lease carries the credential the <b>process</b> holds instead of the one the
+    ///     controller resolved for this borrower. It must fail, and it must read nothing.
+    /// </summary>
+    /// <remarks>
+    ///     Without this half, the positive test would still pass on a member that ignored the lease and
+    ///     used its own configuration, on any installation where those two happen to coincide — which
+    ///     is every installation today (AB#5255).
+    /// </remarks>
+    [Fact]
+    public async Task ALeaseCarryingSomeoneElsesDatabaseCredentialReadsNothing()
+    {
+        fixture.EnsureInitialized();
+        await using var member = await PoolMember.CreateAsync(fixture);
+
+        var release = await member.TryLeaseAndRunAsync(TwoTenantLeaseFixture.RotatedTenant,
+            fixture.InstallationDatabasePassword);
+
+        using var _ = new AssertionScope();
+        release.Success.Should().BeFalse(
+            "the installation-wide password does not open this tenant's database, and a member that "
+            + "read it anyway would be reading it with a credential the lease never granted");
+        (member.WorkItem.LastOutput ?? string.Empty)
+            .Should().NotContain(TwoTenantLeaseFixture.MarkerOf(TwoTenantLeaseFixture.RotatedTenant));
+    }
+
+    /// <summary>
+    ///     🔴 <b>A lease with no database credential at all is refused by the member.</b> Two gates, one
+    ///     on each side of the wire: the controller refuses to grant one, and the member refuses to take
+    ///     one. A member that shrugged and carried on would run the borrower's work on whatever
+    ///     credentials its own process happens to hold — and would look perfectly healthy doing it,
+    ///     which is how this defect survived an end-to-end run.
+    /// </summary>
+    [Fact]
+    public async Task ALeaseWithNoDatabaseCredentialIsRefusedByTheMember()
+    {
+        fixture.EnsureInitialized();
+        await using var member = await PoolMember.CreateAsync(fixture);
+
+        var release = await member.TryLeaseAndRunAsync(TwoTenantLeaseFixture.TenantA,
+            omitDatabaseCredential: true);
+
+        using var _ = new AssertionScope();
+        release.Success.Should().BeFalse();
+        member.WorkItem.LastOutput.Should().BeNull("the work item must never have run");
+        // Tenant A's data is readable with the installation credential this member holds — which is
+        // exactly why the refusal has to be the member's decision and not a side effect of failing.
+        (member.Services.GetRequiredService<ITenantDatabaseCredentialSource>())
+            .TryGetCredential(TwoTenantLeaseFixture.DatabaseNameOf(TwoTenantLeaseFixture.TenantA),
+                out var _unusedUser, out var _unusedPassword)
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    ///     🔴 Held during the lease, for the borrower's database and for no other — the same assertion
+    ///     as the unit suite's, made here on the composition a real member actually runs, where the
+    ///     holder is reached through the interface the <b>runtime engine</b> resolves rather than
+    ///     through the concrete type a test could have constructed itself.
+    /// </summary>
+    [Fact]
+    public async Task DuringALeaseTheCredentialIsHeldForTheBorrowersDatabaseOnly()
+    {
+        fixture.EnsureInitialized();
+        await using var member = await PoolMember.CreateAsync(fixture);
+
+        var observed = new List<(bool Own, bool Other)>();
+        member.WorkItem.OnRun = services =>
+        {
+            var source = services.GetRequiredService<ITenantDatabaseCredentialSource>();
+            observed.Add((
+                source.TryGetCredential(
+                    TwoTenantLeaseFixture.DatabaseNameOf(TwoTenantLeaseFixture.TenantB),
+                    out var _unusedUser, out var _unusedPassword),
+                source.TryGetCredential(
+                    TwoTenantLeaseFixture.DatabaseNameOf(TwoTenantLeaseFixture.TenantA),
+                    out var _unusedUser2, out var _unusedPassword2)));
+        };
+
+        await member.LeaseAndRunAsync(TwoTenantLeaseFixture.TenantA);
+        await member.LeaseAndRunAsync(TwoTenantLeaseFixture.TenantB);
+
+        using var _ = new AssertionScope();
+        observed.Should().HaveCount(2);
+        // During A's lease: A yes, B no. During B's lease: B yes, A no.
+        observed[0].Should().Be((false, true));
+        observed[1].Should().Be((true, false));
     }
 
     /// <summary>
@@ -283,9 +417,12 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
     {
         private readonly ServiceProvider _services;
 
-        private PoolMember(ServiceProvider services, RecordingHubClient hubClient,
-            FakeIdentityService identity, MarkerReadingWorkItem workItem)
+        private readonly TwoTenantLeaseFixture _fixture;
+
+        private PoolMember(TwoTenantLeaseFixture fixture, ServiceProvider services,
+            RecordingHubClient hubClient, FakeIdentityService identity, MarkerReadingWorkItem workItem)
         {
+            _fixture = fixture;
             _services = services;
             HubClient = hubClient;
             Identity = identity;
@@ -360,17 +497,39 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
             var provider = services.BuildServiceProvider();
             workItem.Bind(provider);
 
-            return Task.FromResult(new PoolMember(provider, hubClient, identity, workItem));
+            return Task.FromResult(new PoolMember(fixture, provider, hubClient, identity, workItem));
         }
 
         /// <summary>
         ///     Grants one lease for <paramref name="tenantId" />, lets the member run it, and returns
         ///     the pipeline output.
         /// </summary>
-        public async Task<string> LeaseAndRunAsync(string tenantId)
+        /// <remarks>
+        ///     🔴 AB#4924 — the lease carries the borrower's <b>database</b> credential, because in
+        ///     production the controller puts it there and the member refuses a lease without one. The
+        ///     default is what the controller would resolve for this tenant; the overrides are how the
+        ///     credential tests say "a different one" and "none".
+        /// </remarks>
+        public async Task<string> LeaseAndRunAsync(string tenantId, string? databasePassword = null)
+        {
+            var release = await TryLeaseAndRunAsync(tenantId, databasePassword);
+
+            release.Success.Should().BeTrue(
+                $"the lease of tenant '{tenantId}' must have completed: {release.StatusMessage}");
+
+            return WorkItem.LastOutput ?? string.Empty;
+        }
+
+        /// <summary>
+        ///     The same lease, without demanding that it succeeded — what a test needs when the point
+        ///     is that it must <b>not</b>.
+        /// </summary>
+        public async Task<LeaseResultDto> TryLeaseAndRunAsync(string tenantId, string? databasePassword = null,
+            bool omitDatabaseCredential = false)
         {
             var client = _services.GetRequiredService<AdapterPoolClient>();
             Identity.NextTenantId = tenantId;
+            WorkItem.LastOutput = null;
 
             await client.LeaseAsync(new LeaseDto
             {
@@ -382,15 +541,18 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
                 AdapterCkTypeId = "System.Communication/Adapter",
                 ClientId = $"octo-pipeline-sa-{tenantId}",
                 ClientSecret = BorrowerSecret,
+                DatabaseName = omitDatabaseCredential
+                    ? string.Empty
+                    : TwoTenantLeaseFixture.DatabaseNameOf(tenantId),
+                DatabaseUser = omitDatabaseCredential ? string.Empty : _fixture.DatabaseUserOf(tenantId),
+                DatabasePassword = omitDatabaseCredential
+                    ? string.Empty
+                    : databasePassword ?? _fixture.InstallationDatabasePassword,
                 GrantedAtUtc = DateTime.UtcNow,
                 ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15)
             });
 
-            var release = HubClient.Releases[^1];
-            release.Success.Should().BeTrue(
-                $"the lease of tenant '{tenantId}' must have completed: {release.StatusMessage}");
-
-            return WorkItem.LastOutput ?? string.Empty;
+            return HubClient.Releases[^1];
         }
 
         public async ValueTask DisposeAsync()
@@ -413,10 +575,17 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
     {
         private IServiceProvider? _services;
 
-        public string? LastOutput { get; private set; }
+        public string? LastOutput { get; set; }
 
         /// <summary>The <c>tenant_id</c> of the token the process held while the work item ran.</summary>
         public string? TokenTenantDuringRun { get; private set; }
+
+        /// <summary>
+        ///     Observed from <b>inside</b> the lease, which is the only place some of these properties
+        ///     exist at all. AB#4924: what the member holds during a lease cannot be read after it,
+        ///     because the whole point is that it is gone by then.
+        /// </summary>
+        public Action<IServiceProvider>? OnRun { get; set; }
 
         public void Bind(IServiceProvider services) => _services = services;
 
@@ -430,6 +599,8 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
                     out var claims)
                     ? claims.TenantId
                     : null;
+
+            OnRun?.Invoke(services);
 
             var systemContext = services.GetRequiredService<ISystemContext>();
             var tenantRepository = await systemContext.FindTenantRepositoryAsync(tenantId);

@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
@@ -42,6 +43,18 @@ public static class MeshAdapterPoolServiceCollectionExtensions
     ///         registry last, because it is the one that holds the borrower's credentials once a
     ///         pipeline is deployed and therefore has to be the <i>first</i> thing dropped.
     ///     </para>
+    ///     <para>
+    ///         🔴 <b>The database credential goes second — between identity and the CK cache — and the
+    ///         position is forced from both sides.</b> It has to come <i>after</i> identity because
+    ///         identity is the gate: a member that cannot become the borrower must not be holding a
+    ///         live credential to that tenant's data while it finds out. It has to come <i>before</i>
+    ///         the CK cache because the CK cache warm-up is the first thing that opens the borrower's
+    ///         database, and it cannot open it without the credential — reversed, every lease fails on
+    ///         its first Mongo command. The leave order follows: the credential and the cached
+    ///         connections are dropped after the registrations and the model are gone and before the
+    ///         token is cleared, which is the last moment anything could still legitimately need the
+    ///         borrower's database.
+    ///     </para>
     /// </remarks>
     public static IServiceCollection AddOctoMeshAdapterPoolMember(this IServiceCollection services)
     {
@@ -55,7 +68,17 @@ public static class MeshAdapterPoolServiceCollectionExtensions
 
         services.AddAdapterPoolMember();
 
+        // 🔴 AB#4924 — the one object that holds the borrowing tenant's database credential, and the
+        // seam the runtime engine reads it through. Registered under BOTH its own type and
+        // ITenantDatabaseCredentialSource, and deliberately as the SAME instance: the participant
+        // writes to it and the engine's UserMongoRepositoryClient reads from it, and two instances
+        // would give a member that looks configured and authenticates with nothing.
+        services.AddSingleton<LeasedDatabaseCredentialSource>();
+        services.AddSingleton<ITenantDatabaseCredentialSource>(sp =>
+            sp.GetRequiredService<LeasedDatabaseCredentialSource>());
+
         services.AddSingleton<IAdapterLeaseParticipant, BorrowerIdentityLeaseParticipant>();
+        services.AddSingleton<IAdapterLeaseParticipant, BorrowerDatabaseLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, CkModelCacheLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, PipelineRegistryLeaseParticipant>();
 

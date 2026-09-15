@@ -118,8 +118,16 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     /// The archive columns and where each one's value comes from. Required and non-empty: a series
     /// write with no columns would store nothing but window boundaries.
     /// </summary>
+    /// <remarks>
+    /// A concrete <see cref="List{T}" /> on purpose. Pipeline definitions are deserialized by
+    /// YamlDotNet, which has no node deserializer for <c>IReadOnlyList&lt;T&gt;</c> — a config
+    /// declaring one compiles, unit-tests fine (C# constructs it directly) and then fails at
+    /// registration with "No node deserializer was able to deserialize the node into type
+    /// IReadOnlyList`1[...]". Every other node config in this assembly uses
+    /// <c>ICollection&lt;T&gt;</c> or <c>List&lt;T&gt;</c>.
+    /// </remarks>
     [PropertyGroup("Columns", 0)]
-    public required IReadOnlyList<TimeRangeSeriesColumn> Columns { get; init; }
+    public required List<TimeRangeSeriesColumn> Columns { get; init; }
 
     /// <summary>
     /// Attribute path on the anchor entity that receives the winning value's window start (e.g.

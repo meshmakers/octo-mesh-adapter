@@ -63,6 +63,17 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// marker), so the count survives adapter restarts — including runs that kill
     /// the process (e.g. an OOM) and therefore never report a failure.
     /// </summary>
+    /// <remarks>
+    /// Set this wherever the import matters: it is not only where poison mails are
+    /// parked, it is also the <b>only user-facing way back</b>. A parked message is
+    /// marked <c>OctoMesh-Import-Failed</c>, and moving it back into
+    /// <see cref="FolderPath"/> clears every import marker and imports it again with a
+    /// full attempt budget — no Graph access, no category editing, no adapter restart
+    /// (AB#5260). Without a failure folder there is nowhere to move a message back
+    /// <i>from</i>, and an exhausted message sits in the source folder unnoticed.
+    /// A path that cannot be resolved degrades to "skip exhausted messages" and is
+    /// logged; it never stops the import as a whole.
+    /// </remarks>
     [PropertyGroup("Connection", 4)]
     public string? MoveToFolderPathOnFailure { get; set; }
 
@@ -129,6 +140,15 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// each run, so it survives adapter restarts and counts runs that never
     /// returned (process death).
     /// </summary>
+    /// <remarks>
+    /// The markers (<c>OctoMesh-Import-Attempt-N</c> and <c>OctoMesh-Import-Failed</c>)
+    /// are registered in the mailbox's master category list on first use so Outlook and
+    /// OWA actually render them — a category the mailbox does not know is invisible in
+    /// the UI. That registration needs the <c>MailboxSettings.ReadWrite</c> Graph scope;
+    /// without it the markers still count, they are merely invisible, and the node logs
+    /// one warning. Removing a marker by hand resets the message on the next poll
+    /// (AB#5260).
+    /// </remarks>
     [PropertyGroup("Query", 2)]
     public int MaxAttemptsPerMessage { get; set; } = 3;
 

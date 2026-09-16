@@ -72,14 +72,49 @@
 {{ include "octo-mesh.streamdata-env" (dict "global" . "name" $name) }}
 - name: OCTO_ADAPTER__INSTANCEPREFIX
   value: {{ .Values.instancePrefix | quote }}
-- name: OCTO_ADAPTER__TENANTID
+{{/*
+  AB#4924 — a pool member is a different kind of process, and the difference is
+  visible right here.
+
+  `IsEnabled` on AdapterPoolMemberOptions requires BOTH ids, so both are the
+  condition; half a configuration must render as "not a pool member" rather than
+  as a broken one. A member then gets neither a dedicated tenant nor an adapter
+  RtId: it belongs to no tenant until a lease arrives, and it registers through
+  the pool hub rather than as an adapter entity. The SDK clears
+  AdapterOptions.DedicatedTenantId on a configured member regardless
+  (ConfigurePoolMemberAdapterTenantId), because three call sites justify their
+  safety with that value being null — but a chart that still rendered a tenant
+  would make `kubectl describe pod` say the opposite of what the process does.
+
+  No MEMBERID: AdapterPoolMemberOptions.EffectiveMemberId falls back to the
+  machine name, which is the pod name here. A configured value would give every
+  replica of the deployment the same member id, and the controller's registry
+  keys members by it.
+*/}}
+{{- $isPoolMember := and .Values.adapterPool .Values.adapterPool.poolTenantId .Values.adapterPool.poolRtId }}
+{{- if $isPoolMember }}
+- name: OCTO_ADAPTERPOOL__POOLTENANTID
+  value: {{ .Values.adapterPool.poolTenantId | quote }}
+- name: OCTO_ADAPTERPOOL__POOLRTID
+  value: {{ .Values.adapterPool.poolRtId | quote }}
+{{- else }}
+{{/*
+  AB#4924 increment 3 renamed this: the property behind OCTO_ADAPTER__TENANTID was
+  DELETED, and the key only still works because ConfigureLegacyAdapterTenantId binds
+  it for one deprecation release — at the price of a warning in this adapter's log on
+  every start, naming this chart as the thing to fix. DEDICATEDTENANTID is the name
+  that says what it is: the single tenant a dedicated adapter is pinned to, used for
+  its hub route and its own credential and for nothing on the execution path.
+*/}}
+- name: OCTO_ADAPTER__DEDICATEDTENANTID
   value: {{ .Values.tenantId | quote }}
+- name: OCTO_ADAPTER__ADAPTERRTID
+  value: {{ .Values.adapterRtId | quote }}
+{{- end }}
 - name: OCTO_ADAPTER__COMMUNICATIONCONTROLLERSERVICESURI
   value: {{ .Values.communicationControllerServiceUri | quote }}
 - name: OCTO_ADAPTER__ADAPTERCKTYPEID
   value: "System.Communication/Adapter"
-- name: OCTO_ADAPTER__ADAPTERRTID
-  value: {{ .Values.adapterRtId | quote }}
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL
   value: {{ .Values.reportingServiceUri | quote }}
 {{- if .Values.authUri }}

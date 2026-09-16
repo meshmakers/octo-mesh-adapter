@@ -9,11 +9,38 @@ replicaCount: 1
 # default of 30s would SIGKILL mid-drain (AB#4917, on-demand lifecycle).
 terminationGracePeriodSeconds: 180
 
-# Tenant id the adapter is executing
+# Tenant id the adapter is executing.
+# 🔴 Leave EMPTY on an adapter pool member (see `adapterPool` below): a member
+# has no tenant of its own, it is handed one per lease. The SDK clears the
+# property on a configured member anyway (ConfigurePoolMemberAdapterTenantId),
+# but a value here would still be misleading in `kubectl describe pod`.
 tenantId: ""
 
-# Runtime id of adapter in database
+# Runtime id of adapter in database. Empty on a pool member, which is not an
+# adapter entity and registers through the pool hub instead.
 adapterRtId: ""
+
+# Adapter pool membership (AB#4924). Set BOTH values to turn this deployment
+# into a pool member: a process that belongs to no tenant and is leased one work
+# item at a time. Written by the communication controller as ValueOverrides when
+# it deploys an `AdapterPool` workload (PoolService.AppendAdapterPoolMemberOverrides).
+#
+# 🔴 Both or neither. AdapterPoolMemberOptions.IsEnabled requires both ids — a
+# member that knew its pool but not its tenant could not be authorized, one that
+# knew its tenant but not its pool could not be routed a lease — and half a
+# configuration produces a pod that starts, logs "started without a configured
+# pool … Doing nothing" and looks healthy for ever.
+#
+# There is deliberately NO memberId: it defaults to the machine name, which in
+# Kubernetes is the pod name, so every replica identifies itself correctly
+# without configuration and stays correct when one is rescheduled.
+adapterPool:
+  # The LENDING tenant — the one that owns the pool. This is the member's own
+  # connection tenant (its management token carries it), never the tenant of the
+  # work it executes.
+  poolTenantId: ""
+  # RtId of the AdapterPool entity in the lending tenant.
+  poolRtId: ""
   
 # The communication controller service uri
 communicationControllerServiceUri: ""

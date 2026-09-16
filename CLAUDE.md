@@ -453,8 +453,35 @@ no registration behind), the rendered-log assertion and the identity assertion. 
 resolves the tenant from `IAdapterTenantScope`, **never** from the lease it was handed — otherwise
 every assertion would be a tautology about passing the right argument.
 
-⚠️ The chart still sets the deprecated `OCTO_ADAPTER__TENANTID`. It is bound for one release with a
-warning; move it to `OCTO_ADAPTER__DEDICATEDTENANTID` before the shim is removed.
+✅ **The chart no longer sets the deprecated `OCTO_ADAPTER__TENANTID`** — it renders
+`OCTO_ADAPTER__DEDICATEDTENANTID`, so this adapter stops paying for the shim and stops printing the
+deprecation warning on every start. The other seven SDK-based adapter charts (Loxone, plug-simulation,
+weclapp, modbus-plug, modbus-socket, finapi, eda) still carry the old key and have to follow before
+`ConfigureLegacyAdapterTenantId` is removed.
+
+### The chart can deploy a pool member (AB#4924 §9.4)
+
+`adapterPool.poolTenantId` + `adapterPool.poolRtId` turn the deployment into a pool member: the two
+render as `OCTO_ADAPTERPOOL__POOLTENANTID` / `__POOLRTID`, and the member then gets **neither**
+`OCTO_ADAPTER__DEDICATEDTENANTID` **nor** `OCTO_ADAPTER__ADAPTERRTID`. Before this, neither value had
+any route into the container, so an `AdapterPool` workload deployed a pod that started, found
+`AdapterPoolMemberOptions.IsEnabled` false, logged *"started without a configured pool … Doing
+nothing"* and looked perfectly healthy for ever.
+
+🔴 **Both ids or neither.** `IsEnabled` requires both, so half a configuration renders as a *dedicated*
+adapter rather than as a broken member — a typo in one variable must not produce the silent pod above.
+
+🔴 **No `memberId` value, deliberately.** `EffectiveMemberId` falls back to the machine name, which is
+the pod name in Kubernetes. A configured value would give every replica of the deployment the same
+member id, and the controller's registry keys members by it.
+
+The controller writes both paths as `ValueOverride`s when it deploys an `RtAdapterPool`
+(`PoolService.AppendAdapterPoolMemberOverrides`).
+
+⚠️ **Still missing for a pod to actually work**: the member has no MongoDB credential in a cluster,
+not even for the registry `OctoSystem` it reads on *every* lease — the chart's only source for
+`OCTO_SYSTEM__DATABASEUSERPASSWORD` / `__ADMINUSERPASSWORD` is the cluster-secret tier that
+`WorkloadReconciler.AppendClusterSecrets` correctly withholds from an `AdapterPool`. See AB#4924.
 
 ## Helm chart publishing (AB#4948)
 

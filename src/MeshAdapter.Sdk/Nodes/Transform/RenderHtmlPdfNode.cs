@@ -58,6 +58,11 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     // exactly on a band boundary is still complete in one of the two bands. AB#5259.
     private const float TileOverlapRatio = 0.02f;
 
+    // Upper bound for a page of an image-only document, whose page size follows the image
+    // instead of A4. 14400pt (200 inch) is the PDF format's own maximum page edge — beyond
+    // it the file would be invalid, so such an image falls back to the A4 render. AB#5259.
+    private const float MaxImagePagePt = 14400f;
+
     static RenderHtmlPdfNode()
     {
         // meshmakers GmbH qualifies for the free QuestPDF Community license.
@@ -72,6 +77,12 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
     private static readonly HashSet<string> SkippedTags =
         ["script", "style", "head", "title", "noscript", "meta", "link"];
+
+    // Elements that carry no visible content of their own. Only relevant for the
+    // image-only detection below: the Stage Document wrapper nests its <img> directly in
+    // <body>, but a bare wrapper around it must not change the verdict. AB#5259.
+    private static readonly HashSet<string> TransparentWrapperTags =
+        ["div", "span", "p", "figure", "center"];
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
@@ -110,49 +121,19 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         var title = ResolveTitle(dataContext, config);
         var isHtml = ResolveIsHtml(dataContext, config, content);
 
-        byte[] bytes;
+        byte[]? bytes;
         try
         {
-            bytes = Document.Create(container =>
-                {
-                    container.Page(page =>
-                    {
-                        page.Size(PageSizes.A4);
-                        page.Margin(2, Unit.Centimetre);
-                        page.DefaultTextStyle(x => x.FontSize(10).FontColor(Colors.Grey.Darken4));
+            // AB#5259: a document that is nothing but ONE inline image gets pages sized to
+            // the image instead of the A4 page layout — see TryRenderImageDocument. The
+            // title gate is part of the structural test: a caller that asks for a header
+            // (the mail-body render always passes the subject) wants the A4 document, and
+            // an image-sized page has nowhere to put a header anyway.
+            bytes = isHtml && string.IsNullOrEmpty(title) && TryGetSingleImageBody(content, out var imageBytes)
+                ? TryRenderImageDocument(imageBytes)
+                : null;
 
-                        if (!string.IsNullOrEmpty(title))
-                        {
-                            page.Header().Column(header =>
-                            {
-                                header.Item().Text(StripInvisible(title)).FontSize(15).Bold();
-                                header.Item().PaddingTop(6).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
-                            });
-                        }
-
-                        page.Content().PaddingVertical(8).Column(content2 =>
-                        {
-                            content2.Spacing(6);
-
-                            if (isHtml)
-                            {
-                                RenderHtml(content, content2);
-                            }
-                            else
-                            {
-                                content2.Item().Text(StripInvisible(content));
-                            }
-                        });
-
-                        page.Footer().AlignRight().Text(text =>
-                        {
-                            text.CurrentPageNumber();
-                            text.Span(" / ");
-                            text.TotalPages();
-                        });
-                    });
-                })
-                .GeneratePdf();
+            bytes ??= RenderPagedDocument(content, title, isHtml);
         }
         catch (Exception ex)
         {
@@ -171,6 +152,254 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// The general document: A4 with 2cm margins, the optional title as a page header, the
+    /// parsed HTML (or plain text) as the content and a page-number footer. This is what a
+    /// forwarded e-mail body becomes, and it must stay exactly that — the image-sized
+    /// treatment below is deliberately a SEPARATE composition rather than a conditional
+    /// page setup here. AB#5259.
+    /// </summary>
+    private static byte[] RenderPagedDocument(string content, string? title, bool isHtml)
+    {
+        return Document.Create(container =>
+            {
+                container.Page(page =>
+                {
+                    page.Size(PageSizes.A4);
+                    page.Margin(2, Unit.Centimetre);
+                    page.DefaultTextStyle(x => x.FontSize(10).FontColor(Colors.Grey.Darken4));
+
+                    if (!string.IsNullOrEmpty(title))
+                    {
+                        page.Header().Column(header =>
+                        {
+                            header.Item().Text(StripInvisible(title)).FontSize(15).Bold();
+                            header.Item().PaddingTop(6).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
+                        });
+                    }
+
+                    page.Content().PaddingVertical(8).Column(content2 =>
+                    {
+                        content2.Spacing(6);
+
+                        if (isHtml)
+                        {
+                            RenderHtml(content, content2);
+                        }
+                        else
+                        {
+                            content2.Item().Text(StripInvisible(content));
+                        }
+                    });
+
+                    page.Footer().AlignRight().Text(text =>
+                    {
+                        text.CurrentPageNumber();
+                        text.Span(" / ");
+                        text.TotalPages();
+                    });
+                });
+            })
+            .GeneratePdf();
+    }
+
+    /// <summary>
+    /// Renders a document whose whole body is ONE image as the image itself: one page per
+    /// band, every page sized exactly to its band, with no margins, header or footer.
+    /// <para>
+    /// AB#5259 (second attempt, after <c>r3.4.120</c> shipped the tiling alone). Tiling a
+    /// too-tall receipt across pages was correct but not sufficient: the bands were still
+    /// drawn at <see cref="ContentWidthPt"/> on A4, which places a 542px-wide band on the
+    /// page at ~81ppi. Every OCR rasterisation then has to upscale it 2.5-4x and the
+    /// interpolation smears the thin thermal-print strokes past recognition. Measured on
+    /// the production PDF: the embedded band extracted at its native 542x644px OCRs
+    /// perfectly, the A4 page built around it OCRs to NOTHING at 81, 150, 300 and 400 dpi
+    /// alike, and cropping the white margins does not help. Sizing the page to the band
+    /// keeps 1 image pixel = 1/96 inch, so the rasteriser never has to invent pixels —
+    /// with that, tesseract reads the receipt totals back out of the rendered PDF.
+    /// </para>
+    /// Returns <c>null</c> whenever the image cannot be laid out this way, so the caller
+    /// falls back to the A4 render (which skips an unusable image silently).
+    /// </summary>
+    private static byte[]? TryRenderImageDocument(byte[] imageBytes)
+    {
+        if (!TryGetImageDimensions(imageBytes, out var pixelWidth, out var pixelHeight))
+        {
+            // Unknown header format — the A4 path's constrained FitArea render stays in charge.
+            return null;
+        }
+
+        // The tiling CRITERION is unchanged from the inline path on purpose: exactly the
+        // same extreme-aspect images are sliced as before, only the page they land on
+        // changes. ContentWidthPt/ContentHeightPt no longer describe the layout box here,
+        // they only answer "would this image have had to be shrunk below legibility?".
+        var fittedWidthPt = Math.Min(PointsFor(pixelWidth), ContentWidthPt);
+        var fittedHeightPt = fittedWidthPt * pixelHeight / pixelWidth;
+        var shrunkWidthPt = ContentHeightPt * pixelWidth / (float)pixelHeight;
+
+        List<ImageBand> bands;
+        if (fittedHeightPt > ContentHeightPt && shrunkWidthPt < MinShrunkImageWidthPt
+                                             && TrySliceIntoBands(imageBytes, pixelWidth, pixelHeight, out var sliced))
+        {
+            bands = sliced;
+        }
+        else if (TryGetDecodedSize(imageBytes, pixelWidth, pixelHeight, out var width, out var height))
+        {
+            // Not extreme enough to slice (or slicing refused by one of its guards): the
+            // whole image becomes one page at its natural size.
+            bands = [new ImageBand(imageBytes, width, height)];
+        }
+        else
+        {
+            // Not decodable within the budget — the page size would be a guess, so leave it
+            // to the A4 render, which fits the image into the content box without one.
+            return null;
+        }
+
+        if (bands.Any(band => PointsFor(band.PixelWidth) > MaxImagePagePt
+                              || PointsFor(band.PixelHeight) > MaxImagePagePt))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Document.Create(container =>
+                {
+                    foreach (var band in bands)
+                    {
+                        container.Page(page =>
+                        {
+                            page.Size(PointsFor(band.PixelWidth), PointsFor(band.PixelHeight), Unit.Point);
+                            page.Margin(0);
+
+                            // QuestPDF re-encodes the band at its own compression quality.
+                            // It does NOT resample it — a band drawn at its natural size is
+                            // 96dpi, far below QuestPDF's 288dpi raster target — so the
+                            // pixel grid this fix is about survives. Measured on the prod-1
+                            // receipt: re-encoded 191KB and OCR reads "BelegNr: 289943" /
+                            // "Brutto 426.00", UseOriginalImage() 2.1MB for the same reading.
+                            // Not worth 11x the stored receipt. AB#5259.
+                            page.Content().Image(band.Bytes).FitArea();
+                        });
+                    }
+                })
+                .GeneratePdf();
+        }
+        catch
+        {
+            // A valid header over an undecodable body only fails here, at layout time —
+            // fall back to the A4 render rather than failing the whole receipt.
+            return null;
+        }
+    }
+
+    /// <summary>Maps image pixels to PDF points at 96 DPI — the scale the whole node uses.</summary>
+    private static float PointsFor(int pixels) => pixels * 72f / 96f;
+
+    /// <summary>
+    /// Pixel size read from the DECODED bitmap rather than the header. A page sized to the
+    /// image may only ever be built from these: an EXIF-rotated JPEG reports its
+    /// pre-rotation dimensions in the SOF marker, and a page cut to those would letterbox
+    /// the photo inside white bars — the same reason the slicer recomputes before cropping.
+    /// The decodable-pixel budget applies here too (AB#5142): a poison attachment must not
+    /// be materialised just to measure it. AB#5259.
+    /// </summary>
+    private static bool TryGetDecodedSize(byte[] bytes, int pixelWidth, int pixelHeight,
+        out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        if ((long)pixelWidth * pixelHeight > MaxDecodablePixels)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var bitmap = AnyBitmap.FromBytes(bytes);
+            width = bitmap.Width;
+            height = bitmap.Height;
+            return width > 0 && height > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True when the document's entire visible content is ONE inline data-URI image and
+    /// nothing else — the shape the Stage Document pipeline's image-to-PDF wrapper produces
+    /// (<c>&lt;body style="margin:0;padding:0"&gt;&lt;img src="data:…"&gt;&lt;/body&gt;</c>).
+    /// The test is structural, on the parsed DOM, so the general HTML path — above all the
+    /// e-mail BODY render, which must keep its A4 layout with header, footer and margins —
+    /// is never affected. Whitespace and bare wrappers around the image are tolerated; any
+    /// text, a second image or any layout element makes it a normal document. AB#5259.
+    /// </summary>
+    private static bool TryGetSingleImageBody(string html, out byte[] imageBytes)
+    {
+        imageBytes = [];
+
+        var body = new HtmlParser().ParseDocument(html).Body;
+        if (body == null)
+        {
+            return false;
+        }
+
+        IElement? image = null;
+        if (!IsImageOnly(body, ref image) || image == null)
+        {
+            return false;
+        }
+
+        var src = image.GetAttribute("src");
+        return !string.IsNullOrWhiteSpace(src) && TryDecodeDataUri(src, out imageBytes);
+    }
+
+    private static bool IsImageOnly(INode container, ref IElement? image)
+    {
+        foreach (var child in container.ChildNodes)
+        {
+            switch (child.NodeType)
+            {
+                case NodeType.Text when Normalize(child.TextContent).Trim().Length > 0:
+                    return false;
+                case NodeType.Element:
+                    var element = (IElement)child;
+                    var name = element.LocalName;
+                    if (SkippedTags.Contains(name))
+                    {
+                        // Carries no visible content in any case.
+                        break;
+                    }
+
+                    if (name == "img")
+                    {
+                        if (image != null)
+                        {
+                            // A second image is a composed document, not a photo.
+                            return false;
+                        }
+
+                        image = element;
+                        break;
+                    }
+
+                    if (!TransparentWrapperTags.Contains(name) || IsHidden(element)
+                        || !IsImageOnly(element, ref image))
+                    {
+                        return false;
+                    }
+
+                    break;
+            }
+        }
+
+        return true;
     }
 
     private static void RenderHtml(string html, ColumnDescriptor col)
@@ -474,13 +703,49 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
     /// <summary>
     /// Slices a too-tall image into <see cref="ContentHeightPt"/>-sized horizontal bands and
-    /// emits one band per page at full content width. QuestPDF cannot break a single image
-    /// across pages, so the split has to happen on the pixels — hence the decode/crop/encode
-    /// round trip. Returns <c>false</c> (and renders nothing) whenever slicing is refused or
-    /// fails, so the caller can fall back to the plain shrink-to-fit. AB#5259.
+    /// emits one band per page at full content width, INSIDE the A4 document — the shape a
+    /// tall image embedded in an e-mail body keeps. An image-only document takes the
+    /// natively sized route in <see cref="TryRenderImageDocument"/> instead. Returns
+    /// <c>false</c> (and renders nothing) whenever slicing is refused or fails, so the
+    /// caller can fall back to the plain shrink-to-fit. AB#5259.
     /// </summary>
     private static bool TryRenderTiled(byte[] bytes, int pixelWidth, int pixelHeight, ColumnDescriptor col)
     {
+        if (!TrySliceIntoBands(bytes, pixelWidth, pixelHeight, out var bands))
+        {
+            return false;
+        }
+
+        for (var i = 0; i < bands.Count; i++)
+        {
+            // One band per page: the bands are sized to the content height, so letting
+            // them flow would still fit two partial bands on a page and split the
+            // receipt at an arbitrary place a second time.
+            if (i > 0)
+            {
+                col.Item().PageBreak();
+            }
+
+            col.Item().Width(ContentWidthPt).Image(bands[i].Bytes);
+        }
+
+        return true;
+    }
+
+    /// <summary>One horizontal slice of a too-tall image, with its own pixel size. AB#5259.</summary>
+    private readonly record struct ImageBand(byte[] Bytes, int PixelWidth, int PixelHeight);
+
+    /// <summary>
+    /// Cuts a too-tall image into as many horizontal bands as it needs pages. QuestPDF
+    /// cannot break a single image across pages, so the split has to happen on the pixels —
+    /// hence the decode/crop/encode round trip. Returns <c>false</c> whenever slicing is
+    /// refused by one of its guards or fails, leaving <paramref name="bands"/> empty. AB#5259.
+    /// </summary>
+    private static bool TrySliceIntoBands(byte[] bytes, int pixelWidth, int pixelHeight,
+        out List<ImageBand> bands)
+    {
+        bands = [];
+
         // Pre-check on the sniffed header dimensions so an absurd image is rejected BEFORE
         // it is decoded — the point of the guard is not to allocate it in the first place.
         if ((long)pixelWidth * pixelHeight > MaxDecodablePixels)
@@ -519,10 +784,10 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
             var bandHeight = (int)Math.Ceiling(height / (double)tiles);
             var overlap = (int)(bandHeight * TileOverlapRatio);
 
-            // Encode every band BEFORE emitting any of it: a failure halfway through must
-            // leave the column untouched, otherwise the caller's shrink fallback would be
-            // appended below a few already-rendered bands.
-            var bands = new List<byte[]>(tiles);
+            // Encode every band BEFORE handing any of it back: a failure halfway through
+            // must leave the caller with nothing, otherwise its fallback render would be
+            // appended below a few already-emitted bands.
+            var sliced = new List<ImageBand>(tiles);
             for (var i = 0; i < tiles; i++)
             {
                 var top = i == 0 ? 0 : Math.Max(0, i * bandHeight - overlap);
@@ -533,27 +798,15 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                 }
 
                 using var band = bitmap.Clone(new Rectangle(0, top, width, bottom - top));
-                bands.Add(band.ExportBytes(format, 95));
+                sliced.Add(new ImageBand(band.ExportBytes(format, 95), width, bottom - top));
             }
 
-            if (bands.Count == 0)
+            if (sliced.Count == 0)
             {
                 return false;
             }
 
-            for (var i = 0; i < bands.Count; i++)
-            {
-                // One band per page: the bands are sized to the content height, so letting
-                // them flow would still fit two partial bands on a page and split the
-                // receipt at an arbitrary place a second time.
-                if (i > 0)
-                {
-                    col.Item().PageBreak();
-                }
-
-                col.Item().Width(ContentWidthPt).Image(bands[i]);
-            }
-
+            bands = sliced;
             return true;
         }
         catch

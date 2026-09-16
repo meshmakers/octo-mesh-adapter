@@ -104,6 +104,19 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         return bitmap.ExportBytes(format, 90);
     }
 
+    /// <summary>
+    /// A payload with a valid JPEG header but a garbage body: it passes the dimension
+    /// sniffer (SOF0 claims 2570 x 210, whose shrunk width would be ~51pt, so the tall-image
+    /// branch is taken) and then fails to decode. AB#5259.
+    /// </summary>
+    private static readonly byte[] BrokenTallJpeg =
+    [
+        0xFF, 0xD8, // SOI
+        0xFF, 0xC0, 0x00, 0x11, 0x08, 0x0A, 0x0A, 0x00, 0xD2, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01,
+        0x03, 0x11, 0x01, // SOF0: 2570 x 210
+        0x00, 0x00, 0x00, 0x00
+    ];
+
     private static int PageCount(string? base64)
     {
         Assert.NotNull(base64);
@@ -112,9 +125,54 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         return pdf.PageCount;
     }
 
+    /// <summary>
+    /// Page sizes in POINTS, one entry per page. AB#5259: the image-only document sizes its
+    /// pages to the image, so the page geometry — not only the page count — is part of the
+    /// contract now.
+    /// </summary>
+    private static IReadOnlyList<(double Width, double Height)> PageSizes(string? base64)
+    {
+        Assert.NotNull(base64);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(Convert.FromBase64String(base64!));
+        return pdf.GetPages().Select(p => (p.Width, p.Height)).ToList();
+    }
+
+    private const double A4WidthPt = 595d;
+    private const double A4HeightPt = 842d;
+
+    private static void AssertAllPagesA4(string? base64)
+    {
+        Assert.All(PageSizes(base64), size =>
+        {
+            Assert.Equal(A4WidthPt, size.Width, 1d);
+            Assert.Equal(A4HeightPt, size.Height, 1d);
+        });
+    }
+
+    /// <summary>
+    /// The e-mail shape: an image embedded in a mail BODY, alongside text. Stays on the
+    /// A4 document with header, margins and page-number footer.
+    /// </summary>
     private async Task<string?> RenderImageHtmlAsync(byte[] jpeg, string? title = null)
     {
         var html = $"<p>Von meinem iPhone gesendet</p><img src=\"data:image/jpeg;base64,{Convert.ToBase64String(jpeg)}\"/>";
+        return await RenderAsync(html, title);
+    }
+
+    /// <summary>
+    /// The Stage Document shape: the pipeline's image-to-PDF wrapper, verbatim — a body
+    /// whose entire content is one data-URI image and no title. AB#5259.
+    /// </summary>
+    private async Task<string?> RenderImageDocumentAsync(byte[] image, string contentType = "image/jpeg")
+    {
+        var html = "<!DOCTYPE html><html><body style=\"margin:0;padding:0\">"
+                   + $"<img src=\"data:{contentType};base64,{Convert.ToBase64String(image)}\" "
+                   + "style=\"display:block;width:100%;height:auto\"></body></html>";
+        return await RenderAsync(html, title: null);
+    }
+
+    private async Task<string?> RenderAsync(string html, string? title)
+    {
         var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf", Title = title };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
@@ -129,18 +187,100 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_VeryTallInlineImage_IsTiledAcrossPagesAtFullWidth()
+    public async Task ProcessObjectAsync_VeryTallImageDocument_IsTiledOnBandSizedPages()
     {
-        // AB#5259: a narrow, very tall receipt photo (prod-1 evidence: a 542x2573 px
-        // Stadtgemeinde Salzburg shop receipt) used to be shrunk by WIDTH until its full
-        // height fitted ONE page — it landed ~131pt (4.6cm) wide on A4 and the OCR/AI
-        // stage extracted nothing at all from it. It must now be sliced into content-height
-        // bands, one per page, at full content width. 480pt * 2573/542 = 2279pt of image
-        // over a 620pt content height = 4 bands, so the receipt can no longer fit one page.
+        // AB#5259, both attempts in one test. A narrow, very tall receipt photo (prod-1
+        // evidence: a 542x2573 px Stadtgemeinde Salzburg shop receipt) used to be shrunk by
+        // WIDTH until its full height fitted ONE page — it landed ~131pt (4.6cm) wide on A4
+        // and the OCR/AI stage extracted nothing at all from it.
+        //
+        // The first fix sliced it into 4 bands, one per page — correct, and still the
+        // measured result in production was an empty extraction, because the bands were
+        // drawn at 480pt on A4: a 542px band at 480pt sits in the page at ~81ppi, and every
+        // OCR rasterisation of it upscales 2.5-4x and smears the thermal print away. So the
+        // PAGE has to follow the band: 542px at 96dpi = 406.5pt wide, no margins, no footer.
+        var base64 = await RenderImageDocumentAsync(CreateImage(542, 2573));
+
+        var sizes = PageSizes(base64);
+        Assert.True(sizes.Count >= 4, $"expected at least 4 band pages, got {sizes.Count}");
+        Assert.All(sizes, size =>
+        {
+            // Natural width — NOT A4, and not the 480pt content width of the first attempt.
+            Assert.Equal(542 * 72d / 96d, size.Width, 1d);
+
+            // Every band is a slice of the photo, so no page may be taller than the whole
+            // image and none may carry A4's letterbox of white margin.
+            Assert.InRange(size.Height, 1d, 2573 * 72d / 96d);
+        });
+
+        // The band heights must add up to the image (plus the deliberate slice overlap):
+        // no band may have been dropped.
+        Assert.True(sizes.Sum(s => s.Height) >= 2573 * 72d / 96d,
+            $"bands cover only {sizes.Sum(s => s.Height)}pt of a {2573 * 72d / 96d}pt image");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VeryTallInlineImageInMailBody_IsTiledOnA4Pages()
+    {
+        // The same photo INSIDE a mail body (text above it) is not an image document: it
+        // keeps the A4 layout and is tiled at the 480pt content width, exactly as before.
+        // 480pt * 2573/542 = 2279pt of image over a 620pt content height = 4 bands. AB#5259.
         var base64 = await RenderImageHtmlAsync(CreateImage(542, 2573));
 
         Assert.True(PageCount(base64) >= 4,
             $"expected the tall receipt to be tiled over at least 4 pages, got {PageCount(base64)}");
+        AssertAllPagesA4(base64);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NormalAspectImageDocument_UsesOneImageSizedPage()
+    {
+        // An image document that needs no slicing still gets a page of its own size — one
+        // pixel stays one 96th of an inch, which is the whole point of the change. AB#5259.
+        var base64 = await RenderImageDocumentAsync(CreateImage(1600, 2200));
+
+        var sizes = PageSizes(base64);
+        Assert.Single(sizes);
+        Assert.Equal(1600 * 72d / 96d, sizes[0].Width, 1d);
+        Assert.Equal(2200 * 72d / 96d, sizes[0].Height, 1d);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_UndecodableImageDocument_FallsBackToA4()
+    {
+        // A valid JPEG header over a garbage body passes the dimension sniffer but cannot
+        // be decoded — and a page may only ever be cut from DECODED dimensions, because an
+        // EXIF-rotated JPEG lies about its size in the SOF marker. The image document must
+        // therefore fall back to the A4 render, which drops the unusable image rather than
+        // failing the receipt — never to a page sized from the lie. AB#5259.
+        var base64 = await RenderImageDocumentAsync(BrokenTallJpeg);
+
+        Assert.Equal(1, PageCount(base64));
+        AssertAllPagesA4(base64);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_MailBodyWithTitle_StaysOnA4()
+    {
+        // The regression guard for the other consumer of this node: the no-attachment
+        // branch of the e-mail import renders the mail BODY into the receipt PDF and must
+        // keep the A4 page with its header, margins and page-number footer. AB#5259.
+        const string html = """
+            <html><body>
+              <h1>Rechnung 2026-042</h1>
+              <p>Betrag: 426,00 EUR</p>
+              <table><tr><th>Position</th><th>Betrag</th></tr><tr><td>Schutt</td><td>426,00</td></tr></table>
+            </body></html>
+            """;
+
+        var base64 = await RenderAsync(html, title: "Fwd: Beleg Wirtschaftshof");
+
+        AssertAllPagesA4(base64);
+        var text = ExtractPdfText(base64);
+        Assert.Contains("Fwd: Beleg Wirtschaftshof", text);
+        Assert.Contains("426,00", text);
+        // The page-number footer belongs to the A4 document and must still be there.
+        Assert.Contains("1 / 1", text);
     }
 
     [Fact]
@@ -171,15 +311,7 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         // payload with a valid JPEG header but a garbage body passes the dimension sniffer
         // (so the tall-image branch is taken) and then fails to decode — the node must fall
         // back to the old single-page render instead of dropping the image or throwing. AB#5259.
-        var broken = new byte[]
-        {
-            0xFF, 0xD8, // SOI
-            0xFF, 0xC0, 0x00, 0x11, 0x08, 0x0A, 0x0A, 0x00, 0xD2, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01,
-            0x03, 0x11, 0x01, // SOF0: 2570 x 210 -> shrunk width would be ~51pt
-            0x00, 0x00, 0x00, 0x00
-        };
-
-        var base64 = await RenderImageHtmlAsync(broken);
+        var base64 = await RenderImageHtmlAsync(BrokenTallJpeg);
 
         Assert.Equal(1, PageCount(base64));
     }

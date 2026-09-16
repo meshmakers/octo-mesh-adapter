@@ -6,15 +6,19 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.Services;
-using UglyToad.PdfPig;
-using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.Pdf;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 [NodeConfiguration(typeof(PdfOcrExtractionNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
+internal partial class PdfOcrExtractionNode(NodeDelegate next, IPdfTextExtractor pdfTextExtractor) : IPipelineNode
 {
+    private const string TierTextLayer = "TextLayer";
+    private const string TierTextLayerFromOcr = "TextLayerFromOcr";
+    private const string TierMixed = "Mixed";
+    private const string TierOcr = "Ocr";
+
     /// <summary>
     /// Header the merged OCR supplement is introduced with. It is prose on purpose: the
     /// consumer of this node's output is an AI extraction prompt, and the marker tells it
@@ -57,7 +61,18 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
-        
+
+        // Configuration error, outside the try: a page selection that leaves no valid page must not
+        // silently become "all pages", and ContinueOnError must not turn it into a pass-through.
+        if (config.PageNumbers is { Length: > 0 } && SelectedPageIndices(config) is { Count: 0 })
+        {
+            throw MeshAdapterPipelineExecutionException.ProcessingError(nodeContext,
+                new ArgumentException(
+                    $"pageNumbers [{string.Join(", ", config.PageNumbers)}] selects no valid page; " +
+                    "page numbers are 1-based. Omit pageNumbers to process the whole document.",
+                    nameof(config.PageNumbers)));
+        }
+
         try
         {
             if (string.IsNullOrEmpty(config.Path))
@@ -90,144 +105,153 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 fileData = fileData[pdfHeaderOffset..];
             }
 
-            nodeContext.Debug($"Starting OCR extraction for {(isPdf ? "PDF" : "image")} ({fileData.Length} bytes)");
+            nodeContext.Debug($"Starting extraction for {(isPdf ? "PDF" : "image")} ({fileData.Length} bytes)");
 
-            // Digital PDFs carry an exact embedded text layer; prefer it over raster+OCR.
-            // Tesseract drops separator-less alphanumeric codes (e.g. invoice numbers) and
-            // mangles non-German diacritics, whereas the text layer is verbatim. Tables and
-            // barcodes only come from the OCR path, so the shortcut is skipped when either is
-            // requested; scanned/image PDFs (empty text layer) fall through to OCR. AB#4528.
-            // Hybrid PDFs break the either/or above: the text layer carries the LABELS while
-            // the FIGURES are embedded images, so the shortcut hands the AI stage an invoice
-            // without a single amount (prod-1 2026-09-15, "26034 Lehrlingstraining": text
-            // layer had "Gesamt"/"MWSt 20%"/"Bruttosumme", the amount column was one of 43
-            // stencil images). When set, this carries the text layer into the OCR branch
-            // below so both reads can be merged instead of one replacing the other. AB#5259.
-            string? textLayerToMerge = null;
-
-            var handledByTextLayer = false;
-            if (isPdf && config.PreferTextLayer && !config.ExtractTables && !config.ExtractBarcodes)
+            // Extraction ladder (PDF only): pages with a usable embedded text layer are
+            // read losslessly, only the rest is OCR'd. Tables, barcodes and explicit page
+            // selection are OCR-path features, so the text-layer tier stands aside when
+            // they are requested.
+            var textLayerEligible = config.PreferTextLayer && !config.ExtractTables && !config.ExtractBarcodes
+                                    && config.PageNumbers is not { Length: > 0 };
+            PdfTextExtractionResult? textLayerResult = null;
+            if (isPdf && textLayerEligible)
             {
-                var textLayer = TryExtractPdfTextLayer(fileData, config.PageNumbers, nodeContext);
-                if (textLayer is not null
-                    && textLayer.Length >= config.MinTextLayerChars
-                    && config.MergeOcrOnIncompleteTextLayer
-                    && !IsTextLayerStructurallyComplete(textLayer, config.AmountLabels, out var unresolvedLabel))
+                try
                 {
-                    // Not a digital PDF after all — it only looks like one. Keep the text
-                    // layer (it stays authoritative) and fall through to OCR for the gaps.
-                    textLayerToMerge = textLayer;
-                    nodeContext.Info(
-                        $"PDF text layer carries the label '{unresolvedLabel}' without an adjacent amount — running OCR in addition and merging both reads");
+                    textLayerResult = pdfTextExtractor.Extract(fileData, config.MinTextLayerChars);
                 }
-                else if (textLayer is not null && textLayer.Length >= config.MinTextLayerChars)
+                catch (Exception ex)
                 {
-                    dataContext.Set(
-                        config.TargetPath,
-                        textLayer,
-                        config.DocumentMode,
-                        config.TargetValueKind,
-                        config.TargetValueWriteMode
-                    );
+                    // A malformed PDF must not break the OCR path — fall through.
+                    nodeContext.Warning($"Text-layer extraction failed, falling back to OCR: {ex.Message}");
+                }
+            }
 
-                    if (config.IncludeConfidence)
+            // Tier 1: text layer — determine which pages still need OCR.
+            string? extractedText = null;
+            var extractionTier = TierOcr;
+            List<PdfPageText>? pagesWithLayer = null;
+            // A text layer that names amount labels without figures next to them is a hybrid PDF
+            // (labels in the layer, figures as images): the layer stays the authoritative base and
+            // OCR of the whole document supplements it instead of one read replacing the other.
+            string? textLayerToMerge = null;
+            var layerNeedsSupplement = false;
+
+            if (textLayerEligible && textLayerResult is { Pages.Count: > 0 })
+            {
+                var pagesMissingLayer = textLayerResult.Pages.Count(p => !p.HasTextLayer);
+                if (pagesMissingLayer == 0)
+                {
+                    extractedText = string.Join("\n\n", textLayerResult.Pages.Select(p => p.Text));
+                    // Text-on-image pages (scans with a baked-in OCR layer) downgrade the
+                    // tier: usable text, but OCR-grade trust rather than born-digital fidelity.
+                    var textOnImagePages = textLayerResult.Pages.Count(p => p.IsTextOnImage);
+                    extractionTier = textOnImagePages > 0 ? TierTextLayerFromOcr : TierTextLayer;
+                    nodeContext.Info(textOnImagePages > 0
+                        ? $"All {textLayerResult.Pages.Count} page(s) have a text layer, but {textOnImagePages} are text-on-image (previous OCR pass); OCR skipped, trust downgraded"
+                        : $"All {textLayerResult.Pages.Count} page(s) have a text layer; OCR skipped");
+
+                    if (config.MergeOcrOnIncompleteTextLayer
+                        && !IsTextLayerStructurallyComplete(extractedText, config.AmountLabels, out var unresolvedLabel))
                     {
-                        // The text layer is authoritative, not a probabilistic OCR read.
-                        dataContext.Set(
-                            config.ConfidenceOutputPath ?? "$.Confidence",
-                            100d,
-                            config.DocumentMode,
-                            config.TargetValueKind,
-                            config.TargetValueWriteMode
-                        );
+                        nodeContext.Info(
+                            $"Text layer names '{unresolvedLabel}' without an adjacent amount (hybrid PDF); OCR runs in addition and both reads are merged");
+                        textLayerToMerge = extractedText;
+                        extractedText = null;
+                        extractionTier = TierMixed;
                     }
+                }
+                else if (pagesMissingLayer < textLayerResult.Pages.Count)
+                {
+                    pagesWithLayer = textLayerResult.Pages.ToList();
+                    extractionTier = TierMixed;
+                    nodeContext.Info(
+                        $"{textLayerResult.Pages.Count - pagesMissingLayer} of {textLayerResult.Pages.Count} page(s) have a text layer; OCR runs for the rest");
 
-                    handledByTextLayer = true;
-                    nodeContext.Info($"Extracted {textLayer.Length} characters from the PDF text layer (OCR skipped)");
+                    var layerText = string.Join("\n", pagesWithLayer.Where(p => p.HasTextLayer).Select(p => p.Text));
+                    if (config.MergeOcrOnIncompleteTextLayer
+                        && !IsTextLayerStructurallyComplete(layerText, config.AmountLabels, out var unresolvedLabel))
+                    {
+                        nodeContext.Info(
+                            $"Text-layer pages name '{unresolvedLabel}' without an adjacent amount (hybrid PDF); OCR runs for every page and supplements the layer");
+                        layerNeedsSupplement = true;
+                    }
                 }
                 else
                 {
-                    nodeContext.Debug($"PDF text layer absent or below {config.MinTextLayerChars} chars — falling back to OCR");
+                    nodeContext.Info("No page has a usable text layer; using OCR for the whole document");
                 }
             }
 
-            if (!handledByTextLayer)
+            // Tier 2: OCR — runs unless the text layer covered every page.
+            if (extractedText == null)
             {
+                // OCR only what still needs it: the pages without a text layer in the mixed case,
+                // or the configured page selection. Rasterizing and recognizing pages whose text
+                // is then discarded was the dominant cost on mixed documents.
+                var ocrPageIndices = pagesWithLayer != null && !layerNeedsSupplement
+                    ? PagesWithoutLayer(pagesWithLayer)
+                    : SelectedPageIndices(config);
+                var result = RunOcr(config, fileData, isPdf, ocrPageIndices);
 
-            // Initialize IronOCR with explicit configuration
-            License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
-            var ocr = new IronTesseract();
-            
-            if (!string.IsNullOrEmpty(config.Language))
-            {
-                ocr.Language = GetOcrLanguage(config.Language);
-            }
-            
-            if (config.PageNumbers is { Length: > 0 })
-            {
-                ocr.Configuration.PageSegmentationMode = TesseractPageSegmentationMode.AutoOsd;
-            }
-
-            using OcrInputBase ocrInput = isPdf
-                ? new OcrPdfInput(fileData)
-                : new OcrImageInput(fileData);
-
-            // A photographed document benefits from geometric + noise correction
-            // before OCR (deskew straightens tilt, denoise removes sensor grain).
-            // Skipped for PDFs (already page-rendered) and when EnhanceImage is off.
-            if (!isPdf && config.EnhanceImage)
-            {
-                ocrInput.Deskew(config.MaxDeskewAngle);
-                ocrInput.DeNoise(false);
-            }
-
-            var result = ocr.Read(ocrInput);
-
-            var extractedText = result.Text;
-
-            if (textLayerToMerge is not null)
-            {
-                // Merge, do not replace: the text layer is verbatim where it has content
-                // (AB#4528 — Tesseract drops separator-less invoice numbers and mangles
-                // diacritics), OCR only supplies what the text layer is missing. The
-                // confidence written further down is the OCR score, not the 100 of the
-                // pure text-layer path — part of this result IS a probabilistic read. AB#5259.
-                var merged = MergeTextLayerWithOcr(textLayerToMerge, extractedText);
-                nodeContext.Info(
-                    $"Merged PDF text layer ({textLayerToMerge.Length} chars) with OCR ({extractedText.Length} chars) into {merged.Length} chars");
-                extractedText = merged;
-            }
-
-            if (config.ExtractTables)
-            {
-                var tables = result.Tables;
-                if (tables is { Length: > 0 })
+                // OcrResult pages come back in the order requested; PdfPageText.PageNumber is 1-based.
+                // Merge whenever pages have a text layer, even when OCR returned no page objects:
+                // falling back to result.Text would drop every text-layer page and report Ocr.
+                var ocrPageTexts = result.Pages?.Select(p => p.Text).ToList() ?? [];
+                if (textLayerToMerge != null)
                 {
-                    nodeContext.Debug($"Found {tables.Length} tables in PDF");
-                    dataContext.Set(
-                        config.TablesOutputPath ?? "$.Tables",
-                        tables,
-                        config.DocumentMode,
-                        config.TargetValueKind,
-                        config.TargetValueWriteMode
-                    );
+                    // Every page had a layer, but it lacks the figures: keep it verbatim and
+                    // append only the OCR lines that carry tokens the layer does not have.
+                    extractedText = MergeTextLayerWithOcr(textLayerToMerge, result.Text);
+                    nodeContext.Info(
+                        $"Merged PDF text layer ({textLayerToMerge.Length} chars) with OCR ({result.Text.Length} chars) into {extractedText.Length} chars");
                 }
-            }
-
-            if (config.ExtractBarcodes)
-            {
-                var barcodes = result.Barcodes;
-                if (barcodes != null && barcodes.Length > 0)
+                else if (pagesWithLayer != null && layerNeedsSupplement)
                 {
-                    nodeContext.Debug($"Found {barcodes.Length} barcodes in PDF");
-                    dataContext.Set(
-                        config.BarcodesOutputPath ?? "$.Barcodes",
-                        barcodes,
-                        config.DocumentMode,
-                        config.TargetValueKind,
-                        config.TargetValueWriteMode
-                    );
+                    // OCR covered every page: layer pages keep their layer, the others take their
+                    // OCR page, and the OCR read supplements what the layer pages lack.
+                    var basePages = pagesWithLayer.Select((p, i) =>
+                        p.HasTextLayer ? p.Text : i < ocrPageTexts.Count ? ocrPageTexts[i] : string.Empty);
+                    extractedText = MergeTextLayerWithOcr(string.Join("\n\n", basePages), result.Text);
                 }
+                else if (pagesWithLayer != null)
+                {
+                    if (ocrPageTexts.Count != ocrPageIndices!.Count)
+                    {
+                        nodeContext.Warning(
+                            $"OCR returned {ocrPageTexts.Count} page(s) for {ocrPageIndices.Count} requested; " +
+                            "pages without a result are left empty");
+                    }
+
+                    // Mixed: text-layer pages stay lossless; OCR fills the gaps (page order kept).
+                    extractedText = MergeMixedPages(pagesWithLayer, ocrPageTexts);
+                }
+                else
+                {
+                    extractedText = result.Text;
+                    extractionTier = TierOcr;
+                }
+
+                EmitOcrExtras(config, dataContext, nodeContext, result);
+            }
+            else if (config.IncludeConfidence && extractionTier == TierTextLayer)
+            {
+                // A born-digital text layer is authoritative, not a probabilistic OCR read.
+                dataContext.Set(
+                    config.ConfidenceOutputPath ?? "$.Confidence",
+                    100d,
+                    config.DocumentMode,
+                    config.TargetValueKind,
+                    config.TargetValueWriteMode
+                );
+            }
+            else if (config.IncludeConfidence)
+            {
+                // Text-on-image layers stem from an earlier OCR pass whose confidence is
+                // unknown — no value beats a fabricated 100. ExtractionTier carries the
+                // trust signal instead.
+                nodeContext.Debug(
+                    "Confidence not emitted: the text layer stems from a previous OCR pass (see ExtractionTier)");
             }
 
             dataContext.Set(
@@ -238,20 +262,19 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 config.TargetValueWriteMode
             );
 
-            if (config.IncludeConfidence)
+            if (config.PreferTextLayer || config.ExtractionTierOutputPath != null)
             {
                 dataContext.Set(
-                    config.ConfidenceOutputPath ?? "$.Confidence",
-                    result.Confidence,
+                    config.ExtractionTierOutputPath ?? "$.ExtractionTier",
+                    extractionTier,
                     config.DocumentMode,
                     config.TargetValueKind,
                     config.TargetValueWriteMode
                 );
             }
 
-            nodeContext.Info($"Successfully extracted {extractedText.Length} characters from {(isPdf ? "PDF" : "image")}");
-
-            } // end !handledByTextLayer
+            nodeContext.Info(
+                $"Successfully extracted {extractedText.Length} characters from {(isPdf ? "PDF" : "image")} (tier: {extractionTier})");
         }
         catch (Exception ex)
         {
@@ -260,41 +283,142 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 throw MeshAdapterPipelineExecutionException.ProcessingError(nodeContext, ex);
             }
 
-            nodeContext.Error($"Error during PDF OCR extraction: {ex.Message}");
+            nodeContext.Error($"Error during PDF extraction: {ex.Message}");
         }
-        
+
         await next(dataContext, nodeContext);
     }
-    
+
     /// <summary>
-    /// Extracts the embedded text layer of a digital PDF in reading order (PdfPig).
-    /// Returns <c>null</c> on any parse failure — encrypted, malformed, or an image-only
-    /// PDF with no text — so the caller transparently falls back to OCR. AB#4528.
+    /// Zero-based indices of the pages that have no usable text layer, in document order — the
+    /// pages the OCR pass has to cover in the mixed case.
     /// </summary>
-    private static string? TryExtractPdfTextLayer(byte[] fileData, int[]? pageNumbers, INodeContext nodeContext)
+    internal static IReadOnlyList<int> PagesWithoutLayer(IReadOnlyList<PdfPageText> pages) =>
+        pages.Where(p => !p.HasTextLayer).Select(p => p.PageNumber - 1).Where(i => i >= 0).ToList();
+
+    /// <summary>
+    /// Zero-based indices for a configured <see cref="PdfOcrExtractionNodeConfiguration.PageNumbers"/>
+    /// selection (1-based on the configuration); null when every page is to be processed.
+    /// </summary>
+    internal static IReadOnlyList<int>? SelectedPageIndices(PdfOcrExtractionNodeConfiguration config) =>
+        config.PageNumbers is { Length: > 0 }
+            ? config.PageNumbers.Where(n => n >= 1).Select(n => n - 1).Distinct().OrderBy(i => i).ToList()
+            : null;
+
+    /// <summary>
+    /// Interleaves text-layer pages with the OCR results of the pages that lacked one. The OCR
+    /// texts arrive in the order of <see cref="PagesWithoutLayer"/>, so they are consumed
+    /// sequentially rather than indexed by absolute page number — the OCR pass no longer covers
+    /// every page. A missing OCR result leaves that page empty instead of shifting the others.
+    /// </summary>
+    internal static string MergeMixedPages(IReadOnlyList<PdfPageText> pages,
+        IReadOnlyList<string> ocrTextsForPagesWithoutLayer)
     {
-        try
+        var merged = new List<string>(pages.Count);
+        var nextOcr = 0;
+        foreach (var page in pages)
         {
-            using var document = PdfDocument.Open(fileData);
-
-            var pages = pageNumbers is { Length: > 0 }
-                ? pageNumbers.Where(p => p >= 1 && p <= document.NumberOfPages)
-                : Enumerable.Range(1, document.NumberOfPages);
-
-            var sb = new StringBuilder();
-            foreach (var pageNumber in pages)
+            if (page.HasTextLayer)
             {
-                sb.AppendLine(ContentOrderTextExtractor.GetText(document.GetPage(pageNumber)));
+                merged.Add(page.Text);
             }
-
-            return sb.ToString();
+            else
+            {
+                merged.Add(nextOcr < ocrTextsForPagesWithoutLayer.Count
+                    ? ocrTextsForPagesWithoutLayer[nextOcr++]
+                    : string.Empty);
+            }
         }
-        catch (Exception ex)
+
+        return string.Join("\n\n", merged);
+    }
+
+    private static OcrResult RunOcr(PdfOcrExtractionNodeConfiguration config, byte[] fileData, bool isPdf,
+        IReadOnlyList<int>? pageIndices)
+    {
+        // Initialize IronOCR with explicit configuration
+        License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
+        var ocr = new IronTesseract();
+
+        if (!string.IsNullOrEmpty(config.Language))
         {
-            nodeContext.Debug($"PDF text-layer extraction failed ({ex.Message}); falling back to OCR");
-            return null;
+            ocr.Language = GetOcrLanguage(config.Language);
+        }
+
+        if (config.PageNumbers is { Length: > 0 })
+        {
+            ocr.Configuration.PageSegmentationMode = TesseractPageSegmentationMode.AutoOsd;
+        }
+
+        // IronOCR page indices are zero-based; null means the whole document.
+        using OcrInputBase ocrInput = isPdf
+            ? pageIndices is { Count: > 0 }
+                ? new OcrPdfInput(fileData, PageIndices: pageIndices)
+                : new OcrPdfInput(fileData)
+            : new OcrImageInput(fileData);
+
+        // A photographed document benefits from geometric + noise correction
+        // before OCR (deskew straightens tilt, denoise removes sensor grain).
+        // Skipped for PDFs (already page-rendered) and when EnhanceImage is off.
+        if (!isPdf && config.EnhanceImage)
+        {
+            ocrInput.Deskew(config.MaxDeskewAngle);
+            ocrInput.DeNoise(false);
+        }
+
+        return ocr.Read(ocrInput);
+    }
+
+    /// <summary>
+    /// Emits the OCR-only side outputs (tables, barcodes, confidence) — pre-existing behavior.
+    /// </summary>
+    private static void EmitOcrExtras(PdfOcrExtractionNodeConfiguration config, IDataContext dataContext,
+        INodeContext nodeContext, OcrResult result)
+    {
+        if (config.ExtractTables)
+        {
+            var tables = result.Tables;
+            if (tables is { Length: > 0 })
+            {
+                nodeContext.Debug($"Found {tables.Length} tables in PDF");
+                dataContext.Set(
+                    config.TablesOutputPath ?? "$.Tables",
+                    tables,
+                    config.DocumentMode,
+                    config.TargetValueKind,
+                    config.TargetValueWriteMode
+                );
+            }
+        }
+
+        if (config.ExtractBarcodes)
+        {
+            var barcodes = result.Barcodes;
+            if (barcodes != null && barcodes.Length > 0)
+            {
+                nodeContext.Debug($"Found {barcodes.Length} barcodes in PDF");
+                dataContext.Set(
+                    config.BarcodesOutputPath ?? "$.Barcodes",
+                    barcodes,
+                    config.DocumentMode,
+                    config.TargetValueKind,
+                    config.TargetValueWriteMode
+                );
+            }
+        }
+
+        if (config.IncludeConfidence)
+        {
+            dataContext.Set(
+                config.ConfidenceOutputPath ?? "$.Confidence",
+                result.Confidence,
+                config.DocumentMode,
+                config.TargetValueKind,
+                config.TargetValueWriteMode
+            );
         }
     }
+
 
     /// <summary>
     /// Decides whether an embedded text layer may stand in for OCR on its own. A layer is

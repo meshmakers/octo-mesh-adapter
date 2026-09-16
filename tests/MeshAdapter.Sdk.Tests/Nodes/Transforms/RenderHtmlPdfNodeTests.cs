@@ -90,28 +90,98 @@ public class RenderHtmlPdfNodeTests : NodeTestBase
         AssertIsPdf(CapturedString(dataContext, config.TargetPath));
     }
 
-    [Fact]
-    public async Task ProcessObjectAsync_VeryTallInlineImage_RendersSinglePagePdf()
+    /// <summary>
+    /// Builds a real bitmap of exactly the requested pixel size. QuestPDF's
+    /// <c>Placeholders.Image(w, h)</c> only honours the ASPECT RATIO — it returns a 13x64
+    /// thumbnail for a 542x2573 request — so it can never reach the size-dependent branches
+    /// of <see cref="RenderHtmlPdfNode"/> and is useless for the tiling tests. AB#5259.
+    /// </summary>
+    private static byte[] CreateImage(int pixelWidth, int pixelHeight,
+        IronSoftware.Drawing.AnyBitmap.ImageFormat format = IronSoftware.Drawing.AnyBitmap.ImageFormat.Jpeg)
     {
-        // A narrow, very tall receipt photo (real-world case: 484x2016 iPhone shot of a
-        // long shop receipt). Width-only capping made the layout exceed one page and
-        // QuestPDF failed with "conflicting size constraints".
-        var jpeg = QuestPDF.Helpers.Placeholders.Image(484, 2016);
+        using var bitmap = new IronSoftware.Drawing.AnyBitmap(
+            pixelWidth, pixelHeight, IronSoftware.Drawing.Color.White);
+        return bitmap.ExportBytes(format, 90);
+    }
+
+    private static int PageCount(string? base64)
+    {
+        Assert.NotNull(base64);
+        using var pdf = PdfSharp.Pdf.IO.PdfReader.Open(
+            new MemoryStream(Convert.FromBase64String(base64!)), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import);
+        return pdf.PageCount;
+    }
+
+    private async Task<string?> RenderImageHtmlAsync(byte[] jpeg, string? title = null)
+    {
         var html = $"<p>Von meinem iPhone gesendet</p><img src=\"data:image/jpeg;base64,{Convert.ToBase64String(jpeg)}\"/>";
-        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf", Title = "Wirtschaftsforum Rechnung" };
+        var config = new RenderHtmlPdfNodeConfiguration { Path = "$.html", TargetPath = "$.pdf", Title = title };
         var (dataContext, nodeContext, next) = PrepareTest(config);
         A.CallTo(() => dataContext.GetKind("$.html")).Returns(DataKind.String);
         A.CallTo(() => dataContext.Get<string>("$.html")).Returns(html);
 
-        var node = new RenderHtmlPdfNode(next);
-        await node.ProcessObjectAsync(dataContext, nodeContext);
+        await new RenderHtmlPdfNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
         VerifyNextCalled(next, dataContext, nodeContext);
         var base64 = CapturedString(dataContext, config.TargetPath);
         AssertIsPdf(base64);
-        using var pdf = PdfSharp.Pdf.IO.PdfReader.Open(
-            new MemoryStream(Convert.FromBase64String(base64!)), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import);
-        Assert.Equal(1, pdf.PageCount);
+        return base64;
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_VeryTallInlineImage_IsTiledAcrossPagesAtFullWidth()
+    {
+        // AB#5259: a narrow, very tall receipt photo (prod-1 evidence: a 542x2573 px
+        // Stadtgemeinde Salzburg shop receipt) used to be shrunk by WIDTH until its full
+        // height fitted ONE page — it landed ~131pt (4.6cm) wide on A4 and the OCR/AI
+        // stage extracted nothing at all from it. It must now be sliced into content-height
+        // bands, one per page, at full content width. 480pt * 2573/542 = 2279pt of image
+        // over a 620pt content height = 4 bands, so the receipt can no longer fit one page.
+        var base64 = await RenderImageHtmlAsync(CreateImage(542, 2573));
+
+        Assert.True(PageCount(base64) >= 4,
+            $"expected the tall receipt to be tiled over at least 4 pages, got {PageCount(base64)}");
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NormalAspectInlineImage_StaysOnOnePage()
+    {
+        // The counterpart to the tiling above: an ordinary portrait scan overshoots the
+        // content height only slightly (480pt * 2200/1600 = 660pt vs. 620pt) and is still
+        // perfectly legible after the shrink-to-fit — 451pt wide. Splitting THAT across two
+        // pages would be a regression, so only the extreme aspect ratios are tiled.
+        var base64 = await RenderImageHtmlAsync(CreateImage(1600, 2200));
+
+        Assert.Equal(1, PageCount(base64));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_SmallInlineImage_StaysOnOnePage()
+    {
+        // A logo-sized image keeps its natural size and never goes near the tiling path.
+        var base64 = await RenderImageHtmlAsync(CreateImage(200, 80));
+
+        Assert.Equal(1, PageCount(base64));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_UndecodableTallImage_FallsBackToShrunkSinglePage()
+    {
+        // The shrink-to-fit stays the fallback whenever the bitmap cannot be sliced. A
+        // payload with a valid JPEG header but a garbage body passes the dimension sniffer
+        // (so the tall-image branch is taken) and then fails to decode — the node must fall
+        // back to the old single-page render instead of dropping the image or throwing. AB#5259.
+        var broken = new byte[]
+        {
+            0xFF, 0xD8, // SOI
+            0xFF, 0xC0, 0x00, 0x11, 0x08, 0x0A, 0x0A, 0x00, 0xD2, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01,
+            0x03, 0x11, 0x01, // SOF0: 2570 x 210 -> shrunk width would be ~51pt
+            0x00, 0x00, 0x00, 0x00
+        };
+
+        var base64 = await RenderImageHtmlAsync(broken);
+
+        Assert.Equal(1, PageCount(base64));
     }
 
     [Fact]

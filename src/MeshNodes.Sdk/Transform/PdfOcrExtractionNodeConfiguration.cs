@@ -110,4 +110,30 @@ public record PdfOcrExtractionNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Options", 10)]
     public int MinTextLayerChars { get; set; } = 100;
+
+    /// <summary>
+    /// Treat a sufficiently long text layer as a CANDIDATE rather than as the answer.
+    /// Hybrid PDFs carry a text layer for the LABELS while rendering the FIGURES as
+    /// embedded images — the layer is present and well above
+    /// <see cref="MinTextLayerChars"/>, yet every amount is missing (prod-1 2026-09-15:
+    /// an invoice whose text layer yielded "Gesamt" / "MWSt 20%" / "Bruttosumme" with no
+    /// numbers at all, while the amount column was one of 43 embedded stencil images).
+    /// When enabled (default) and a total/amount label has no number next to it, the node
+    /// additionally runs OCR and MERGES both reads: the text layer stays authoritative
+    /// (it is verbatim where it has content) and OCR only contributes lines carrying
+    /// tokens the text layer does not have. Only used when <see cref="PreferTextLayer"/>
+    /// is enabled. AB#5259.
+    /// </summary>
+    [PropertyGroup("Options", 11)]
+    public bool MergeOcrOnIncompleteTextLayer { get; set; } = true;
+
+    /// <summary>
+    /// Labels next to which a monetary figure is expected, used by the completeness check
+    /// of <see cref="MergeOcrOnIncompleteTextLayer"/>. Matched case-insensitively as
+    /// substrings of a text-layer line. Leave unset to use the built-in German/English
+    /// invoice vocabulary. A document that carries none of these labels is not an invoice
+    /// as far as this check is concerned and is never sent through the merge path. AB#5259.
+    /// </summary>
+    [PropertyGroup("Options", 12)]
+    public string[]? AmountLabels { get; set; }
 }

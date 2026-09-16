@@ -191,24 +191,50 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
     /// The index and key that collided, for the log. The document itself is not written out: on a
     /// public endpoint it is the caller's own payload and has no business in our logs twice.
     /// </summary>
+    /// <summary>
+    /// Names the index that refused the write, never the value that collided. MongoDB puts the
+    /// duplicate key itself in the message, and the unique keys this node guards are business
+    /// identifiers - an applicant's e-mail address on the public registration route, for one. The
+    /// index name is what an operator needs to find the conflict; the value is theirs to look up
+    /// under whatever access control the data sits behind, not something a log should carry.
+    /// </summary>
     private static string DescribeDuplicates(Exception? e)
     {
         for (; e != null; e = e.InnerException)
         {
             if (e is MongoBulkWriteException bulk)
             {
-                return string.Join("; ", bulk.WriteErrors
+                var names = bulk.WriteErrors
                     .Where(error => error.Category == ServerErrorCategory.DuplicateKey)
-                    .Select(error => error.Message));
+                    .Select(error => IndexNameOf(error.Message))
+                    .ToArray();
+                return names.Length > 0 ? string.Join("; ", names) : "a unique index";
             }
 
             if (e is MongoWriteException { WriteError.Category: ServerErrorCategory.DuplicateKey } single)
             {
-                return single.WriteError.Message;
+                return IndexNameOf(single.WriteError.Message);
             }
         }
 
         return "no duplicate-key detail found in the exception chain";
+    }
+
+    /// <summary>
+    /// Pulls the index name out of a MongoDB duplicate-key message and drops the rest, which is
+    /// where the colliding value sits. Anything unrecognised degrades to a constant rather than
+    /// to the original text, so a message shape we have not seen cannot leak by default.
+    /// </summary>
+    private static string IndexNameOf(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "a unique index";
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            message, @"index:\s*(?<name>[^\s]+)");
+        return match.Success ? $"index {match.Groups["name"].Value}" : "a unique index";
     }
 
     private static string ConcatOriginAndTarget(AssociationUpdateInfo updateInfo)

@@ -15,7 +15,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class SftpUploadNodeTests : NodeTestBase
+public class SftpUploadNodeTests : SessionNodeTestBase
 {
     private const string TestServerConfig = "sftp-server-1";
     private const string TestRemoteDir = "/upload/test";
@@ -25,26 +25,19 @@ public class SftpUploadNodeTests : NodeTestBase
     private const string TestFileRtIdPath = "$.fileRtId";
     private const string TestContentPath = "$.content";
 
-    private readonly IMeshEtlContext _etlContext;
     private readonly IGlobalConfiguration _globalConfiguration;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
     private readonly Dictionary<string, object?> _properties;
     private readonly ISftpSessionFactory _sftpSessionFactory;
     private readonly ISftpSession _sftpSession;
 
     public SftpUploadNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
         _globalConfiguration = A.Fake<IGlobalConfiguration>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
         _properties = new Dictionary<string, object?>();
 
-        A.CallTo(() => _etlContext.GlobalConfiguration).Returns(_globalConfiguration);
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _etlContext.Properties).Returns(_properties);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        A.CallTo(() => EtlContext.GlobalConfiguration).Returns(_globalConfiguration);
+        A.CallTo(() => EtlContext.Properties).Returns(_properties);
+        GivenSystemSessionIsExpected();
 
         _sftpSessionFactory = A.Fake<ISftpSessionFactory>();
         _sftpSession = A.Fake<ISftpSession>();
@@ -54,7 +47,7 @@ public class SftpUploadNodeTests : NodeTestBase
 
     private SftpUploadNode CreateNode(NodeDelegate next)
     {
-        return new SftpUploadNode(next, _etlContext, _sftpSessionFactory);
+        return new SftpUploadNode(next, EtlContext, _sftpSessionFactory);
     }
 
     #region Configuration Validation Tests
@@ -315,8 +308,8 @@ public class SftpUploadNodeTests : NodeTestBase
 
         SetupGlobalConfig();
 
-        A.CallTo(() => _tenantRepository.DownloadLargeBinaryAsync(
-                _session, A<OctoObjectId>._, A<CancellationToken>._))
+        A.CallTo(() => TenantRepository.DownloadLargeBinaryAsync(
+                Session, A<OctoObjectId>._, A<CancellationToken>._))
             .Returns(Task.FromResult((IDownloadStreamHandler)null!));
 
         var (dataContext, nodeContext, next) = PrepareTest<SftpUploadNodeConfiguration>(config);
@@ -376,8 +369,8 @@ public class SftpUploadNodeTests : NodeTestBase
         var payload = new byte[] { 0xE2, 0x82, 0xAC, 0xF0, 0x9D, 0x84, 0x9E };
         var handler = A.Fake<IDownloadStreamHandler>();
         A.CallTo(() => handler.Stream).Returns(new MemoryStream(payload));
-        A.CallTo(() => _tenantRepository.DownloadLargeBinaryAsync(
-                _session, A<OctoObjectId>._, A<CancellationToken>._))
+        A.CallTo(() => TenantRepository.DownloadLargeBinaryAsync(
+                Session, A<OctoObjectId>._, A<CancellationToken>._))
             .Returns(Task.FromResult(handler));
 
         var (dataContext, nodeContext, _) = PrepareTest<SftpUploadNodeConfiguration>(config);

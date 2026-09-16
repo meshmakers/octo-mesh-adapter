@@ -14,19 +14,44 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// Pipeline node that sends a Signal message (with an optional attachment) through a
 /// signal-cli-rest-api bridge (<c>POST {ApiUrl}/v2/send</c>). Outbound counterpart of
 /// <c>FromSignal@1</c>. Prototype context: AB#4406 (Epic AB#3295).
+/// Number/ApiUrl resolution (AB#5145): the tenant's registered
+/// <c>System.Communication/SignalChannel</c> singleton wins over the deprecated legacy settings —
+/// see <see cref="SignalChannelEndpointResolver"/>.
 /// </summary>
 /// <param name="next">Next node in the pipeline.</param>
 /// <param name="httpClientFactory">HttpClient factory. Uses the named client "Signal".</param>
+/// <param name="etlContext">ETL context — provides access to the pipeline's GlobalConfiguration.</param>
 [NodeConfiguration(typeof(SignalSenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class SignalSenderNode(
     NodeDelegate next,
-    IHttpClientFactory httpClientFactory) : IPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<SignalSenderNodeConfiguration>();
+
+        // AB#5145 resolution order (see SignalChannelEndpointResolver): the tenant's registered
+        // SignalChannel singleton wins; the legacy settingsConfiguration/node-property mechanism
+        // is the deprecated fallback so existing pipeline definitions keep working.
+        var resolution = SignalChannelEndpointResolver.Resolve(etlContext.GlobalConfiguration,
+            c.SettingsConfiguration, c.NumberAttribute, c.ApiUrlAttribute, c.Number, c.ApiUrl);
+        foreach (var warning in resolution.Warnings)
+        {
+            nodeContext.Warning("SignalSender: {0}", warning);
+        }
+
+        if (!resolution.IsConfigured)
+        {
+            nodeContext.Error(
+                "SignalSender: no Signal channel is configured (no registered System.Communication/SignalChannel and no legacy number/apiUrl settings)");
+            return;
+        }
+
+        var apiUrl = resolution.ApiUrl!;
+        var number = resolution.Number!;
 
         var recipient = ResolveStringValue(dataContext, c.RecipientPath, c.Recipient);
         if (string.IsNullOrWhiteSpace(recipient))
@@ -52,10 +77,10 @@ public class SignalSenderNode(
             attachments = new[] { prefix + attachmentBase64 };
         }
 
-        var payload = new SignalSendPayload(c.Number, new[] { recipient }, message, attachments);
+        var payload = new SignalSendPayload(number, new[] { recipient }, message, attachments);
         var payloadJson = JsonSerializer.Serialize(payload, SystemTextJsonOptions.Default);
 
-        var url = $"{c.ApiUrl.TrimEnd('/')}/v2/send";
+        var url = $"{apiUrl.TrimEnd('/')}/v2/send";
 
         var client = httpClientFactory.CreateClient("Signal");
         client.Timeout = TimeSpan.FromSeconds(c.TimeoutSeconds);

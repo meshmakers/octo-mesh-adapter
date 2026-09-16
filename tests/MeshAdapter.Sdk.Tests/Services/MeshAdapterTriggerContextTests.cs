@@ -3,6 +3,8 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -21,6 +23,7 @@ public class MeshAdapterTriggerContextTests
     private readonly IEtlDataOrchestrator _etlDataOrchestrator;
     private readonly IContextCreatorService _contextCreatorService;
     private readonly IPipelineExecutionReporter _executionReporter;
+    private readonly IPipelineDebugger _pipelineDebugger;
     private readonly MeshAdapterTriggerContext _sut;
     private readonly RtEntityId _pipelineRtEntityId;
     private readonly PipelineRegistration _pipelineRegistration;
@@ -31,6 +34,7 @@ public class MeshAdapterTriggerContextTests
         _etlDataOrchestrator = A.Fake<IEtlDataOrchestrator>();
         _contextCreatorService = A.Fake<IContextCreatorService>();
         _executionReporter = A.Fake<IPipelineExecutionReporter>();
+        _pipelineDebugger = A.Fake<IPipelineDebugger>();
 
         var services = new ServiceCollection();
         services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace));
@@ -38,6 +42,7 @@ public class MeshAdapterTriggerContextTests
         services.AddSingleton(_etlDataOrchestrator);
         services.AddSingleton(_contextCreatorService);
         services.AddSingleton(_executionReporter);
+        services.AddSingleton(_pipelineDebugger);
         var serviceProvider = services.BuildServiceProvider();
 
         _pipelineRtEntityId = new RtEntityId("System.Communication/Pipeline", OctoObjectId.GenerateNewId());
@@ -176,5 +181,92 @@ public class MeshAdapterTriggerContextTests
                 "Pipeline failed",
                 null))
             .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_DryRun_PassesDryRunModeAndForcesDebuggerOn()
+    {
+        // Arrange: debugging is off on the registration, so the only debugger the orchestrator
+        // can receive is the one the dry run forces on - without one, the intents the Load
+        // nodes record have nowhere to go (AB#5159).
+        ArrangeEtlContext();
+
+        // Act
+        var executionId = await _sut.StartExecutePipelineAsync(
+            new ExecutePipelineOptions(DateTime.UtcNow) { IsDryRun = true });
+        await _sut.EndExecutePipelineAsync(executionId);
+
+        // Assert
+        A.CallTo(() => _etlDataOrchestrator.ExecutePipelineAsync(
+                A<NodeDefinitionRoot>._, A<IMeshEtlContext>._, _pipelineDebugger, A<object?>._,
+                A<IPipelineExecutionMode>.That.Matches(m => m != null && m.IsDryRun)))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _pipelineDebugger.RegisterPipelineRtEntityId(_pipelineRtEntityId, executionId))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_DryRun_WithDebuggingEnabled_KeepsThePipelineDebugger()
+    {
+        // Arrange: the pipeline's own debugger already captures the intents, so the dry run
+        // must pass the mode without resolving and registering a second debugger on top.
+        UseRegistrationWithDebuggingEnabled();
+        ArrangeEtlContext();
+
+        // Act
+        var executionId = await _sut.StartExecutePipelineAsync(
+            new ExecutePipelineOptions(DateTime.UtcNow) { IsDryRun = true });
+        await _sut.EndExecutePipelineAsync(executionId);
+
+        // Assert
+        A.CallTo(() => _etlDataOrchestrator.ExecutePipelineAsync(
+                A<NodeDefinitionRoot>._, A<IMeshEtlContext>._, _pipelineDebugger, A<object?>._,
+                A<IPipelineExecutionMode>.That.Matches(m => m != null && m.IsDryRun)))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _pipelineDebugger.RegisterPipelineRtEntityId(_pipelineRtEntityId, executionId))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_RealRun_PassesNoModeAndNoDebugger()
+    {
+        // Arrange: classic semantics - no mode object at all, and the debugger stays opt-in
+        // through the registration's IsDebuggingEnabled.
+        ArrangeEtlContext();
+
+        // Act
+        var executionId = await _sut.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow));
+        await _sut.EndExecutePipelineAsync(executionId);
+
+        // Assert
+        A.CallTo(() => _etlDataOrchestrator.ExecutePipelineAsync(
+                A<NodeDefinitionRoot>._, A<IMeshEtlContext>._, null, A<object?>._, null))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _pipelineDebugger.RegisterPipelineRtEntityId(A<RtEntityId>._, A<Guid>._))
+            .MustNotHaveHappened();
+    }
+
+    private void ArrangeEtlContext()
+    {
+        var etlContext = A.Fake<IMeshEtlContext>();
+        A.CallTo(() => etlContext.Properties).Returns(new Dictionary<string, object?>());
+        A.CallTo(() => _contextCreatorService.CreateEtlContext<IMeshEtlContext>(
+                A<PipelineRegistration>._, A<ExecutePipelineOptions>._, A<Guid>._))
+            .Returns(Task.FromResult(etlContext));
+    }
+
+    private void UseRegistrationWithDebuggingEnabled()
+    {
+        PipelineRegistration? registration = new PipelineRegistration(
+            TenantId,
+            _pipelineRegistration.DataFlowRtId,
+            _pipelineRtEntityId,
+            true,
+            _pipelineRegistration.NodeDefinitionRoot,
+            _pipelineRegistration.GlobalConfiguration,
+            _pipelineRegistration.Dictionary);
+        A.CallTo(() => _pipelineRegistryService.TryGetPipelineRegistration(
+                TenantId, _pipelineRtEntityId, out registration!))
+            .Returns(true);
     }
 }

@@ -28,6 +28,8 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetQueryByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<WriteVerifiedCallerNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationChannelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetStreamDataNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SftpListNodeConfiguration>();
@@ -40,6 +42,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<EMailSenderNodeConfiguration2>();
         pipelineBuilder.RegisterNodeConfiguration<SftpUploadNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SftpDeleteNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SignalSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeStreamDataInArchiveNodeConfiguration>();

@@ -61,6 +61,15 @@ public interface ISftpSession : IDisposable
 
     /// <summary>Creates the remote directory and any missing parent, if it does not exist.</summary>
     void EnsureDirectory(string remoteDirectory);
+
+    /// <summary>
+    /// Deletes a remote file. Returns false when the file did not exist, which is a state
+    /// rather than a failure: the caller's goal is that the file is gone, and whether this
+    /// session removed it or someone else already did makes no difference to that. Whether the
+    /// difference is worth reporting is the caller's decision, so it travels as a value. Every
+    /// other failure - no permission, no connection, a timeout - is raised.
+    /// </summary>
+    bool Delete(string remotePath);
 }
 
 /// <summary>

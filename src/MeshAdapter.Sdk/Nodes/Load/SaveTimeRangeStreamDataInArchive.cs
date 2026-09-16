@@ -164,7 +164,10 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
             return;
         }
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: this read is an ORPHAN GUARD — it asks whether the entity a
+        // row references still exists. A read filter would turn "you may not see it" into "it does
+        // not exist" and the node would refuse to insert perfectly good measurements.
+        var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
         var existingRtIds = new HashSet<OctoObjectId>();
         var requestedRtIds = new List<OctoObjectId>();

@@ -8,8 +8,13 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
+// AnyBitmap/Rectangle: cross-platform decode/crop/encode for the tall-image slicing (AB#5259).
+// IronSoftware.Drawing comes in with IronOcr, which this assembly already depends on for the
+// OCR nodes — no extra native payload is pulled in for it.
+using AnyBitmap = IronSoftware.Drawing.AnyBitmap;
 using Document = QuestPDF.Fluent.Document;
 using IElement = AngleSharp.Dom.IElement;
+using Rectangle = IronSoftware.Drawing.Rectangle;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -33,6 +38,26 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     // the whole document fails with "conflicting size constraints" at layout time.
     private const float ContentHeightPt = 620f;
 
+    // AB#5259: below this rendered width the print of a photographed receipt no longer
+    // survives the OCR rasterization (a 542x2573 shop receipt was shrunk to ~131pt ≈ 4.6cm
+    // and extracted as completely empty). A too-tall image whose shrink-to-fit width would
+    // land below this is sliced across pages instead; above it the plain shrink is kept, so
+    // a normal A4 scan that merely overshoots the content height stays a SINGLE page.
+    private const float MinShrunkImageWidthPt = 300f;
+
+    // Cap on the pages one image may occupy. An accidental panorama must not turn a single
+    // receipt into a hundred-page PDF; past the cap the shrink-to-fit fallback applies. AB#5259.
+    private const int MaxImageTiles = 12;
+
+    // Slicing needs the whole bitmap decoded in memory (~4 bytes/pixel). Refuse anything
+    // beyond this and fall back to the shrink — the adapter has been OOM-killed by a single
+    // poison attachment before (AB#5142) and that must not become possible here. AB#5259.
+    private const long MaxDecodablePixels = 40_000_000L;
+
+    // Neighbouring slices overlap by this fraction of a band so a receipt line that falls
+    // exactly on a band boundary is still complete in one of the two bands. AB#5259.
+    private const float TileOverlapRatio = 0.02f;
+
     static RenderHtmlPdfNode()
     {
         // meshmakers GmbH qualifies for the free QuestPDF Community license.
@@ -50,6 +75,21 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
+
+    // Invisible formatting characters: soft hyphen, combining grapheme joiner,
+    // zero-width space/non-joiner/joiner, word joiner, zero-width no-break space (BOM).
+    // Marketing-mail preheaders pad hundreds of these into hidden text; QuestPDF's
+    // text shaper cannot place such runs ("cannot render even a single character")
+    // and, depending on the platform's font fallback, either throws a layout
+    // exception or allocates until the process is OOM-killed (AB#5142). They carry
+    // no visible content, so stripping them is lossless for a rendered receipt.
+    [GeneratedRegex("[\\u00AD\\u034F\\u200B-\\u200D\\u2060\\uFEFF]")]
+    private static partial Regex InvisibleCharsRegex();
+
+    // Matches a trailing "!important" (with optional inner/outer spacing) on an
+    // inline style declaration value.
+    [GeneratedRegex(@"!\s*important\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ImportantSuffixRegex();
 
     private readonly record struct InlineStyle(bool Bold, bool Italic, bool Underline, bool Link)
     {
@@ -85,7 +125,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                         {
                             page.Header().Column(header =>
                             {
-                                header.Item().Text(title).FontSize(15).Bold();
+                                header.Item().Text(StripInvisible(title)).FontSize(15).Bold();
                                 header.Item().PaddingTop(6).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
                             });
                         }
@@ -100,7 +140,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                             }
                             else
                             {
-                                content2.Item().Text(content);
+                                content2.Item().Text(StripInvisible(content));
                             }
                         });
 
@@ -139,7 +179,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         var body = document.Body;
         if (body == null)
         {
-            col.Item().Text(html);
+            col.Item().Text(StripInvisible(html));
             return;
         }
 
@@ -194,6 +234,11 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
 
     private static void CollectInline(IElement element, InlineStyle style, List<InlineRun> buffer)
     {
+        if (IsHidden(element))
+        {
+            return;
+        }
+
         var name = element.LocalName;
         var childStyle = name switch
         {
@@ -232,7 +277,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     private static void DispatchBlock(IElement element, ColumnDescriptor col, InlineStyle style)
     {
         var name = element.LocalName;
-        if (SkippedTags.Contains(name))
+        if (SkippedTags.Contains(name) || IsHidden(element))
         {
             return;
         }
@@ -277,7 +322,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         var index = 1;
         foreach (var item in element.Children)
         {
-            if (item.LocalName != "li")
+            if (item.LocalName != "li" || IsHidden(item))
             {
                 continue;
             }
@@ -302,7 +347,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         }
 
         var grid = rows
-            .Select(r => r.Children.Where(c => c.LocalName is "td" or "th").ToList())
+            .Select(r => r.Children.Where(c => (c.LocalName is "td" or "th") && !IsHidden(c)).ToList())
             .ToList();
         var columnCount = grid.Max(cells => cells.Count);
         if (columnCount == 0)
@@ -344,10 +389,10 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         {
             switch (child.LocalName)
             {
-                case "tr":
+                case "tr" when !IsHidden(child):
                     rows.Add(child);
                     break;
-                case "thead" or "tbody" or "tfoot":
+                case "thead" or "tbody" or "tfoot" when !IsHidden(child):
                     CollectRows(child, rows);
                     break;
             }
@@ -357,7 +402,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
     private static void RenderPre(IElement element, ColumnDescriptor col)
     {
         col.Item().Background(Colors.Grey.Lighten4).Padding(6)
-            .Text(element.TextContent).FontFamily(Fonts.Consolas).FontSize(9);
+            .Text(StripInvisible(element.TextContent)).FontFamily(Fonts.Consolas).FontSize(9);
     }
 
     private static void RenderBlockquote(IElement element, ColumnDescriptor col, InlineStyle style)
@@ -375,7 +420,7 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
             var alt = element.GetAttribute("alt");
             if (!string.IsNullOrWhiteSpace(alt))
             {
-                col.Item().Text($"[{alt}]").Italic().FontColor(Colors.Grey.Medium);
+                col.Item().Text(StripInvisible($"[{alt}]")).Italic().FontColor(Colors.Grey.Medium);
             }
 
             return;
@@ -394,7 +439,22 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
                 var heightPt = widthPt * pixelHeight / pixelWidth;
                 if (heightPt > ContentHeightPt)
                 {
-                    widthPt = ContentHeightPt * pixelWidth / (float)pixelHeight;
+                    var shrunkWidthPt = ContentHeightPt * pixelWidth / (float)pixelHeight;
+
+                    // AB#5259: shrinking by WIDTH is the only way to fit a tall image on one
+                    // page, but for a portrait receipt photo it destroys the document — a
+                    // 542x2573 px shop receipt landed ~131pt wide and the OCR/AI stage
+                    // extracted nothing at all. Slice it into content-height bands and render
+                    // one per page at FULL content width instead. Only the genuinely extreme
+                    // aspect ratios go this way; the shrink remains for everything else and
+                    // as the fallback whenever the bitmap cannot be sliced.
+                    if (shrunkWidthPt < MinShrunkImageWidthPt
+                        && TryRenderTiled(bytes, pixelWidth, pixelHeight, col))
+                    {
+                        return;
+                    }
+
+                    widthPt = shrunkWidthPt;
                 }
 
                 col.Item().Width(widthPt).Image(bytes);
@@ -409,6 +469,97 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         catch
         {
             // Undecodable image payload — skip silently rather than fail the whole receipt.
+        }
+    }
+
+    /// <summary>
+    /// Slices a too-tall image into <see cref="ContentHeightPt"/>-sized horizontal bands and
+    /// emits one band per page at full content width. QuestPDF cannot break a single image
+    /// across pages, so the split has to happen on the pixels — hence the decode/crop/encode
+    /// round trip. Returns <c>false</c> (and renders nothing) whenever slicing is refused or
+    /// fails, so the caller can fall back to the plain shrink-to-fit. AB#5259.
+    /// </summary>
+    private static bool TryRenderTiled(byte[] bytes, int pixelWidth, int pixelHeight, ColumnDescriptor col)
+    {
+        // Pre-check on the sniffed header dimensions so an absurd image is rejected BEFORE
+        // it is decoded — the point of the guard is not to allocate it in the first place.
+        if ((long)pixelWidth * pixelHeight > MaxDecodablePixels)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var bitmap = AnyBitmap.FromBytes(bytes);
+
+            // Recompute from the decoded bitmap rather than the header: an EXIF-rotated JPEG
+            // reports its pre-rotation dimensions in the SOF marker, and cropping with those
+            // would slice the wrong axis.
+            var width = bitmap.Width;
+            var height = bitmap.Height;
+            if (width <= 0 || height <= 0)
+            {
+                return false;
+            }
+
+            var fullHeightPt = ContentWidthPt * height / width;
+            var tiles = (int)Math.Ceiling(fullHeightPt / ContentHeightPt);
+            if (tiles is < 2 or > MaxImageTiles)
+            {
+                return false;
+            }
+
+            // A screenshot (PNG/GIF/BMP) must stay lossless — its text is thin and
+            // JPEG ringing is exactly what OCR trips over. A photo is re-encoded as JPEG,
+            // where a lossless band would multiply the attachment size for no gain.
+            var format = bitmap.GetImageFormat() == AnyBitmap.ImageFormat.Jpeg
+                ? AnyBitmap.ImageFormat.Jpeg
+                : AnyBitmap.ImageFormat.Png;
+
+            var bandHeight = (int)Math.Ceiling(height / (double)tiles);
+            var overlap = (int)(bandHeight * TileOverlapRatio);
+
+            // Encode every band BEFORE emitting any of it: a failure halfway through must
+            // leave the column untouched, otherwise the caller's shrink fallback would be
+            // appended below a few already-rendered bands.
+            var bands = new List<byte[]>(tiles);
+            for (var i = 0; i < tiles; i++)
+            {
+                var top = i == 0 ? 0 : Math.Max(0, i * bandHeight - overlap);
+                var bottom = Math.Min(height, (i + 1) * bandHeight);
+                if (bottom <= top)
+                {
+                    break;
+                }
+
+                using var band = bitmap.Clone(new Rectangle(0, top, width, bottom - top));
+                bands.Add(band.ExportBytes(format, 95));
+            }
+
+            if (bands.Count == 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < bands.Count; i++)
+            {
+                // One band per page: the bands are sized to the content height, so letting
+                // them flow would still fit two partial bands on a page and split the
+                // receipt at an arbitrary place a second time.
+                if (i > 0)
+                {
+                    col.Item().PageBreak();
+                }
+
+                col.Item().Width(ContentWidthPt).Image(bands[i]);
+            }
+
+            return true;
+        }
+        catch
+        {
+            // Undecodable or unsupported payload — the caller falls back to the shrink.
+            return false;
         }
     }
 
@@ -573,7 +724,76 @@ public partial class RenderHtmlPdfNode(NodeDelegate next) : IPipelineNode
         return result;
     }
 
-    private static string Normalize(string text) => WhitespaceRegex().Replace(text, " ");
+    private static string Normalize(string text) =>
+        WhitespaceRegex().Replace(InvisibleCharsRegex().Replace(text, string.Empty), " ");
+
+    /// <summary>
+    /// True when the element's inline style hides it (<c>display:none</c> or
+    /// <c>visibility:hidden</c>). Hidden containers — the marketing-mail preheader
+    /// pattern — are skipped entirely: their text is invisible in every mail client,
+    /// and it is exactly where senders park layout-breaking filler (AB#5142).
+    /// The declarations are evaluated with inline-CSS semantics: the last
+    /// declaration of a property wins, except that an <c>!important</c> one beats
+    /// later non-important ones — so <c>display:none;display:block</c> is visible.
+    /// </summary>
+    private static bool IsHidden(IElement element)
+    {
+        var style = element.GetAttribute("style");
+        if (string.IsNullOrEmpty(style))
+        {
+            return false;
+        }
+
+        string? display = null;
+        var displayImportant = false;
+        string? visibility = null;
+        var visibilityImportant = false;
+
+        foreach (var declaration in style.Split(';'))
+        {
+            var colon = declaration.IndexOf(':');
+            if (colon < 0)
+            {
+                continue;
+            }
+
+            var property = declaration[..colon].Trim();
+            var value = declaration[(colon + 1)..].Trim();
+            var important = ImportantSuffixRegex().IsMatch(value);
+            if (important)
+            {
+                value = ImportantSuffixRegex().Replace(value, string.Empty).TrimEnd();
+            }
+
+            if (property.Equals("display", StringComparison.OrdinalIgnoreCase))
+            {
+                if (important || !displayImportant)
+                {
+                    display = value;
+                    displayImportant = important;
+                }
+            }
+            else if (property.Equals("visibility", StringComparison.OrdinalIgnoreCase))
+            {
+                if (important || !visibilityImportant)
+                {
+                    visibility = value;
+                    visibilityImportant = important;
+                }
+            }
+        }
+
+        return string.Equals(display, "none", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(visibility, "hidden", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Removes the invisible formatting characters QuestPDF cannot place. Applied at
+    /// EVERY text sink — parsed HTML runs go through <see cref="Normalize"/>, while
+    /// plain text, titles, <c>&lt;pre&gt;</c> content and image alt fallbacks reach
+    /// QuestPDF raw and must be stripped without collapsing their line breaks.
+    /// </summary>
+    private static string StripInvisible(string text) => InvisibleCharsRegex().Replace(text, string.Empty);
 
     private static string? ReadOptionalString(IDataContext dataContext, string? path)
     {

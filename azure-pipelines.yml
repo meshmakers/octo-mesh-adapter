@@ -49,19 +49,14 @@ parameters:
     default: 'auto'
 
 resources:
+  # Chain link: exactly ONE upstream pipeline resource per repo. Pipeline
+  # resource triggers do NOT batch, so a repo with two trigger parents is
+  # started twice per main cascade. The chain is therefore a single-parent
+  # tree; artificial ordering edges (marked below) resolve real DAG joins.
+  # Full picture: octo-mesh-deployment/pipelines/orchestrator-ci.yml.
+  # comm-sdk only: octo-common-services is upstream of comm-sdk in the
+  # chain, so both package sets are fresh when this fires.
   pipelines:
-    - pipeline: octo-common-services
-      source: octo-common-services-CI
-      trigger:
-        branches:
-          include:
-            - main
-    # Phase 3 of the YAML migration carved the adapter framework out of
-    # octo-sdk into octo-communication-sdk. mesh-adapter restores
-    # Meshmakers.Octo.Sdk.{Pipeline,Adapters,CommunicationAdapter,Common.Web,
-    # SimulationNodes} from this repo, so its CI must re-fire when those
-    # NuGets are republished. octo-sdk + DEH + CK-Engine are reached
-    # transitively (octo-communication-sdk watches octo-sdk).
     - pipeline: octo-communication-sdk
       source: octo-communication-sdk-CI
       trigger:

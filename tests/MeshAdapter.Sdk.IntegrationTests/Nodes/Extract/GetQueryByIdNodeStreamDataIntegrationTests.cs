@@ -2,10 +2,12 @@
 using MeshAdapter.Sdk.IntegrationTests.Fixtures;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.ConstructionKit.Models.StreamData.Generated.System.StreamData.v1;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
@@ -305,8 +307,218 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
             () => ExecuteNodeAndGetQueryResultAsync(config));
     }
 
+    /// <summary>
+    /// AB#5157 against real CrateDB coverage: the half-hour rung that answers the 30-minute bins
+    /// exactly holds no data for the first half of the window, so the resolver falls back to the
+    /// covering hourly rung and signals <c>CoverageLimited</c>. The hourly rung cannot answer
+    /// 30-minute bins (they are not a whole multiple of its bucket), so the exactness gate declines it
+    /// and the query stays on the archive it names — the outcome this fixture produces is
+    /// <b>warning present, persisted archive kept</b>.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_WithFinestRungStartingLate_WarnsCoverageLimitedAndKeepsPersistedArchive()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var ladder = await CreateResolutionLadderAsync("CoverageLadder");
+
+        // 8 h / 16 buckets ⇒ 30-minute bins: the half-hour rung is the exact fit, but it only starts
+        // four hours into the window.
+        var queryRtId = await CreateDownsamplingStreamDataQueryForArchiveAsync(
+            "DownsamplingSdQuery_CoverageLimited", ladder.BaseArchiveRtId, ladder.From, ladder.To, 16,
+            ("Temperature", RtAggregationTypesEnum.Sum));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var (result, logger) = await ExecuteNodeAndCaptureLogAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Rows.Should().HaveCount(16, "the query's own bin geometry is executed verbatim");
+
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("CoverageLimited"), A<object[]>._))
+            .MustHaveHappened();
+        // The diagnostic names the rung the measured coverage excluded.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains(ladder.HalfHourRollupRtId.ToString()), A<object[]>._))
+            .MustHaveHappened();
+        // The hourly fallback fails the exactness gate, so the persisted archive answers the query.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains("whole multiple"), A<object[]>._))
+            .MustHaveHappened();
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Contains($"Querying '{ladder.BaseArchiveRtId}' instead"), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    /// The same ladder answered at its native resolution: 15-minute bins are finer than every rollup
+    /// rung, so the base archive is returned unreduced — signal <c>Ok</c>, and the node reports nothing
+    /// as a warning. The coverage filter is present here too and must stay silent when it changes
+    /// nothing.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_WithOkResolutionSignal_ReportsNoWarning()
+    {
+        // Arrange
+        fixture.EnsureInitialized();
+
+        var ladder = await CreateResolutionLadderAsync("OkSignalLadder");
+
+        // 8 h / 32 buckets ⇒ 15-minute bins: no rollup is that fine, and the base's 32 native points
+        // already fit the target, so the resolver returns the base unreduced.
+        var queryRtId = await CreateDownsamplingStreamDataQueryForArchiveAsync(
+            "DownsamplingSdQuery_OkSignal", ladder.BaseArchiveRtId, ladder.From, ladder.To, 32,
+            ("Temperature", RtAggregationTypesEnum.Sum));
+
+        var config = new GetQueryByIdNodeConfiguration
+        {
+            QueryRtId = queryRtId,
+            TargetPath = "$.queryResult"
+        };
+
+        // Act
+        var (result, logger) = await ExecuteNodeAndCaptureLogAsync(config);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.Rows.Should().HaveCount(32, "each 15-minute window falls into its own bin");
+
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustNotHaveHappened();
+        A.CallTo(() => logger.Info(A<string>._, A<string>._,
+                A<string>.That.Contains(ladder.BaseArchiveRtId.ToString()), A<object[]>._))
+            .MustHaveHappened();
+    }
+
+    /// <summary>
+    /// One resolution family in real storage: a 15-minute time-range base archive covering the last
+    /// eight full hours, plus two fixed-size rollup rungs over it. The half-hour rung is deliberately
+    /// aggregated only from the middle of the window — the shape of a rollup provisioned after the fact
+    /// and never backfilled — while the hourly rung covers the whole of it.
+    /// </summary>
+    private async Task<ResolutionLadder> CreateResolutionLadderAsync(string name)
+    {
+        var systemContext = fixture.GetSystemContext();
+        var tenantRepository = systemContext.GetSystemTenantRepository();
+        var ckCacheService = fixture.GetService<ICkCacheService>();
+        await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
+
+        var tenantContext = await systemContext.FindTenantContextAsync(systemContext.TenantId);
+        var archiveLifecycle = tenantContext.GetArchiveLifecycleService()
+            ?? throw new InvalidOperationException("ArchiveLifecycleService not registered.");
+        var rollupLifecycle = tenantContext.GetRollupArchiveLifecycleService()
+            ?? throw new InvalidOperationException("RollupArchiveLifecycleService not registered.");
+        var orchestrator = tenantContext.GetRollupOrchestrator()
+            ?? throw new InvalidOperationException("RollupOrchestrator not registered.");
+        var repo = tenantContext.GetStreamDataRepository()
+            ?? throw new InvalidOperationException("StreamDataRepository not available.");
+
+        // The rollup orchestrator only aggregates buckets that are fully in the past, so the window
+        // ends on the last full hour and the data sits behind it.
+        var now = DateTime.UtcNow;
+        var to = new DateTime(now.Year, now.Month, now.Day, now.Hour, 0, 0, DateTimeKind.Utc);
+        var from = to.AddHours(-8);
+
+        var baseArchive = new RtTimeRangeArchive
+        {
+            RtWellKnownName = $"{name}Base",
+            TargetCkTypeId = fixture.TestCkTypeId,
+            Status = RtCkArchiveStatusEnum.Created,
+            Period = TimeSpan.FromMinutes(15),
+            Columns = new AttributeRecordValueList<RtCkArchiveColumnRecord>
+            {
+                new() { Path = "Temperature", Indexed = true, Required = false }
+            }
+        };
+
+        using (var session = await tenantRepository.GetSessionAsync())
+        {
+            session.StartTransaction();
+            await tenantRepository.InsertOneRtEntityAsync(session, baseArchive);
+            await session.CommitTransactionAsync();
+        }
+
+        await archiveLifecycle.ActivateAsync(baseArchive.RtId);
+
+        var ckTypeId = new RtCkId<CkTypeId>(fixture.TestCkTypeId);
+        var meterRtId = OctoObjectId.GenerateNewId();
+        var points = new List<TimeRangeStreamDataPoint>();
+        for (var slot = 0; slot < 32; slot++)
+        {
+            var slotStart = from.AddMinutes(15 * slot);
+            points.Add(new TimeRangeStreamDataPoint
+            {
+                From = slotStart,
+                To = slotStart.AddMinutes(15),
+                RtId = meterRtId,
+                CkTypeId = ckTypeId,
+                RtWellKnownName = $"{name}-METER",
+                Attributes = new Dictionary<string, object?> { ["Temperature"] = 20.0 + slot }
+            });
+        }
+
+        await repo.InsertTimeRangeAsync(baseArchive.RtId, points);
+        await fixture.RefreshArchiveAsync(baseArchive.RtId);
+
+        // The half-hour rung starts halfway through the window, the hourly one covers all of it.
+        var halfHourRtId = await CreateAndFillRollupAsync(
+            $"{name}HalfHour", baseArchive.RtId, TimeSpan.FromMinutes(30), from.AddHours(4));
+        var hourRtId = await CreateAndFillRollupAsync(
+            $"{name}Hour", baseArchive.RtId, TimeSpan.FromHours(1), from);
+
+        return new ResolutionLadder(baseArchive.RtId, halfHourRtId, hourRtId, from, to);
+
+        async Task<OctoObjectId> CreateAndFillRollupAsync(
+            string rollupName, OctoObjectId sourceRtId, TimeSpan bucketSize, DateTime aggregateFrom)
+        {
+            var rollupRtId = await rollupLifecycle.CreateAsync(
+                rollupName,
+                [new RollupSourceReference(sourceRtId)],
+                bucketSize,
+                TimeSpan.Zero,
+                [new CkRollupAggregationSpec("Temperature", CkRollupFunction.Sum, null)]);
+
+            await archiveLifecycle.ActivateAsync(rollupRtId);
+
+            // Activation seeds the watermark at "now", so the rung would hold nothing at all. Rewinding
+            // it to the intended start is what makes the coverage of the two rungs differ.
+            await rollupLifecycle.RewindWatermarkAsync(rollupRtId, aggregateFrom);
+            await orchestrator.ProcessRollupAsync(rollupRtId, CancellationToken.None);
+            await fixture.RefreshArchiveAsync(rollupRtId);
+
+            return rollupRtId;
+        }
+    }
+
+    /// <summary>One resolution family: the base archive, its two rollup rungs and the seeded window.</summary>
+    private sealed record ResolutionLadder(
+        OctoObjectId BaseArchiveRtId,
+        OctoObjectId HalfHourRollupRtId,
+        OctoObjectId HourRollupRtId,
+        DateTime From,
+        DateTime To);
+
     private async Task<OctoObjectId> CreateDownsamplingStreamDataQueryAsync(
         string name, DateTime? from, DateTime? to, int? limit,
+        params (string path, RtAggregationTypesEnum type)[] columns)
+    {
+        return await CreateDownsamplingStreamDataQueryForArchiveAsync(name, null, from, to, limit, columns);
+    }
+
+    /// <summary>
+    /// A downsampling query against an archive the test created itself (a resolution ladder's base),
+    /// rather than the fixture's shared raw archive.
+    /// </summary>
+    private async Task<OctoObjectId> CreateDownsamplingStreamDataQueryForArchiveAsync(
+        string name, OctoObjectId? archiveRtId, DateTime? from, DateTime? to, int? limit,
         params (string path, RtAggregationTypesEnum type)[] columns)
     {
         return await CreateStreamDataQueryAsync<RtDownsamplingSdQuery>(name, query =>
@@ -322,7 +534,7 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
                     AggregationType = type
                 });
             }
-        });
+        }, archiveRtId);
     }
 
     private async Task<OctoObjectId> CreateAggregationStreamDataQueryAsync(
@@ -358,7 +570,8 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
         });
     }
 
-    private async Task<OctoObjectId> CreateStreamDataQueryAsync<TQuery>(string name, Action<TQuery> configure)
+    private async Task<OctoObjectId> CreateStreamDataQueryAsync<TQuery>(string name, Action<TQuery> configure,
+        OctoObjectId? archiveRtId = null)
         where TQuery : RtStreamDataQuery, new()
     {
         var systemContext = fixture.GetSystemContext();
@@ -373,7 +586,7 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
         query.Name = name;
         query.RtWellKnownName = name;
         query.QueryCkTypeId = fixture.TestCkTypeId;
-        query.ArchiveRtId = fixture.ArchiveRtIdString;
+        query.ArchiveRtId = (archiveRtId ?? fixture.ArchiveRtId).ToString();
         configure(query);
 
         await tenantRepository.InsertOneRtEntityAsync(session, query);
@@ -408,6 +621,17 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
     private async Task<QueryResult?> ExecuteNodeAndGetQueryResultAsync(
         GetQueryByIdNodeConfiguration config)
     {
+        var (result, _) = await ExecuteNodeAndCaptureLogAsync(config);
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="ExecuteNodeAndGetQueryResultAsync" /> that also hands back the faked pipeline logger,
+    /// so a test can assert what the node reported — the resolution signals above all.
+    /// </summary>
+    private async Task<(QueryResult? Result, IPipelineLogger Logger)> ExecuteNodeAndCaptureLogAsync(
+        GetQueryByIdNodeConfiguration config)
+    {
         var systemContext = fixture.GetSystemContext();
         var tenantRepository = systemContext.GetSystemTenantRepository();
         var ckCacheService = fixture.GetService<ICkCacheService>();
@@ -434,7 +658,7 @@ public class GetQueryByIdNodeStreamDataIntegrationTests(StreamDataFixture fixtur
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        return capturedResult;
+        return (capturedResult, logger);
     }
 
     private static MeshEtlContext CreateMeshEtlContext(ITenantRepository tenantRepository)

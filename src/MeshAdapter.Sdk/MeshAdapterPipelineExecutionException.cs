@@ -414,6 +414,24 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Cannot download file via SFTP: {exception.Message}", exception);
     }
 
+    public static Exception CannotDeleteViaSftp(INodeContext nodeContext, string remotePath, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot delete file '{remotePath}' via SFTP: {exception.Message}", exception);
+    }
+
+    public static Exception SftpFileNotFound(INodeContext nodeContext, string remotePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote file '{remotePath}' does not exist and OnMissingFile is 'Fail'. Use 'Ignore' where a file someone else already removed is an acceptable outcome, for example when a run is repeated after a partial pass.");
+    }
+
+    public static Exception RemotePathIsDirectory(INodeContext nodeContext, string remotePath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote path '{remotePath}' ends with '/', which names a directory. This node deletes exactly one file.");
+    }
+
     public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)
     {
         return new MeshAdapterPipelineExecutionException(
@@ -1121,5 +1139,20 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: URL '{url}' names its own scheme while an ApiConfiguration is " +
             "set, which configures the host to talk to. Configure a path relative to the configured " +
             "base URL, or drop the ApiConfiguration and supply the header yourself.");
+    }
+
+    /// <summary>
+    ///     The pipeline has a service account but its identity could not be established (AB#5028).
+    ///     Deliberately fatal: falling back to the system context would run the pipeline with MORE
+    ///     rights than the operator granted, and nothing downstream could tell that apart from a
+    ///     correctly restricted run.
+    /// </summary>
+    public static Exception ServiceAccountIdentityUnavailable(string tenantId, string clientId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{tenantId}]: The pipeline runs under service account client '{clientId}', but no token " +
+            "could be acquired for it, so its identity is unknown. The execution is refused rather " +
+            "than continued as the system context, which would bypass data permissions. Check the " +
+            "ServiceAccountConfiguration (issuer, client id, client secret) and the identity service.");
     }
 }

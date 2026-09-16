@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MeshAdapter.Sdk.Tests.Helpers;
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -21,23 +22,15 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 /// <c>ExtractDateTime</c> comparison (including the record-typed <c>TimeRange.From</c> path the energy
 /// simulation uses).
 /// </summary>
-public class UpdateRtEntityIfNewerNodeTests
+public class UpdateRtEntityIfNewerNodeTests : SessionNodeTestBase
 {
     private const string CkTypeId = "Basic.Energy/EnergyMeasurement";
     private const string Wkn = "MP1-1.8.0";
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public UpdateRtEntityIfNewerNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
         SetupExistingEntities();
     }
 
@@ -45,7 +38,7 @@ public class UpdateRtEntityIfNewerNodeTests
     {
         var resultSet = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => resultSet.Items).Returns(existing);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
             .Returns(Task.FromResult<IResultSet<RtEntity>>(resultSet));
     }
@@ -106,7 +99,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var filtered = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered");
         Assert.NotNull(filtered);
@@ -140,7 +133,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var inserted = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Equal(3, inserted.RtEntity!.GetAttributeValue<int>("slot"));
@@ -175,7 +168,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
 
@@ -201,7 +194,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
@@ -256,7 +249,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(config, input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var inserted = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Equal(2, inserted.RtEntity!.GetAttributeValue<int>("slot"));
@@ -324,7 +317,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var filtered = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Equal(EntityModOptions.Update, filtered.ModOption);
@@ -347,7 +340,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         var kept = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
@@ -371,7 +364,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
     }
@@ -395,7 +388,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var filtered = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Equal(EntityModOptions.Insert, filtered.ModOption);
@@ -421,7 +414,7 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var filtered = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Equal(EntityModOptions.Insert, filtered.ModOption);
@@ -438,13 +431,13 @@ public class UpdateRtEntityIfNewerNodeTests
 
         var (dataContext, nodeContext, next) = PrepareRealContext(RecordConfig(), input);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._filtered")!);
         Assert.Empty(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>("$._all")!);
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
         // Nothing to dedup -> no DB round-trip.
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._, A<RtCkId<CkTypeId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
             .MustNotHaveHappened();
     }
@@ -497,7 +490,7 @@ public class UpdateRtEntityIfNewerNodeTests
         };
         dataContext.Set("$._assocIn", assocInput);
 
-        await new UpdateRtEntityIfNewerNode(next, _etlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new UpdateRtEntityIfNewerNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
 
         var assocs = dataContext.Get<List<AssociationUpdateInfo>>("$._assocOut");
         Assert.NotNull(assocs);

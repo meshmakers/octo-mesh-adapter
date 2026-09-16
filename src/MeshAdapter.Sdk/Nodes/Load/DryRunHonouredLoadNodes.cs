@@ -37,6 +37,9 @@ public static class DryRunHonouredLoadNodes
     /// <summary>NodeName@Version key for <see cref="SaveTimeRangeStreamDataInArchive"/>.</summary>
     public const string SaveTimeRangeStreamDataInArchive = "SaveTimeRangeStreamDataInArchive@1";
 
+    /// <summary>NodeName@Version key for <see cref="SftpDeleteNode"/>.</summary>
+    public const string SftpDelete = "SftpDelete@1";
+
     /// <summary>NodeName@Version key for <see cref="SftpUploadNode"/>.</summary>
     public const string SftpUpload = "SftpUpload@1";
 
@@ -61,6 +64,7 @@ public static class DryRunHonouredLoadNodes
         GrafanaDeprovisionTenant,
         SaveStreamDataInArchive,
         SaveTimeRangeStreamDataInArchive,
+        SftpDelete,
         SftpUpload,
         ToDiscord
     };

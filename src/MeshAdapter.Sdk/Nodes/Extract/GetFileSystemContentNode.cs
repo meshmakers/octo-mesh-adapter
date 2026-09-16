@@ -35,7 +35,10 @@ public class GetFileSystemContentNode(NodeDelegate next, IMeshEtlContext etlCont
 
         var rtId = OctoObjectId.Parse(rtIdValue);
 
-        var session = await etlContext.TenantRepository.GetSessionAsync();
+        // AB#5028 — SYSTEM by decision: this is the binary-download side of the outgoing channels.
+        // Attachments regularly belong to somebody else than whoever triggered the run, and a read
+        // filter here does not fail the node — it sends the message without its attachment.
+        var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
 
         var entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session,

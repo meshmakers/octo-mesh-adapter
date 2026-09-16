@@ -35,25 +35,17 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 /// both of which understood JSONPath. After the fix, the node delegates to
 /// <c>JsonNodePath.Select</c> / <c>JsonNodePath.Set</c> from the SDK.
 /// </summary>
-public class GetRtEntitiesByWellKnownNameTypeNodeTests : NodeTestBase
+public class GetRtEntitiesByWellKnownNameTypeNodeTests : SessionNodeTestBase
 {
     private const string TestTenantId = "test-tenant";
     private static readonly RtCkId<CkTypeId> TestRtCkTypeId = new("TestModel/TestType");
     private static readonly OctoObjectId TestRtId = new("000000000000000000000001");
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public GetRtEntitiesByWellKnownNameTypeNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantId).Returns(TestTenantId);
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        A.CallTo(() => EtlContext.TenantId).Returns(TestTenantId);
     }
 
     private static GetRtEntitiesByWellKnownNameNodeConfiguration DefaultConfig() => new()
@@ -80,8 +72,8 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : NodeTestBase
     private void SetupRepositoryToReturn(params RtEntity[] entities)
     {
         var resultSet = new ResultSet<RtEntity>(entities, entities.Length, null, null);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
-                _session,
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
+                Session,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
                 A<int?>._,
@@ -107,7 +99,7 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : NodeTestBase
 
         var config = DefaultConfig();
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetRtEntitiesByWellKnownName");
-        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, _etlContext);
+        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -150,8 +142,8 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : NodeTestBase
         // populate the query options (which we capture below).
         var resultSet = new ResultSet<RtEntity>([], 0, null, null);
         var capturedQueryOptions = (RtEntityQueryOptions?)null;
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
-                _session,
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
+                Session,
                 A<RtCkId<CkTypeId>>._,
                 A<RtEntityQueryOptions>._,
                 A<int?>._,
@@ -161,7 +153,7 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : NodeTestBase
 
         var config = DefaultConfig();
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetRtEntitiesByWellKnownName");
-        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, _etlContext);
+        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -191,7 +183,7 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : NodeTestBase
 
         var config = DefaultConfig() with { GenerateInsertOperation = true, AttributeTargetPath = "$.attributes" };
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetRtEntitiesByWellKnownName");
-        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, _etlContext);
+        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

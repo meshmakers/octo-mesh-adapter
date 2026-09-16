@@ -13,19 +13,15 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class ImportDataPointMappingsNodeTests : NodeTestBase
+public class ImportDataPointMappingsNodeTests : SessionNodeTestBase
 {
     private static readonly RtCkId<CkTypeId> ControlType = new("Loxone/Control");
     private static readonly RtCkId<CkTypeId> SpaceType = new("EnergyIQ/Space");
 
-    private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
-    private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
-    private readonly IOctoSession _session = A.Fake<IOctoSession>();
 
     public ImportDataPointMappingsNodeTests()
     {
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        GivenSystemSessionIsExpected();
     }
 
     [Fact]
@@ -56,7 +52,7 @@ public class ImportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config, document);
-        var node = new ImportDataPointMappingsNode(next, _etlContext);
+        var node = new ImportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -100,7 +96,7 @@ public class ImportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config, document);
-        var node = new ImportDataPointMappingsNode(next, _etlContext);
+        var node = new ImportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -130,7 +126,7 @@ public class ImportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config, document);
-        var node = new ImportDataPointMappingsNode(next, _etlContext);
+        var node = new ImportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -162,7 +158,7 @@ public class ImportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config, document);
-        var node = new ImportDataPointMappingsNode(next, _etlContext);
+        var node = new ImportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -185,7 +181,7 @@ public class ImportDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config, null);
-        var node = new ImportDataPointMappingsNode(next, _etlContext);
+        var node = new ImportDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -225,7 +221,7 @@ public class ImportDataPointMappingsNodeTests : NodeTestBase
         var resultSet = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => resultSet.Items).Returns(entities.ToList());
         A.CallTo(() => resultSet.TotalCount).Returns(entities.Length);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 ckTypeId,
                 A<RtEntityQueryOptions>._,

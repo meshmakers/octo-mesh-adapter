@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Cryptography.Pkcs;
 using System.Text;
@@ -6,8 +7,11 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using MimeKit;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
+
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
@@ -15,7 +19,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class FromMicrosoftGraphEmailNode(
     ILogger<FromMicrosoftGraphEmailNode> logger,
-    IHttpClientFactory httpClientFactory)
+    IHttpClientFactory httpClientFactory,
+    IChannelCallerBinder callerBinder)
     : ITriggerPipelineNode
 {
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
@@ -47,12 +52,73 @@ internal class FromMicrosoftGraphEmailNode(
 
         var graphConfig = context.GlobalConfiguration.GetValue<GraphConfiguration>(c.ServerConfiguration);
 
+        // Mailbox / folders may live in a configuration entity instead of the pipeline
+        // definition (see SettingsConfiguration) so a redeploy never overwrites what an
+        // operator configured and nothing tenant-specific leaks into the seed. A value
+        // found in the settings configuration takes precedence over the node property.
+        var effectiveConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, c);
+
+        if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
+        {
+            logger.LogInformation(
+                "FromMicrosoftGraphEmail: resolved mailbox/folders from settings configuration '{Settings}' (folder='{Folder}', moveTo='{MoveTo}')",
+                c.SettingsConfiguration, effectiveConfig.FolderPath, effectiveConfig.MoveToFolderPathOnSuccess);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveConfig.Mailbox))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.Mailbox),
+                c.SettingsConfiguration ?? c.ServerConfiguration);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveConfig.FolderPath))
+        {
+            throw MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(
+                context.NodeContext, nameof(c.FolderPath),
+                c.SettingsConfiguration ?? c.ServerConfiguration);
+        }
+
         _cancellationTokenSource = new CancellationTokenSource();
         _pollingTask = Task.Run(
-            async () => await PollForMessagesAsync(context, graphConfig, c),
+            async () => await PollForMessagesAsync(context, graphConfig, effectiveConfig),
             _cancellationTokenSource.Token);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="c"/> with Mailbox / FolderPath /
+    /// MoveToFolderPathOnSuccess / MoveToFolderPathOnFailure / PollingIntervalSeconds resolved from the optional
+    /// settings configuration (well-known name <see cref="FromMicrosoftGraphEmailNodeConfiguration.SettingsConfiguration"/>).
+    /// A non-empty settings value overrides the corresponding node property; anything
+    /// missing falls back to the node property. The node stays domain-agnostic: which
+    /// attributes to read is given by the *Attribute node properties.
+    /// </summary>
+    internal static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
+        IGlobalConfiguration globalConfiguration, FromMicrosoftGraphEmailNodeConfiguration c)
+    {
+        var attributes = ConfigurationSettingsReader.TryGetAttributes(
+            globalConfiguration, c.SettingsConfiguration);
+        if (attributes is null)
+        {
+            // No settings configuration, undefined, or a malformed payload — keep the
+            // node properties (validated by the caller).
+            return c;
+        }
+
+        var attrs = attributes.Value;
+        return c with
+        {
+            Mailbox = ConfigurationSettingsReader.ReadString(attrs, c.MailboxAttribute) ?? c.Mailbox,
+            FolderPath = ConfigurationSettingsReader.ReadString(attrs, c.SourceFolderAttribute) ?? c.FolderPath,
+            MoveToFolderPathOnSuccess =
+                ConfigurationSettingsReader.ReadString(attrs, c.DoneFolderAttribute) ?? c.MoveToFolderPathOnSuccess,
+            MoveToFolderPathOnFailure =
+                ConfigurationSettingsReader.ReadString(attrs, c.FailedFolderAttribute) ?? c.MoveToFolderPathOnFailure,
+            PollingIntervalSeconds =
+                ConfigurationSettingsReader.ReadPositiveInt(attrs, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds,
+        };
     }
 
     public async Task StopAsync(ITriggerContext context)
@@ -89,10 +155,26 @@ internal class FromMicrosoftGraphEmailNode(
     {
         string? sourceFolderId = null;
         string? targetFolderId = null;
-        // Messages that keep failing are skipped after MaxAttemptsPerMessage tries so a
-        // poison message cannot block the folder queue; successful messages are moved
-        // away, so no bookkeeping is needed for them.
-        var failureCounts = new Dictionary<string, int>();
+        string? failureFolderId = null;
+        // AB#5260: a failure folder that cannot be resolved must not take the import
+        // down. Once the path turns out to be unusable we degrade to "skip exhausted
+        // messages" (the pre-AB#5142 behaviour) instead of failing every poll — the
+        // path is operator-entered configuration, and a typo in it used to stop
+        // *every* message from being imported, not just the exhausted ones.
+        var failureFolderUnusable = false;
+        // AB#5260: the markers are only visible in Outlook/OWA once their names exist in
+        // the mailbox's master category list. Ensured once per node lifetime; see
+        // TryRegisterImportCategoriesAsync for what "once" means when it fails.
+        var categoriesEnsured = false;
+        // In-process fallback attempt counter for mailboxes where the category stamp
+        // cannot be written; the authoritative count lives ON the message as an
+        // Outlook category (AB#5142), so it survives adapter restarts and counts
+        // runs that killed the process (e.g. an OOM in a render node) and therefore
+        // never reported a failure.
+        var failureCounts = new Dictionary<string, AttemptMemory>();
+        // Avoids re-warning every poll about an exhausted message that stays in the
+        // source folder because no failure folder is configured.
+        var exhaustedLogged = new HashSet<string>();
 
         while (!_cancellationTokenSource!.Token.IsCancellationRequested)
         {
@@ -106,6 +188,36 @@ internal class FromMicrosoftGraphEmailNode(
                 {
                     targetFolderId ??= await ResolveFolderIdAsync(accessToken, nodeConfig.Mailbox,
                         nodeConfig.MoveToFolderPathOnSuccess, createLeafIfMissing: true);
+                }
+
+                if (!string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure) && !failureFolderUnusable)
+                {
+                    // AB#5260: resolved inside its own try — the failure folder is a
+                    // convenience for messages that already failed, so a bad path must
+                    // degrade this one feature and never the import as a whole.
+                    try
+                    {
+                        failureFolderId ??= await ResolveFolderIdAsync(accessToken, nodeConfig.Mailbox,
+                            nodeConfig.MoveToFolderPathOnFailure, createLeafIfMissing: true);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        // Only a *path* problem is treated as permanent — that is the one
+                        // ResolveFolderIdAsync reports as InvalidOperationException and the
+                        // one no amount of retrying fixes. Connectivity errors keep
+                        // bubbling to the poll-level handler, which backs off and retries.
+                        failureFolderUnusable = true;
+                        logger.LogError(ex,
+                            "Could not resolve the failure folder '{Folder}' in mailbox '{Mailbox}'; " +
+                            "exhausted messages stay in '{SourceFolder}' and are skipped until the path is corrected",
+                            nodeConfig.MoveToFolderPathOnFailure, nodeConfig.Mailbox, nodeConfig.FolderPath);
+                    }
+                }
+
+                if (!categoriesEnsured)
+                {
+                    categoriesEnsured = await TryRegisterImportCategoriesAsync(accessToken, nodeConfig.Mailbox,
+                        nodeConfig.MaxAttemptsPerMessage);
                 }
 
                 var messages = await GetMessagesAsync(accessToken, nodeConfig, sourceFolderId);
@@ -123,9 +235,78 @@ internal class FromMicrosoftGraphEmailNode(
                         continue;
                     }
 
-                    if (failureCounts.TryGetValue(messageId, out var attempts) &&
-                        attempts >= nodeConfig.MaxAttemptsPerMessage)
+                    var subject = message.TryGetProperty("subject", out var subj) ? subj.GetString() : null;
+                    var categories = GetCategories(message);
+
+                    // AB#5260 — the retry affordance. A message carrying the parked marker can
+                    // only be in the SOURCE folder because a human put it back: the adapter
+                    // stamps that marker exclusively on messages it moves into the failure
+                    // folder in the same breath, and never moves one back. So the move itself
+                    // is the reset gesture ("drag it back in and it gets picked up again") —
+                    // no Graph access, no category surgery, no adapter restart.
+                    var parked = HasFailedCategory(categories);
+                    if (parked)
                     {
+                        var cleared = WithoutImportMarkers(categories);
+                        if (await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId, cleared))
+                        {
+                            categories = cleared;
+                            parked = false;
+                            failureCounts.Remove(messageId);
+                            exhaustedLogged.Remove(messageId);
+                            logger.LogInformation(
+                                "Mail '{Subject}' was moved back into '{Folder}'; import markers cleared, " +
+                                "retrying it with a full attempt budget",
+                                subject, nodeConfig.FolderPath);
+                        }
+                        // Else: the marker could not be cleared (TrySetCategoriesAsync logged
+                        // why). Importing anyway would loop forever — the marker would still be
+                        // there on the next poll and read as another reset — so the message stays
+                        // parked and is moved aside again below.
+                    }
+
+                    var attempts = ResolveAttemptCount(categories,
+                        failureCounts.TryGetValue(messageId, out var remembered) ? remembered : null,
+                        out var operatorReset);
+                    if (operatorReset)
+                    {
+                        failureCounts.Remove(messageId);
+                        logger.LogInformation(
+                            "The attempt marker on mail '{Subject}' was cleared in the mailbox; " +
+                            "forgetting the in-process attempt count and retrying it",
+                            subject);
+                    }
+
+                    if (parked || attempts >= nodeConfig.MaxAttemptsPerMessage)
+                    {
+                        if (failureFolderId != null)
+                        {
+                            var parkedId = await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId,
+                                failureFolderId);
+                            // Marked AFTER the move, on the id the move minted (Graph gives the
+                            // moved copy a new one): a stamp written before a move that then fails
+                            // would leave the parked marker on a message still sitting in the
+                            // source folder, where the next poll would read it as an operator
+                            // reset and hand a poison message a fresh attempt budget (AB#5260).
+                            await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, parkedId,
+                                WithFailedCategory(categories));
+                            failureCounts.Remove(messageId);
+                            exhaustedLogged.Remove(messageId);
+                            logger.LogWarning(
+                                "Mail '{Subject}' failed {MaxAttempts} attempt(s); moved to '{Folder}' and " +
+                                "marked '{Marker}' — move it back into '{SourceFolder}' to have it imported again",
+                                subject, nodeConfig.MaxAttemptsPerMessage, nodeConfig.MoveToFolderPathOnFailure,
+                                FailedCategory, nodeConfig.FolderPath);
+                        }
+                        else if (exhaustedLogged.Add(messageId))
+                        {
+                            logger.LogWarning(
+                                "Mail '{Subject}' failed {MaxAttempts} attempt(s); skipping it " +
+                                "(configure moveToFolderPathOnFailure to move such messages aside; " +
+                                "removing the '{Marker}*' category in Outlook retries it)",
+                                subject, nodeConfig.MaxAttemptsPerMessage, AttemptCategoryPrefix);
+                        }
+
                         continue;
                     }
 
@@ -137,7 +318,7 @@ internal class FromMicrosoftGraphEmailNode(
                         continue;
                     }
 
-                    var emailData = await BuildEmailDataAsync(accessToken, nodeConfig.Mailbox, messageId, message);
+                    var emailData = await BuildEmailDataAsync(accessToken, nodeConfig, messageId, message);
 
                     var batch = new EmailBatch
                     {
@@ -146,31 +327,76 @@ internal class FromMicrosoftGraphEmailNode(
                         ProcessedAt = DateTime.UtcNow
                     };
 
+                    // AB#5126: one message → one execution, so the sender maps cleanly to a caller.
+                    // The From address is the identifier; AB#5125 derives the per-message trust from
+                    // the DKIM/DMARC (Authentication-Results) verdict — Strong only for a
+                    // dkim=pass + aligned dmarc=pass mail, Weak otherwise (fail-safe when unknown).
+                    var messageTrust = EmailMessageTrust.Evaluate(emailData.Authentication, fromAddress);
+                    var sender = string.IsNullOrWhiteSpace(fromAddress)
+                        ? null
+                        : new ChannelSender(ChannelIdentifierKind.EmailAddress, fromAddress, messageTrust);
+                    var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
+                    if (binding.Rejected)
+                    {
+                        logger.LogWarning("FromMicrosoftGraphEmail: {Reason} Skipping message '{MessageId}'.",
+                            binding.RejectReason, messageId);
+                        continue;
+                    }
+
+                    // Stamp the attempt BEFORE the run: a poison message can take the whole
+                    // process down (OOM), in which case no catch block ever runs — only a
+                    // marker persisted on the message itself makes that run count (AB#5142).
+                    // Stamped after the binding gate, so a rejected message is never counted.
+                    var stamped = await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId,
+                        WithAttemptCategory(categories, attempts + 1));
+
                     try
                     {
                         // One pipeline run per message so the success/failure of a run maps
                         // 1:1 to the move decision for exactly that message.
-                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), batch);
-
-                        failureCounts.Remove(messageId);
-
-                        if (targetFolderId != null)
+                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
                         {
-                            await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId, targetFolderId);
-                        }
-
-                        logger.LogInformation(
-                            "Processed mail '{Subject}' from '{From}' ({AttachmentCount} attachments)",
-                            emailData.Subject, fromAddress, emailData.Attachments.Count);
+                            VerifiedPrincipal = binding.Principal,
+                            CallerTrust = binding.Trust
+                        }, batch);
+                    }
+                    catch (OperationCanceledException) when (_cancellationTokenSource.Token.IsCancellationRequested)
+                    {
+                        // Adapter shutdown, not a message failure — unwind to the poll
+                        // loop's cancellation handling without failure bookkeeping.
+                        throw;
                     }
                     catch (Exception ex)
                     {
-                        var count = failureCounts.GetValueOrDefault(messageId) + 1;
-                        failureCounts[messageId] = count;
+                        // Remembers whether the marker for this attempt actually reached the
+                        // mailbox: only then may a later poll read a lower stamped count as a
+                        // deliberate operator reset rather than as a mailbox that cannot be
+                        // stamped at all (AB#5260).
+                        failureCounts[messageId] = new AttemptMemory(attempts + 1, stamped);
                         logger.LogError(ex,
                             "Pipeline run failed for mail '{Subject}' (attempt {Attempt}/{MaxAttempts}); message stays in '{Folder}'",
-                            emailData.Subject, count, nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                            emailData.Subject, attempts + 1, nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                        continue;
                     }
+
+                    // Post-success bookkeeping runs OUTSIDE the failure net: a cleanup
+                    // hiccup (or a shutdown cancel) after a successful run must never turn
+                    // the success into a counted failed attempt. A failing move bubbles to
+                    // the poll-level handler, which resets the folder ids and backs off.
+                    failureCounts.Remove(messageId);
+                    if (stamped)
+                    {
+                        await TryClearAttemptCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId);
+                    }
+
+                    if (targetFolderId != null)
+                    {
+                        await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId, targetFolderId);
+                    }
+
+                    logger.LogInformation(
+                        "Processed mail '{Subject}' from '{From}' ({AttachmentCount} attachments)",
+                        emailData.Subject, fromAddress, emailData.Attachments.Count);
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),
@@ -186,6 +412,7 @@ internal class FromMicrosoftGraphEmailNode(
                 // renamed/moved, which surfaces as a request failure here).
                 sourceFolderId = null;
                 targetFolderId = null;
+                failureFolderId = null;
                 logger.LogError(ex, "Error while polling Microsoft Graph mailbox '{Mailbox}'", nodeConfig.Mailbox);
                 // Guard the backoff delay: a cancel during StopAsync makes Task.Delay throw
                 // TaskCanceledException, which — being raised inside this catch — would escape
@@ -355,15 +582,34 @@ internal class FromMicrosoftGraphEmailNode(
         return doc.RootElement.GetProperty("id").GetString()!;
     }
 
+    /// <summary>
+    ///     The <c>$select</c> the message query asks for.
+    /// </summary>
+    /// <remarks>
+    ///     AB#5011: <c>internetMessageHeaders</c> is one of the properties Microsoft Graph returns
+    ///     <b>only</b> when it is named in <c>$select</c> — which is the whole reason
+    ///     <c>Authentication-Results</c> was not merely empty on the pipeline side but absent. Adding
+    ///     it costs the full Received chain plus the DKIM signatures on every message, so it stays
+    ///     opt-in and only the configured header names are surfaced downstream.
+    /// </remarks>
+    /// <param name="includeInternetMessageHeaders">Whether to request the internet message headers.</param>
+    internal static string BuildMessageSelect(bool includeInternetMessageHeaders)
+    {
+        return "id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId,categories"
+               + (includeInternetMessageHeaders ? ",internetMessageHeaders" : string.Empty);
+    }
+
     private async Task<List<JsonElement>> GetMessagesAsync(string accessToken,
         FromMicrosoftGraphEmailNodeConfiguration config, string folderId)
     {
         using var client = CreateGraphClient(accessToken);
 
+        var select = BuildMessageSelect(config.IncludeInternetMessageHeaders);
+
         var url =
             $"{GraphBaseUrl}/users/{Uri.EscapeDataString(config.Mailbox)}/mailFolders/{folderId}/messages" +
             $"?$top={config.MaxMessagesPerPoll}&$orderby=receivedDateTime asc" +
-            "&$select=id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,internetMessageId";
+            $"&$select={select}";
 
         var response = await client.GetAsync(url, _cancellationTokenSource!.Token);
         response.EnsureSuccessStatusCode();
@@ -381,9 +627,10 @@ internal class FromMicrosoftGraphEmailNode(
         return messages;
     }
 
-    private async Task<EmailData> BuildEmailDataAsync(string accessToken, string mailbox, string messageId,
-        JsonElement message)
+    private async Task<EmailData> BuildEmailDataAsync(string accessToken,
+        FromMicrosoftGraphEmailNodeConfiguration config, string messageId, JsonElement message)
     {
+        var mailbox = config.Mailbox;
         var subject = message.TryGetProperty("subject", out var subj) ? subj.GetString() : null;
         var fromAddress = GetFromAddress(message);
         var fromName = GetFromName(message);
@@ -418,7 +665,7 @@ internal class FromMicrosoftGraphEmailNode(
         // cheaply when there is nothing to fetch.
         var attachments = await GetAttachmentsAsync(accessToken, mailbox, messageId);
 
-        return new EmailData
+        var emailData = new EmailData
         {
             Subject = subject,
             From = string.IsNullOrWhiteSpace(fromName) ? fromAddress : $"{fromName} <{fromAddress}>",
@@ -431,6 +678,100 @@ internal class FromMicrosoftGraphEmailNode(
             MessageId = message.TryGetProperty("internetMessageId", out var imi) ? imi.GetString() : messageId,
             Attachments = attachments
         };
+
+        if (config.IncludeInternetMessageHeaders)
+        {
+            ApplyInternetMessageHeaders(emailData, message, config.InternetMessageHeaderNames);
+        }
+
+        return emailData;
+    }
+
+    /// <summary>
+    ///     Header names surfaced when the node was not told which ones it wants. The set a sender gate
+    ///     needs and nothing else — the rest of the headers are kilobytes of Received chain and base64
+    ///     signatures that would land in the pipeline data context of every message. AB#5011.
+    /// </summary>
+    internal static readonly string[] DefaultInternetMessageHeaderNames =
+    [
+        AuthenticationResultsParser.HeaderName,
+        "Authentication-Results-Original",
+        "ARC-Authentication-Results",
+        "Received-SPF"
+    ];
+
+    /// <summary>
+    ///     Copies the selected internet message headers onto <paramref name="emailData" /> and parses
+    ///     the SPF/DKIM/DMARC verdicts out of <c>Authentication-Results</c>. AB#5011.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 <b>Only the first occurrence of a name is kept</b>, and the verdicts are parsed from the
+    ///     first <c>Authentication-Results</c> header alone. A sender can put such a header into the
+    ///     message they submit and the receiving server <i>prepends</i> its own rather than replacing
+    ///     it, so only the topmost one was written by infrastructure we trust. Joining the occurrences
+    ///     — the obvious way to "not lose data" — would put a forged <c>dmarc=pass</c> into the same
+    ///     string as the real verdict, where any downstream substring or regex check would find it.
+    ///     The number of occurrences is reported on
+    ///     <see cref="EmailAuthenticationResults.HeaderCount" /> instead, so a pipeline can treat a
+    ///     duplicated header as the anomaly it is.
+    ///     <para>
+    ///         Graph returns the headers in message order, i.e. most recently added first, which is why
+    ///         "first wins" is the right rule here and not merely the cheap one.
+    ///     </para>
+    /// </remarks>
+    internal static void ApplyInternetMessageHeaders(EmailData emailData, JsonElement message,
+        string[]? configuredNames)
+    {
+        if (!message.TryGetProperty("internetMessageHeaders", out var headers) ||
+            headers.ValueKind != JsonValueKind.Array)
+        {
+            // Graph omits the property entirely for a message that carries no internet headers (an
+            // internally generated or draft mail). Not an error, and deliberately not an empty
+            // Authentication record either: "no header" must stay distinguishable from "header said
+            // nothing", or a gate cannot tell "unknown" from "reported as none".
+            return;
+        }
+
+        // Authentication-Results is always collected, whatever the name filter says: it is what the
+        // verdicts are parsed from, and a list that omitted it would turn them off silently while the
+        // flag claims they are on.
+        var wanted = new HashSet<string>(
+            configuredNames is { Length: > 0 } ? configuredNames : DefaultInternetMessageHeaderNames,
+            StringComparer.OrdinalIgnoreCase) { AuthenticationResultsParser.HeaderName };
+
+        string? authenticationResults = null;
+        var authenticationResultsCount = 0;
+
+        foreach (var header in headers.EnumerateArray())
+        {
+            var name = header.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+
+            var value = header.TryGetProperty("value", out var v) ? v.GetString() ?? string.Empty : string.Empty;
+
+            if (string.Equals(name, AuthenticationResultsParser.HeaderName, StringComparison.OrdinalIgnoreCase))
+            {
+                authenticationResultsCount++;
+                authenticationResults ??= value;
+            }
+
+            if (!wanted.Contains(name))
+            {
+                continue;
+            }
+
+            // TryAdd, not the indexer: first occurrence wins — see the remarks.
+            emailData.Headers.TryAdd(name, value);
+        }
+
+        if (authenticationResultsCount > 0)
+        {
+            emailData.Authentication =
+                AuthenticationResultsParser.Parse(authenticationResults, authenticationResultsCount);
+        }
     }
 
     private async Task<List<AttachmentData>> GetAttachmentsAsync(string accessToken, string mailbox,
@@ -757,7 +1098,269 @@ internal class FromMicrosoftGraphEmailNode(
         }
     }
 
-    private async Task MoveMessageAsync(string accessToken, string mailbox, string messageId,
+    // Outlook category carrying the persistent per-message attempt count, e.g.
+    // "OctoMesh-Import-Attempt-2". Deliberately a category (not an extended
+    // property): a category is visible in the mailbox, so an operator can see at a
+    // glance why a message was skipped or moved aside. AB#5142.
+    //
+    // 🔴 "Visible" only holds once the NAME is registered in the mailbox's master
+    // category list — Outlook and OWA render nothing for a category a message carries
+    // but the mailbox does not know, which is exactly what AB#5142 shipped and what
+    // left the operator on prod-1 unable to find (let alone clear) the marker. The
+    // registration is done by TryRegisterImportCategoriesAsync. AB#5260.
+    internal const string AttemptCategoryPrefix = "OctoMesh-Import-Attempt-";
+
+    // Outlook category marking a message the adapter gave up on and parked in the
+    // failure folder. It is the counterpart of the attempt markers and never coexists
+    // with them: the two-state protocol is what makes "move the mail back into the
+    // source folder" readable as a reset — a parked marker seen in the SOURCE folder
+    // can only have got there by hand. AB#5260.
+    internal const string FailedCategory = "OctoMesh-Import-Failed";
+
+    // Outlook preset colours the markers are registered with: the attempt markers in
+    // orange ("in trouble, still trying"), the parked marker in red ("stopped"), so the
+    // two states are distinguishable at a glance in the message list. AB#5260.
+    private const string AttemptCategoryColour = "preset1";
+    private const string FailedCategoryColour = "preset0";
+
+    /// <summary>
+    /// True when a category is a well-formed attempt marker (prefix plus a numeric
+    /// suffix). Only these are ever counted or removed — a category that merely
+    /// shares the prefix is user metadata and is preserved.
+    /// </summary>
+    private static bool IsAttemptCategory(string category, out int attempts)
+    {
+        attempts = 0;
+        // The marker is a persisted protocol between adapter runs: plain ASCII digits,
+        // no sign, no whitespace, culture-invariant — anything else is user metadata.
+        return category.StartsWith(AttemptCategoryPrefix, StringComparison.OrdinalIgnoreCase) &&
+               int.TryParse(category.AsSpan(AttemptCategoryPrefix.Length), NumberStyles.None,
+                   CultureInfo.InvariantCulture, out attempts);
+    }
+
+    /// <summary>
+    /// Reads the attempt count from a message's categories. Multiple markers (which
+    /// only a partial category update failure could leave behind) read as the maximum.
+    /// </summary>
+    internal static int GetAttemptCount(IReadOnlyList<string> categories)
+    {
+        var attempts = 0;
+        foreach (var category in categories)
+        {
+            if (IsAttemptCategory(category, out var value) && value > attempts)
+            {
+                attempts = value;
+            }
+        }
+
+        return attempts;
+    }
+
+    /// <summary>
+    /// Returns the categories with the attempt marker set to <paramref name="attempts"/>,
+    /// preserving every unrelated (user-assigned) category. The parked marker is dropped
+    /// as well: a message being tried again is by definition no longer parked, and leaving
+    /// it behind would make the next poll read the message as freshly moved back and hand
+    /// it yet another full attempt budget (AB#5260).
+    /// </summary>
+    internal static List<string> WithAttemptCategory(IReadOnlyList<string> categories, int attempts)
+    {
+        var result = WithoutImportMarkers(categories);
+        result.Add($"{AttemptCategoryPrefix}{attempts}");
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the categories with every attempt marker replaced by the single parked
+    /// marker (<see cref="FailedCategory"/>), preserving every unrelated (user-assigned)
+    /// category. The attempt count is not kept: once a message is parked the only number
+    /// that matters is "gave up", and a parked message that is moved back starts over.
+    /// AB#5260.
+    /// </summary>
+    internal static List<string> WithFailedCategory(IReadOnlyList<string> categories)
+    {
+        var result = WithoutImportMarkers(categories);
+        result.Add(FailedCategory);
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the categories with every well-formed attempt marker removed,
+    /// preserving every unrelated (user-assigned) category — including one that
+    /// merely shares the prefix without a numeric suffix.
+    /// </summary>
+    internal static List<string> WithoutAttemptCategory(IReadOnlyList<string> categories)
+    {
+        return categories
+            .Where(c => !IsAttemptCategory(c, out _))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Returns the categories with every marker this node owns removed — the attempt
+    /// markers and the parked marker — preserving every unrelated (user-assigned)
+    /// category. This is what a reset writes. AB#5260.
+    /// </summary>
+    internal static List<string> WithoutImportMarkers(IReadOnlyList<string> categories)
+    {
+        return categories
+            .Where(c => !IsAttemptCategory(c, out _) && !IsFailedCategory(c))
+            .ToList();
+    }
+
+    /// <summary>
+    /// True when the message carries the parked marker. Seen on a message in the SOURCE
+    /// folder this means an operator moved the message back out of the failure folder —
+    /// the adapter only ever stamps it while moving a message the other way. AB#5260.
+    /// </summary>
+    internal static bool HasFailedCategory(IReadOnlyList<string> categories)
+    {
+        return categories.Any(IsFailedCategory);
+    }
+
+    private static bool IsFailedCategory(string category)
+    {
+        return string.Equals(category, FailedCategory, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// What the poll loop remembers in process about a message whose pipeline run failed.
+    /// <see cref="Stamped"/> records whether the marker for <see cref="Attempts"/> actually
+    /// reached the mailbox — without it a lower stamped count cannot be told apart from a
+    /// mailbox that never accepted a stamp in the first place. AB#5260.
+    /// </summary>
+    internal readonly record struct AttemptMemory(int Attempts, bool Stamped);
+
+    /// <summary>
+    /// The attempt count a message is judged by, combining the marker on the message with
+    /// what the poll loop remembers in process.
+    /// </summary>
+    /// <remarks>
+    /// The marker is authoritative <b>whenever it is being written successfully</b>: nobody
+    /// but a human clears an Outlook category, so a stamped count below the remembered one
+    /// is a deliberate reset and <paramref name="operatorReset"/> tells the caller to forget
+    /// what it remembered. AB#5142 combined the two with a plain <c>Math.Max</c>, which made
+    /// the in-process dictionary out-vote the operator: clearing the category changed nothing
+    /// until the adapter restarted or the DataFlow was redeployed (AB#5260).
+    /// <para>
+    /// The in-process count stays what it was documented to be — the fallback for a mailbox
+    /// whose stamp write failed. For such a message (<c>Stamped == false</c>) the marker says
+    /// nothing, so it can never trigger a reset and the remembered count keeps counting. That
+    /// also covers the mixed case where earlier attempts stamped fine and a later one did not:
+    /// no attempt is silently lost, at the price of the category route not resetting a message
+    /// in a mailbox that just stopped accepting stamps — where clearing the marker by hand
+    /// would not have stuck either.
+    /// </para>
+    /// </remarks>
+    internal static int ResolveAttemptCount(IReadOnlyList<string> categories, AttemptMemory? remembered,
+        out bool operatorReset)
+    {
+        operatorReset = false;
+        var stampedAttempts = GetAttemptCount(categories);
+
+        if (remembered is not { } memory)
+        {
+            return stampedAttempts;
+        }
+
+        if (memory.Stamped && stampedAttempts < memory.Attempts)
+        {
+            operatorReset = true;
+            return stampedAttempts;
+        }
+
+        return Math.Max(stampedAttempts, memory.Attempts);
+    }
+
+    private static IReadOnlyList<string> GetCategories(JsonElement message)
+    {
+        if (!message.TryGetProperty("categories", out var categories) ||
+            categories.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return categories.EnumerateArray()
+            .Select(c => c.GetString())
+            .Where(c => c != null)
+            .Select(c => c!)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Removes every import marker from a message using the message's CURRENT
+    /// categories — the pipeline run between stamping and clearing can take a
+    /// while, and clearing from the poll-time snapshot would silently revert any
+    /// category a user assigned in the meantime. Never throws (a leftover marker
+    /// on a successfully imported message is cosmetic; the mail leaves the source
+    /// folder anyway).
+    /// </summary>
+    private async Task TryClearAttemptCategoriesAsync(string accessToken, string mailbox, string messageId)
+    {
+        try
+        {
+            using var client = CreateGraphClient(accessToken);
+            var getUrl =
+                $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}?$select=categories";
+            var response = await client.GetAsync(getUrl, _cancellationTokenSource!.Token);
+            response.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_cancellationTokenSource.Token));
+            var current = GetCategories(doc.RootElement);
+
+            await TrySetCategoriesAsync(accessToken, mailbox, messageId, WithoutImportMarkers(current));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not clear the attempt-tracking category on message {MessageId}; the marker stays behind",
+                messageId);
+        }
+    }
+
+    /// <summary>
+    /// Replaces a message's categories. Never throws: a mailbox where the stamp cannot
+    /// be written degrades to the in-process attempt counter instead of blocking the
+    /// import (the caller checks the return value before relying on the stamp).
+    /// </summary>
+    private async Task<bool> TrySetCategoriesAsync(string accessToken, string mailbox, string messageId,
+        List<string> categories)
+    {
+        try
+        {
+            using var client = CreateGraphClient(accessToken);
+            var url = $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}";
+            var payload = JsonSerializer.Serialize(new { categories });
+            var response = await client.PatchAsync(url,
+                new StringContent(payload, Encoding.UTF8, "application/json"), _cancellationTokenSource!.Token);
+            response.EnsureSuccessStatusCode();
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not update the attempt-tracking categories on message {MessageId}; " +
+                "attempt counting falls back to in-process tracking until the adapter restarts",
+                messageId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Moves a message to another folder and returns the id of the moved message.
+    /// Graph mints a NEW id for the moved copy, so anything that still wants to touch
+    /// that message — stamping the parked marker, for one — must use the returned id
+    /// and not the one the poll read (AB#5260). Falls back to the original id if the
+    /// response carries none.
+    /// </summary>
+    private async Task<string> MoveMessageAsync(string accessToken, string mailbox, string messageId,
         string destinationFolderId)
     {
         using var client = CreateGraphClient(accessToken);
@@ -767,6 +1370,157 @@ internal class FromMicrosoftGraphEmailNode(
         var response = await client.PostAsync(url,
             new StringContent(payload, Encoding.UTF8, "application/json"), _cancellationTokenSource!.Token);
         response.EnsureSuccessStatusCode();
+
+        try
+        {
+            using var doc =
+                JsonDocument.Parse(await response.Content.ReadAsStringAsync(_cancellationTokenSource.Token));
+            return doc.RootElement.TryGetProperty("id", out var id) && id.GetString() is { } movedId
+                ? movedId
+                : messageId;
+        }
+        catch (JsonException)
+        {
+            return messageId;
+        }
+    }
+
+    /// <summary>
+    /// Registers the import markers in the mailbox's master category list so Outlook and
+    /// OWA actually render them — a category a message carries but the mailbox does not
+    /// know is invisible in the UI, which is why the marker AB#5142 introduced "so an
+    /// operator can see at a glance why a message was skipped" could not be found (let
+    /// alone removed) by the operator it was meant for. AB#5260.
+    /// </summary>
+    /// <remarks>
+    /// Idempotent by construction: the existing names are read first and only the missing
+    /// ones are created, and a create that races another writer (Graph answers
+    /// <c>ErrorCategoryNameAlreadyExists</c>) is treated as success.
+    /// <para>
+    /// Needs the <c>MailboxSettings.ReadWrite</c> Graph scope, which an existing app
+    /// registration may well not have. That is not an error: the markers still do their
+    /// job as attempt tracking, they are merely invisible, so a <c>403</c> degrades to one
+    /// warning and the import carries on. Returns whether the node should stop asking —
+    /// true after success and after a permission refusal (both are final), false for a
+    /// transient failure so the next poll tries again.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> TryRegisterImportCategoriesAsync(string accessToken, string mailbox, int maxAttempts)
+    {
+        try
+        {
+            using var client = CreateGraphClient(accessToken);
+            var listUrl =
+                $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/outlook/masterCategories?$select=displayName";
+            var listResponse = await client.GetAsync(listUrl, _cancellationTokenSource!.Token);
+            if (listResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
+            {
+                LogMasterCategoriesForbidden(mailbox);
+                return true;
+            }
+
+            listResponse.EnsureSuccessStatusCode();
+
+            using var doc =
+                JsonDocument.Parse(await listResponse.Content.ReadAsStringAsync(_cancellationTokenSource.Token));
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (doc.RootElement.TryGetProperty("value", out var values))
+            {
+                foreach (var category in values.EnumerateArray())
+                {
+                    if (category.TryGetProperty("displayName", out var name) && name.GetString() is { } displayName)
+                    {
+                        existing.Add(displayName);
+                    }
+                }
+            }
+
+            var created = 0;
+            foreach (var (name, colour) in ImportCategoryDefinitions(maxAttempts))
+            {
+                if (existing.Contains(name))
+                {
+                    continue;
+                }
+
+                var createUrl = $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/outlook/masterCategories";
+                var payload = JsonSerializer.Serialize(new { displayName = name, color = colour });
+                var createResponse = await client.PostAsync(createUrl,
+                    new StringContent(payload, Encoding.UTF8, "application/json"), _cancellationTokenSource.Token);
+
+                if (createResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    LogMasterCategoriesForbidden(mailbox);
+                    return true;
+                }
+
+                if (createResponse.IsSuccessStatusCode)
+                {
+                    created++;
+                    continue;
+                }
+
+                // A name that already exists comes back as 409 (or 400 carrying
+                // ErrorCategoryNameAlreadyExists) — the goal state, not a failure.
+                var body = await createResponse.Content.ReadAsStringAsync(_cancellationTokenSource.Token);
+                if (createResponse.StatusCode == System.Net.HttpStatusCode.Conflict ||
+                    body.Contains("ErrorCategoryNameAlreadyExists", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                createResponse.EnsureSuccessStatusCode();
+            }
+
+            if (created > 0)
+            {
+                logger.LogInformation(
+                    "Registered {Count} import marker categor(ies) in the master category list of mailbox " +
+                    "'{Mailbox}' so they are visible and removable in Outlook/OWA",
+                    created, mailbox);
+            }
+
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Transient (connectivity, throttling): retried on the next poll. Never fatal —
+            // an unregistered marker is a visibility problem, not an import problem.
+            logger.LogWarning(ex,
+                "Could not register the import marker categories in mailbox '{Mailbox}'; " +
+                "the markers keep working but stay invisible in Outlook until this succeeds",
+                mailbox);
+            return false;
+        }
+    }
+
+    private void LogMasterCategoriesForbidden(string mailbox)
+    {
+        logger.LogWarning(
+            "The Graph app registration may not write the master category list of mailbox '{Mailbox}' " +
+            "(needs MailboxSettings.ReadWrite). The import attempt markers ('{AttemptMarker}N', " +
+            "'{FailedMarker}') keep working, but Outlook/OWA will not render them — grant the scope to " +
+            "make them visible and removable for operators",
+            mailbox, AttemptCategoryPrefix, FailedCategory);
+    }
+
+    /// <summary>
+    /// The marker names that must exist in a mailbox's master category list, with the
+    /// colour each is registered in. One entry per reachable attempt count plus the parked
+    /// marker — the set is bounded by <c>MaxAttemptsPerMessage</c> and tiny. AB#5260.
+    /// </summary>
+    internal static IEnumerable<(string Name, string Colour)> ImportCategoryDefinitions(int maxAttempts)
+    {
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            yield return ($"{AttemptCategoryPrefix}{attempt}", AttemptCategoryColour);
+        }
+
+        yield return (FailedCategory, FailedCategoryColour);
     }
 
     private HttpClient CreateGraphClient(string accessToken)

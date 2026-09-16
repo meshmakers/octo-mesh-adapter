@@ -14,27 +14,20 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-public class ApplyChangesNodeTests : NodeTestBase
+public class ApplyChangesNodeTests : SessionNodeTestBase
 {
     private const string DataPath = "$.updateInfos";
 
-    private readonly IMeshEtlContext _etlContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public ApplyChangesNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        GivenSystemSessionIsExpected();
     }
 
     private ApplyChangesNode CreateNode(NodeDelegate next)
     {
-        return new ApplyChangesNode(next, _etlContext);
+        return new ApplyChangesNode(next, EtlContext);
     }
 
     private static RtEntity CreateRtEntity(string? rtId = null)
@@ -72,6 +65,26 @@ public class ApplyChangesNodeTests : NodeTestBase
             .Returns(data);
     }
 
+    /// <summary>
+    ///     ApplyChanges@1 is the frozen, deprecated twin of @2 and stays on the system context by
+    ///     decision (AB#5028) — a pipeline still on @1 must not start stamping or filtering because
+    ///     the adapter was upgraded.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_DeliberatelyOpensASystemSession()
+    {
+        var config = new ApplyChangesNodeConfiguration { Path = DataPath };
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration>(config);
+
+        var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
+        SetupDataContextList(dataContext, DataPath, data);
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        AssertSystemSessionOpened();
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_WithData_StartsTransaction()
     {
@@ -84,7 +97,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.StartTransaction()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.StartTransaction()).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -99,7 +112,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -116,7 +129,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))
@@ -145,7 +158,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))
@@ -174,7 +187,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))
@@ -202,7 +215,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         SetupDataContextList(dataContext, DataPath, data);
 
         IReadOnlyList<IEntityUpdateInfo<RtEntity>>? capturedUpdates = null;
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))
@@ -229,7 +242,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).MustNotHaveHappened();
+        AssertNoSessionOpened();
     }
 
     [Fact]
@@ -243,7 +256,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).MustNotHaveHappened();
+        AssertNoSessionOpened();
     }
 
     [Fact]
@@ -255,7 +268,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupDataContextList(dataContext, DataPath, data);
 
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))
@@ -267,8 +280,8 @@ public class ApplyChangesNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.AbortTransactionAsync()).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _session.CommitTransactionAsync()).MustNotHaveHappened();
+        A.CallTo(() => Session.AbortTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustNotHaveHappened();
     }
 
     [Fact]
@@ -280,7 +293,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupDataContextList(dataContext, DataPath, data);
 
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))
@@ -292,8 +305,8 @@ public class ApplyChangesNodeTests : NodeTestBase
         var node = CreateNode(next);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _session.AbortTransactionAsync()).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _session.CommitTransactionAsync()).MustNotHaveHappened();
+        A.CallTo(() => Session.AbortTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustNotHaveHappened();
     }
 
     [Fact]
@@ -334,7 +347,7 @@ public class ApplyChangesNodeTests : NodeTestBase
         var data = new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() };
         SetupDataContextList(dataContext, DataPath, data);
 
-        A.CallTo(() => _tenantRepository.ApplyChangesAsync(
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
                 A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
                 A<OperationResult>._))

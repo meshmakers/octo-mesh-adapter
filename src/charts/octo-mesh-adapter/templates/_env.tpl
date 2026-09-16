@@ -85,5 +85,67 @@
 {{- if .Values.authUri }}
 - name: OCTO_ADAPTER__AUTHORITYURL
   value: {{ .Values.authUri | quote }}
+{{/*
+  AB#5072 — the adapter's OUTBOUND credential.
+
+  `AUTHORITYURL` above is the INBOUND direction: the issuer that secured
+  `FromHttpRequest@2` routes accept on tokens presented TO the adapter
+  (MeshAdapterConfiguration.AuthorityUrl, adapter repo). `ISSUERURI` is the
+  identity service the adapter authenticates ITSELF against before it connects
+  to `/{tenantId}/adapterHub` (AdapterOptions.IssuerUri, octo-communication-sdk).
+
+  Both are fed from the SAME `authUri` value on purpose — one identity service
+  issues and validates both directions, so a second chart value could only ever
+  drift. The two config keys exist because AdapterOptions lives in the SDK and
+  must also serve adapters that have no MeshAdapterConfiguration (Loxone,
+  Modbus, Zenon, the simulation plug); the chart is where they are tied back
+  together. It must be the PUBLIC issuer address, not a cluster-internal
+  service name: OIDC discovery runs against it and the communication controller
+  validates the issuer of the resulting token.
+*/}}
+- name: OCTO_ADAPTER__ISSUERURI
+  value: {{ .Values.authUri | quote }}
+{{- end }}
+{{/*
+  AB#5232 — split-horizon issuer widening. Indexed env vars because
+  MeshAdapterConfiguration.AdditionalValidIssuers is a string array
+  (OCTO_ADAPTER__ADDITIONALVALIDISSUERS__0, __1, ...). Rendered independently
+  of authUri: the entries only widen the issuer string comparison, and an
+  adapter whose authority comes from its compiled-in default (local dev) must
+  still be able to accept extra issuers.
+*/}}
+{{- range $i, $issuer := .Values.additionalValidIssuers }}
+- name: OCTO_ADAPTER__ADDITIONALVALIDISSUERS__{{ $i }}
+  value: {{ $issuer | quote }}
+{{- end }}
+{{/*
+  Client id of the adapter's own confidential OAuth client — the
+  `ServiceAccountConfiguration` the communication controller provisions per
+  adapter (AB#5027) and projects onto this path as a `ValueOverride` at deploy
+  time. Omitted when unset: `AdapterOptions.IsEnabled` is
+  `IssuerUri && ClientId`, so an unconfigured adapter acquires no token and
+  connects anonymously exactly as the whole fleet does today. Rendering it as
+  an empty string would be the same thing, but the absent env var keeps the
+  "nothing was configured here" state readable in a `kubectl describe pod`.
+*/}}
+{{- if .Values.serviceAccountClientId }}
+- name: OCTO_ADAPTER__CLIENTID
+  value: {{ .Values.serviceAccountClientId | quote }}
+{{- end }}
+{{/*
+  🔴 Secret-flagged. The controller marks the matching `ValueOverride`
+  `IsSecret=true`, so the operator materialises it into `{release}-octo-secrets`
+  and hands this path a `{valueFrom: {secretKeyRef: ...}}` map instead of the
+  plaintext — `octo-mesh.secretEnv` accepts both shapes, exactly as
+  `secrets.rabbitmq` does. The value must never be rendered into the pod spec
+  as a literal, and never into a values file that ends up in a helm release
+  secret in cleartext.
+
+  Guarded by `if` because `octo-mesh.secretEnv` FAILS on an empty value (that
+  is deliberate for the mandatory cluster secrets) while this one is optional
+  by design — see the `ClientId` note above.
+*/}}
+{{- if .Values.secrets.serviceAccountClientSecret }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_ADAPTER__CLIENTSECRET" "value" .Values.secrets.serviceAccountClientSecret "legacyKey" "serviceAccountClientSecret" "context" .) }}
 {{- end }}
 {{- end }}

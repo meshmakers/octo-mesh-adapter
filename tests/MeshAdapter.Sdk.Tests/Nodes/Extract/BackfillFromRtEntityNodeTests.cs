@@ -16,7 +16,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
-public class BackfillFromRtEntityNodeTests : NodeTestBase
+public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
 {
     private const string TenantId = "test-tenant";
     private const string DataPath = "$.updateInfos";
@@ -24,25 +24,18 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
     private static readonly OctoObjectId ArchiveRtId = new(ArchiveRtIdString);
     private static readonly RtCkId<CkTypeId> TestCkTypeId = new("TestModel/TestType");
 
-    private readonly IMeshEtlContext _etlContext;
     private readonly ISystemContext _systemContext;
     private readonly ITenantContext _tenantContext;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
     private readonly IArchiveRuntimeStore _archiveStore;
 
     public BackfillFromRtEntityNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
         _systemContext = A.Fake<ISystemContext>();
         _tenantContext = A.Fake<ITenantContext>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
         _archiveStore = A.Fake<IArchiveRuntimeStore>();
 
-        A.CallTo(() => _etlContext.TenantId).Returns(TenantId);
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        A.CallTo(() => EtlContext.TenantId).Returns(TenantId);
+        GivenSystemSessionIsExpected();
         A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
         A.CallTo(() => _tenantContext.GetArchiveRuntimeStore()).Returns(_archiveStore);
     }
@@ -77,7 +70,7 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         {
             entity.SetAttributeValue(name, type, value);
         }
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync(_session, A<RtEntityId>.That.Matches(id => id.RtId == rtId)))
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(Session, A<RtEntityId>.That.Matches(id => id.RtId == rtId)))
             .Returns(Task.FromResult<RtEntity?>(entity));
     }
 
@@ -96,7 +89,7 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal(230.0, update.RtEntity!.GetAttributeValueOrDefault<double>("Voltage"));
@@ -118,12 +111,12 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal(230.0, update.RtEntity!.GetAttributeValueOrDefault<double>("Voltage"));
         // The Mongo round-trip should be skipped entirely when nothing is missing.
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
             .MustNotHaveHappened();
     }
 
@@ -145,11 +138,11 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // Same RtId across two update infos — only one Mongo lookup expected.
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
             .MustHaveHappenedOnceExactly();
         Assert.Equal(888.0, u1.RtEntity!.GetAttributeValueOrDefault<double>("Current"));
         Assert.Equal(999.0, u2.RtEntity!.GetAttributeValueOrDefault<double>("Voltage"));
@@ -164,7 +157,7 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(null);
 
-        var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._)).MustNotHaveHappened();
@@ -183,7 +176,7 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
         await Assert.ThrowsAsync<InvalidOperationException>(() => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
@@ -194,7 +187,7 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
 
         var rtId = new OctoObjectId("000000000000000000000005");
         var update = CreateUpdateInfo(rtId);
-        A.CallTo(() => _tenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
             .Returns(Task.FromResult<RtEntity?>(null));
 
         var data = new List<EntityUpdateInfo<RtEntity>> { update };
@@ -203,7 +196,7 @@ public class BackfillFromRtEntityNodeTests : NodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, _etlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.False(update.RtEntity!.Attributes.ContainsKey("Voltage"));

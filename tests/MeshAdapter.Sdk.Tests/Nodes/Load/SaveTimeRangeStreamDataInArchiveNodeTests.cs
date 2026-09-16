@@ -19,7 +19,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 // Pins the time-range save node's wiring through to IStreamDataRepository.InsertTimeRangeAsync.
 // Critical behaviours: From/To stripped from attributes (so they don't reappear as user columns),
 // entities without a usable window are skipped (not aborted), deletes are not propagated.
-public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
+public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
 {
     private const string TenantId = "test-tenant";
     private const string DataPath = "$.updateInfos";
@@ -27,28 +27,21 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
     private static readonly OctoObjectId ArchiveRtId = new(ArchiveRtIdString);
     private const string SourceRtIdString = "000000000000000000000001";
 
-    private readonly IMeshEtlContext _etlContext;
     private readonly ISystemContext _systemContext;
     private readonly ITenantContext _tenantContext;
     private readonly IStreamDataRepository _streamDataRepository;
-    private readonly ITenantRepository _tenantRepository;
-    private readonly IOctoSession _session;
 
     public SaveTimeRangeStreamDataInArchiveNodeTests()
     {
-        _etlContext = A.Fake<IMeshEtlContext>();
-        A.CallTo(() => _etlContext.TenantId).Returns(TenantId);
+        A.CallTo(() => EtlContext.TenantId).Returns(TenantId);
 
         _systemContext = A.Fake<ISystemContext>();
         _tenantContext = A.Fake<ITenantContext>();
         _streamDataRepository = A.Fake<IStreamDataRepository>();
-        _tenantRepository = A.Fake<ITenantRepository>();
-        _session = A.Fake<IOctoSession>();
 
         A.CallTo(() => _systemContext.FindTenantContextAsync(TenantId)).Returns(Task.FromResult(_tenantContext));
         A.CallTo(() => _tenantContext.GetStreamDataRepository()).Returns(_streamDataRepository);
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
+        GivenSystemSessionIsExpected();
 
         // By default every source rtId is treated as existing in the rt-model so the existing
         // behavioural tests are unaffected by the integrity guard. Individual tests override this.
@@ -68,7 +61,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         A.CallTo(() => resultSet.Items).Returns(entities);
         A.CallTo(() => resultSet.TotalCount).Returns(entities.Count);
 
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
                 A<RtCkId<CkTypeId>>._,
                 A<IReadOnlyList<OctoObjectId>>._,
@@ -117,7 +110,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
             .Invokes((OctoObjectId _, IEnumerable<TimeRangeStreamDataPoint> points, CancellationToken _) =>
                 captured = points.ToList());
 
-        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured);
@@ -140,7 +133,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var entity = CreateEntityWithWindow(from: null, to: null);
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
 
-        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         // Nothing usable in the batch → InsertTimeRangeAsync is not called.
@@ -172,7 +165,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
             .Invokes((OctoObjectId _, IEnumerable<TimeRangeStreamDataPoint> points, CancellationToken _) =>
                 captured = points.Single());
 
-        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.NotNull(captured);
@@ -193,7 +186,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var del = EntityUpdateInfo<RtEntity>.CreateDelete(rtEntityId);
         SetupDataContext(dataContext, new() { del });
 
-        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
@@ -208,7 +201,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
         SetupDataContext(dataContext, null);
 
-        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => _streamDataRepository.EnsureDatabaseCreatedAsync()).MustNotHaveHappened();
@@ -222,7 +215,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+            new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
                 .ProcessObjectAsync(dataContext, nodeContext));
     }
 
@@ -238,7 +231,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         SetupDataContext(dataContext, new() { CreateInsert(entity) });
 
         // The source rtId (SourceRtIdString) is registered as existing by the ctor default.
-        await new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
             .ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
@@ -261,7 +254,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : NodeTestBase
         SetupExistingRtIds(/* none exist */);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            new SaveTimeRangeStreamDataInArchiveNode(next, _etlContext, _systemContext)
+            new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
                 .ProcessObjectAsync(dataContext, nodeContext));
 
         Assert.Contains(SourceRtIdString, ex.Message);

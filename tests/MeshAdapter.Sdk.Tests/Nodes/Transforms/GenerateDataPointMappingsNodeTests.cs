@@ -16,7 +16,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transforms;
 
-public class GenerateDataPointMappingsNodeTests : NodeTestBase
+public class GenerateDataPointMappingsNodeTests : SessionNodeTestBase
 {
     private static readonly RtCkId<CkTypeId> RoomType = new("Loxone/Room");
     private static readonly RtCkId<CkTypeId> CategoryType = new("Loxone/Category");
@@ -24,14 +24,9 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
     private static readonly RtCkId<CkTypeId> SpaceType = new("EnergyIQ/Space");
     private static readonly RtCkId<CkAssociationRoleId> ParentChild = new("System/ParentChild");
 
-    private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
-    private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
-    private readonly IOctoSession _session = A.Fake<IOctoSession>();
 
     public GenerateDataPointMappingsNodeTests()
     {
-        A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
-        A.CallTo(() => _tenantRepository.GetSessionAsync()).Returns(Task.FromResult(_session));
     }
 
     // ───────────────────────────── Normalize helper ─────────────────────────────
@@ -261,7 +256,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+        var node = new GenerateDataPointMappingsNode(next, EtlContext);
 
         // Act
         await node.ProcessObjectAsync(dataContext, nodeContext);
@@ -324,7 +319,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+        var node = new GenerateDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -374,7 +369,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+        var node = new GenerateDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -435,7 +430,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+        var node = new GenerateDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -500,7 +495,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+        var node = new GenerateDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -572,7 +567,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         };
 
         var (dataContext, nodeContext, next, captured) = PrepareTestWithCapture(config);
-        var node = new GenerateDataPointMappingsNode(next, _etlContext);
+        var node = new GenerateDataPointMappingsNode(next, EtlContext);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -643,7 +638,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         var resultSet = A.Fake<IResultSet<RtEntity>>();
         A.CallTo(() => resultSet.Items).Returns(entities.ToList());
         A.CallTo(() => resultSet.TotalCount).Returns(entities.Length);
-        A.CallTo(() => _tenantRepository.GetRtEntitiesByTypeAsync(
+        A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(
                 A<IOctoSession>._,
                 ckTypeId,
                 A<RtEntityQueryOptions>._,
@@ -669,7 +664,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
         A.CallTo(() => assocSet.Items).Returns(assocs);
         A.CallTo(() => assocSet.TotalCount).Returns(assocs.Count);
 
-        A.CallTo(() => _tenantRepository.GetRtAssociationsAsync(
+        A.CallTo(() => TenantRepository.GetRtAssociationsAsync(
                 A<IOctoSession>._,
                 A<RtEntityId>.That.Matches(eid =>
                     eid.RtId.Equals(parent.RtId) && eid.CkTypeId.Equals(parent.CkTypeId!)),
@@ -683,7 +678,7 @@ public class GenerateDataPointMappingsNodeTests : NodeTestBase
             A.CallTo(() => childSet.Items).Returns(new List<RtEntity> { childEntity });
             A.CallTo(() => childSet.TotalCount).Returns(1);
             var paddedRtId = new OctoObjectId(PadRtId(childRtId));
-            A.CallTo(() => _tenantRepository.GetRtEntitiesByIdAsync(
+            A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                     A<IOctoSession>._,
                     childCkTypeId,
                     A<IReadOnlyList<OctoObjectId>>.That.Matches(ids => ids.Contains(paddedRtId)),

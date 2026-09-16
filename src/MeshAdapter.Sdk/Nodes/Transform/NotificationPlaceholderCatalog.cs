@@ -154,7 +154,13 @@ public static class NotificationPlaceholderCatalog
         new("registration.street", PlaceholderSource.Registration, "BillingStreet"),
         new("registration.zipcode", PlaceholderSource.Registration, "BillingPostalCode"),
         new("registration.cityTown", PlaceholderSource.Registration, "BillingCity"),
-        new("registration.phone", PlaceholderSource.Registration, "PhoneNumber")
+        new("registration.phone", PlaceholderSource.Registration, "PhoneNumber"),
+        // RejectionReason is the one attribute here written BY an operator rather than by the
+        // applicant, and it exists to be read by the applicant: it is why the application was
+        // refused, and the refusal mail is the only channel that carries it back. It is
+        // deliberately not in the bookkeeping group above - a refusal with no reason is the
+        // experience this token exists to fix (AB#3719).
+        new("registration.rejectionReason", PlaceholderSource.Registration, "RejectionReason")
     ];
 
     /// <summary>

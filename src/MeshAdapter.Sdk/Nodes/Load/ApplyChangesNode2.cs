@@ -119,8 +119,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
 
                         throw;
                     }
-                    catch (Exception e) when (
-                        c.OnDuplicateKey == DuplicateKeyHandling.Report && IsDuplicateKey(e))
+                    catch (Exception e) when (CanReportDuplicateKey(c) && IsDuplicateKey(e))
                     {
                         // A unique index refused the write. Not a retry case: the conflicting
                         // document is committed, so every attempt would fail the same way. The
@@ -134,17 +133,8 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                         nodeContext.Warning(
                             $"A unique index refused the write, reporting it as configured: {DescribeDuplicates(e)}");
 
-                        if (c.DuplicateKeyTargetPath != null)
-                        {
-                            dataContext.Set(c.DuplicateKeyTargetPath, true, DocumentModes.Extend,
-                                ValueKinds.Simple, TargetValueWriteModes.Overwrite);
-                        }
-                        else
-                        {
-                            nodeContext.Warning(
-                                "OnDuplicateKey is Report but no DuplicateKeyTargetPath is configured, so the " +
-                                "pipeline cannot tell the refusal from a successful write.");
-                        }
+                        dataContext.Set(c.DuplicateKeyTargetPath!, true, DocumentModes.Extend,
+                            ValueKinds.Simple, TargetValueWriteModes.Overwrite);
                     }
 
                     break;
@@ -198,6 +188,23 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
     /// index name is what an operator needs to find the conflict; the value is theirs to look up
     /// under whatever access control the data sits behind, not something a log should carry.
     /// </summary>
+    /// <summary>
+    /// Whether a duplicate key can be reported rather than thrown. Report means "do not fail, tell
+    /// me through the flag", so without somewhere to put the flag there is nothing to tell: the
+    /// caller would get neither the failure nor the signal, and a rolled-back write would be
+    /// indistinguishable from a stored one. In that case the filter does not match and the
+    /// exception keeps travelling, which is what this node has always done.
+    ///
+    /// A blank path counts as no path. An empty JSONPath addresses the document ROOT in this data
+    /// context (DataContext.Set treats "" and "$" alike), so `duplicateKeyTargetPath: ""` would
+    /// write the flag over the whole data document instead of into a field of it.
+    /// </summary>
+    internal static bool CanReportDuplicateKey(ApplyChangesNodeConfiguration2 c)
+    {
+        return c.OnDuplicateKey == DuplicateKeyHandling.Report
+               && !string.IsNullOrWhiteSpace(c.DuplicateKeyTargetPath);
+    }
+
     private static string DescribeDuplicates(Exception? e)
     {
         for (; e != null; e = e.InnerException)
@@ -225,7 +232,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
     /// where the colliding value sits. Anything unrecognised degrades to a constant rather than
     /// to the original text, so a message shape we have not seen cannot leak by default.
     /// </summary>
-    private static string IndexNameOf(string? message)
+    internal static string IndexNameOf(string? message)
     {
         if (string.IsNullOrWhiteSpace(message))
         {

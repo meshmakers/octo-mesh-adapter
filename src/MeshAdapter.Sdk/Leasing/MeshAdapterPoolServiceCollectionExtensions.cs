@@ -68,13 +68,22 @@ public static class MeshAdapterPoolServiceCollectionExtensions
 
         services.AddAdapterPoolMember();
 
-        // 🔴 AB#4924 — the one object that holds the borrowing tenant's database credential, and the
-        // seam the runtime engine reads it through. Registered under BOTH its own type and
-        // ITenantDatabaseCredentialSource, and deliberately as the SAME instance: the participant
-        // writes to it and the engine's UserMongoRepositoryClient reads from it, and two instances
-        // would give a member that looks configured and authenticates with nothing.
+        // 🔴 AB#4924 — the one object that holds where the borrowing tenant lives and how to open it,
+        // and the two seams the runtime engine reads it through. Registered under its own type and
+        // BOTH interfaces, and deliberately as the SAME instance: the participant writes to it while
+        // the engine reads from it (SystemContext for the location, UserMongoRepositoryClient for the
+        // credential), and separate instances would give a member that looks configured, resolves
+        // nothing and authenticates with nothing.
+        //
+        // The pair is what keeps a member out of the installation's registry entirely. The location
+        // half short-circuits the resolve that would otherwise run listDatabases on the ADMIN
+        // connection and read the system database; the credential half opens the borrower's database
+        // with what the lease carried. Either one alone leaves the member needing an
+        // installation-wide credential.
         services.AddSingleton<LeasedDatabaseCredentialSource>();
         services.AddSingleton<ITenantDatabaseCredentialSource>(sp =>
+            sp.GetRequiredService<LeasedDatabaseCredentialSource>());
+        services.AddSingleton<ITenantLocationSource>(sp =>
             sp.GetRequiredService<LeasedDatabaseCredentialSource>());
 
         services.AddSingleton<IAdapterLeaseParticipant, BorrowerIdentityLeaseParticipant>();

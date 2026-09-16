@@ -92,7 +92,11 @@ internal sealed class BorrowerDatabaseLeaseParticipant(
                 + "is refused.");
         }
 
-        credentialSource.HoldForLease(lease.DatabaseName, lease.DatabaseUser, lease.DatabasePassword);
+        // The tenant id travels with it: the same object answers "where does this tenant live" for the
+        // engine's resolve, which is what stops that resolve from reaching the installation's registry
+        // — and therefore what stops this member from needing the installation's admin credential.
+        credentialSource.HoldForLease(lease.TenantId, lease.DatabaseName, lease.DatabaseUser,
+            lease.DatabasePassword);
 
         // 🔴 Evict before the first connection is built, not only on leave. The engine caches one
         // repository client per database for the life of the process and builds its connection —

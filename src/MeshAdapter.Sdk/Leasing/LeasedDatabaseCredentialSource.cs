@@ -3,8 +3,8 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Leasing;
 
 /// <summary>
-///     Holds the database credential of the tenant this member is <b>currently</b> lent, and hands it
-///     to the runtime engine for that tenant's database and for no other (AB#4924).
+///     Holds where the tenant this member is <b>currently</b> lent lives and how to open it, and hands
+///     both to the runtime engine — for that tenant and that database, and for no other (AB#4924).
 /// </summary>
 /// <remarks>
 ///     <para>
@@ -29,7 +29,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Leasing;
 ///         <see cref="ToString" /> — not to a log.
 ///     </para>
 /// </remarks>
-internal sealed class LeasedDatabaseCredentialSource : ITenantDatabaseCredentialSource
+internal sealed class LeasedDatabaseCredentialSource : ITenantDatabaseCredentialSource, ITenantLocationSource
 {
     private HeldCredential? _held;
 
@@ -41,6 +41,33 @@ internal sealed class LeasedDatabaseCredentialSource : ITenantDatabaseCredential
     ///     password has no such accessor and deliberately never gets one.
     /// </remarks>
     public string? HeldDatabaseName => Volatile.Read(ref _held)?.DatabaseName;
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     🔴 The half that keeps the member out of the installation's registry. Without it, resolving
+    ///     the borrower runs <c>IsSystemTenantExistingAsync</c> — <c>listDatabases</c> on the admin
+    ///     connection — and then reads the tenant's row in the system database, so the member would
+    ///     need the installation's admin and datasource credentials to serve a single lease. The lease
+    ///     already carries the answer; this is where it is handed over.
+    ///
+    ///     Answers for the leased tenant and no other, for the same reason
+    ///     <see cref="TryGetCredential" /> answers for one database: a source that guessed would point
+    ///     the engine at a neighbour's database, and the credential seam would then be asked to open
+    ///     it.
+    /// </remarks>
+    public bool TryGetDatabaseName(string tenantId, out string databaseName)
+    {
+        var held = Volatile.Read(ref _held);
+
+        if (held is null || !string.Equals(held.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            databaseName = string.Empty;
+            return false;
+        }
+
+        databaseName = held.DatabaseName;
+        return true;
+    }
 
     /// <inheritdoc />
     public bool TryGetCredential(string databaseName, out string user, out string password)
@@ -63,13 +90,14 @@ internal sealed class LeasedDatabaseCredentialSource : ITenantDatabaseCredential
     ///     Takes the credential the lease carried. Replaces whatever was held — a member that still
     ///     held one here would be a member whose previous lease did not leave.
     /// </summary>
-    public void HoldForLease(string databaseName, string user, string password)
+    public void HoldForLease(string tenantId, string databaseName, string user, string password)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(databaseName);
         ArgumentException.ThrowIfNullOrWhiteSpace(user);
         ArgumentException.ThrowIfNullOrWhiteSpace(password);
 
-        Volatile.Write(ref _held, new HeldCredential(databaseName, user, password));
+        Volatile.Write(ref _held, new HeldCredential(tenantId, databaseName, user, password));
     }
 
     /// <summary>
@@ -85,9 +113,9 @@ internal sealed class LeasedDatabaseCredentialSource : ITenantDatabaseCredential
     public override string ToString() =>
         Volatile.Read(ref _held) is null
             ? "LeasedDatabaseCredentialSource(no lease)"
-            : "LeasedDatabaseCredentialSource(holding one lease credential)";
+            : "LeasedDatabaseCredentialSource(holding one lease location and credential)";
 
-    private sealed record HeldCredential(string DatabaseName, string User, string Password)
+    private sealed record HeldCredential(string TenantId, string DatabaseName, string User, string Password)
     {
         /// <summary>🔴 A record's generated rendering would print the password.</summary>
         public override string ToString() => "<lease database credential>";

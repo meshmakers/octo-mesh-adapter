@@ -26,8 +26,28 @@
 - name: OCTO_SYSTEM__REPLICASETNAME
   value: {{ .Values.clusterDependencies.mongodbReplicaSet | quote }}
 {{- end }}
+{{/*
+  🔴 AB#4924 — a pool member gets NEITHER of these, and could not be deployed if it did.
+
+  They are the installation's shared datasource and admin passwords: the datasource user name is a
+  format string over the database name, so whoever holds that password can open EVERY tenant's
+  database, and the admin password needs no explanation. A pool member executes work for tenants
+  other than the one that owns it and is handed exactly one of them at a time by a lease — a standing
+  credential to all of them would make that lease decorative. The communication operator refuses to
+  hand the cluster-secret tier to an AdapterPool for the same reason (WorkloadReconciler
+  .AppendClusterSecrets), so the values would not arrive anyway and `octo-mesh.secretEnv`, which fails
+  on an empty value, would fail the render instead.
+
+  What replaces them: the member is TOLD where the leased tenant lives and how to open it
+  (ITenantLocationSource + ITenantDatabaseCredentialSource in the runtime engine, both fed from the
+  lease), so it never resolves a tenant through the installation's registry and never needs an
+  installation-wide credential at all. The host, the system database name and the replica set above
+  are not secrets and are still rendered — a connection needs an address either way.
+*/}}
+{{- if not (and .Values.adapterPool .Values.adapterPool.poolTenantId .Values.adapterPool.poolRtId) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
+{{- end }}
 {{- end }}
 
 {{- define "octo-mesh.broker-env" -}}

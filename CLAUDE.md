@@ -478,10 +478,38 @@ member id, and the controller's registry keys members by it.
 The controller writes both paths as `ValueOverride`s when it deploys an `RtAdapterPool`
 (`PoolService.AppendAdapterPoolMemberOverrides`).
 
-⚠️ **Still missing for a pod to actually work**: the member has no MongoDB credential in a cluster,
-not even for the registry `OctoSystem` it reads on *every* lease — the chart's only source for
-`OCTO_SYSTEM__DATABASEUSERPASSWORD` / `__ADMINUSERPASSWORD` is the cluster-secret tier that
-`WorkloadReconciler.AppendClusterSecrets` correctly withholds from an `AdapterPool`. See AB#4924.
+### 🔴 A member needs NO installation-wide database credential (AB#4924 §9.4)
+
+The member used to have to resolve the borrower through the installation's registry, which runs
+`listDatabases` on the **admin** connection and reads the system database — six `octosystem` commands
+and hundreds of admin authentications were measured **per lease**, not just at startup. It would
+therefore have needed the cluster's admin password to serve one borrowed pipeline, while the chart's
+only source for `OCTO_SYSTEM__DATABASEUSERPASSWORD` / `__ADMINUSERPASSWORD` is exactly the
+cluster-secret tier that `WorkloadReconciler.AppendClusterSecrets` correctly withholds from an
+`AdapterPool`. A member pod was undeployable *and* would have been over-privileged if it had deployed.
+
+Resolved by telling the member where the tenant lives instead of letting it find out.
+`LeasedDatabaseCredentialSource` implements **both** runtime seams of the engine, fed from the lease by
+`BorrowerDatabaseLeaseParticipant`:
+
+| Seam | Answers | Effect |
+|---|---|---|
+| `ITenantLocationSource` | which database holds the leased tenant | `SystemContext` skips the admin probe and the registry read entirely |
+| `ITenantDatabaseCredentialSource` | which credential opens that database | the borrower's own datasource user, for the length of the lease |
+
+Both answer for the leased tenant / its database and for nothing else, and both are dropped on release.
+Either one alone would leave the member needing an installation-wide credential.
+
+The chart follows: a pool member renders **no** `OCTO_SYSTEM__DATABASEUSERPASSWORD` /
+`__ADMINUSERPASSWORD` at all. Not cosmetic — `octo-mesh.secretEnv` fails on an empty value, so with the
+operator (correctly) withholding the tier the render itself would have failed. Host, system database
+name and replica set are still rendered; they are not secrets and a connection needs an address either
+way. A *dedicated* adapter still fails to render without the two secrets, verified explicitly.
+
+⚠️ What a member gets from the engine this way is a **detached** tenant context: it reads and writes
+entities but performs none of the model management the registry route performs (see
+`octo-construction-kit-engine-mongodb/CLAUDE.md`). Deliberate — those are writes on behalf of the
+installation that owns the tenant, and a borrowed process is not it.
 
 ## Helm chart publishing (AB#4948)
 

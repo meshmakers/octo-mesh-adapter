@@ -25,9 +25,10 @@ triggers:
 
 transformations:
   - type: LlmQuery@1
-    provider: OpenAICompatible
+    provider: OpenAiCompatible
     baseUrl: http://localhost:11434/v1/
-    apiKey: ollama
+    # Local Ollama needs no credential. For an authenticated backend reference an
+    # AiConfiguration entity via apiKeyConfigurationName instead of an inline key.
     model: nemotron-3-nano:4b
     question: "Summarize the following text in exactly one sentence."
     systemPrompt: "You are a concise summarizer. Reply with one sentence only."

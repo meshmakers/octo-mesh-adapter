@@ -44,7 +44,7 @@
   installation-wide credential at all. The host, the system database name and the replica set above
   are not secrets and are still rendered — a connection needs an address either way.
 */}}
-{{- if not (and .Values.adapterPool .Values.adapterPool.poolTenantId .Values.adapterPool.poolRtId) }}
+{{- if not (include "octo-mesh.isPoolMember" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
 {{- end }}
@@ -79,7 +79,24 @@
   value: {{ .global.Values.clusterDependencies.streamDataHost | quote }}
 - name: {{ printf "%s__STREAMDATAUSER" (upper .name) }}
   value: {{ .global.Values.clusterDependencies.streamDataUser | quote }}
+{{/*
+  🔴 AB#4924 — withheld from a pool member, like the two Mongo secrets above, and for
+  a reason that cannot be fixed by handing it over: there is NO per-tenant CrateDB
+  principal. The engine holds one connection string per installation and separates
+  tenants by SCHEMA, so this one credential reaches every tenant's stream data. On a
+  lease it would be time-scoped but not tenant-scoped — the shape of the mechanism
+  without its substance.
+
+  The accepted consequence (concept §4, AB#4924): a LEASED pipeline that writes an
+  archive fails to connect, rather than reaching a neighbour's schema. A per-tenant
+  CrateDB principal has to exist before that can change.
+
+  The host and user above are not secrets and stay rendered, so the failure is a
+  refused connection with a named user rather than a half-configured process.
+*/}}
+{{- if not (include "octo-mesh.isPoolMember" .global) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" (printf "%s__STREAMDATAPASSWORD" (upper .name)) "value" .global.Values.secrets.streamDataPassword "legacyKey" "streamDataPassword" "context" .global) }}
+{{- end }}
 {{- end }}
 
 
@@ -111,7 +128,7 @@
   replica of the deployment the same member id, and the controller's registry
   keys members by it.
 */}}
-{{- $isPoolMember := and .Values.adapterPool .Values.adapterPool.poolTenantId .Values.adapterPool.poolRtId }}
+{{- $isPoolMember := include "octo-mesh.isPoolMember" . }}
 {{- if $isPoolMember }}
 - name: OCTO_ADAPTERPOOL__POOLTENANTID
   value: {{ .Values.adapterPool.poolTenantId | quote }}

@@ -10,6 +10,23 @@ We now use Release.Name verbatim (still truncated to 63 chars for the
 DNS-1123 limit). `fullnameOverride` stays as an escape hatch for
 out-of-band installs that need a fixed name.
 */}}
+{{/*
+  AB#4924 — is this release an adapter POOL MEMBER rather than a dedicated adapter?
+
+  Both ids or neither: AdapterPoolMemberOptions.IsEnabled requires both, so half a
+  configuration must render as a dedicated adapter rather than as a broken member.
+  Emits a non-empty string for true and nothing for false, which is what `if`
+  expects. Defined once because three separate places have to agree — they decide
+  whether the pod gets a tenant, an adapter RtId, and the cluster's shared data-store
+  secrets, and a condition that drifted between them would produce a member that is a
+  member in one respect and not in another.
+*/}}
+{{- define "octo-mesh.isPoolMember" -}}
+{{- if and .Values.adapterPool .Values.adapterPool.poolTenantId .Values.adapterPool.poolRtId -}}
+true
+{{- end -}}
+{{- end }}
+
 {{- define "octo-mesh.adapterFullname" -}}
     {{- if .Values.fullnameOverride }}
         {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" | lower }}

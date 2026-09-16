@@ -114,4 +114,126 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
         // Confidence 100 proves the text-layer path ran, i.e. the file was seen as a PDF.
         Assert.Equal(100d, CapturedValue(dataContext, "$.Confidence"));
     }
+
+    // --- AB#5259: hybrid PDFs (text layer for the labels, figures as embedded images) ----
+    // The decision and the merge are pure functions so they can be asserted without paying
+    // for a full Tesseract run; the end-to-end contract of the untouched digital-PDF path
+    // (text layer wins, OCR skipped, confidence 100) is covered by the two tests above.
+
+    [Fact]
+    public void IsTextLayerStructurallyComplete_HybridInvoice_ReportsTheLabelWithoutAnAmount()
+    {
+        // Verbatim shape of the prod-1 evidence (uploaded documents 6aa9a681…43c3 / …43c7,
+        // "26034 Lehrlingstraining"): pdftotext -layout returns the labels and NOT ONE of the
+        // three amounts, because the amount column is one of 43 embedded stencil images.
+        const string textLayer = """
+            Potenzialwerkstatt Mag. Halina Gruber
+            Rechnung 26034 vom 12.09.2026
+            Leistungsbetrag gesamt
+            MWSt 20%
+            Bruttosumme
+            Zahlbar innerhalb von 14 Tagen ohne Abzug.
+            """;
+
+        Assert.False(PdfOcrExtractionNode.IsTextLayerStructurallyComplete(textLayer, null, out var label));
+        Assert.NotNull(label);
+    }
+
+    [Fact]
+    public void IsTextLayerStructurallyComplete_DigitalInvoiceWithAmounts_IsComplete()
+    {
+        // The AB#4528 case must keep the cheap text-layer path: every total label has its
+        // figure right next to it, so there is nothing for OCR to add.
+        const string textLayer = """
+            Rechnung Nr. N2026020 vom 30.05.2026
+            Position 1: Auftragsentwicklung 160 Std zu 30,00 EUR = 4.800,00 EUR
+            Zwischensumme 4.800,00 EUR
+            MWSt 20% 960,00 EUR
+            Gesamtbetrag 5.760,00 EUR
+            """;
+
+        Assert.True(PdfOcrExtractionNode.IsTextLayerStructurallyComplete(textLayer, null, out var label));
+        Assert.Null(label);
+    }
+
+    [Fact]
+    public void IsTextLayerStructurallyComplete_DocumentWithoutAmountLabels_IsNotJudged()
+    {
+        // An info sheet or an attendance confirmation carries no total at all. It must NOT be
+        // dragged through the OCR merge — there is no figure to recover, only cost.
+        const string textLayer = """
+            Teilnahmebestaetigung
+            Hiermit bestaetigen wir die Teilnahme am Lehrlingstraining am 12.09.2026.
+            Die Veranstaltung umfasste 8 Einheiten zu je 50 Minuten.
+            """;
+
+        Assert.True(PdfOcrExtractionNode.IsTextLayerStructurallyComplete(textLayer, null, out _));
+    }
+
+    [Fact]
+    public void IsTextLayerStructurallyComplete_DateNextToALabel_DoesNotCountAsAnAmount()
+    {
+        // "30.05.2026" must not satisfy a total label — a date-shaped token next to
+        // "Gesamtbetrag" would otherwise mask exactly the defect this check exists for.
+        const string textLayer = """
+            Leistungszeitraum bis 30.05.2026
+            Gesamtbetrag
+            Wir danken fuer Ihren Auftrag.
+            """;
+
+        Assert.False(PdfOcrExtractionNode.IsTextLayerStructurallyComplete(textLayer, null, out _));
+    }
+
+    [Fact]
+    public void IsTextLayerStructurallyComplete_CustomAmountLabels_OverrideTheBuiltInSet()
+    {
+        const string textLayer = """
+            Consumption report
+            Reading 2026-09-12
+            Meter value
+            """;
+
+        Assert.False(PdfOcrExtractionNode.IsTextLayerStructurallyComplete(textLayer, ["meter value"], out var label));
+        Assert.Equal("meter value", label);
+        // The built-in invoice vocabulary does not apply to this document at all.
+        Assert.True(PdfOcrExtractionNode.IsTextLayerStructurallyComplete(textLayer, null, out _));
+    }
+
+    [Fact]
+    public void MergeTextLayerWithOcr_KeepsTheTextLayerVerbatimAndAppendsOnlyNewLines()
+    {
+        // The text layer stays authoritative: "N2026020" (the separator-less invoice number
+        // Tesseract mangles into "NZ02G020") must survive unchanged, the label lines must not
+        // be duplicated in their OCR form, and the image-only amounts must be added.
+        const string textLayer = """
+            Rechnung Nr. N2026020
+            Leistungsbetrag gesamt
+            Bruttosumme
+            """;
+        const string ocrText = """
+            Rechnung Nr. NZ02G020
+            Leistungsbetrag gesamt 520,00
+            Bruttosumme
+            624,00 EUR
+            """;
+
+        var merged = PdfOcrExtractionNode.MergeTextLayerWithOcr(textLayer, ocrText);
+
+        Assert.StartsWith(textLayer, merged);
+        Assert.Contains(PdfOcrExtractionNode.OcrSupplementMarker, merged);
+        Assert.Contains("520,00", merged);
+        Assert.Contains("624,00 EUR", merged);
+        // "Bruttosumme" adds no token the text layer does not have -> not repeated.
+        Assert.Equal(1, merged.Split("Bruttosumme").Length - 1);
+    }
+
+    [Fact]
+    public void MergeTextLayerWithOcr_OcrAddsNothingNew_ReturnsTheTextLayerUnchanged()
+    {
+        const string textLayer = "Gesamtbetrag 5.760,00 EUR\nMWSt 20% 960,00 EUR";
+
+        Assert.Equal(textLayer, PdfOcrExtractionNode.MergeTextLayerWithOcr(textLayer, "Gesamtbetrag 5.760,00 EUR"));
+        Assert.Equal(textLayer, PdfOcrExtractionNode.MergeTextLayerWithOcr(textLayer, "   \n  \n"));
+        Assert.Equal(textLayer, PdfOcrExtractionNode.MergeTextLayerWithOcr(textLayer, string.Empty));
+    }
 }

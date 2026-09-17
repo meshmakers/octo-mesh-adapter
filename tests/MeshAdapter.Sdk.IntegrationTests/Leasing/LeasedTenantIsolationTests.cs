@@ -58,7 +58,7 @@ namespace MeshAdapter.Sdk.IntegrationTests.Leasing;
 public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassFixture<TwoTenantLeaseFixture>
 {
     private const string LenderTenantId = "leaselender";
-    private const string PoolRtId = "665f0000000000000000ee21";
+    private const string AdapterPoolRtId = "665f0000000000000000ee21";
     private const string Issuer = "https://identity.example.com";
     private const string BorrowerSecret = "sJ8k2p-QmZ4x7vNb1LcT0aRwEyUiOpAsDfGhJkLzXcVbNm";
 
@@ -523,8 +523,8 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
             services.Configure<AdapterOptions>(o => o.IssuerUri = Issuer);
             services.Configure<AdapterPoolMemberOptions>(o =>
             {
-                o.PoolTenantId = LenderTenantId;
-                o.PoolRtId = PoolRtId;
+                o.AdapterPoolTenantId = LenderTenantId;
+                o.AdapterPoolRtId = AdapterPoolRtId;
                 o.MemberId = "octo-pool-integration-0";
             });
 
@@ -582,8 +582,8 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
             {
                 LeaseId = Guid.NewGuid().ToString("N"),
                 TenantId = tenantId,
-                PoolTenantId = LenderTenantId,
-                PoolRtId = PoolRtId,
+                AdapterPoolTenantId = LenderTenantId,
+                AdapterPoolRtId = AdapterPoolRtId,
                 AdapterRtId = "665f0000000000000000ee22",
                 AdapterCkTypeId = "System.Communication/Adapter",
                 ClientId = $"octo-pipeline-sa-{tenantId}",

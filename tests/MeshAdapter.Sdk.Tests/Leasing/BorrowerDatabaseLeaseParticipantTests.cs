@@ -44,8 +44,8 @@ public class BorrowerDatabaseLeaseParticipantTests
     {
         LeaseId = "lease-1",
         TenantId = BorrowerTenantId,
-        PoolTenantId = "lender",
-        PoolRtId = "665f0000000000000000ee21",
+        AdapterPoolTenantId = "lender",
+        AdapterPoolRtId = "665f0000000000000000ee21",
         AdapterRtId = "665f0000000000000000ee22",
         AdapterCkTypeId = "System.Communication/Adapter",
         ClientId = "octo-pipeline-sa-tenant-b",

@@ -43,8 +43,8 @@ public class BorrowerIdentityLeaseParticipantTests
     {
         LeaseId = "lease-1",
         TenantId = tenantId,
-        PoolTenantId = "lender",
-        PoolRtId = "665f0000000000000000ee21",
+        AdapterPoolTenantId = "lender",
+        AdapterPoolRtId = "665f0000000000000000ee21",
         AdapterRtId = "665f0000000000000000ee22",
         AdapterCkTypeId = "System.Communication/Adapter",
         ClientId = BorrowerClientId,

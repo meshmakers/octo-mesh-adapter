@@ -83,6 +83,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                 while (count <= 5)
                 {
                     count++;
+                    IOctoSession? session = null;
                     try
                     {
                         // AB#4975 / AB#5028 — scoped: the engine stamps RtCreatedBy and enforces data
@@ -90,7 +91,10 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                         // back to a system session without a verified caller is gone: the fallback is
                         // now the adapter's service account and only then the system context, decided
                         // once per execution rather than here (AB#5027 / AB#5028).
-                        var session = await etlContext.GetSessionForAsync(c.Identity);
+                        //
+                        // Assigned rather than declared here: the duplicate-key catch below rolls the
+                        // transaction back, so the session has to outlive this block (AB#3717).
+                        session = await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
 
                         OperationResult operationResult = new();
@@ -115,6 +119,23 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
 
                         throw;
                     }
+                    catch (Exception e) when (CanReportDuplicateKey(c) && IsDuplicateKey(e))
+                    {
+                        // A unique index refused the write. Not a retry case: the conflicting
+                        // document is committed, so every attempt would fail the same way. The
+                        // pipeline asked to hear about it rather than to fail, so roll back and
+                        // hand it a flag - see DuplicateKeyHandling.Report.
+                        if (session != null)
+                        {
+                            await session.AbortTransactionAsync();
+                        }
+
+                        nodeContext.Warning(
+                            $"A unique index refused the write, reporting it as configured: {DescribeDuplicates(e)}");
+
+                        dataContext.Set(c.DuplicateKeyTargetPath!, true, DocumentModes.Extend,
+                            ValueKinds.Simple, TargetValueWriteModes.Overwrite);
+                    }
 
                     break;
                 }
@@ -133,6 +154,96 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
         await next(dataContext, nodeContext);
     }
     
+    /// <summary>
+    /// Walks the inner-exception chain: the repository wraps the driver failure in an
+    /// OperationFailedException, so the bulk-write exception is never the one that arrives here.
+    /// </summary>
+    private static bool IsDuplicateKey(Exception? e)
+    {
+        for (; e != null; e = e.InnerException)
+        {
+            if (e is MongoBulkWriteException bulk &&
+                bulk.WriteErrors.Any(error => error.Category == ServerErrorCategory.DuplicateKey))
+            {
+                return true;
+            }
+
+            if (e is MongoWriteException { WriteError.Category: ServerErrorCategory.DuplicateKey })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The index and key that collided, for the log. The document itself is not written out: on a
+    /// public endpoint it is the caller's own payload and has no business in our logs twice.
+    /// </summary>
+    /// <summary>
+    /// Names the index that refused the write, never the value that collided. MongoDB puts the
+    /// duplicate key itself in the message, and the unique keys this node guards are business
+    /// identifiers - an applicant's e-mail address on the public registration route, for one. The
+    /// index name is what an operator needs to find the conflict; the value is theirs to look up
+    /// under whatever access control the data sits behind, not something a log should carry.
+    /// </summary>
+    /// <summary>
+    /// Whether a duplicate key can be reported rather than thrown. Report means "do not fail, tell
+    /// me through the flag", so without somewhere to put the flag there is nothing to tell: the
+    /// caller would get neither the failure nor the signal, and a rolled-back write would be
+    /// indistinguishable from a stored one. In that case the filter does not match and the
+    /// exception keeps travelling, which is what this node has always done.
+    ///
+    /// A blank path counts as no path. An empty JSONPath addresses the document ROOT in this data
+    /// context (DataContext.Set treats "" and "$" alike), so `duplicateKeyTargetPath: ""` would
+    /// write the flag over the whole data document instead of into a field of it.
+    /// </summary>
+    internal static bool CanReportDuplicateKey(ApplyChangesNodeConfiguration2 c)
+    {
+        return c.OnDuplicateKey == DuplicateKeyHandling.Report
+               && !string.IsNullOrWhiteSpace(c.DuplicateKeyTargetPath);
+    }
+
+    private static string DescribeDuplicates(Exception? e)
+    {
+        for (; e != null; e = e.InnerException)
+        {
+            if (e is MongoBulkWriteException bulk)
+            {
+                var names = bulk.WriteErrors
+                    .Where(error => error.Category == ServerErrorCategory.DuplicateKey)
+                    .Select(error => IndexNameOf(error.Message))
+                    .ToArray();
+                return names.Length > 0 ? string.Join("; ", names) : "a unique index";
+            }
+
+            if (e is MongoWriteException { WriteError.Category: ServerErrorCategory.DuplicateKey } single)
+            {
+                return IndexNameOf(single.WriteError.Message);
+            }
+        }
+
+        return "no duplicate-key detail found in the exception chain";
+    }
+
+    /// <summary>
+    /// Pulls the index name out of a MongoDB duplicate-key message and drops the rest, which is
+    /// where the colliding value sits. Anything unrecognised degrades to a constant rather than
+    /// to the original text, so a message shape we have not seen cannot leak by default.
+    /// </summary>
+    internal static string IndexNameOf(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "a unique index";
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            message, @"index:\s*(?<name>[^\s]+)");
+        return match.Success ? $"index {match.Groups["name"].Value}" : "a unique index";
+    }
+
     private static string ConcatOriginAndTarget(AssociationUpdateInfo updateInfo)
     {
         return string.Format($"{updateInfo.Origin}{updateInfo.Target}");

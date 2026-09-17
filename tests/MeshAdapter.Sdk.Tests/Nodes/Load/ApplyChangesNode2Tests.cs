@@ -345,4 +345,63 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
         Assert.NotNull(capturedEntities);
         Assert.Equal(2, capturedEntities!.Count);
     }
+
+    /// <summary>
+    /// The duplicate-key behaviour is opt-in. A caller that never asked to hear about a unique
+    /// index must keep failing rather than silently storing nothing - the node has always thrown,
+    /// and every existing write pipeline relies on that.
+    /// </summary>
+    [Fact]
+    public void Duplicate_key_reporting_is_off_unless_the_pipeline_asks_for_it()
+    {
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+
+        Assert.Equal(DuplicateKeyHandling.Throw, config.OnDuplicateKey);
+        Assert.Null(config.DuplicateKeyTargetPath);
+    }
+
+    /// <summary>
+    /// Report without somewhere to put the flag is not reporting. The decision lives in the
+    /// exception filter, so when it says no the duplicate keeps travelling and the node throws -
+    /// the alternative is a rolled-back write that every later node reads as a success.
+    /// </summary>
+    [Theory]
+    [InlineData(DuplicateKeyHandling.Report, "$.duplicate", true)]
+    [InlineData(DuplicateKeyHandling.Report, null, false)]
+    [InlineData(DuplicateKeyHandling.Report, "", false)]
+    [InlineData(DuplicateKeyHandling.Report, "   ", false)]
+    [InlineData(DuplicateKeyHandling.Throw, "$.duplicate", false)]
+    public void A_duplicate_key_is_reported_only_with_a_usable_target(
+        DuplicateKeyHandling handling, string? targetPath, bool expected)
+    {
+        var config = new ApplyChangesNodeConfiguration2
+        {
+            EntityUpdatesPath = EntityUpdatesPath,
+            OnDuplicateKey = handling,
+            DuplicateKeyTargetPath = targetPath
+        };
+
+        Assert.Equal(expected, ApplyChangesNode2.CanReportDuplicateKey(config));
+    }
+
+    /// <summary>
+    /// The warning names the index and never the value that collided. MongoDB puts the duplicate
+    /// key itself in the message, and on the public registration route that key is an applicant's
+    /// e-mail address.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "E11000 duplicate key error collection: tenant.RtEntity_Registration index: Registration_0 dup key: { attributes.eMail: \"someone@example.at\" }",
+        "index Registration_0")]
+    [InlineData("a shape this parser has never seen", "a unique index")]
+    [InlineData("", "a unique index")]
+    [InlineData(null, "a unique index")]
+    public void The_duplicate_key_warning_names_the_index_and_nothing_else(
+        string? message, string expected)
+    {
+        var described = ApplyChangesNode2.IndexNameOf(message);
+
+        Assert.Equal(expected, described);
+        Assert.DoesNotContain("someone@example.at", described);
+    }
 }

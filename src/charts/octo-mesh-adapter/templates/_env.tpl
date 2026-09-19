@@ -130,9 +130,24 @@
 */}}
 {{- $isPoolMember := include "octo-mesh.isPoolMember" . }}
 {{- if $isPoolMember }}
-- name: OCTO_ADAPTERPOOL__POOLTENANTID
+{{/*
+  🔴 The ENV names must spell AdapterPoolTenantId / AdapterPoolRtId, the VALUES keys must not.
+  They are two different contracts and they were renamed apart (AB#4924).
+
+  The env names bind `AdapterPoolMemberOptions` in octo-communication-sdk: section "AdapterPool"
+  plus properties `AdapterPoolTenantId` / `AdapterPoolRtId`, so the keys are
+  OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID / __ADAPTERPOOLRTID. Stuttery, and not ours to shorten.
+  Emitting the old POOLTENANTID / POOLRTID binds nothing, `IsEnabled` reads false, and the process
+  starts as an ORDINARY ADAPTER with no tenant and no rtId — running, healthy, 1/1 Ready, and not a
+  pool member. Observed on a local kind cluster.
+
+  The values keys stay `adapterPool.poolTenantId` / `.poolRtId`: the `adapterPool.` prefix already
+  says which pool, and the communication controller writes exactly those two paths
+  (DeploymentSiteService.AppendAdapterPoolMemberOverrides). Renaming them here breaks that instead.
+*/}}
+- name: OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID
   value: {{ .Values.adapterPool.poolTenantId | quote }}
-- name: OCTO_ADAPTERPOOL__POOLRTID
+- name: OCTO_ADAPTERPOOL__ADAPTERPOOLRTID
   value: {{ .Values.adapterPool.poolRtId | quote }}
 {{- else }}
 {{/*

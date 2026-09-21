@@ -3,6 +3,7 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -109,6 +110,24 @@ internal sealed class LeasedPipelineWorkItem(
             InputData = lease.PipelineInput,
             TriggerType = PipelineTriggerType.Manual
         };
+
+        // AB#5279: the invoker the work item was queued for runs the pipeline, under the same
+        // three-state rule its execute trigger declares. A required binding with no invoker on the
+        // lease is a failed lease, never a run as the service account.
+        var binding = LeaseCallerCarryThrough.Apply(lease, registration.NodeDefinitionRoot, options);
+        if (binding == CallerBindingOutcome.Reject)
+        {
+            return LeaseWorkOutcome.Failed(
+                $"Pipeline {lease.PipelineRtId} requires a bound caller, but the lease carries no invoker; the "
+                + "work item is not run as the service account.");
+        }
+
+        if (options.VerifiedPrincipal is not null && string.IsNullOrEmpty(options.CallerAccessToken))
+        {
+            logger.LogInformation(
+                "Leased execution '{PipelineExecutionId}' runs as '{Subject}' without a delegation token",
+                pipelineExecutionId, options.VerifiedPrincipal.SubjectId);
+        }
 
         logger.LogInformation(
             "Running leased pipeline {PipelineRtEntityId} for tenant '{TenantId}' as execution "

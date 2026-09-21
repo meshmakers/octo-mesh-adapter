@@ -54,7 +54,8 @@ public class ResolveNotificationPlaceholdersNodeTests
         string? customerPath = "$.customer",
         string? communityPath = "$.config",
         string? billingPath = null,
-        string? renderingTypePath = null) => new()
+        string? renderingTypePath = null,
+        string? registrationPath = null) => new()
     {
         SubjectPath = "$.subject",
         SubjectTargetPath = "$.renderedSubject",
@@ -64,6 +65,7 @@ public class ResolveNotificationPlaceholdersNodeTests
         CommunityConfigPath = communityPath,
         BillingDocumentPath = billingPath,
         RenderingTypePath = renderingTypePath,
+        RegistrationPath = registrationPath,
     };
 
     [Fact]
@@ -96,7 +98,7 @@ public class ResolveNotificationPlaceholdersNodeTests
 
         Assert.NotNull(error);
         Assert.Contains("billingDocument.documentNumber", error!.Message, StringComparison.Ordinal);
-        // Naming the source, not only the token: four paths are configurable and the operator has
+        // Naming the source, not only the token: five paths are configurable and the operator has
         // to know which one to look at.
         Assert.Contains("BillingDocument (no path configured)", error.Message, StringComparison.Ordinal);
     }
@@ -234,6 +236,59 @@ public class ResolveNotificationPlaceholdersNodeTests
 
         Assert.Null(error);
         Assert.Equal("[]", context.Get<string>("$.renderedBody"));
+    }
+
+    /// <summary>
+    /// The applicant is not a Customer: a membership application is its own type with flat
+    /// attributes, so the registration tokens read <c>FirstName</c> where
+    /// <c>customer.firstName</c> reads <c>Contact.Attributes.FirstName</c>. Pointing the Customer
+    /// source at an application would resolve nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_registration_source_is_read_from_the_applications_own_attributes()
+    {
+        const string json = """
+            {
+              "registration": {
+                "RtId": "6a9a",
+                "Attributes": { "FirstName": "Erika", "EMail": "erika@example.at", "BillingCity": "Abtenau" }
+              },
+              "config": { "RtId": "6977", "Attributes": { "Name": "EEG Musterstadt" } },
+              "subject": "Ihr Antrag bei ${community.name}",
+              "body": "Guten Tag ${registration.firstName}, wir melden uns unter ${registration.email} - ${registration.cityTown}"
+            }
+            """;
+
+        var (context, error) = await RunAsync(json, Config(customerPath: null, registrationPath: "$.registration"));
+
+        Assert.Null(error);
+        Assert.Equal("Ihr Antrag bei EEG Musterstadt", context.Get<string>("$.renderedSubject"));
+        Assert.Equal(
+            "Guten Tag Erika, wir melden uns unter erika@example.at - Abtenau",
+            context.Get<string>("$.renderedBody"));
+    }
+
+    /// <summary>
+    /// The billing send paths do not supply a registration, so a registration token in a billing
+    /// template refuses that send rather than mailing a nameless greeting.
+    /// </summary>
+    [Fact]
+    public async Task A_registration_token_without_a_configured_registration_refuses_the_send()
+    {
+        const string json = """
+            {
+              "customer": { "RtId": "6a8e", "Attributes": {} },
+              "config": { "RtId": "6977", "Attributes": {} },
+              "subject": "Guten Tag ${registration.firstName}",
+              "body": "x"
+            }
+            """;
+
+        var (_, error) = await RunAsync(json, Config());
+
+        Assert.NotNull(error);
+        Assert.Contains("registration.firstName", error!.Message, StringComparison.Ordinal);
+        Assert.Contains("Registration (no path configured)", error.Message, StringComparison.Ordinal);
     }
 }
 

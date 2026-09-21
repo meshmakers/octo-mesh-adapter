@@ -127,13 +127,30 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
     private static Dictionary<PlaceholderSource, string?> ReadSources(
         ResolveNotificationPlaceholdersNodeConfiguration c, IDataContext dataContext)
     {
-        return new Dictionary<PlaceholderSource, string?>
-        {
-            [PlaceholderSource.Customer] = BaseOrNull(dataContext, c.CustomerPath),
-            [PlaceholderSource.Community] = BaseOrNull(dataContext, c.CommunityConfigPath),
-            [PlaceholderSource.BillingDocument] = BaseOrNull(dataContext, c.BillingDocumentPath)
-        };
+        return ConfiguredPaths(c).ToDictionary(
+            entry => entry.Source,
+            entry => BaseOrNull(dataContext, entry.Path));
     }
+
+    /// <summary>
+    /// Every source this node knows, paired with the path it was configured to read.
+    ///
+    /// One list rather than two switches: <see cref="ReadSources"/> and
+    /// <see cref="ConfiguredPath"/> both need the same mapping, and a source present in one but
+    /// not the other fails silently. It would not fail at the send - the token still refuses -
+    /// but <see cref="DescribeMissingSources"/> would report a configured source as
+    /// "(no path configured)", which is the exact distinction that message exists to draw.
+    /// <c>NotificationPlaceholderResolverTests</c> asserts that every source the catalog uses
+    /// appears here.
+    /// </summary>
+    internal static (PlaceholderSource Source, string? Path)[] ConfiguredPaths(
+        ResolveNotificationPlaceholdersNodeConfiguration c) =>
+    [
+        (PlaceholderSource.Customer, c.CustomerPath),
+        (PlaceholderSource.Community, c.CommunityConfigPath),
+        (PlaceholderSource.BillingDocument, c.BillingDocumentPath),
+        (PlaceholderSource.Registration, c.RegistrationPath)
+    ];
 
     /// <summary>
     /// Which sources the refused tokens needed, and what each one was configured to read, so the
@@ -182,13 +199,11 @@ public class ResolveNotificationPlaceholdersNode(NodeDelegate next) : IPipelineN
     }
 
     private static string? ConfiguredPath(
-        ResolveNotificationPlaceholdersNodeConfiguration c, PlaceholderSource source) => source switch
+        ResolveNotificationPlaceholdersNodeConfiguration c, PlaceholderSource source)
     {
-        PlaceholderSource.Customer => Blank(c.CustomerPath),
-        PlaceholderSource.Community => Blank(c.CommunityConfigPath),
-        PlaceholderSource.BillingDocument => Blank(c.BillingDocumentPath),
-        _ => null
-    };
+        var match = ConfiguredPaths(c).FirstOrDefault(entry => entry.Source == source);
+        return Blank(match.Path);
+    }
 
     private static string? Blank(string? path) => string.IsNullOrWhiteSpace(path) ? null : path;
 

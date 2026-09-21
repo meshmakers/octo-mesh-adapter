@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
@@ -283,11 +284,18 @@ public class NotificationPlaceholderCatalogTests
     {
         foreach (var definition in NotificationPlaceholderCatalog.Definitions)
         {
+            // Every source spelled out and no catch-all: the discard used to map to
+            // "billingDocument.", so a source added later was asserted against another group's
+            // prefix instead of its own. Throwing makes the next one a compile-time-obvious
+            // decision rather than a puzzling failure.
             var expected = definition.Source switch
             {
                 PlaceholderSource.Customer => "customer.",
                 PlaceholderSource.Community => "community.",
-                _ => "billingDocument."
+                PlaceholderSource.BillingDocument => "billingDocument.",
+                PlaceholderSource.Registration => "registration.",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(definition.Source), definition.Source, "Give the new source its token prefix.")
             };
             Assert.StartsWith(expected, definition.Token, StringComparison.Ordinal);
         }
@@ -321,12 +329,19 @@ public class NotificationPlaceholderCatalogTests
             withFallback);
     }
 
+    /// <summary>
+    /// "As a minimum" is the claim, so containment is the assertion. It counted the distinct
+    /// sources instead, which says "there are exactly three" - the opposite of a minimum, and it
+    /// failed the moment AB#3717 added a fourth without any of the three going missing.
+    /// </summary>
     [Fact]
     public void The_three_sources_the_issue_names_as_a_minimum_are_all_covered()
     {
         var sources = NotificationPlaceholderCatalog.Definitions.Select(d => d.Source).Distinct().ToArray();
 
-        Assert.Equal(3, sources.Length);
+        Assert.Contains(PlaceholderSource.Customer, sources);
+        Assert.Contains(PlaceholderSource.Community, sources);
+        Assert.Contains(PlaceholderSource.BillingDocument, sources);
     }
 }
 
@@ -416,5 +431,51 @@ public class NotificationPlaceholderBillingTypeTests
         Assert.Equal(PlaceholderSource.BillingDocument, definition.Source);
         Assert.Equal("BillingType", definition.AttributePath);
         Assert.Equal(PlaceholderFormat.BillingType, definition.Format);
+    }
+}
+
+/// <summary>
+/// The node maps every <see cref="PlaceholderSource" /> to the configuration property carrying
+/// its path. Two callers used to spell that mapping out separately, one of them with a
+/// fall-through arm, so a source added to the catalog and to the configuration but forgotten in
+/// the second switch would still refuse its tokens - and then report the source as
+/// "(no path configured)" when a path was configured, which is the one distinction the message
+/// exists to draw. The mapping is a single list now; this is what keeps it complete.
+/// </summary>
+public class NotificationPlaceholderConfiguredPathsTests
+{
+    private static ResolveNotificationPlaceholdersNodeConfiguration EverySourceConfigured() => new()
+    {
+        SubjectPath = "$.subject",
+        SubjectTargetPath = "$.renderedSubject",
+        BodyPath = "$.body",
+        BodyTargetPath = "$.renderedBody",
+        CustomerPath = "$.customer",
+        CommunityConfigPath = "$.community",
+        BillingDocumentPath = "$.billingDocument",
+        RegistrationPath = "$.registration"
+    };
+
+    [Fact]
+    public void Every_source_the_catalog_uses_has_a_configurable_path()
+    {
+        var configured = ResolveNotificationPlaceholdersNode.ConfiguredPaths(EverySourceConfigured());
+
+        foreach (var source in NotificationPlaceholderCatalog.Definitions.Select(d => d.Source).Distinct())
+        {
+            var entry = Assert.Single(configured, e => e.Source == source);
+            Assert.False(string.IsNullOrWhiteSpace(entry.Path),
+                $"Source {source} is used by the catalog but has no path in ConfiguredPaths.");
+        }
+    }
+
+    [Fact]
+    public void No_source_is_listed_twice()
+    {
+        var sources = ResolveNotificationPlaceholdersNode.ConfiguredPaths(EverySourceConfigured())
+            .Select(e => e.Source)
+            .ToArray();
+
+        Assert.Equal(sources.Length, sources.Distinct().Count());
     }
 }

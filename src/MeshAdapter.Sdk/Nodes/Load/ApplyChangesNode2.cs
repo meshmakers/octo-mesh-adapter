@@ -108,6 +108,16 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                         else
                         {
                             await session.CommitTransactionAsync();
+
+                            // Written on every run, not only on a duplicate: the node can run more
+                            // than once against one data document (a ForEach over several records,
+                            // or several apply steps), and a true left by an earlier iteration
+                            // would answer "already on file" for a record this run just stored.
+                            if (CanReportDuplicateKey(c))
+                            {
+                                dataContext.Set(c.DuplicateKeyTargetPath!, false, DocumentModes.Extend,
+                                    ValueKinds.Simple, TargetValueWriteModes.Overwrite);
+                            }
                         }
                     }
                     catch (MongoCommandException e)
@@ -178,17 +188,6 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
     }
 
     /// <summary>
-    /// The index and key that collided, for the log. The document itself is not written out: on a
-    /// public endpoint it is the caller's own payload and has no business in our logs twice.
-    /// </summary>
-    /// <summary>
-    /// Names the index that refused the write, never the value that collided. MongoDB puts the
-    /// duplicate key itself in the message, and the unique keys this node guards are business
-    /// identifiers - an applicant's e-mail address on the public registration route, for one. The
-    /// index name is what an operator needs to find the conflict; the value is theirs to look up
-    /// under whatever access control the data sits behind, not something a log should carry.
-    /// </summary>
-    /// <summary>
     /// Whether a duplicate key can be reported rather than thrown. Report means "do not fail, tell
     /// me through the flag", so without somewhere to put the flag there is nothing to tell: the
     /// caller would get neither the failure nor the signal, and a rolled-back write would be
@@ -205,6 +204,13 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                && !string.IsNullOrWhiteSpace(c.DuplicateKeyTargetPath);
     }
 
+    /// <summary>
+    /// The index that refused the write, for the log, and never the value that collided. MongoDB
+    /// puts the duplicate key itself in the message, and the unique keys this node guards are
+    /// business identifiers - an applicant's e-mail address on the public registration route, for
+    /// one. The index name is what an operator needs to find the conflict; the value is theirs to
+    /// look up under whatever access control the data sits behind.
+    /// </summary>
     private static string DescribeDuplicates(Exception? e)
     {
         for (; e != null; e = e.InnerException)

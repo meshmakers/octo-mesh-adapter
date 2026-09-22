@@ -73,6 +73,13 @@ The adapter provides four categories of pipeline nodes:
 - [Email Trigger](docs/examples/email-trigger.md) - Configure email-triggered pipelines
 - [Binary Upload](docs/examples/binary-upload.md) - HTTP binary file upload handling
 
+### API reference
+
+`scripts/createDocumentation.ps1` generates the published API reference from the XML documentation
+of `Meshmakers.Octo.MeshAdapter.Nodes` and uploads it as a build artifact. The `MeshAdapter` host
+executable is deliberately not documented: it exposes no public API of its own, only the `Program`
+class the compiler generates for top-level statement apps.
+
 ## License
 
 Proprietary - Meshmakers

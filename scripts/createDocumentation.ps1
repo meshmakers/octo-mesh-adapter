@@ -17,12 +17,10 @@ if (Test-Path -Path $baseOutputPath) {
     Remove-Item -Path $baseOutputPath -Recurse -Force
 }
 
-# Create XML documentation for Libraries
-$outputPath = "$baseOutputPath/apiReference/Adapters/MeshAdapter"
-$sourcePath = "$baseBinPath/Meshmakers.Octo.MeshAdapter.dll"
-Write-Host "Creating documentation for $sourcePath, doc is generated at $outputPath"
-mmxmldoc2md $sourcePath $outputPath
-
+# Create XML documentation for Libraries.
+# Meshmakers.Octo.MeshAdapter is the host executable and exposes no public API of its own - its
+# only public type is the Program class Roslyn generates for top-level statement apps. It is
+# therefore not documented here.
 $outputPath = "$baseOutputPath/apiReference/Adapters/MeshNodes"
 $sourcePath = "$baseBinPath/Meshmakers.Octo.MeshAdapter.Nodes.dll"
 Write-Host "Creating documentation for $sourcePath, doc is generated at $outputPath"

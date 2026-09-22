@@ -38,6 +38,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="Anthropic" Version="12.24.1" />
         <PackageReference Include="IronOcr" Version="2026.9.4" />
         <!-- Cover-sheet rendering (RenderDataSheetPdf) + PDF merge (MergePdf) for
              the accounting BMD handover export. QuestPDF Community license is set
@@ -64,6 +65,9 @@
         <!-- Direct reference: the released SDK still ships the legacy IdentityModel until the next libs train. -->
         <PackageReference Include="Duende.IdentityModel" Version="8.1.0" />
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
+        <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
+        <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
+        <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
         <PackageReference Include="Microsoft.ML" Version="5.0.0" />
         <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
         <ProjectReference Include="..\MeshNodes.Sdk\MeshNodes.Sdk.csproj" />

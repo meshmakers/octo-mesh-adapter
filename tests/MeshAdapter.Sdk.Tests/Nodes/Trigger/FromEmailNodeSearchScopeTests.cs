@@ -24,7 +24,7 @@ public class FromEmailNodeSearchScopeTests
         bool onlyUnread = true,
         DateTime? sinceDate = null,
         int? sinceDaysBack = null,
-        int maxMessagesPerPoll = 25) =>
+        int? maxMessagesPerPoll = 25) =>
         new()
         {
             ServerConfiguration = "TestServer",
@@ -101,9 +101,13 @@ public class FromEmailNodeSearchScopeTests
     [Fact]
     public void SinceDaysBack_IsTheRelativeFallback()
     {
+        // Bracket the call rather than reading UtcNow once afterwards: crossing UTC midnight between
+        // the method's read and the assertion's would fail on a perfectly correct result.
+        var before = DateTime.UtcNow.Date;
         var resolved = FromEmailNode.ResolveSinceDate(Config(sinceDaysBack: 30));
+        var after = DateTime.UtcNow.Date;
 
-        Assert.Equal(DateTime.UtcNow.Date.AddDays(-30), resolved);
+        Assert.Contains(resolved, new DateTime?[] { before.AddDays(-30), after.AddDays(-30) });
     }
 
     [Fact]
@@ -180,7 +184,28 @@ public class FromEmailNodeSearchScopeTests
         // failure was reachable purely by flipping an existing switch.
         var defaults = new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" };
 
-        Assert.True(defaults.MaxMessagesPerPoll > 0);
+        Assert.True(FromEmailNode.ResolveMaxMessagesPerPoll(defaults) > 0);
         Assert.True(defaults.OnlyUnread);
+    }
+
+    [Fact]
+    public void ExplicitNullCap_StillUsesTheDefault_AndIsNotReadAsUnlimited()
+    {
+        // The pipeline definition is YAML, where a key that is PRESENT and null overwrites a property
+        // initializer. On a non-nullable int that lands on 0 — which this node reads as the deliberate
+        // "no limit" opt-out, so the OOM protection would switch itself back off without a trace.
+        var explicitNull = Config(maxMessagesPerPoll: null);
+
+        Assert.Equal(FromEmailNodeConfiguration.DefaultMaxMessagesPerPoll,
+            FromEmailNode.ResolveMaxMessagesPerPoll(explicitNull));
+        Assert.Equal(25, FromEmailNode.ApplyBatchCap(Uids(1697),
+            FromEmailNode.ResolveMaxMessagesPerPoll(explicitNull)).Count);
+    }
+
+    [Fact]
+    public void ZeroCap_RemainsTheDeliberateOptOut()
+    {
+        // Distinct from the null case above: 0 is something an operator typed.
+        Assert.Equal(0, FromEmailNode.ResolveMaxMessagesPerPoll(Config(maxMessagesPerPoll: 0)));
     }
 }

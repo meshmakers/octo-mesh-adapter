@@ -111,7 +111,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 // out-of-memory failure (1697 mails killed the adapter on prod-1/gastroacker). Take at most
                 // MaxMessagesPerPoll per pass and let a backlog drain over consecutive polls.
                 var pendingUids = uids.Where(uid => !processedUids.Contains(uid)).ToList();
-                var batchUids = ApplyBatchCap(pendingUids, nodeConfig.MaxMessagesPerPoll);
+                var batchUids = ApplyBatchCap(pendingUids, ResolveMaxMessagesPerPoll(nodeConfig));
 
                 if (batchUids.Count < pendingUids.Count)
                 {
@@ -125,7 +125,14 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 foreach (var uid in batchUids)
                 {
                     var message = await folder.GetMessageAsync(uid);
-                    
+
+                    // Mark the UID as examined BEFORE the client-side filters below (AB#5336). The
+                    // filters skip with `continue`, so a message they reject never reached the
+                    // bookkeeping further down and is offered again on the next poll. Without a cap
+                    // that was merely wasteful; with one, rejected messages occupy the budget on every
+                    // pass and starve everything behind them indefinitely.
+                    processedUids.Add(uid);
+
                     // Apply sender filter if specified
                     if (!string.IsNullOrWhiteSpace(nodeConfig.SenderFilter))
                     {
@@ -186,7 +193,6 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     PopulateAuthentication(emailData, message);
 
                     newEmails.Add(emailData);
-                    processedUids.Add(uid);
                     
                     // Mark as read if configured
                     if (nodeConfig.MarkAsRead)
@@ -307,6 +313,16 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         return since.HasValue
             ? SearchQuery.And(query, SearchQuery.DeliveredAfter(since.Value))
             : query;
+    }
+
+    /// <summary>
+    ///     Effective per-poll cap: the configured value, or
+    ///     <see cref="FromEmailNodeConfiguration.DefaultMaxMessagesPerPoll" /> when none is set. An
+    ///     explicit null must not read as 0 — see the remark on the property.
+    /// </summary>
+    internal static int ResolveMaxMessagesPerPoll(FromEmailNodeConfiguration nodeConfig)
+    {
+        return nodeConfig.MaxMessagesPerPoll ?? FromEmailNodeConfiguration.DefaultMaxMessagesPerPoll;
     }
 
     /// <summary>

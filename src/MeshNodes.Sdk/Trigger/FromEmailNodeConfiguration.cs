@@ -22,13 +22,24 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     public int PollingIntervalSeconds { get; set; } = 60;
 
     /// <summary>
+    /// Default for <see cref="MaxMessagesPerPoll" />, resolved where the value is read.
+    /// </summary>
+    public const int DefaultMaxMessagesPerPoll = 25;
+
+    /// <summary>
     /// Maximum number of messages fetched and dispatched in a single polling pass (AB#5336).
     /// Each message is downloaded in full and its attachments are base64-encoded into the batch, so an
     /// unbounded result set is an out-of-memory failure on any mailbox with history. A backlog is drained
     /// over consecutive polls instead. Values &lt;= 0 mean "no limit" and are not recommended.
+    /// <para>
+    /// Nullable with the default resolved at the call site on purpose: the pipeline definition
+    /// deserializer is YamlDotNet, where a key that is PRESENT and null overwrites a property
+    /// initializer. On a non-nullable int that yields 0 — which this node reads as the deliberate
+    /// "no limit" opt-out, so an explicit null would silently switch the OOM protection back off.
+    /// </para>
     /// </summary>
     [PropertyGroup("Timing", 1)]
-    public int MaxMessagesPerPoll { get; set; } = 25;
+    public int? MaxMessagesPerPoll { get; set; }
 
     /// <summary>
     /// Whether to only process unread emails

@@ -168,6 +168,15 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                                 attachment.Length = memoryStream.Length;
                             }
 
+                            // AB#5338: many senders declare a PDF as application/octet-stream. The
+                            // shared Stage Document pipeline keys on the DECLARED type and routes
+                            // anything but application/pdf through its image->PDF branch, which
+                            // REPLACES the stored bytes with a blank render — a 90 KB invoice became
+                            // a 5.6 KB empty page on prod-1/gastroacker. Correct the type from the
+                            // content, as the Graph channel has done since AB#4433.
+                            attachment.ContentType = AttachmentContentType.NormalizePdf(
+                                attachment.FileName, attachment.ContentType, attachment.Data);
+
                             return attachment;
                         }).ToList() ?? new List<AttachmentData>()
                     };

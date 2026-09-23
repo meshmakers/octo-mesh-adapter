@@ -22,6 +22,26 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     public int PollingIntervalSeconds { get; set; } = 60;
 
     /// <summary>
+    /// Default for <see cref="MaxMessagesPerPoll" />, resolved where the value is read.
+    /// </summary>
+    public const int DefaultMaxMessagesPerPoll = 25;
+
+    /// <summary>
+    /// Maximum number of messages fetched and dispatched in a single polling pass (AB#5336).
+    /// Each message is downloaded in full and its attachments are base64-encoded into the batch, so an
+    /// unbounded result set is an out-of-memory failure on any mailbox with history. A backlog is drained
+    /// over consecutive polls instead. Values &lt;= 0 mean "no limit" and are not recommended.
+    /// <para>
+    /// Nullable with the default resolved at the call site on purpose: the pipeline definition
+    /// deserializer is YamlDotNet, where a key that is PRESENT and null overwrites a property
+    /// initializer. On a non-nullable int that yields 0 — which this node reads as the deliberate
+    /// "no limit" opt-out, so an explicit null would silently switch the OOM protection back off.
+    /// </para>
+    /// </summary>
+    [PropertyGroup("Timing", 1)]
+    public int? MaxMessagesPerPoll { get; set; }
+
+    /// <summary>
     /// Whether to only process unread emails
     /// </summary>
     [PropertyGroup("Options", 0)]
@@ -50,4 +70,19 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     /// </summary>
     [PropertyGroup("Query", 1)]
     public string? SubjectFilter { get; set; }
+
+    /// <summary>
+    /// Only consider messages delivered on or after this date (AB#5340). Maps to the IMAP <c>SINCE</c> key,
+    /// which the server evaluates on the message's INTERNALDATE with date granularity and inclusive bounds.
+    /// Takes precedence over <see cref="SinceDaysBack" />.
+    /// </summary>
+    [PropertyGroup("Query", 2)]
+    public DateTime? SinceDate { get; set; }
+
+    /// <summary>
+    /// Only consider messages delivered within the last N days (AB#5340). Relative alternative to
+    /// <see cref="SinceDate" />, which wins when both are configured. Values &lt;= 0 are ignored.
+    /// </summary>
+    [PropertyGroup("Query", 3)]
+    public int? SinceDaysBack { get; set; }
 }

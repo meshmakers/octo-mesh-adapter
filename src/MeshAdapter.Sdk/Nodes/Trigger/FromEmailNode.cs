@@ -102,17 +102,28 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 var folder = await _imapClient.GetFolderAsync(serverConfig.Folder);
                 await folder.OpenAsync(FolderAccess.ReadWrite);
                 
-                // Search for unread messages
-                var searchQuery = nodeConfig.OnlyUnread ? SearchQuery.NotSeen : SearchQuery.All;
-                var uids = await folder.SearchAsync(searchQuery);
-                
+                // Search for messages. The date cut-off is applied SERVER-SIDE (AB#5340) so a mailbox
+                // with years of history never reaches the client in the first place.
+                var uids = await folder.SearchAsync(BuildSearchQuery(nodeConfig));
+
+                // AB#5336: never fetch the whole search result. Every message below is downloaded in full
+                // and its attachments are base64-encoded into the batch, so an unbounded result set is an
+                // out-of-memory failure (1697 mails killed the adapter on prod-1/gastroacker). Take at most
+                // MaxMessagesPerPoll per pass and let a backlog drain over consecutive polls.
+                var pendingUids = uids.Where(uid => !processedUids.Contains(uid)).ToList();
+                var batchUids = ApplyBatchCap(pendingUids, nodeConfig.MaxMessagesPerPoll);
+
+                if (batchUids.Count < pendingUids.Count)
+                {
+                    logger.LogInformation(
+                        "FromEmail: taking {Taken} of {Pending} pending message(s) this poll; the remainder follows on the next poll(s).",
+                        batchUids.Count, pendingUids.Count);
+                }
+
                 // Process new emails
                 var newEmails = new List<EmailData>();
-                foreach (var uid in uids)
+                foreach (var uid in batchUids)
                 {
-                    if (processedUids.Contains(uid))
-                        continue;
-                    
                     var message = await folder.GetMessageAsync(uid);
                     
                     // Apply sender filter if specified
@@ -273,6 +284,52 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         
         _imapClient?.Dispose();
         _cancellationTokenSource?.Dispose();
+    }
+
+    /// <summary>
+    ///     Builds the IMAP search predicate. The date cut-off (AB#5340) is ANDed onto the read-state
+    ///     predicate so the server, not the client, discards everything outside the window.
+    /// </summary>
+    internal static SearchQuery BuildSearchQuery(FromEmailNodeConfiguration nodeConfig)
+    {
+        var query = nodeConfig.OnlyUnread ? SearchQuery.NotSeen : SearchQuery.All;
+        var since = ResolveSinceDate(nodeConfig);
+
+        return since.HasValue
+            ? SearchQuery.And(query, SearchQuery.DeliveredAfter(since.Value))
+            : query;
+    }
+
+    /// <summary>
+    ///     Caps one polling pass at <paramref name="maxMessagesPerPoll" /> messages (AB#5336). A value
+    ///     &lt;= 0 disables the cap and restores the unbounded pre-fix behaviour.
+    /// </summary>
+    internal static List<UniqueId> ApplyBatchCap(List<UniqueId> pendingUids, int maxMessagesPerPoll)
+    {
+        return maxMessagesPerPoll > 0 && pendingUids.Count > maxMessagesPerPoll
+            ? pendingUids.Take(maxMessagesPerPoll).ToList()
+            : pendingUids;
+    }
+
+    /// <summary>
+    ///     Resolves the effective IMAP <c>SINCE</c> cut-off (AB#5340).
+    ///     <see cref="FromEmailNodeConfiguration.SinceDate" /> wins when both are configured;
+    ///     <see cref="FromEmailNodeConfiguration.SinceDaysBack" /> is the relative fallback. Returns
+    ///     <c>null</c> when neither is set, which keeps the previous unbounded behaviour.
+    /// </summary>
+    internal static DateTime? ResolveSinceDate(FromEmailNodeConfiguration nodeConfig)
+    {
+        if (nodeConfig.SinceDate.HasValue)
+        {
+            return nodeConfig.SinceDate.Value.Date;
+        }
+
+        if (nodeConfig.SinceDaysBack is > 0)
+        {
+            return DateTime.UtcNow.Date.AddDays(-nodeConfig.SinceDaysBack.Value);
+        }
+
+        return null;
     }
 
     /// <summary>

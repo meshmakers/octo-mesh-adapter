@@ -228,10 +228,10 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     // after the pipeline ran and succeeded — see below.
                 }
 
-                // AB#5337: gate for the server-side write-back further down. It means "the
-                // pipeline CONFIRMED the import", not "the pipeline did not throw" — see
-                // EvaluateRunConfirmation for why the second is too weak to flag a mail on.
-                var runConfirmed = false;
+                // AB#5337: gate for the server-side write-back further down. It stays false
+                // unless the run came back — a throw skips straight past the assignment — and, where
+                // a successPath is configured, unless the pipeline also confirmed the import.
+                var writeBackAllowed = false;
 
                 // Trigger the pipeline if we have new emails
                 if (newEmails.Count > 0)
@@ -277,36 +277,36 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                                     CallerTrust = binding.Trust
                                 }, emailBatch);
 
-                            // AB#5337: returning is not the same as importing. The pipeline's own
-                            // confirmation decides, and without one nothing is written back.
-                            switch (EvaluateRunConfirmation(nodeConfig.SuccessPath, executionResult as JsonNode))
+                            // AB#5337: returning is not the same as importing, so where the
+                            // pipeline was asked to confirm, its confirmation decides.
+                            var confirmation =
+                                EvaluateRunConfirmation(nodeConfig.SuccessPath, executionResult as JsonNode);
+                            writeBackAllowed = IsWriteBackAllowed(confirmation);
+
+                            if (confirmation == RunConfirmation.NotConfirmed)
                             {
-                                case RunConfirmation.Confirmed:
-                                    runConfirmed = true;
-                                    logger.LogInformation("Processed {Count} new emails", newEmails.Count);
-                                    break;
-
-                                case RunConfirmation.NotConfirmed:
+                                logger.LogWarning(
+                                    "FromEmail: the pipeline run for {Count} mail(s) ended without setting " +
+                                    "'{SuccessPath}' to true — a node may have reported an error and stopped its " +
+                                    "branch while the execution still completed. The mails keep their server-side " +
+                                    "flags so they are not lost.",
+                                    newEmails.Count, nodeConfig.SuccessPath);
+                            }
+                            else
+                            {
+                                if (confirmation == RunConfirmation.NotConfigured &&
+                                    !_successPathWarningLogged)
+                                {
+                                    _successPathWarningLogged = true;
                                     logger.LogWarning(
-                                        "FromEmail: the pipeline run for {Count} mail(s) ended without setting " +
-                                        "'{SuccessPath}' to true — a node may have reported an error and stopped " +
-                                        "its branch while the execution still completed. The mails keep their " +
-                                        "server-side flags so they are not lost.",
-                                        newEmails.Count, nodeConfig.SuccessPath);
-                                    break;
+                                        "FromEmail: no 'successPath' is configured, so a batch whose import branch " +
+                                        "stopped on a reported node error cannot be told apart from an imported " +
+                                        "one, and the mails are flagged either way. Configure 'successPath' and " +
+                                        "have the pipeline write that flag as the last step of its import branch " +
+                                        "to make the write-back conditional on the import itself.");
+                                }
 
-                                default:
-                                    if (!_successPathWarningLogged)
-                                    {
-                                        _successPathWarningLogged = true;
-                                        logger.LogWarning(
-                                            "FromEmail: no 'successPath' is configured, so an imported batch cannot " +
-                                            "be told apart from one whose import branch stopped on a node error — " +
-                                            "no mail is marked read or deleted. Set 'successPath' and have the " +
-                                            "pipeline write that flag as the last step of its import branch.");
-                                    }
-
-                                    break;
+                                logger.LogInformation("Processed {Count} new emails", newEmails.Count);
                             }
                         }
                         catch (OperationCanceledException) when (_cancellationTokenSource.Token
@@ -329,11 +329,12 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     }
                 }
 
-                // AB#5337: the server-side bookkeeping happens HERE, after the run, and only when
-                // the pipeline CONFIRMED the import. Doing it inside the UID loop above destroyed a
-                // receipt on every failure: the mail was already `\Seen`, the default
-                // `onlyUnread: true` search never offers it again, and nothing about the missing
-                // document is visible to anyone.
+                // AB#5337: the server-side bookkeeping happens HERE, after the run, and never for
+                // a run that threw — `writeBackAllowed` is still false then, because the assignment
+                // sits behind the await. Doing it inside the UID loop above destroyed a receipt on
+                // every failure: the mail was already `\Seen`, the default `onlyUnread: true` search
+                // never offers it again, and nothing about the missing document is visible to
+                // anyone.
                 //
                 // A failed batch is NOT retried by the next poll of this process: `processedUids`
                 // (AB#5336) already holds these UIDs, which is what keeps a permanently failing mail
@@ -342,7 +343,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 // still there, unread and unflagged, and that is the property this fix buys.
                 if (batchedUids.Count > 0)
                 {
-                    var flagDecision = ResolveFlagDecision(nodeConfig, runConfirmed);
+                    var flagDecision = ResolveFlagDecision(nodeConfig, writeBackAllowed);
                     if (flagDecision.HasFlags)
                     {
                         await folder.AddFlagsAsync(batchedUids, flagDecision.Flags, true);
@@ -570,6 +571,10 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
     ///     string <c>"true"</c> and a number all read as "not confirmed", and every one of those
     ///     fails towards leaving the mail alone.
     ///     </para>
+    ///     <para>
+    ///     Reports only what the pipeline said; what to DO with an unconfigured path is
+    ///     <see cref="IsWriteBackAllowed" />'s decision.
+    ///     </para>
     /// </summary>
     internal static RunConfirmation EvaluateRunConfirmation(string? successPath, JsonNode? executionResult)
     {
@@ -633,9 +638,42 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
     }
 
     /// <summary>
+    ///     Whether a run that CAME BACK may have its messages flagged (AB#5337). Two of the three
+    ///     levels live here; the third is the absence of a call:
+    ///     <list type="number">
+    ///         <item>
+    ///         The run <b>threw</b> ⇒ never. The poll loop never reaches this method, which is the
+    ///         actual fix: whatever is configured, a failed run leaves the mailbox alone.
+    ///         </item>
+    ///         <item>
+    ///         No <c>successPath</c> configured ⇒ <b>yes</b>. Deliberately the pre-AB#5337 behaviour:
+    ///         a stricter default would stop every deployed <c>FromEmail@1</c> from marking anything
+    ///         read and re-offer its whole <c>SINCE</c> window on every adapter restart — a certain
+    ///         fleet-wide regression traded for one edge case.
+    ///         </item>
+    ///         <item>
+    ///         <c>successPath</c> configured ⇒ only when the pipeline confirmed. The strict promise
+    ///         stays exactly where somebody asked for it.
+    ///         </item>
+    ///     </list>
+    ///     <para>
+    ///     The edge case level 2 leaves open is real and known: a node that reports an error and
+    ///     stops its branch (<c>MakeHttpRequest@1</c>'s <c>LogAndStop</c>) ends the run normally, and
+    ///     without a confirmation the trigger cannot see it. AB#5345 replaces this with a business
+    ///     success criterion ("an inbox item was created") and one post-processing mode shared by
+    ///     the IMAP and Graph channels; <c>successPath</c> is the hook that will hang on.
+    ///     </para>
+    /// </summary>
+    internal static bool IsWriteBackAllowed(RunConfirmation confirmation)
+    {
+        return confirmation is RunConfirmation.Confirmed or RunConfirmation.NotConfigured;
+    }
+
+    /// <summary>
     ///     Decides the server-side write-back for a finished poll (AB#5337). The decision is taken
-    ///     AFTER the pipeline ran and only on a CONFIRMED import; anything else writes nothing at
-    ///     all, so the mail stays exactly as the server has it and is still there to be imported.
+    ///     AFTER the pipeline ran and only when <see cref="IsWriteBackAllowed" /> let it through;
+    ///     otherwise nothing is written at all, so the mail stays exactly as the server has it and is
+    ///     still there to be imported.
     ///     <para>
     ///     This used to happen per message inside the fetch loop, before the pipeline was even
     ///     invoked. Under the default <c>onlyUnread: true</c> the next poll asks the server for
@@ -645,9 +683,9 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
     ///     </para>
     /// </summary>
     internal static EmailFlagDecision ResolveFlagDecision(FromEmailNodeConfiguration nodeConfig,
-        bool runConfirmed)
+        bool writeBackAllowed)
     {
-        if (!runConfirmed)
+        if (!writeBackAllowed)
         {
             return new EmailFlagDecision(MessageFlags.None, false);
         }

@@ -16,8 +16,8 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Trigger;
 /// before staging (stager timeout, <c>RenderHtmlPdf</c> OOM, the allowlist gate) destroys the
 /// document instead.
 ///
-/// The write-back is therefore a decision taken AFTER the run, and this is where that decision is
-/// pinned: nothing is written back unless the run was CONFIRMED.
+/// The write-back is therefore a decision taken AFTER the run, and this is where the last step of
+/// it is pinned: given the gate, what reaches the server.
 /// </summary>
 public class FromEmailNodeFlaggingTests
 {
@@ -34,12 +34,12 @@ public class FromEmailNodeFlaggingTests
     // ---- The regression itself -----------------------------------------------------
 
     [Fact]
-    public void UnconfirmedRun_WritesNothingBackToTheServer()
+    public void ABlockedRun_WritesNothingBackToTheServer()
     {
-        // The whole point of the fix: even with both switches on, an unconfirmed run leaves the
-        // mailbox exactly as it was, so the mail is still unread and still there.
+        // The whole point of the fix: even with both switches on, a run the gate blocked leaves
+        // the mailbox exactly as it was, so the mail is still unread and still there.
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: true, deleteAfterProcessing: true), runConfirmed: false);
+            Config(markAsRead: true, deleteAfterProcessing: true), writeBackAllowed: false);
 
         Assert.Equal(MessageFlags.None, decision.Flags);
         Assert.False(decision.HasFlags);
@@ -47,34 +47,34 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void UnconfirmedRun_NeverExpunges()
+    public void ABlockedRun_NeverExpunges()
     {
         // Stated separately because expunging is the irreversible half: a `\Deleted` flag can be
         // removed again, an expunged message is gone from the server for good.
         Assert.False(FromEmailNode
-            .ResolveFlagDecision(Config(deleteAfterProcessing: true), runConfirmed: false)
+            .ResolveFlagDecision(Config(deleteAfterProcessing: true), writeBackAllowed: false)
             .Expunge);
     }
 
     [Fact]
-    public void DefaultConfiguration_MarksSeenOnlyAfterAConfirmedRun()
+    public void DefaultConfiguration_MarksSeenOnlyWhenTheWriteBackIsAllowed()
     {
         // `markAsRead` defaults to true and the accounting document import runs with exactly these
         // defaults, so this pair is the configuration the field bug happened under.
         var defaults = new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" };
 
         Assert.Equal(MessageFlags.None,
-            FromEmailNode.ResolveFlagDecision(defaults, runConfirmed: false).Flags);
+            FromEmailNode.ResolveFlagDecision(defaults, writeBackAllowed: false).Flags);
         Assert.Equal(MessageFlags.Seen,
-            FromEmailNode.ResolveFlagDecision(defaults, runConfirmed: true).Flags);
+            FromEmailNode.ResolveFlagDecision(defaults, writeBackAllowed: true).Flags);
     }
 
     // ---- What a confirmed run writes -----------------------------------------------
 
     [Fact]
-    public void ConfirmedRun_MarksSeenWhenConfigured()
+    public void AnAllowedRun_MarksSeenWhenConfigured()
     {
-        var decision = FromEmailNode.ResolveFlagDecision(Config(), runConfirmed: true);
+        var decision = FromEmailNode.ResolveFlagDecision(Config(), writeBackAllowed: true);
 
         Assert.Equal(MessageFlags.Seen, decision.Flags);
         Assert.True(decision.HasFlags);
@@ -82,10 +82,10 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void ConfirmedRun_DeletesAndExpungesWhenConfigured()
+    public void AnAllowedRun_DeletesAndExpungesWhenConfigured()
     {
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: false, deleteAfterProcessing: true), runConfirmed: true);
+            Config(markAsRead: false, deleteAfterProcessing: true), writeBackAllowed: true);
 
         Assert.Equal(MessageFlags.Deleted, decision.Flags);
         // `\Deleted` only marks — without the expunge the message stays in the folder.
@@ -93,22 +93,22 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void ConfirmedRun_CombinesBothFlagsInOneWrite()
+    public void AnAllowedRun_CombinesBothFlagsInOneWrite()
     {
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: true, deleteAfterProcessing: true), runConfirmed: true);
+            Config(markAsRead: true, deleteAfterProcessing: true), writeBackAllowed: true);
 
         Assert.Equal(MessageFlags.Seen | MessageFlags.Deleted, decision.Flags);
         Assert.True(decision.Expunge);
     }
 
     [Fact]
-    public void NeitherOptionConfigured_TouchesTheServerAtAllOnAConfirmedRun()
+    public void NeitherOptionConfigured_TouchesTheServerAtAllOnAnAllowedRun()
     {
         // "Leave the mailbox alone" has to stay reachable: an operator polling a shared folder
         // read-only relies on the node not changing anything.
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: false), runConfirmed: true);
+            Config(markAsRead: false), writeBackAllowed: true);
 
         Assert.False(decision.HasFlags);
         Assert.False(decision.Expunge);
@@ -124,8 +124,13 @@ public class FromEmailNodeFlaggingTests
 /// trigger nothing finer: <c>INodeContext.Error</c> only writes to the pipeline log,
 /// <c>IEtlContext</c> carries no error state, and <c>PipelineExecutionStatus</c> is
 /// <c>Completed</c> for everything that did not throw. The single per-run channel back to the
-/// trigger is the data root <c>ExecuteAsync</c> returns — so the pipeline states the outcome itself
-/// and the trigger believes nothing else.
+/// trigger is the data root <c>ExecuteAsync</c> returns — so where a <c>successPath</c> is
+/// configured, the pipeline states the outcome itself and the trigger believes nothing else.
+///
+/// Three levels, all pinned below: a run that THREW never flags (unconditional — that is the fix);
+/// with no <c>successPath</c> a run that came back flags as it always did (no fleet-wide
+/// regression); with one, only a confirmed run flags. AB#5345 supersedes this with a business
+/// success criterion and one post-processing mode shared by the IMAP and Graph channels.
 /// </summary>
 public class FromEmailNodeRunConfirmationTests
 {
@@ -228,24 +233,64 @@ public class FromEmailNodeRunConfirmationTests
     // ---- No confirmation configured -------------------------------------------------
 
     [Fact]
-    public void WithoutASuccessPath_TheOutcomeIsUnknownAndNothingIsFlagged()
+    public void WithoutASuccessPath_TheOutcomeIsSimplyUnknown()
     {
-        // Deliberately NOT "assume it worked". Without a confirmation the trigger cannot tell an
-        // import from a branch that stopped, and the node errs towards keeping the mail: a mail
-        // imported twice is caught by the stager's content dedup, a mail marked read and never
-        // imported is gone.
         var result = PipelineResult(""", "importCompleted": true""");
 
         Assert.Equal(FromEmailNode.RunConfirmation.NotConfigured,
             FromEmailNode.EvaluateRunConfirmation(null, result));
         Assert.Equal(FromEmailNode.RunConfirmation.NotConfigured,
             FromEmailNode.EvaluateRunConfirmation("   ", result));
+    }
 
-        var confirmed = FromEmailNode.EvaluateRunConfirmation(null, result)
-                        == FromEmailNode.RunConfirmation.Confirmed;
-        Assert.False(FromEmailNode
-            .ResolveFlagDecision(new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" }, confirmed)
-            .HasFlags);
+    [Fact]
+    public void WithoutASuccessPath_ACleanRunFlagsExactlyAsItDidBefore()
+    {
+        // Level 2 of the rule. A stricter default would stop every deployed FromEmail@1 from
+        // marking anything read and re-offer its whole SINCE window on every adapter restart — a
+        // certain fleet-wide regression traded for one edge case, so an unconfigured node keeps
+        // doing what it always did.
+        var confirmation = FromEmailNode.EvaluateRunConfirmation(null, PipelineResult());
+
+        Assert.True(FromEmailNode.IsWriteBackAllowed(confirmation));
+        Assert.Equal(MessageFlags.Seen,
+            FromEmailNode.ResolveFlagDecision(
+                    new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" },
+                    FromEmailNode.IsWriteBackAllowed(confirmation))
+                .Flags);
+    }
+
+    [Fact]
+    public void WithoutASuccessPath_ARunThatThrewStillFlagsNothing()
+    {
+        // Level 1, and the one the relaxed default must not weaken: a run that threw never reaches
+        // the confirmation at all — the poll loop's gate is still its initial false when the
+        // exception is caught — and ResolveFlagDecision obeys the gate without ever consulting
+        // SuccessPath. So an unset path cannot turn a failed import into a flagged mailbox, which
+        // is the AB#5337 gap itself.
+        var unconfigured = new FromEmailNodeConfiguration
+        {
+            ServerConfiguration = "TestServer",
+            SuccessPath = null,
+            MarkAsRead = true,
+            DeleteAfterProcessing = true
+        };
+
+        var decision = FromEmailNode.ResolveFlagDecision(unconfigured, writeBackAllowed: false);
+
+        Assert.Equal(MessageFlags.None, decision.Flags);
+        Assert.False(decision.Expunge);
+    }
+
+    [Fact]
+    public void OnlyAnExplicitlyUnconfirmedRunBlocksTheWriteBack()
+    {
+        // Levels 2 and 3 side by side: the strict promise applies exactly where somebody configured
+        // it, and nowhere else. (Written as one Fact rather than a Theory because the enum is
+        // internal and an InlineData parameter would have to be public.)
+        Assert.True(FromEmailNode.IsWriteBackAllowed(FromEmailNode.RunConfirmation.Confirmed));
+        Assert.True(FromEmailNode.IsWriteBackAllowed(FromEmailNode.RunConfirmation.NotConfigured));
+        Assert.False(FromEmailNode.IsWriteBackAllowed(FromEmailNode.RunConfirmation.NotConfirmed));
     }
 
     // ---- The path syntax ------------------------------------------------------------

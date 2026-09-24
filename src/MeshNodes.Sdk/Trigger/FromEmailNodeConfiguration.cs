@@ -65,14 +65,25 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     /// <c>true</c>; anything else — absent, null, <c>false</c>, a string, a number — leaves the
     /// mails exactly as the server has them, so a later restart offers them again.
     /// <para>
-    /// 🔴 Without this the node cannot tell an imported batch from a failed one. A pipeline can end
-    /// perfectly normally while a node reported an error and stopped its branch — that is what
-    /// <c>MakeHttpRequest@1</c>'s <c>LogAndStop</c> is defined to do — and the platform surfaces no
-    /// per-node status to a trigger: the execution status is <c>Completed</c> unless something threw
-    /// and <c>ExecuteAsync</c> returns the pipeline's data root, nothing else. So an UNSET value
-    /// means "cannot be confirmed" and the node flags nothing, which is the safe side: a mail
-    /// imported twice is caught by the stager's content dedup, a mail flagged read and never
-    /// imported is gone.
+    /// 🔴 Why this exists: a pipeline can end perfectly normally while a node reported an error and
+    /// stopped its branch — that is what <c>MakeHttpRequest@1</c>'s <c>LogAndStop</c> is defined to
+    /// do ("leaving the execution successful") — and the platform surfaces no per-node status to a
+    /// trigger: the execution status is <c>Completed</c> unless something threw, and
+    /// <c>ExecuteAsync</c> returns the pipeline's data root, nothing else. Without a confirmation
+    /// the trigger cannot see such a branch, so this is the only way to make the write-back
+    /// conditional on the import itself.
+    /// </para>
+    /// <para>
+    /// ⚠️ UNSET keeps the pre-AB#5337 behaviour: a run that came back flags its mails. A stricter
+    /// default would stop every deployed <c>FromEmail@1</c> from marking anything read and re-offer
+    /// its whole <c>SINCE</c> window on every adapter restart — a certain fleet-wide regression
+    /// traded for one edge case. What is NEVER traded is the run that threw: that one leaves the
+    /// mailbox untouched whatever this is set to.
+    /// </para>
+    /// <para>
+    /// AB#5345 supersedes this with a business success criterion ("an inbox item was created") and
+    /// one post-processing mode shared by the IMAP and Graph channels; this property is the hook it
+    /// can hang on and is deliberately not grown into that model here.
     /// </para>
     /// <para>
     /// Write the flag as the LAST step of the import branch (e.g.

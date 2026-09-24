@@ -60,6 +60,35 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     public bool DeleteAfterProcessing { get; set; } = false;
 
     /// <summary>
+    /// Path into the pipeline's result data that CONFIRMS the batch was imported (AB#5337).
+    /// <c>\Seen</c> / <c>\Deleted</c> are written back only when it resolves to the boolean
+    /// <c>true</c>; anything else — absent, null, <c>false</c>, a string, a number — leaves the
+    /// mails exactly as the server has them, so a later restart offers them again.
+    /// <para>
+    /// 🔴 Without this the node cannot tell an imported batch from a failed one. A pipeline can end
+    /// perfectly normally while a node reported an error and stopped its branch — that is what
+    /// <c>MakeHttpRequest@1</c>'s <c>LogAndStop</c> is defined to do — and the platform surfaces no
+    /// per-node status to a trigger: the execution status is <c>Completed</c> unless something threw
+    /// and <c>ExecuteAsync</c> returns the pipeline's data root, nothing else. So an UNSET value
+    /// means "cannot be confirmed" and the node flags nothing, which is the safe side: a mail
+    /// imported twice is caught by the stager's content dedup, a mail flagged read and never
+    /// imported is gone.
+    /// </para>
+    /// <para>
+    /// Write the flag as the LAST step of the import branch (e.g.
+    /// <c>SetPrimitiveValue@1 targetPath: $.importCompleted, value: true, valueType: Boolean</c>)
+    /// — placed there, a branch that stopped early never reaches it.
+    /// </para>
+    /// <para>
+    /// Syntax: a plain path from the pipeline data root, optionally with the <c>$.</c> prefix
+    /// (<c>$.importCompleted</c>, <c>result.ok</c>). Array indexes, wildcards and filters are
+    /// rejected when the trigger starts — a confirmation must name exactly one value.
+    /// </para>
+    /// </summary>
+    [PropertyGroup("Options", 3)]
+    public string? SuccessPath { get; set; }
+
+    /// <summary>
     /// Optional filter for sender email address (contains match)
     /// </summary>
     [PropertyGroup("Query", 0)]

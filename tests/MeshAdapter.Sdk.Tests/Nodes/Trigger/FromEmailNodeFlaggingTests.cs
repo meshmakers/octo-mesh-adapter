@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using MailKit;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
@@ -16,7 +17,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Trigger;
 /// document instead.
 ///
 /// The write-back is therefore a decision taken AFTER the run, and this is where that decision is
-/// pinned: a run that did not succeed writes nothing back, whatever the node is configured to do.
+/// pinned: nothing is written back unless the run was CONFIRMED.
 /// </summary>
 public class FromEmailNodeFlaggingTests
 {
@@ -33,12 +34,12 @@ public class FromEmailNodeFlaggingTests
     // ---- The regression itself -----------------------------------------------------
 
     [Fact]
-    public void FailedRun_WritesNothingBackToTheServer()
+    public void UnconfirmedRun_WritesNothingBackToTheServer()
     {
-        // The whole point of the fix: even with both switches on, a failed run leaves the mailbox
-        // exactly as it was, so the mail is still unread and still there.
+        // The whole point of the fix: even with both switches on, an unconfirmed run leaves the
+        // mailbox exactly as it was, so the mail is still unread and still there.
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: true, deleteAfterProcessing: true), pipelineSucceeded: false);
+            Config(markAsRead: true, deleteAfterProcessing: true), runConfirmed: false);
 
         Assert.Equal(MessageFlags.None, decision.Flags);
         Assert.False(decision.HasFlags);
@@ -46,34 +47,34 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void FailedRun_NeverExpunges()
+    public void UnconfirmedRun_NeverExpunges()
     {
         // Stated separately because expunging is the irreversible half: a `\Deleted` flag can be
         // removed again, an expunged message is gone from the server for good.
         Assert.False(FromEmailNode
-            .ResolveFlagDecision(Config(deleteAfterProcessing: true), pipelineSucceeded: false)
+            .ResolveFlagDecision(Config(deleteAfterProcessing: true), runConfirmed: false)
             .Expunge);
     }
 
     [Fact]
-    public void DefaultConfiguration_MarksSeenOnlyAfterASuccessfulRun()
+    public void DefaultConfiguration_MarksSeenOnlyAfterAConfirmedRun()
     {
         // `markAsRead` defaults to true and the accounting document import runs with exactly these
         // defaults, so this pair is the configuration the field bug happened under.
         var defaults = new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" };
 
         Assert.Equal(MessageFlags.None,
-            FromEmailNode.ResolveFlagDecision(defaults, pipelineSucceeded: false).Flags);
+            FromEmailNode.ResolveFlagDecision(defaults, runConfirmed: false).Flags);
         Assert.Equal(MessageFlags.Seen,
-            FromEmailNode.ResolveFlagDecision(defaults, pipelineSucceeded: true).Flags);
+            FromEmailNode.ResolveFlagDecision(defaults, runConfirmed: true).Flags);
     }
 
-    // ---- What a successful run writes ----------------------------------------------
+    // ---- What a confirmed run writes -----------------------------------------------
 
     [Fact]
-    public void SuccessfulRun_MarksSeenWhenConfigured()
+    public void ConfirmedRun_MarksSeenWhenConfigured()
     {
-        var decision = FromEmailNode.ResolveFlagDecision(Config(), pipelineSucceeded: true);
+        var decision = FromEmailNode.ResolveFlagDecision(Config(), runConfirmed: true);
 
         Assert.Equal(MessageFlags.Seen, decision.Flags);
         Assert.True(decision.HasFlags);
@@ -81,10 +82,10 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void SuccessfulRun_DeletesAndExpungesWhenConfigured()
+    public void ConfirmedRun_DeletesAndExpungesWhenConfigured()
     {
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: false, deleteAfterProcessing: true), pipelineSucceeded: true);
+            Config(markAsRead: false, deleteAfterProcessing: true), runConfirmed: true);
 
         Assert.Equal(MessageFlags.Deleted, decision.Flags);
         // `\Deleted` only marks — without the expunge the message stays in the folder.
@@ -92,24 +93,187 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void SuccessfulRun_CombinesBothFlagsInOneWrite()
+    public void ConfirmedRun_CombinesBothFlagsInOneWrite()
     {
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: true, deleteAfterProcessing: true), pipelineSucceeded: true);
+            Config(markAsRead: true, deleteAfterProcessing: true), runConfirmed: true);
 
         Assert.Equal(MessageFlags.Seen | MessageFlags.Deleted, decision.Flags);
         Assert.True(decision.Expunge);
     }
 
     [Fact]
-    public void NeitherOptionConfigured_TouchesTheServerAtAllOnSuccess()
+    public void NeitherOptionConfigured_TouchesTheServerAtAllOnAConfirmedRun()
     {
         // "Leave the mailbox alone" has to stay reachable: an operator polling a shared folder
         // read-only relies on the node not changing anything.
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: false), pipelineSucceeded: true);
+            Config(markAsRead: false), runConfirmed: true);
 
         Assert.False(decision.HasFlags);
         Assert.False(decision.Expunge);
+    }
+}
+
+/// <summary>
+/// AB#5337, second round. The first fix read "<c>ExecuteAsync</c> returned" as success, and that is
+/// too weak: a pipeline ends perfectly normally while a node reported an error and stopped its
+/// branch. <c>MakeHttpRequest@1</c>'s <c>OnHttpError: LogAndStop</c> — its DEFAULT — is documented
+/// as "report the failure and stop this branch, leaving the execution successful", so a staging call
+/// that 500s takes the import branch out while the run still completes. The platform offers a
+/// trigger nothing finer: <c>INodeContext.Error</c> only writes to the pipeline log,
+/// <c>IEtlContext</c> carries no error state, and <c>PipelineExecutionStatus</c> is
+/// <c>Completed</c> for everything that did not throw. The single per-run channel back to the
+/// trigger is the data root <c>ExecuteAsync</c> returns — so the pipeline states the outcome itself
+/// and the trigger believes nothing else.
+/// </summary>
+public class FromEmailNodeRunConfirmationTests
+{
+    private const string SuccessPath = "$.importCompleted";
+
+    /// <summary>
+    /// The shape a real run comes back in: the batch the trigger handed in, plus whatever the
+    /// pipeline wrote. <paramref name="tail" /> is spliced in as further properties.
+    /// </summary>
+    private static JsonNode PipelineResult(string tail = "") =>
+        JsonNode.Parse($$"""
+                         {
+                           "Emails": [ { "Subject": "Rechnung", "FromAddress": "a@example.com" } ],
+                           "Count": 1
+                           {{tail}}
+                         }
+                         """)!;
+
+    // ---- The review's case ---------------------------------------------------------
+
+    [Fact]
+    public void ARunThatEndedWithoutWritingTheFlag_IsNotConfirmed()
+    {
+        // The LogAndStop shape: nothing threw, the data root came back, and the import branch
+        // never reached its last node — so the confirmation the pipeline promised is simply absent.
+        var result = PipelineResult();
+
+        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
+            FromEmailNode.EvaluateRunConfirmation(SuccessPath, result));
+    }
+
+    [Fact]
+    public void ARunThatEndedWithoutWritingTheFlag_FlagsNothing()
+    {
+        // The two halves joined: this is the sequence the poll loop runs, and a batch whose branch
+        // stopped must leave the mailbox untouched even though nothing threw.
+        var confirmed = FromEmailNode.EvaluateRunConfirmation(SuccessPath, PipelineResult())
+                        == FromEmailNode.RunConfirmation.Confirmed;
+
+        var decision = FromEmailNode.ResolveFlagDecision(
+            new FromEmailNodeConfiguration
+            {
+                ServerConfiguration = "TestServer",
+                SuccessPath = SuccessPath,
+                DeleteAfterProcessing = true
+            }, confirmed);
+
+        Assert.False(decision.HasFlags);
+        Assert.False(decision.Expunge);
+    }
+
+    [Fact]
+    public void ARunThatWroteTheFlag_IsConfirmed()
+    {
+        var result = PipelineResult(""", "importCompleted": true""");
+
+        Assert.Equal(FromEmailNode.RunConfirmation.Confirmed,
+            FromEmailNode.EvaluateRunConfirmation(SuccessPath, result));
+    }
+
+    // ---- Only a real boolean true confirms ------------------------------------------
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("null")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    [InlineData("{}")]
+    [InlineData("[true]")]
+    public void OnlyTheBooleanTrueConfirms(string json)
+    {
+        // Every one of these fails towards leaving the mail alone, which is the direction a
+        // confirmation must fail in. A stringly "true" is the likeliest near-miss — it is what a
+        // SetPrimitiveValue@1 with valueType: String produces.
+        var result = PipelineResult($""", "importCompleted": {json}""");
+
+        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
+            FromEmailNode.EvaluateRunConfirmation(SuccessPath, result));
+    }
+
+    [Fact]
+    public void AMissingOrNullResultIsNotConfirmed()
+    {
+        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
+            FromEmailNode.EvaluateRunConfirmation(SuccessPath, null));
+    }
+
+    [Fact]
+    public void ANestedConfirmationIsRead()
+    {
+        var result = PipelineResult(""", "stageOut": { "ok": true }""");
+
+        Assert.Equal(FromEmailNode.RunConfirmation.Confirmed,
+            FromEmailNode.EvaluateRunConfirmation("$.stageOut.ok", result));
+        // A path whose intermediate segment is missing must not throw its way out of the poll.
+        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
+            FromEmailNode.EvaluateRunConfirmation("$.missing.ok", result));
+    }
+
+    // ---- No confirmation configured -------------------------------------------------
+
+    [Fact]
+    public void WithoutASuccessPath_TheOutcomeIsUnknownAndNothingIsFlagged()
+    {
+        // Deliberately NOT "assume it worked". Without a confirmation the trigger cannot tell an
+        // import from a branch that stopped, and the node errs towards keeping the mail: a mail
+        // imported twice is caught by the stager's content dedup, a mail marked read and never
+        // imported is gone.
+        var result = PipelineResult(""", "importCompleted": true""");
+
+        Assert.Equal(FromEmailNode.RunConfirmation.NotConfigured,
+            FromEmailNode.EvaluateRunConfirmation(null, result));
+        Assert.Equal(FromEmailNode.RunConfirmation.NotConfigured,
+            FromEmailNode.EvaluateRunConfirmation("   ", result));
+
+        var confirmed = FromEmailNode.EvaluateRunConfirmation(null, result)
+                        == FromEmailNode.RunConfirmation.Confirmed;
+        Assert.False(FromEmailNode
+            .ResolveFlagDecision(new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" }, confirmed)
+            .HasFlags);
+    }
+
+    // ---- The path syntax ------------------------------------------------------------
+
+    [Theory]
+    [InlineData("$.importCompleted", "importCompleted")]
+    [InlineData("importCompleted", "importCompleted")]
+    [InlineData("$.stageOut.ok", "stageOut|ok")]
+    public void APlainPathIsAccepted(string path, string expected)
+    {
+        Assert.True(FromEmailNode.TryParseSuccessPath(path, out var segments));
+        Assert.Equal(expected, string.Join('|', segments));
+    }
+
+    [Theory]
+    [InlineData("$")]
+    [InlineData("$..ok")]
+    [InlineData("$.results[0].ok")]
+    [InlineData("$.results[*].ok")]
+    [InlineData("$.results[?(@.ok)]")]
+    [InlineData("$.")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void APathThatCanSelectMoreThanOneValueIsRejected(string? path)
+    {
+        // A confirmation matching a set has no single truth value, and quietly picking one would be
+        // the kind of guess this fix exists to remove. StartAsync turns the rejection into a
+        // configuration error, so the author hears it at deploy time.
+        Assert.False(FromEmailNode.TryParseSuccessPath(path, out _));
     }
 }

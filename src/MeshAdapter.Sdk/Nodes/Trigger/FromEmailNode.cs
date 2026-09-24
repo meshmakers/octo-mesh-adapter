@@ -32,6 +32,13 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
     ///     once per process rather than once per polling interval.
     /// </summary>
     private bool _successPathWarningLogged;
+
+    /// <summary>
+    ///     AB#5341: "the import window is closed, nothing is fetched" is worth saying once per
+    ///     closed stretch rather than once per polling interval. Reset when the window reopens, so
+    ///     the next close is announced again.
+    /// </summary>
+    private bool _windowClosedLogged;
     
     // ReSharper disable once ClassNeverInstantiated.Local
     private record EmailServerConfiguration
@@ -144,6 +151,11 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                         ?? c.SinceDate,
             SinceDaysBack = ConfigurationSettingsReader.ReadInt(attributes, c.SinceDaysBackAttribute)
                             ?? c.SinceDaysBack,
+            // AB#5341: the import window itself. Unset leaves the definition's value, which
+            // ResolveWindowOpen reads as OPEN — so a tenant that never computes this keeps polling
+            // exactly as before.
+            WindowOpen = ConfigurationSettingsReader.ReadBool(attributes, c.WindowOpenAttribute)
+                         ?? c.WindowOpen,
             SenderFilter = ConfigurationSettingsReader.ReadString(attributes, c.SenderFilterAttribute)
                            ?? c.SenderFilter,
             SubjectFilter = ConfigurationSettingsReader.ReadString(attributes, c.SubjectFilterAttribute)
@@ -188,6 +200,31 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 // a setting is operating state and the node must read it where it uses it, not
                 // freeze a copy of it for the lifetime of the trigger.
                 var nodeConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, definitionConfig);
+
+                // AB#5341: an EMPTY import window fetches nothing. Skipping the whole pass — before
+                // the connection, before the search — is the point: leaving the cut-off unset
+                // instead would mean "no date filter", and with `onlyUnread` switched off that is
+                // the unbounded SearchQuery.All which killed the adapter on prod-1 (AB#5336). The
+                // trigger stays registered and resumes by itself when the window reopens; the
+                // operator's own enable switch is not touched.
+                if (!ResolveWindowOpen(nodeConfig))
+                {
+                    if (!_windowClosedLogged)
+                    {
+                        _windowClosedLogged = true;
+                        logger.LogInformation(
+                            "FromEmail: the import window is closed ('{Attribute}' is false on the '{Configuration}' " +
+                            "settings), so no mail is fetched. Polling continues and resumes on its own once the " +
+                            "window reopens.",
+                            nodeConfig.WindowOpenAttribute, nodeConfig.SettingsConfiguration);
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),
+                        _cancellationTokenSource.Token);
+                    continue;
+                }
+
+                _windowClosedLogged = false;
 
                 // Ensure we're connected
                 if (!_imapClient!.IsConnected)
@@ -529,6 +566,16 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         }
 
         return null;
+    }
+
+    /// <summary>
+    ///     Effective import-window state (AB#5341): the configured value, or OPEN when none is set.
+    ///     An unset value must not read as <c>false</c> — see the remark on the property — because
+    ///     that would switch off every already deployed pipeline that never heard of this.
+    /// </summary>
+    internal static bool ResolveWindowOpen(FromEmailNodeConfiguration nodeConfig)
+    {
+        return nodeConfig.WindowOpen ?? true;
     }
 
     /// <summary>

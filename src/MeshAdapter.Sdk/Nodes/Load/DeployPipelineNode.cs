@@ -99,6 +99,22 @@ internal class DeployPipelineNode(
             return;
         }
 
+        // AB#5341: never start what the operator switched off. `DeployDataFlow` has always
+        // dropped disabled pipelines from the configuration it pushes, so a disabled pipeline is
+        // an UNDEPLOYED one — but this node went straight to the controller, and deploying a
+        // disabled pipeline there registers it and starts its triggers. A computation that keeps a
+        // trigger's settings fresh (the AB#5341 import-window recompute is the first one) would
+        // otherwise resurrect an import nobody enabled, on every tenant that has the pipeline but
+        // never turned it on. Skipped, not failed: "the operator switched it off" is a normal
+        // state, and the calling pipeline has nothing to repair.
+        if (pipelineEntity.GetAttributeValueOrDefault("Enabled") is false)
+        {
+            nodeContext.Info(
+                $"Pipeline {targetPipelineRtId} is disabled and is not deployed.");
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         // Read pipeline definition
         var pipelineDefinition = pipelineEntity.GetAttributeValueOrDefault("PipelineDefinition") as string;
         if (string.IsNullOrWhiteSpace(pipelineDefinition))

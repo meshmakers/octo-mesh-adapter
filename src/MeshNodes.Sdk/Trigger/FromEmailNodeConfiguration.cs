@@ -139,6 +139,36 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     public int? SinceDaysBack { get; set; }
 
     /// <summary>
+    /// Whether this trigger currently has an import window at all (AB#5341). <c>false</c> means the
+    /// window is EMPTY and the trigger fetches nothing: it skips the whole polling pass — no search,
+    /// no download, no pipeline run — and picks up again by itself as soon as the value flips back.
+    /// <para>
+    /// This exists because "no cut-off" cannot express "import nothing". An absent
+    /// <see cref="SinceDate" /> / <see cref="SinceDaysBack" /> means "no date filter", which with
+    /// <see cref="OnlyUnread" /> switched off is the unbounded <c>SearchQuery.All</c> that killed the
+    /// adapter on prod-1 with 1697 mails (AB#5336) — the exact opposite of what an empty window has
+    /// to do. The accounting channel derives both values from the OPEN fiscal years, and "no fiscal
+    /// year is open" has to mean nothing is imported, not everything.
+    /// </para>
+    /// <para>
+    /// Deliberately NOT the operator's <c>System/Enabled</c> switch: that one is owned by whoever
+    /// configures the channel, and flipping it from a computation would both fight the operator and
+    /// require a DATA FLOW deploy to take effect (a disabled pipeline is dropped by
+    /// <c>DeployDataFlow</c>), which restarts every sibling trigger. This value rides on the settings
+    /// configuration instead, so a single-pipeline <c>DeployPipeline@1</c> delivers it.
+    /// </para>
+    /// <para>
+    /// Nullable with the default resolved at the call site, for the YamlDotNet reason documented on
+    /// <see cref="MaxMessagesPerPoll" />: a key that is PRESENT and null overwrites a property
+    /// initializer, and on a non-nullable bool that yields <c>false</c> — which would silently
+    /// switch a working mailbox off. Unset therefore reads as OPEN; see
+    /// <c>FromEmailNode.ResolveWindowOpen</c>.
+    /// </para>
+    /// </summary>
+    [PropertyGroup("Query", 4)]
+    public bool? WindowOpen { get; set; }
+
+    /// <summary>
     /// Post-processing applied to a message once its pipeline run confirmed the import
     /// (AB#5345) — the same three modes the Microsoft Graph channel offers, so a settings page
     /// can present ONE choice for both. Overrides <see cref="MarkAsRead" /> /
@@ -262,6 +292,14 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     /// <summary>Attribute holding the relative date cut-off (<see cref="SinceDaysBack" />).</summary>
     [PropertyGroup("Settings", 9)]
     public string? SinceDaysBackAttribute { get; set; }
+
+    /// <summary>
+    /// Attribute holding the import-window flag (<see cref="WindowOpen" />). A <c>false</c> there
+    /// suspends fetching for as long as it stands; unset leaves the definition's value, which is
+    /// "open".
+    /// </summary>
+    [PropertyGroup("Settings", 13)]
+    public string? WindowOpenAttribute { get; set; }
 
     /// <summary>Attribute holding the sender filter (<see cref="SenderFilter" />).</summary>
     [PropertyGroup("Settings", 10)]

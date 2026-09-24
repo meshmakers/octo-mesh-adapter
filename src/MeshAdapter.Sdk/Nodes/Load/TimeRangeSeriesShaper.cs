@@ -13,17 +13,35 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// </summary>
 internal sealed class ShapedSeries(string wellKnownName, JsonObject series)
 {
+    private readonly Dictionary<JsonObject, JsonObject> _sourceOf = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>Natural key of the anchor entity this series belongs to.</summary>
     public string WellKnownName { get; } = wellKnownName;
 
     /// <summary>
-    /// The first series object seen for this key — the source of series-scoped column values and of
-    /// the parent RtId. Several source objects legitimately resolve to one key when the producer
-    /// splits a logical series across blocks.
+    /// The first series object seen for this key — the source of the parent RtId. Several source
+    /// objects legitimately resolve to one key: a producer that splits a logical series across blocks,
+    /// or one batch carrying several documents for the same register.
     /// </summary>
     public JsonObject Series { get; } = series;
 
     public List<JsonObject> Values { get; } = [];
+
+    /// <summary>Adds a value together with the series object it came from.</summary>
+    public void Add(JsonObject value, JsonObject source)
+    {
+        Values.Add(value);
+        _sourceOf[value] = source;
+    }
+
+    /// <summary>
+    /// The series object a value came from — the source of its series-scoped column values. Those
+    /// differ between the objects merged under one key: two EDA documents for the same register carry
+    /// their own document date, and the archive's ConflictPrecedence orders by it. Taking them from
+    /// the first object stamped every row of a batch with the first document's date, so a same-quality
+    /// correction in the same batch won or lost by position instead of by date.
+    /// </summary>
+    public JsonObject SourceOf(JsonObject value) => _sourceOf.GetValueOrDefault(value, Series);
 
     /// <summary>RtId the anchor is written under; assigned once the runtime store has been queried.</summary>
     public OctoObjectId RtId { get; set; }
@@ -87,7 +105,7 @@ internal static class TimeRangeSeriesShaper
             {
                 if (valueNode is JsonObject value)
                 {
-                    shaped.Values.Add(value);
+                    shaped.Add(value, series);
                 }
             }
         }
@@ -197,20 +215,29 @@ internal static class TimeRangeSeriesShaper
 
         foreach (var shaped in series)
         {
-            // Series-scoped values are constant for the whole series — resolve them once rather than
-            // per value; a long series is thousands of values.
-            var seriesValues = new List<KeyValuePair<string, object?>>();
-            foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Series))
-            {
-                var scalar = convert(column.Name, ToScalar(shaped.Series[column.ValueProperty]));
-                if (scalar is not null)
-                {
-                    seriesValues.Add(new KeyValuePair<string, object?>(column.Name, scalar));
-                }
-            }
+            // Series-scoped values are constant per source object — resolve them once per object
+            // rather than per value; a long series is thousands of values.
+            var seriesValuesBySource =
+                new Dictionary<JsonObject, List<KeyValuePair<string, object?>>>(ReferenceEqualityComparer.Instance);
 
             foreach (var value in shaped.Values)
             {
+                var source = shaped.SourceOf(value);
+                if (!seriesValuesBySource.TryGetValue(source, out var seriesValues))
+                {
+                    seriesValues = [];
+                    foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Series))
+                    {
+                        var scalar = convert(column.Name, ToScalar(source[column.ValueProperty]));
+                        if (scalar is not null)
+                        {
+                            seriesValues.Add(new KeyValuePair<string, object?>(column.Name, scalar));
+                        }
+                    }
+
+                    seriesValuesBySource[source] = seriesValues;
+                }
+
                 var from = ReadDateTime(value, c.FromProperty);
                 var to = ReadDateTime(value, c.ToProperty);
                 if (from is null || to is null || to <= from)

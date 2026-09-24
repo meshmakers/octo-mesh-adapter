@@ -175,7 +175,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
                     continue;
                 }
 
-                var updated = BuildAnchorEntity(ckTypeId, shaped.WellKnownName, shaped.Series, winner, c);
+                var updated = BuildAnchorEntity(ckTypeId, shaped.WellKnownName, shaped.SourceOf(winner), winner, c);
                 updated.RtId = stored.RtId;
                 entityUpdates.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(
                     new RtEntityId(ckTypeId, stored.RtId), updated));
@@ -184,7 +184,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
 
             shaped.RtId = OctoObjectId.GenerateNewId();
 
-            var inserted = BuildAnchorEntity(ckTypeId, shaped.WellKnownName, shaped.Series, winner, c);
+            var inserted = BuildAnchorEntity(ckTypeId, shaped.WellKnownName, shaped.SourceOf(winner), winner, c);
             inserted.RtId = shaped.RtId;
             entityUpdates.Add(EntityUpdateInfo<RtEntity>.CreateInsert(inserted));
 

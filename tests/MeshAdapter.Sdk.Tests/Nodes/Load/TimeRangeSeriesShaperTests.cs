@@ -108,6 +108,54 @@ public class TimeRangeSeriesShaperTests
     }
 
     [Fact]
+    public void SeriesScopedValuesComeFromTheObjectEachValueCameFrom()
+    {
+        // One batch carrying two documents for the same register: an original and a same-quality
+        // correction of the same window. The archive's ConflictPrecedence decides between them by the
+        // document date, a series-scoped column — so each row must carry its OWN document's date. With
+        // both rows stamped with the first document's date the dates tie and position decides.
+        var c = Config();
+        c.Columns.Add(new TimeRangeSeriesColumn
+        {
+            Name = "SourceDocumentDate", ValueProperty = "CreationTime", Scope = TimeRangeSeriesColumnScope.Series
+        });
+        var series = TimeRangeSeriesShaper.Shape(Parse(
+            $$"""
+              [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03", "QuantityUnit": "kWh", "CreationTime": "2026-01-02T08:00:00Z",
+                  "EnergyQuantities": [ { "From": "2026-01-01T00:00:00Z", "To": "2026-01-01T00:15:00Z", "Quantity": 1.0 } ] },
+                { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03", "QuantityUnit": "Wh", "CreationTime": "2026-01-05T08:00:00Z",
+                  "EnergyQuantities": [ { "From": "2026-01-01T00:00:00Z", "To": "2026-01-01T00:15:00Z", "Quantity": 1.2 } ] } ]
+              """), c, out _);
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out _);
+
+        Assert.Single(series);
+        Assert.Equal(
+            [new DateTime(2026, 1, 2, 8, 0, 0, DateTimeKind.Utc), new DateTime(2026, 1, 5, 8, 0, 0, DateTimeKind.Utc)],
+            rows.Select(r => TimeRangeSeriesShaper.NormaliseToUtc((DateTime)r.Attributes["SourceDocumentDate"]!)).ToArray());
+        Assert.Equal(["kWh", "Wh"], rows.Select(r => r.Attributes["Amount.Unit"]).ToArray());
+    }
+
+    [Fact]
+    public void TheWinningValueNamesItsOwnSourceObject()
+    {
+        // The anchor reflects the latest window; its series-scoped attributes must come from the
+        // document that delivered that window, not from whichever document came first.
+        var c = Config();
+        var series = TimeRangeSeriesShaper.Shape(Parse(
+            $$"""
+              [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03", "QuantityUnit": "kWh",
+                  "EnergyQuantities": [ { "From": "2026-01-01T00:15:00Z", "To": "2026-01-01T00:30:00Z", "Quantity": 2.0 } ] },
+                { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03", "QuantityUnit": "Wh",
+                  "EnergyQuantities": [ { "From": "2026-01-01T00:30:00Z", "To": "2026-01-01T00:45:00Z", "Quantity": 3.0 } ] } ]
+              """), c, out _);
+
+        var winner = TimeRangeSeriesShaper.SelectAnchorValue(series[0].Values, c);
+
+        Assert.Equal("Wh", series[0].SourceOf(winner)["QuantityUnit"]!.GetValue<string>());
+        Assert.Equal("kWh", series[0].Series["QuantityUnit"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void TwoRegistersOfOneMeteringPointGetTheirOwnAnchors()
     {
         var series = TimeRangeSeriesShaper.Shape(Parse(

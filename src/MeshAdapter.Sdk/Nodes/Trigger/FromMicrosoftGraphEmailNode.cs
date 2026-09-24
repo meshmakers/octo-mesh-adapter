@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography.Pkcs;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using MimeKit;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -27,6 +28,12 @@ internal class FromMicrosoftGraphEmailNode(
 
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
+
+    /// <summary>
+    ///     AB#5345: the "no successPath configured, so nothing is verified" warning is worth saying
+    ///     once per process rather than once per message.
+    /// </summary>
+    private bool _successPathWarningLogged;
 
     // ReSharper disable once ClassNeverInstantiated.Local
     private record GraphConfiguration
@@ -79,21 +86,41 @@ internal class FromMicrosoftGraphEmailNode(
                 c.SettingsConfiguration ?? c.ServerConfiguration);
         }
 
+        // AB#5345: a confirmation path that cannot name exactly one value is a configuration
+        // mistake, and it has to be heard when the pipeline is deployed rather than be read as
+        // "never confirmed" on every poll for the rest of the adapter's life.
+        if (!string.IsNullOrWhiteSpace(effectiveConfig.SuccessPath) &&
+            !MailSuccessPath.TryParse(effectiveConfig.SuccessPath, out _))
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidValue(
+                context.NodeContext, effectiveConfig.SuccessPath);
+        }
+
         _cancellationTokenSource = new CancellationTokenSource();
+        // The DEFINITION config is handed over, not the resolved one: the settings are resolved
+        // again on every poll so a changed setting is read where it is used (AB#5345).
         _pollingTask = Task.Run(
-            async () => await PollForMessagesAsync(context, graphConfig, effectiveConfig),
+            async () => await PollForMessagesAsync(context, graphConfig, c),
             _cancellationTokenSource.Token);
 
         return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Returns a copy of <paramref name="c"/> with Mailbox / FolderPath /
-    /// MoveToFolderPathOnSuccess / MoveToFolderPathOnFailure / PollingIntervalSeconds resolved from the optional
-    /// settings configuration (well-known name <see cref="FromMicrosoftGraphEmailNodeConfiguration.SettingsConfiguration"/>).
+    /// Returns a copy of <paramref name="c"/> with every RUNTIME setting — mailbox, the three
+    /// folder paths, poll interval, post-processing mode, batch cap, sender filter and the import
+    /// confirmation path — resolved from the optional settings configuration (well-known name
+    /// <see cref="FromMicrosoftGraphEmailNodeConfiguration.SettingsConfiguration"/>).
     /// A non-empty settings value overrides the corresponding node property; anything
     /// missing falls back to the node property. The node stays domain-agnostic: which
     /// attributes to read is given by the *Attribute node properties.
+    /// <para>
+    /// 🔴 The rule this serves (AB#5345): <b>setting a setting must never rewrite a pipeline
+    /// definition.</b> The definition is release content; a poll interval or a folder path is
+    /// operating state. The readers themselves are shared with <c>FromEmail@1</c>
+    /// (<see cref="ConfigurationSettingsReader"/>), so the two mail channels resolve their
+    /// settings by one set of rules.
+    /// </para>
     /// </summary>
     internal static FromMicrosoftGraphEmailNodeConfiguration ResolveEffectiveConfiguration(
         IGlobalConfiguration globalConfiguration, FromMicrosoftGraphEmailNodeConfiguration c)
@@ -118,6 +145,18 @@ internal class FromMicrosoftGraphEmailNode(
                 ConfigurationSettingsReader.ReadString(attrs, c.FailedFolderAttribute) ?? c.MoveToFolderPathOnFailure,
             PollingIntervalSeconds =
                 ConfigurationSettingsReader.ReadPositiveInt(attrs, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds,
+            // AB#5345: the remaining runtime settings, same rule — settings win, node property is
+            // the fallback, and an unset attribute changes nothing about a deployed pipeline.
+            PostProcessingMode =
+                ConfigurationSettingsReader.ReadEnum<MailPostProcessingMode>(
+                    attrs, c.PostProcessingModeAttribute) ?? c.PostProcessingMode,
+            MaxMessagesPerPoll =
+                ConfigurationSettingsReader.ReadPositiveInt(attrs, c.MaxMessagesPerPollAttribute)
+                ?? c.MaxMessagesPerPoll,
+            SenderFilter =
+                ConfigurationSettingsReader.ReadString(attrs, c.SenderFilterAttribute) ?? c.SenderFilter,
+            SuccessPath =
+                ConfigurationSettingsReader.ReadString(attrs, c.SuccessPathAttribute) ?? c.SuccessPath,
         };
     }
 
@@ -151,11 +190,20 @@ internal class FromMicrosoftGraphEmailNode(
     }
 
     private async Task PollForMessagesAsync(ITriggerContext context, GraphConfiguration graphConfig,
-        FromMicrosoftGraphEmailNodeConfiguration nodeConfig)
+        FromMicrosoftGraphEmailNodeConfiguration definitionConfig)
     {
         string? sourceFolderId = null;
         string? targetFolderId = null;
         string? failureFolderId = null;
+        // AB#5345: the paths the cached folder ids above were resolved FROM. The settings are
+        // re-read on every poll, so an id has to be dropped the moment the path behind it changes —
+        // otherwise a corrected folder would keep filing mail into the old one.
+        string? resolvedSourcePath = null;
+        string? resolvedDonePath = null;
+        string? resolvedFailedPath = null;
+        // The mailbox the last poll actually used, for the poll-level error message: the mailbox
+        // may come from the settings entity, in which case the definition carries none at all.
+        var lastKnownMailbox = definitionConfig.Mailbox;
         // AB#5260: a failure folder that cannot be resolved must not take the import
         // down. Once the path turns out to be unusable we degrade to "skip exhausted
         // messages" (the pre-AB#5142 behaviour) instead of failing every poll — the
@@ -180,17 +228,47 @@ internal class FromMicrosoftGraphEmailNode(
         {
             try
             {
+                // AB#5345: resolved HERE, once per poll, not once in StartAsync — a setting is
+                // operating state and the node must read it where it uses it.
+                var nodeConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, definitionConfig);
+                var postProcessingMode = ResolveEffectivePostProcessingMode(nodeConfig);
+                lastKnownMailbox = nodeConfig.Mailbox;
+
+                if (!string.Equals(resolvedSourcePath, nodeConfig.FolderPath, StringComparison.Ordinal))
+                {
+                    resolvedSourcePath = nodeConfig.FolderPath;
+                    sourceFolderId = null;
+                }
+
+                if (!string.Equals(resolvedDonePath, nodeConfig.MoveToFolderPathOnSuccess,
+                        StringComparison.Ordinal))
+                {
+                    resolvedDonePath = nodeConfig.MoveToFolderPathOnSuccess;
+                    targetFolderId = null;
+                }
+
+                if (!string.Equals(resolvedFailedPath, nodeConfig.MoveToFolderPathOnFailure,
+                        StringComparison.Ordinal))
+                {
+                    resolvedFailedPath = nodeConfig.MoveToFolderPathOnFailure;
+                    failureFolderId = null;
+                    // A corrected path deserves a fresh attempt at resolving it.
+                    failureFolderUnusable = false;
+                }
+
                 var accessToken = await GetAccessTokenAsync(graphConfig);
 
                 sourceFolderId ??= await ResolveFolderIdAsync(accessToken, nodeConfig.Mailbox,
                     nodeConfig.FolderPath, createLeafIfMissing: false);
-                if (!string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnSuccess))
+                if (postProcessingMode == MailPostProcessingMode.MoveToFolders &&
+                    !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnSuccess))
                 {
                     targetFolderId ??= await ResolveFolderIdAsync(accessToken, nodeConfig.Mailbox,
                         nodeConfig.MoveToFolderPathOnSuccess, createLeafIfMissing: true);
                 }
 
-                if (!string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure) && !failureFolderUnusable)
+                if (postProcessingMode == MailPostProcessingMode.MoveToFolders &&
+                    !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure) && !failureFolderUnusable)
                 {
                     // AB#5260: resolved inside its own try — the failure folder is a
                     // convenience for messages that already failed, so a bad path must
@@ -350,11 +428,12 @@ internal class FromMicrosoftGraphEmailNode(
                     var stamped = await TrySetCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId,
                         WithAttemptCategory(categories, attempts + 1));
 
+                    object? executionResult;
                     try
                     {
                         // One pipeline run per message so the success/failure of a run maps
                         // 1:1 to the move decision for exactly that message.
-                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        executionResult = await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
                         {
                             VerifiedPrincipal = binding.Principal,
                             CallerTrust = binding.Trust
@@ -379,6 +458,38 @@ internal class FromMicrosoftGraphEmailNode(
                         continue;
                     }
 
+                    // AB#5345: returning is NOT importing. Where the pipeline was asked to confirm
+                    // (successPath), only its confirmation counts as success — a run whose import
+                    // branch stopped on a reported node error ends perfectly normally, and filing
+                    // such a mail under "Done" is how a receipt disappears with nothing to show for
+                    // it. An unconfirmed run is treated exactly like a failed one: the attempt is
+                    // counted, the message is left where it is, and the parking machinery decides
+                    // what happens once the budget is spent.
+                    var confirmation = MailSuccessPath.Evaluate(nodeConfig.SuccessPath,
+                        executionResult as JsonNode);
+                    if (!MailSuccessPath.IsPostProcessingAllowed(confirmation))
+                    {
+                        failureCounts[messageId] = new AttemptMemory(attempts + 1, stamped);
+                        logger.LogWarning(
+                            "The run for mail '{Subject}' ended without setting '{SuccessPath}' to true — " +
+                            "a node may have reported an error and stopped its branch while the execution " +
+                            "still completed (attempt {Attempt}/{MaxAttempts}); the message stays in '{Folder}'",
+                            emailData.Subject, nodeConfig.SuccessPath, attempts + 1,
+                            nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                        continue;
+                    }
+
+                    if (confirmation == MailRunConfirmation.NotConfigured && !_successPathWarningLogged)
+                    {
+                        _successPathWarningLogged = true;
+                        logger.LogWarning(
+                            "FromMicrosoftGraphEmail: no 'successPath' is configured, so a mail whose import " +
+                            "branch stopped on a reported node error cannot be told apart from an imported one, " +
+                            "and it is post-processed either way. Configure 'successPath' and have the pipeline " +
+                            "write that flag as the last step of its import branch to make the post-processing " +
+                            "conditional on the import itself.");
+                    }
+
                     // Post-success bookkeeping runs OUTSIDE the failure net: a cleanup
                     // hiccup (or a shutdown cancel) after a successful run must never turn
                     // the success into a counted failed attempt. A failing move bubbles to
@@ -389,10 +500,8 @@ internal class FromMicrosoftGraphEmailNode(
                         await TryClearAttemptCategoriesAsync(accessToken, nodeConfig.Mailbox, messageId);
                     }
 
-                    if (targetFolderId != null)
-                    {
-                        await MoveMessageAsync(accessToken, nodeConfig.Mailbox, messageId, targetFolderId);
-                    }
+                    await ApplyPostProcessingAsync(accessToken, nodeConfig.Mailbox, messageId,
+                        postProcessingMode, targetFolderId);
 
                     logger.LogInformation(
                         "Processed mail '{Subject}' from '{From}' ({AttachmentCount} attachments)",
@@ -413,7 +522,11 @@ internal class FromMicrosoftGraphEmailNode(
                 sourceFolderId = null;
                 targetFolderId = null;
                 failureFolderId = null;
-                logger.LogError(ex, "Error while polling Microsoft Graph mailbox '{Mailbox}'", nodeConfig.Mailbox);
+                resolvedSourcePath = null;
+                resolvedDonePath = null;
+                resolvedFailedPath = null;
+                logger.LogError(ex, "Error while polling Microsoft Graph mailbox '{Mailbox}'",
+                    lastKnownMailbox);
                 // Guard the backoff delay: a cancel during StopAsync makes Task.Delay throw
                 // TaskCanceledException, which — being raised inside this catch — would escape
                 // uncaught (the sibling catch (OperationCanceledException) does not cover it) and
@@ -429,6 +542,93 @@ internal class FromMicrosoftGraphEmailNode(
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// The post-processing mode actually in force (AB#5345): the configured one, or — when none is
+    /// configured — the one DERIVED from what this pipeline already said.
+    /// </summary>
+    /// <remarks>
+    /// The derivation is the migration and it is exact: before AB#5345 this node did one thing
+    /// after a run, move the message to the done folder (and park an exhausted one in the failure
+    /// folder), and it did it only when such a folder was configured. So a configured done or
+    /// failure folder means <see cref="MailPostProcessingMode.MoveToFolders" /> and everything
+    /// else means <see cref="MailPostProcessingMode.None" /> — which is exactly "leave it in the
+    /// source folder", the behaviour of every pipeline that configured no folders.
+    /// </remarks>
+    internal static MailPostProcessingMode ResolveEffectivePostProcessingMode(
+        FromMicrosoftGraphEmailNodeConfiguration nodeConfig)
+    {
+        if (nodeConfig.PostProcessingMode.HasValue)
+        {
+            return nodeConfig.PostProcessingMode.Value;
+        }
+
+        return !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnSuccess) ||
+               !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure)
+            ? MailPostProcessingMode.MoveToFolders
+            : MailPostProcessingMode.None;
+    }
+
+    /// <summary>
+    /// Carries out the mode's post-processing for one message whose import the pipeline CONFIRMED
+    /// (AB#5345). Never called for a run that threw or that ended unconfirmed.
+    /// </summary>
+    /// <remarks>
+    /// Mode B and C are Graph's counterparts of what the IMAP channel writes as <c>\Deleted</c>
+    /// and <c>\Seen</c>: a delete (into Deleted Items — Graph's <c>DELETE /messages</c> is a
+    /// soft delete, which is the recoverable half of "the mailbox is the queue"), and an
+    /// <c>isRead</c> patch. Neither is allowed to fail the poll silently, so both report through
+    /// their own log line rather than throwing into the message loop.
+    /// </remarks>
+    private async Task ApplyPostProcessingAsync(string accessToken, string mailbox, string messageId,
+        MailPostProcessingMode mode, string? targetFolderId)
+    {
+        switch (mode)
+        {
+            case MailPostProcessingMode.MoveToFolders:
+                if (targetFolderId != null)
+                {
+                    await MoveMessageAsync(accessToken, mailbox, messageId, targetFolderId);
+                }
+
+                return;
+
+            case MailPostProcessingMode.Delete:
+                await DeleteMessageAsync(accessToken, mailbox, messageId);
+                return;
+
+            case MailPostProcessingMode.MarkAsRead:
+                await MarkMessageReadAsync(accessToken, mailbox, messageId);
+                return;
+
+            case MailPostProcessingMode.None:
+            default:
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Deletes a message (mode B). Graph's <c>DELETE</c> moves it to Deleted Items rather than
+    /// erasing it, so a mistake is recoverable by the mailbox owner.
+    /// </summary>
+    private async Task DeleteMessageAsync(string accessToken, string mailbox, string messageId)
+    {
+        using var client = CreateGraphClient(accessToken);
+        var url = $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}";
+        var response = await client.DeleteAsync(url, _cancellationTokenSource!.Token);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>Marks a message as read (mode C).</summary>
+    private async Task MarkMessageReadAsync(string accessToken, string mailbox, string messageId)
+    {
+        using var client = CreateGraphClient(accessToken);
+        var url = $"{GraphBaseUrl}/users/{Uri.EscapeDataString(mailbox)}/messages/{messageId}";
+        var payload = JsonSerializer.Serialize(new { isRead = true });
+        var response = await client.PatchAsync(url,
+            new StringContent(payload, Encoding.UTF8, "application/json"), _cancellationTokenSource!.Token);
+        response.EnsureSuccessStatusCode();
     }
 
     private async Task<string> GetAccessTokenAsync(GraphConfiguration config)

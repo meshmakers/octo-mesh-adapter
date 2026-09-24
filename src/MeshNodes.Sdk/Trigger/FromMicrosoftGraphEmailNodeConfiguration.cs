@@ -189,4 +189,94 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// </remarks>
     [PropertyGroup("Query", 4)]
     public string[]? InternetMessageHeaderNames { get; set; }
+
+    /// <summary>
+    /// Post-processing applied to a message once its pipeline run confirmed the import
+    /// (AB#5345) — the same three modes the IMAP channel offers, so a settings page can present
+    /// ONE choice for both. Overrides <see cref="MoveToFolderPathOnSuccess" /> /
+    /// <see cref="MoveToFolderPathOnFailure" /> when set.
+    /// <para>
+    /// ⚠️ UNSET is the migration path and means "keep doing what this pipeline already did": the
+    /// mode is then DERIVED — a configured done or failed folder ⇒
+    /// <see cref="MailPostProcessingMode.MoveToFolders" />, otherwise
+    /// <see cref="MailPostProcessingMode.None" />, which is byte for byte what this node did
+    /// before.
+    /// </para>
+    /// <para>
+    /// Nullable and only read through <c>ResolveEffectivePostProcessingMode</c>, never directly:
+    /// the pipeline definition deserializer is YamlDotNet, where a key that is PRESENT and null
+    /// overwrites a property initializer. On a non-nullable enum that yields the zero member
+    /// (<see cref="MailPostProcessingMode.None" />) — a real mode here, so an explicit null would
+    /// silently switch a working mailbox queue off.
+    /// </para>
+    /// <para>
+    /// The attempt parking (<c>OctoMesh-Import-Attempt-N</c> / <c>OctoMesh-Import-Failed</c>
+    /// categories, <see cref="MaxAttemptsPerMessage" />) belongs to
+    /// <see cref="MailPostProcessingMode.MoveToFolders" /> and stays GRAPH-ONLY: it needs a
+    /// per-message marker the mailbox persists across a process death, which is an Outlook
+    /// category here and has no IMAP counterpart this node could rely on across servers. Under
+    /// <see cref="MailPostProcessingMode.Delete" /> and
+    /// <see cref="MailPostProcessingMode.MarkAsRead" /> there is nowhere to park a message, so the
+    /// attempts are still counted and an exhausted message is skipped rather than moved.
+    /// </para>
+    /// </summary>
+    [PropertyGroup("Query", 5)]
+    public MailPostProcessingMode? PostProcessingMode { get; set; }
+
+    /// <summary>
+    /// Path into the pipeline's result data that CONFIRMS the message was imported (AB#5345,
+    /// the same contract <c>FromEmail@1</c> has carried since AB#5337). The post-processing
+    /// configured above happens only when it resolves to the boolean <c>true</c>; anything else —
+    /// absent, null, <c>false</c>, a string, a number — leaves the message exactly where it is.
+    /// <para>
+    /// 🔴 Why this exists: this node used to decide done-or-failed on "<c>ExecuteAsync</c> did not
+    /// throw", and that is not a statement about the import. A pipeline ends normally while a node
+    /// reported an error and stopped its branch — <c>MakeHttpRequest@1</c>'s <c>LogAndStop</c> is
+    /// defined to do that ("leaving the execution successful") — and no per-node status reaches a
+    /// trigger. A mail could therefore be filed under "Done" with nothing in the inbox to show
+    /// for it.
+    /// </para>
+    /// <para>
+    /// ⚠️ UNSET keeps the pre-AB#5345 behaviour exactly: a run that came back post-processes its
+    /// message. A stricter default would make every deployed <c>FromMicrosoftGraphEmail@1</c> stop
+    /// moving anything and re-offer its whole source folder on every poll. What is NEVER traded is
+    /// the run that threw: that one leaves the mailbox untouched whatever this is set to.
+    /// </para>
+    /// <para>
+    /// Write the flag as the LAST step of the import branch (e.g.
+    /// <c>SetPrimitiveValue@1 targetPath: $.importCompleted, value: true, valueType: Boolean</c>)
+    /// — placed there, a branch that stopped early never reaches it.
+    /// </para>
+    /// <para>
+    /// Syntax: a plain path from the pipeline data root, optionally with the <c>$.</c> prefix
+    /// (<c>$.importCompleted</c>, <c>result.ok</c>). Array indexes, wildcards and filters are
+    /// rejected when the trigger starts — a confirmation must name exactly one value.
+    /// </para>
+    /// </summary>
+    [PropertyGroup("Query", 6)]
+    public string? SuccessPath { get; set; }
+
+    /// <summary>
+    /// Attribute on <see cref="SettingsConfiguration" /> holding the post-processing mode NAME
+    /// (<see cref="MailPostProcessingMode" />). Names only — a number there is ignored, see
+    /// <c>ConfigurationSettingsReader.ReadEnum</c>.
+    /// </summary>
+    [PropertyGroup("Settings", 6)]
+    public string? PostProcessingModeAttribute { get; set; }
+
+    /// <summary>Attribute holding the per-poll batch cap (<see cref="MaxMessagesPerPoll" />).</summary>
+    [PropertyGroup("Settings", 7)]
+    public string? MaxMessagesPerPollAttribute { get; set; }
+
+    /// <summary>Attribute holding the sender filter (<see cref="SenderFilter" />).</summary>
+    [PropertyGroup("Settings", 8)]
+    public string? SenderFilterAttribute { get; set; }
+
+    /// <summary>
+    /// Attribute holding the import confirmation path (<see cref="SuccessPath" />). Rarely worth
+    /// configuring — the path is a contract between this trigger and the pipeline it starts, both
+    /// of which ship together — but it is a setting like the others and behaves like them.
+    /// </summary>
+    [PropertyGroup("Settings", 9)]
+    public string? SuccessPathAttribute { get; set; }
 }

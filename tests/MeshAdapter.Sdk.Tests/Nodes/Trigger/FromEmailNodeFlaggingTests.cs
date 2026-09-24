@@ -158,8 +158,8 @@ public class FromEmailNodeRunConfirmationTests
         // never reached its last node — so the confirmation the pipeline promised is simply absent.
         var result = PipelineResult();
 
-        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
-            FromEmailNode.EvaluateRunConfirmation(SuccessPath, result));
+        Assert.Equal(MailRunConfirmation.NotConfirmed,
+            MailSuccessPath.Evaluate(SuccessPath, result));
     }
 
     [Fact]
@@ -167,8 +167,8 @@ public class FromEmailNodeRunConfirmationTests
     {
         // The two halves joined: this is the sequence the poll loop runs, and a batch whose branch
         // stopped must leave the mailbox untouched even though nothing threw.
-        var confirmed = FromEmailNode.EvaluateRunConfirmation(SuccessPath, PipelineResult())
-                        == FromEmailNode.RunConfirmation.Confirmed;
+        var confirmed = MailSuccessPath.Evaluate(SuccessPath, PipelineResult())
+                        == MailRunConfirmation.Confirmed;
 
         var decision = FromEmailNode.ResolveFlagDecision(
             new FromEmailNodeConfiguration
@@ -187,8 +187,8 @@ public class FromEmailNodeRunConfirmationTests
     {
         var result = PipelineResult(""", "importCompleted": true""");
 
-        Assert.Equal(FromEmailNode.RunConfirmation.Confirmed,
-            FromEmailNode.EvaluateRunConfirmation(SuccessPath, result));
+        Assert.Equal(MailRunConfirmation.Confirmed,
+            MailSuccessPath.Evaluate(SuccessPath, result));
     }
 
     // ---- Only a real boolean true confirms ------------------------------------------
@@ -207,15 +207,15 @@ public class FromEmailNodeRunConfirmationTests
         // SetPrimitiveValue@1 with valueType: String produces.
         var result = PipelineResult($""", "importCompleted": {json}""");
 
-        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
-            FromEmailNode.EvaluateRunConfirmation(SuccessPath, result));
+        Assert.Equal(MailRunConfirmation.NotConfirmed,
+            MailSuccessPath.Evaluate(SuccessPath, result));
     }
 
     [Fact]
     public void AMissingOrNullResultIsNotConfirmed()
     {
-        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
-            FromEmailNode.EvaluateRunConfirmation(SuccessPath, null));
+        Assert.Equal(MailRunConfirmation.NotConfirmed,
+            MailSuccessPath.Evaluate(SuccessPath, null));
     }
 
     [Fact]
@@ -223,11 +223,11 @@ public class FromEmailNodeRunConfirmationTests
     {
         var result = PipelineResult(""", "stageOut": { "ok": true }""");
 
-        Assert.Equal(FromEmailNode.RunConfirmation.Confirmed,
-            FromEmailNode.EvaluateRunConfirmation("$.stageOut.ok", result));
+        Assert.Equal(MailRunConfirmation.Confirmed,
+            MailSuccessPath.Evaluate("$.stageOut.ok", result));
         // A path whose intermediate segment is missing must not throw its way out of the poll.
-        Assert.Equal(FromEmailNode.RunConfirmation.NotConfirmed,
-            FromEmailNode.EvaluateRunConfirmation("$.missing.ok", result));
+        Assert.Equal(MailRunConfirmation.NotConfirmed,
+            MailSuccessPath.Evaluate("$.missing.ok", result));
     }
 
     // ---- No confirmation configured -------------------------------------------------
@@ -237,10 +237,10 @@ public class FromEmailNodeRunConfirmationTests
     {
         var result = PipelineResult(""", "importCompleted": true""");
 
-        Assert.Equal(FromEmailNode.RunConfirmation.NotConfigured,
-            FromEmailNode.EvaluateRunConfirmation(null, result));
-        Assert.Equal(FromEmailNode.RunConfirmation.NotConfigured,
-            FromEmailNode.EvaluateRunConfirmation("   ", result));
+        Assert.Equal(MailRunConfirmation.NotConfigured,
+            MailSuccessPath.Evaluate(null, result));
+        Assert.Equal(MailRunConfirmation.NotConfigured,
+            MailSuccessPath.Evaluate("   ", result));
     }
 
     [Fact]
@@ -250,13 +250,13 @@ public class FromEmailNodeRunConfirmationTests
         // marking anything read and re-offer its whole SINCE window on every adapter restart — a
         // certain fleet-wide regression traded for one edge case, so an unconfigured node keeps
         // doing what it always did.
-        var confirmation = FromEmailNode.EvaluateRunConfirmation(null, PipelineResult());
+        var confirmation = MailSuccessPath.Evaluate(null, PipelineResult());
 
-        Assert.True(FromEmailNode.IsWriteBackAllowed(confirmation));
+        Assert.True(MailSuccessPath.IsPostProcessingAllowed(confirmation));
         Assert.Equal(MessageFlags.Seen,
             FromEmailNode.ResolveFlagDecision(
                     new FromEmailNodeConfiguration { ServerConfiguration = "TestServer" },
-                    FromEmailNode.IsWriteBackAllowed(confirmation))
+                    MailSuccessPath.IsPostProcessingAllowed(confirmation))
                 .Flags);
     }
 
@@ -288,9 +288,9 @@ public class FromEmailNodeRunConfirmationTests
         // Levels 2 and 3 side by side: the strict promise applies exactly where somebody configured
         // it, and nowhere else. (Written as one Fact rather than a Theory because the enum is
         // internal and an InlineData parameter would have to be public.)
-        Assert.True(FromEmailNode.IsWriteBackAllowed(FromEmailNode.RunConfirmation.Confirmed));
-        Assert.True(FromEmailNode.IsWriteBackAllowed(FromEmailNode.RunConfirmation.NotConfigured));
-        Assert.False(FromEmailNode.IsWriteBackAllowed(FromEmailNode.RunConfirmation.NotConfirmed));
+        Assert.True(MailSuccessPath.IsPostProcessingAllowed(MailRunConfirmation.Confirmed));
+        Assert.True(MailSuccessPath.IsPostProcessingAllowed(MailRunConfirmation.NotConfigured));
+        Assert.False(MailSuccessPath.IsPostProcessingAllowed(MailRunConfirmation.NotConfirmed));
     }
 
     // ---- The path syntax ------------------------------------------------------------
@@ -301,7 +301,7 @@ public class FromEmailNodeRunConfirmationTests
     [InlineData("$.stageOut.ok", "stageOut|ok")]
     public void APlainPathIsAccepted(string path, string expected)
     {
-        Assert.True(FromEmailNode.TryParseSuccessPath(path, out var segments));
+        Assert.True(MailSuccessPath.TryParse(path, out var segments));
         Assert.Equal(expected, string.Join('|', segments));
     }
 
@@ -319,6 +319,6 @@ public class FromEmailNodeRunConfirmationTests
         // A confirmation matching a set has no single truth value, and quietly picking one would be
         // the kind of guess this fix exists to remove. StartAsync turns the rejection into a
         // configuration error, so the author hears it at deploy time.
-        Assert.False(FromEmailNode.TryParseSuccessPath(path, out _));
+        Assert.False(MailSuccessPath.TryParse(path, out _));
     }
 }

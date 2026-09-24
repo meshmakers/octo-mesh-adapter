@@ -66,7 +66,15 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             var rtIds = dataContext.GetArray<string>(c.RtIdsPath)?.ToList();
             if (rtIds == null || rtIds.Count == 0)
             {
-                throw new InvalidOperationException($"No RtIds found at path '{c.RtIdsPath}'");
+                // Name the accepted path forms: the read is lenient (AB#5351), so an empty result
+                // means the path matched nothing — not that the form is unsupported.
+                throw new InvalidOperationException(
+                    $"No RtIds found at path '{c.RtIdsPath}'. The path may address an array of ids " +
+                    "(\"$.ids\"), a single id (read as one entry), or select the ids with a wildcard, " +
+                    "a recursive descent or a filter (\"$.Items[*].RtId\", \"$..RtId\", " +
+                    "\"$.Items[?(@.Kind=='Doc')].RtId\"). An object, a null or an absent path yields " +
+                    "nothing. Inside ForEach@1 a selecting path only sees the iteration document " +
+                    "(\"$.key…\", \"$.full…\"), not the outer one.");
             }
             return rtIds
                 .Select(id => new OctoObjectId(id!))

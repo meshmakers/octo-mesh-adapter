@@ -1125,14 +1125,21 @@ internal class AnthropicAiQueryNode(
         return promptBuilder.ToString();
     }
 
-    private static object ProcessResponse(string aiResponse, string responseFormat, INodeContext nodeContext)
+    /// <summary>
+    /// Turns the model's raw answer into the value written to the data context: the parsed JSON for
+    /// <c>responseFormat: json</c> (recovering a JSON value embedded in prose when the whole answer
+    /// does not parse), the answer text otherwise. Every JSON result passes through
+    /// <see cref="SanitizeModelJson" /> — see there for why a duplicate key must be removed rather
+    /// than caught.
+    /// </summary>
+    internal static object ProcessResponse(string aiResponse, string responseFormat, INodeContext nodeContext)
     {
         if (responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             try
             {
                 var jsonElement = JsonSerializer.Deserialize<JsonElement>(aiResponse);
-                return jsonElement;
+                return SanitizeModelJson(jsonElement, nodeContext);
             }
             catch (JsonException)
             {
@@ -1141,9 +1148,12 @@ internal class AnthropicAiQueryNode(
                 {
                     try
                     {
-                        var jsonElement = JsonNode.Parse(extractedJson);
+                        // JsonDocument, not JsonNode.Parse: the node representation would accept a
+                        // duplicate key here and only throw later, deep in a downstream node (see
+                        // SanitizeModelJson). The element reader lets the sanitizer see it first.
+                        using var extractedDocument = JsonDocument.Parse(extractedJson);
                         nodeContext.Debug("Successfully extracted JSON from mixed response");
-                        return jsonElement!;
+                        return SanitizeModelJson(extractedDocument.RootElement, nodeContext);
                     }
                     catch (JsonException ex)
                     {
@@ -1161,6 +1171,42 @@ internal class AnthropicAiQueryNode(
         }
 
         return aiResponse;
+    }
+
+    /// <summary>
+    /// Returns a data-context-safe copy of a model JSON answer: unchanged (detached) when every
+    /// object key is unique, and rebuilt with the LAST value of every repeated key otherwise.
+    /// <para>
+    /// AB#5348: a language model occasionally emits the same key twice in one object — on prod-1
+    /// roughly one in five invoice extractions repeated <c>addressComplete</c>, whose rule the
+    /// prompt states twice per party. That parses fine here (<see cref="JsonElement" /> keeps both
+    /// occurrences), and it is still fine when the value is written to the data context. It
+    /// detonates later: the data context hands the value on as a <see cref="JsonObject" />, whose
+    /// dictionary is built lazily, so the first downstream node that navigates into the offending
+    /// object dies with <c>An item with the same key has already been added</c>. On the accounting
+    /// document-analysis flow that is <c>CreateUpdateInfo@1</c> reading
+    /// <c>$.ai.result.invoices[0].vendor.addressComplete</c> — which is why this node's
+    /// <c>continueOnError</c> never helped: the throw happens after this node has already returned,
+    /// outside its try/catch, and takes the whole ForEach iteration with it. A borderline answer is
+    /// an expected input from a language model, so it is normalised at the boundary where it enters
+    /// the pipeline instead of being caught somewhere it cannot be caught.
+    /// </para>
+    /// </summary>
+    private static object SanitizeModelJson(JsonElement element, INodeContext nodeContext)
+    {
+        if (!JsonDuplicateKeys.TryFindDuplicateKey(element, out var duplicateKey))
+        {
+            // Clone detaches from the backing document, which the caller may dispose.
+            return element.Clone();
+        }
+
+        nodeContext.Warning(
+            $"The AI response repeats the JSON key '{duplicateKey}' in one object. Keeping the last " +
+            "value of every repeated key — an unrepaired response would fail a later node with " +
+            "'An item with the same key has already been added'.");
+
+        return JsonDuplicateKeys.RewriteLastValueWins(element)
+               ?? (object)element.Clone();
     }
 
     /// <summary>

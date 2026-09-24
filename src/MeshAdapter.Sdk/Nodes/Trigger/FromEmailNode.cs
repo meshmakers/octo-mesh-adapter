@@ -122,6 +122,11 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
 
                 // Process new emails
                 var newEmails = new List<EmailData>();
+
+                // AB#5337: the UIDs that actually made it into the batch. Messages the client-side
+                // filters below rejected are deliberately absent — they were never processed, so
+                // nothing may be written back to the server for them.
+                var batchedUids = new List<UniqueId>();
                 foreach (var uid in batchUids)
                 {
                     var message = await folder.GetMessageAsync(uid);
@@ -193,20 +198,15 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     PopulateAuthentication(emailData, message);
 
                     newEmails.Add(emailData);
-                    
-                    // Mark as read if configured
-                    if (nodeConfig.MarkAsRead)
-                    {
-                        await folder.AddFlagsAsync(uid, MessageFlags.Seen, true);
-                    }
-                    
-                    // Delete if configured
-                    if (nodeConfig.DeleteAfterProcessing)
-                    {
-                        await folder.AddFlagsAsync(uid, MessageFlags.Deleted, true);
-                    }
+                    batchedUids.Add(uid);
+
+                    // AB#5337: NOTHING is flagged here. `\Seen` and `\Deleted` are written back only
+                    // after the pipeline ran and succeeded — see below.
                 }
-                
+
+                // AB#5337: gate for the server-side write-back further down.
+                var pipelineSucceeded = false;
+
                 // Trigger the pipeline if we have new emails
                 if (newEmails.Count > 0)
                 {
@@ -235,27 +235,68 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
                     if (binding.Rejected)
                     {
+                        // Not an execution: the batch was never handed to the pipeline, so the mails
+                        // keep their flags and an operator who repairs the binding still has them.
                         logger.LogWarning("FromEmail: {Reason} Skipping batch of {Count} email(s).",
                             binding.RejectReason, newEmails.Count);
                     }
                     else
                     {
-                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        try
                         {
-                            VerifiedPrincipal = binding.Principal,
-                            CallerTrust = binding.Trust
-                        }, emailBatch);
+                            await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                            {
+                                VerifiedPrincipal = binding.Principal,
+                                CallerTrust = binding.Trust
+                            }, emailBatch);
 
-                        logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                            pipelineSucceeded = true;
+                            logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                        }
+                        catch (OperationCanceledException) when (_cancellationTokenSource.Token
+                                                                     .IsCancellationRequested)
+                        {
+                            // Adapter shutdown, not a batch failure — unwind to the poll loop's
+                            // cancellation handling without touching the mailbox.
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            // AB#5337: swallowed on purpose so the poll finishes cleanly WITHOUT the
+                            // write-back below. The mails keep their server-side state, which is the
+                            // only durable record that they were never imported.
+                            logger.LogError(ex,
+                                "FromEmail: the pipeline run failed for a batch of {Count} mail(s); " +
+                                "their server-side flags are left untouched so the mails are not lost.",
+                                newEmails.Count);
+                        }
                     }
                 }
-                
-                // Expunge deleted messages if any were deleted
-                if (nodeConfig.DeleteAfterProcessing && newEmails.Count > 0)
+
+                // AB#5337: the server-side bookkeeping happens HERE, after the run, and only for a
+                // run that succeeded. Doing it inside the UID loop above destroyed a receipt on every
+                // failure: the mail was already `\Seen`, the default `onlyUnread: true` search never
+                // offers it again, and nothing about the missing document is visible to anyone.
+                //
+                // A failed batch is NOT retried by the next poll of this process: `processedUids`
+                // (AB#5336) already holds these UIDs, which is what keeps a permanently failing mail
+                // from being re-downloaded and re-run every polling interval. That set is
+                // process-local, so a restart does offer the mail again — deliberately: the mail is
+                // still there, unread and unflagged, and that is the property this fix buys.
+                if (batchedUids.Count > 0)
                 {
-                    await folder.ExpungeAsync();
+                    var flagDecision = ResolveFlagDecision(nodeConfig, pipelineSucceeded);
+                    if (flagDecision.HasFlags)
+                    {
+                        await folder.AddFlagsAsync(batchedUids, flagDecision.Flags, true);
+                    }
+
+                    if (flagDecision.Expunge)
+                    {
+                        await folder.ExpungeAsync();
+                    }
                 }
-                
+
                 await folder.CloseAsync();
                 
                 // Wait for the polling interval
@@ -355,6 +396,51 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         }
 
         return null;
+    }
+
+    /// <summary>
+    ///     What one finished polling pass may write back to the IMAP server (AB#5337).
+    /// </summary>
+    /// <param name="Flags">The flags to add to the batch's messages; <see cref="MessageFlags.None" /> means no write.</param>
+    /// <param name="Expunge">Whether the folder must be expunged afterwards, which is what actually removes them.</param>
+    internal readonly record struct EmailFlagDecision(MessageFlags Flags, bool Expunge)
+    {
+        internal bool HasFlags => Flags != MessageFlags.None;
+    }
+
+    /// <summary>
+    ///     Decides the server-side write-back for a finished poll (AB#5337). The decision is taken
+    ///     AFTER the pipeline ran: a run that did not succeed writes nothing at all, so the mail
+    ///     stays exactly as the server has it and is still there to be imported.
+    ///     <para>
+    ///     This used to happen per message inside the fetch loop, before the pipeline was even
+    ///     invoked. Under the default <c>onlyUnread: true</c> the next poll asks the server for
+    ///     <c>NOT SEEN</c>, so a mail flagged ahead of a failing run was never offered again — a
+    ///     receipt lost on a bookkeeping input channel, with nothing missing that anyone would
+    ///     notice (prod-1/gastroacker, 2026-09-23).
+    ///     </para>
+    /// </summary>
+    internal static EmailFlagDecision ResolveFlagDecision(FromEmailNodeConfiguration nodeConfig,
+        bool pipelineSucceeded)
+    {
+        if (!pipelineSucceeded)
+        {
+            return new EmailFlagDecision(MessageFlags.None, false);
+        }
+
+        var flags = MessageFlags.None;
+        if (nodeConfig.MarkAsRead)
+        {
+            flags |= MessageFlags.Seen;
+        }
+
+        if (nodeConfig.DeleteAfterProcessing)
+        {
+            flags |= MessageFlags.Deleted;
+        }
+
+        // `\Deleted` alone only marks; the messages disappear when the folder is expunged.
+        return new EmailFlagDecision(flags, nodeConfig.DeleteAfterProcessing);
     }
 
     /// <summary>

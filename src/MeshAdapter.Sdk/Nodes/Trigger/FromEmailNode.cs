@@ -120,6 +120,13 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                         batchUids.Count, pendingUids.Count);
                 }
 
+                // AB#5339: the server's INTERNALDATE for this batch, the fallback receive time for a
+                // mail whose `Date:` header is missing or unparsable. Fetched for the whole batch in
+                // one round trip, before any message is downloaded — a failure here is a connection
+                // problem that the downloads below would hit anyway, so it bubbles to the poll
+                // handler rather than being softened into "no fallback available".
+                var internalDates = await FetchInternalDatesAsync(folder, batchUids);
+
                 // Process new emails
                 var newEmails = new List<EmailData>();
 
@@ -159,7 +166,9 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                         From = message.From?.ToString(),
                         FromAddress = message.From?.Mailboxes?.FirstOrDefault()?.Address,
                         To = message.To?.ToString(),
-                        Date = message.Date.DateTime,
+                        // AB#5339: never write year 1 — see ResolveReceivedAt.
+                        Date = ResolveReceivedAt(message.Date,
+                            internalDates.TryGetValue(uid, out var internalDate) ? internalDate : null),
                         Body = message.TextBody ?? message.HtmlBody,
                         HtmlBody = message.HtmlBody,
                         TextBody = message.TextBody,
@@ -399,6 +408,78 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
     }
 
     /// <summary>
+    ///     Reads the IMAP <c>INTERNALDATE</c> of a batch in one FETCH (AB#5339). Only messages the
+    ///     server actually reports a value for appear in the result.
+    /// </summary>
+    private static async Task<Dictionary<UniqueId, DateTimeOffset>> FetchInternalDatesAsync(
+        IMailFolder folder, IList<UniqueId> uids)
+    {
+        if (uids.Count == 0)
+        {
+            return new Dictionary<UniqueId, DateTimeOffset>();
+        }
+
+        var summaries = await folder.FetchAsync(uids,
+            MessageSummaryItems.UniqueId | MessageSummaryItems.InternalDate);
+
+        var internalDates = new Dictionary<UniqueId, DateTimeOffset>(summaries.Count);
+        foreach (var summary in summaries)
+        {
+            if (summary.InternalDate.HasValue)
+            {
+                internalDates[summary.UniqueId] = summary.InternalDate.Value;
+            }
+        }
+
+        return internalDates;
+    }
+
+    /// <summary>
+    ///     Resolves when the mail was received (AB#5339). The <c>Date:</c> header wins when it is
+    ///     there and parsable; MimeKit reports both a MISSING and an unparsable header as
+    ///     <see cref="DateTimeOffset.MinValue" />, and writing that straight through produced
+    ///     <c>sourceReceivedAt = 0001-01-01T00:00:00Z</c> on the staged document — a timestamp that
+    ///     sorts to the very front of the inbox and falls outside every fiscal year, so the receipt
+    ///     cannot be assigned at all (prod-1/gastroacker: 67 mails from one sender that emits no
+    ///     <c>Date:</c> header).
+    ///     <para>
+    ///     Falls back to the server's IMAP <c>INTERNALDATE</c> — when the message was delivered,
+    ///     which is what the accounting import wants anyway and is also the value the AB#5340
+    ///     <c>SINCE</c> window is evaluated against, so a mail inside the configured period cannot
+    ///     get a date outside it. Returns <c>null</c> when neither is available: "unknown" is a
+    ///     state the consumer can handle, year 1 is not.
+    ///     </para>
+    ///     <para>
+    ///     Both sources are read with <see cref="DateTimeOffset.DateTime" /> — the wall-clock time
+    ///     as stated, without the offset — because that is what the header path has always emitted;
+    ///     converting to UTC here would shift every existing timestamp.
+    ///     </para>
+    /// </summary>
+    internal static DateTime? ResolveReceivedAt(DateTimeOffset headerDate, DateTimeOffset? internalDate)
+    {
+        if (IsUsableDate(headerDate))
+        {
+            return headerDate.DateTime;
+        }
+
+        if (internalDate.HasValue && IsUsableDate(internalDate.Value))
+        {
+            return internalDate.Value.DateTime;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     A date is usable unless it is the year-1 sentinel every "no value" path produces —
+    ///     MimeKit's unset <c>Date:</c>, an unparsable one, and a default-valued INTERNALDATE alike.
+    /// </summary>
+    private static bool IsUsableDate(DateTimeOffset value)
+    {
+        return value.Year > 1;
+    }
+
+    /// <summary>
     ///     What one finished polling pass may write back to the IMAP server (AB#5337).
     /// </summary>
     /// <param name="Flags">The flags to add to the batch's messages; <see cref="MessageFlags.None" /> means no write.</param>
@@ -505,9 +586,20 @@ public class EmailData
     public string? To { get; set; }
     
     /// <summary>
-    /// Email date
+    /// When the message was received. <b>Nullable</b> since AB#5339: a mail may carry no usable
+    /// <c>Date:</c> header at all, and the IMAP trigger falls back to the server's INTERNALDATE
+    /// before giving up.
     /// </summary>
-    public DateTime Date { get; set; }
+    /// <remarks>
+    /// 🔴 A null here means <b>unknown</b> and must stay distinguishable from a date. The
+    /// non-nullable predecessor made "no date" indistinguishable from
+    /// <c>0001-01-01T00:00:00</c> — written through to <c>UploadedDocument.SourceReceivedAt</c> it
+    /// sorts to the very front of the accounting inbox and falls outside every fiscal year, so the
+    /// receipt cannot be assigned to a period. Consumers read this via JSONPath (<c>$.key.Date</c>)
+    /// and land on <c>CreateUpdateInfo@1</c>, which writes a JSON null as a null attribute value
+    /// and skips a path that matches nothing — both are "unknown", which is the truth.
+    /// </remarks>
+    public DateTime? Date { get; set; }
     
     /// <summary>
     /// Email body (text or HTML)

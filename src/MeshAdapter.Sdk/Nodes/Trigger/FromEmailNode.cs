@@ -23,6 +23,25 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder callerBinder)
     : ITriggerPipelineNode
 {
+    /// <summary>The node as a pipeline definition names it — used in configuration errors.</summary>
+    private const string NodeType = "FromEmail@1";
+
+    /// <summary>
+    ///     AB#5372: what an operator of THIS channel does to get a mode, appended to the
+    ///     "no mode configured" error. Named properties rather than prose, because the person
+    ///     reading the log has the pipeline definition (or the settings entity) in front of them.
+    /// </summary>
+    private const string HowToFix =
+        "The legacy derivation is still honoured, so configuring doneFolder/failedFolder " +
+        "(MoveToFolders), deleteAfterProcessing (Delete) or markAsRead (MarkAsRead) works too — " +
+        "but markAsRead: false together with deleteAfterProcessing: false and no folders describes " +
+        "no queue at all, which is the configuration you have.";
+
+    /// <summary>AB#5372: the repair hint for a settings entity that still stores <c>None</c>.</summary>
+    private const string RemovedModeSuggestion =
+        "MarkAsRead is the lightest equivalent and the one this channel derives by default — with " +
+        "onlyUnread it leaves an unimported mail unread and offers it again.";
+
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
     private ImapClient? _imapClient;
@@ -78,12 +97,21 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
             throw MeshAdapterPipelineExecutionException.InvalidValue(context.NodeContext, effective.SuccessPath);
         }
 
+        // AB#5372: the post-processing mode is resolved HERE, unconditionally and before the poll
+        // loop exists — a configuration that yields no mode throws out of this call. It used to be
+        // evaluated only inside the log branch below, i.e. only for a pipeline that names a settings
+        // configuration, so a definition that could not work started happily and polled a mailbox it
+        // never changed. The three valid modes are the mailbox's bookkeeping (see
+        // MailPostProcessingMode): a trigger that changes nothing re-imports the same capped batch
+        // for ever and never reaches the mail behind the cap.
+        var postProcessingMode = ResolveEffectivePostProcessingMode(effective);
+
         if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
         {
             logger.LogInformation(
                 "FromEmail: runtime settings resolved from configuration '{Settings}' " +
                 "(folder='{Folder}', postProcessing={Mode}, interval={Interval}s, onlyUnread={OnlyUnread})",
-                c.SettingsConfiguration, effective.SourceFolder, ResolveEffectivePostProcessingMode(effective),
+                c.SettingsConfiguration, effective.SourceFolder, postProcessingMode,
                 effective.PollingIntervalSeconds, effective.OnlyUnread);
         }
 
@@ -133,9 +161,12 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 ?? c.PollingIntervalSeconds,
             OnlyUnread = ConfigurationSettingsReader.ReadBool(attributes, c.OnlyUnreadAttribute)
                          ?? c.OnlyUnread,
+            // AB#5372: read through MailPostProcessingModeSetting, not ReadEnum directly — a stored
+            // `None` is the one name that must NOT degrade to "not configured", because the derived
+            // replacement would start writing to a mailbox whose operator asked for no writes.
             PostProcessingMode =
-                ConfigurationSettingsReader.ReadEnum<MailPostProcessingMode>(
-                    attributes, c.PostProcessingModeAttribute) ?? c.PostProcessingMode,
+                MailPostProcessingModeSetting.Read(attributes, c.PostProcessingModeAttribute,
+                    NodeType, RemovedModeSuggestion) ?? c.PostProcessingMode,
             SourceFolder = ConfigurationSettingsReader.ReadString(attributes, c.SourceFolderAttribute)
                            ?? c.SourceFolder,
             DoneFolder = ConfigurationSettingsReader.ReadString(attributes, c.DoneFolderAttribute)
@@ -729,13 +760,20 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
     ///     is configured — the one DERIVED from what this pipeline already said.
     /// </summary>
     /// <remarks>
-    ///     The derivation is the migration, and it is deliberately total: every combination of the
-    ///     pre-AB#5345 properties maps onto a mode that behaves as that combination did.
-    ///     A done/failed folder (both new, so only a pipeline that opted in has one) means the
-    ///     three-folder mode; otherwise <c>deleteAfterProcessing</c> wins over <c>markAsRead</c>,
-    ///     because a message that is deleted and expunged cannot meaningfully also be "read"; with
-    ///     neither flag the node leaves the mailbox alone, which is a state operators rely on when
-    ///     they poll a shared folder.
+    ///     The derivation is the migration, and it covers every combination of the pre-AB#5345
+    ///     properties that describes a working queue: a done/failed folder (both new, so only a
+    ///     pipeline that opted in has one) means the three-folder mode; otherwise
+    ///     <c>deleteAfterProcessing</c> wins over <c>markAsRead</c>, because a message that is
+    ///     deleted and expunged cannot meaningfully also be "read".
+    ///     <para>
+    ///     🔴 <b>With neither flag and no folder there is NOTHING to derive, and this throws</b>
+    ///     (AB#5372). It used to answer <c>None</c> — "leave the mailbox alone" — which reads like a
+    ///     legitimate read-only poll and is not one: the mailbox is this trigger's only record of
+    ///     what it has already imported, so a pass that changes nothing hands the next pass the same
+    ///     <c>maxMessagesPerPoll</c> messages and never reaches the mail behind them. The import then
+    ///     runs for ever, reports success and imports nothing new (AB#5336). Failing at the trigger
+    ///     start is the whole point: a mailbox queue that cannot work has to be heard on deploy.
+    ///     </para>
     /// </remarks>
     internal static MailPostProcessingMode ResolveEffectivePostProcessingMode(
         FromEmailNodeConfiguration nodeConfig)
@@ -756,9 +794,13 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
             return MailPostProcessingMode.Delete;
         }
 
-        return nodeConfig.MarkAsRead
-            ? MailPostProcessingMode.MarkAsRead
-            : MailPostProcessingMode.None;
+        if (nodeConfig.MarkAsRead)
+        {
+            return MailPostProcessingMode.MarkAsRead;
+        }
+
+        throw MeshAdapterPipelineExecutionException.MailPostProcessingModeNotConfigured(
+            NodeType, HowToFix);
     }
 
     /// <summary>

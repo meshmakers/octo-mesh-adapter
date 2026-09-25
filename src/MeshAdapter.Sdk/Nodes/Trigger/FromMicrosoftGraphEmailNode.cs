@@ -26,6 +26,24 @@ internal class FromMicrosoftGraphEmailNode(
 {
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
 
+    /// <summary>The node as a pipeline definition names it — used in configuration errors.</summary>
+    private const string NodeType = "FromMicrosoftGraphEmail@1";
+
+    /// <summary>
+    ///     AB#5372: what an operator of THIS channel does to get a mode, appended to the
+    ///     "no mode configured" error. This channel derives only MoveToFolders, and only from a
+    ///     configured done or failure folder — there are no legacy flags here.
+    /// </summary>
+    private const string HowToFix =
+        "The legacy derivation is still honoured, so configuring moveToFolderPathOnSuccess or " +
+        "moveToFolderPathOnFailure yields MoveToFolders — which is also the only mode that can park " +
+        "a message whose attempts are exhausted.";
+
+    /// <summary>AB#5372: the repair hint for a settings entity that still stores <c>None</c>.</summary>
+    private const string RemovedModeSuggestion =
+        "MoveToFolders is what this channel has always done and the only mode with somewhere to park " +
+        "a message whose attempts are exhausted; configure the done folder alongside it.";
+
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
 
@@ -65,11 +83,18 @@ internal class FromMicrosoftGraphEmailNode(
         // found in the settings configuration takes precedence over the node property.
         var effectiveConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, c);
 
+        // AB#5372: the post-processing mode is resolved HERE, unconditionally and before the poll
+        // loop exists — a configuration that yields no mode throws out of this call. The three valid
+        // modes are the mailbox's bookkeeping (see MailPostProcessingMode): a trigger that changes
+        // nothing hands the next poll the same messages for ever and imports nothing new.
+        var postProcessingMode = ResolveEffectivePostProcessingMode(effectiveConfig);
+
         if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
         {
             logger.LogInformation(
-                "FromMicrosoftGraphEmail: resolved mailbox/folders from settings configuration '{Settings}' (folder='{Folder}', moveTo='{MoveTo}')",
-                c.SettingsConfiguration, effectiveConfig.FolderPath, effectiveConfig.MoveToFolderPathOnSuccess);
+                "FromMicrosoftGraphEmail: resolved mailbox/folders from settings configuration '{Settings}' (folder='{Folder}', moveTo='{MoveTo}', postProcessing={Mode})",
+                c.SettingsConfiguration, effectiveConfig.FolderPath, effectiveConfig.MoveToFolderPathOnSuccess,
+                postProcessingMode);
         }
 
         if (string.IsNullOrWhiteSpace(effectiveConfig.Mailbox))
@@ -147,9 +172,11 @@ internal class FromMicrosoftGraphEmailNode(
                 ConfigurationSettingsReader.ReadPositiveInt(attrs, c.PollingSecondsAttribute) ?? c.PollingIntervalSeconds,
             // AB#5345: the remaining runtime settings, same rule — settings win, node property is
             // the fallback, and an unset attribute changes nothing about a deployed pipeline.
+            // AB#5372: read through MailPostProcessingModeSetting, not ReadEnum directly — a stored
+            // `None` must not degrade to "not configured" and be replaced by a derived mode.
             PostProcessingMode =
-                ConfigurationSettingsReader.ReadEnum<MailPostProcessingMode>(
-                    attrs, c.PostProcessingModeAttribute) ?? c.PostProcessingMode,
+                MailPostProcessingModeSetting.Read(attrs, c.PostProcessingModeAttribute,
+                    NodeType, RemovedModeSuggestion) ?? c.PostProcessingMode,
             MaxMessagesPerPoll =
                 ConfigurationSettingsReader.ReadPositiveInt(attrs, c.MaxMessagesPerPollAttribute)
                 ?? c.MaxMessagesPerPoll,
@@ -552,9 +579,17 @@ internal class FromMicrosoftGraphEmailNode(
     /// The derivation is the migration and it is exact: before AB#5345 this node did one thing
     /// after a run, move the message to the done folder (and park an exhausted one in the failure
     /// folder), and it did it only when such a folder was configured. So a configured done or
-    /// failure folder means <see cref="MailPostProcessingMode.MoveToFolders" /> and everything
-    /// else means <see cref="MailPostProcessingMode.None" /> — which is exactly "leave it in the
-    /// source folder", the behaviour of every pipeline that configured no folders.
+    /// failure folder means <see cref="MailPostProcessingMode.MoveToFolders" />.
+    /// <para>
+    /// 🔴 <b>With no folder at all there is NOTHING to derive, and this throws</b> (AB#5372). It used
+    /// to answer <c>None</c> — "leave it in the source folder" — and that is not a working
+    /// configuration: the mailbox is this trigger's only record of what it already imported, so a
+    /// message left in the source folder is handed back to the next poll, for ever, while the mail
+    /// behind the <c>maxMessagesPerPoll</c> cap is never reached. The import runs for ever, reports
+    /// success and imports nothing new (AB#5336). In practice no live M365 tenant sits here — the
+    /// settings page refuses to activate a channel without mailbox, source and done folder — but a
+    /// hand-made pipeline could, and it would fail silently instead of on deploy.
+    /// </para>
     /// </remarks>
     internal static MailPostProcessingMode ResolveEffectivePostProcessingMode(
         FromMicrosoftGraphEmailNodeConfiguration nodeConfig)
@@ -564,10 +599,14 @@ internal class FromMicrosoftGraphEmailNode(
             return nodeConfig.PostProcessingMode.Value;
         }
 
-        return !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnSuccess) ||
-               !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure)
-            ? MailPostProcessingMode.MoveToFolders
-            : MailPostProcessingMode.None;
+        if (!string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnSuccess) ||
+            !string.IsNullOrWhiteSpace(nodeConfig.MoveToFolderPathOnFailure))
+        {
+            return MailPostProcessingMode.MoveToFolders;
+        }
+
+        throw MeshAdapterPipelineExecutionException.MailPostProcessingModeNotConfigured(
+            NodeType, HowToFix);
     }
 
     /// <summary>
@@ -602,9 +641,12 @@ internal class FromMicrosoftGraphEmailNode(
                 await MarkMessageReadAsync(accessToken, mailbox, messageId);
                 return;
 
-            case MailPostProcessingMode.None:
             default:
-                return;
+                // AB#5372: `None` used to land here and do nothing, which is why a mailbox could be
+                // polled for ever without ever changing. With it gone nothing reaches this branch —
+                // ResolveEffectivePostProcessingMode returns one of the three or throws — so an
+                // undefined value can only come from a cast, and saying so beats doing nothing.
+                throw MeshAdapterPipelineExecutionException.InvalidValue(mode);
         }
     }
 

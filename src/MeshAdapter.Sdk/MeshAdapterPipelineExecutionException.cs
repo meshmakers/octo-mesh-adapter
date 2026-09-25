@@ -1155,4 +1155,53 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "than continued as the system context, which would bypass data permissions. Check the " +
             "ServiceAccountConfiguration (issuer, client id, client secret) and the identity service.");
     }
+
+    /// <summary>
+    ///     Why a mail trigger has no mode that leaves the message where it is (AB#5372). Carried in
+    ///     the message rather than only in a comment, because the person who has to repair the
+    ///     configuration reads the log, not the source.
+    /// </summary>
+    private const string MailboxIsTheBookkeeping =
+        "Nothing in OctoMesh records which mail was already processed — the mailbox IS the " +
+        "bookkeeping. The three valid modes work precisely because each one takes the message out " +
+        "of the search the next poll runs: MoveToFolders (moved out of the source folder), Delete " +
+        "(removed) or MarkAsRead (flagged \\Seen, which the IMAP channel's NotSeen search then " +
+        "skips). A mode that leaves the message in the search result re-fetches the same capped " +
+        "batch (maxMessagesPerPoll) for ever and never reaches the mail behind the cap, so the " +
+        "import runs for ever, reports success and imports nothing new — the shape of AB#5336 " +
+        "(1697 mails, three pod restarts, no progress).";
+
+    /// <summary>
+    ///     A mail trigger starts with no post-processing mode configured and none derivable
+    ///     (AB#5372). Raised at trigger START, so a configuration that cannot work is heard when
+    ///     the pipeline is deployed instead of running for ever and importing nothing.
+    /// </summary>
+    /// <param name="nodeType">The node as a pipeline definition names it, e.g. <c>FromEmail@1</c>.</param>
+    /// <param name="howToFix">
+    ///     The channel's own repair instruction — which properties an operator sets to get a mode.
+    /// </param>
+    public static Exception MailPostProcessingModeNotConfigured(string nodeType, string howToFix)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeType}]: no post-processing mode is configured and none can be derived, so this " +
+            "trigger would poll a mailbox it never changes. " + MailboxIsTheBookkeeping +
+            $" Set postProcessingMode to MoveToFolders, Delete or MarkAsRead. {howToFix}");
+    }
+
+    /// <summary>
+    ///     A settings entity still stores the post-processing mode <c>None</c>, which AB#5372
+    ///     removed. Deliberately louder than the reader's usual "an unknown name means not
+    ///     configured": that fallback would silently replace an operator's stored decision with a
+    ///     derived one, and a stored <c>None</c> is the one value whose derived replacement changes
+    ///     what happens to somebody's mailbox.
+    /// </summary>
+    public static Exception MailPostProcessingModeRemoved(string nodeType, string attributeName,
+        string storedValue, string suggestion)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeType}]: the settings attribute '{attributeName}' stores the post-processing mode " +
+            $"'{storedValue}', which no longer exists — it was REMOVED (AB#5372) because it never " +
+            "worked. " + MailboxIsTheBookkeeping +
+            $" Store MoveToFolders, Delete or MarkAsRead instead; {suggestion}");
+    }
 }

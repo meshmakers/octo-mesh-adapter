@@ -28,6 +28,12 @@ public class FromMicrosoftGraphEmailNodeLifecycleTests
             ServerConfiguration = "graph",
             Mailbox = "invoices@example.com",
             FolderPath = "Archive/Invoices/ToDo",
+            // AB#5372: a done folder is what makes this a COMPLETE configuration — without it the
+            // node derives no post-processing mode and StartAsync refuses, so a fixture lacking it
+            // would never reach the backoff window these tests are about. It is also what every live
+            // M365 channel has: the settings page will not activate one without mailbox, source and
+            // done folder.
+            MoveToFolderPathOnSuccess = "Archive/Invoices/Done",
             PollingIntervalSeconds = 1
         };
 

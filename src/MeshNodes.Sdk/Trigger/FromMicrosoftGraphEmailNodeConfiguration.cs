@@ -198,16 +198,24 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// <para>
     /// ⚠️ UNSET is the migration path and means "keep doing what this pipeline already did": the
     /// mode is then DERIVED — a configured done or failed folder ⇒
-    /// <see cref="MailPostProcessingMode.MoveToFolders" />, otherwise
-    /// <see cref="MailPostProcessingMode.None" />, which is byte for byte what this node did
-    /// before.
+    /// <see cref="MailPostProcessingMode.MoveToFolders" />, which is byte for byte what this node
+    /// did before.
     /// </para>
     /// <para>
-    /// Nullable and only read through <c>ResolveEffectivePostProcessingMode</c>, never directly:
-    /// the pipeline definition deserializer is YamlDotNet, where a key that is PRESENT and null
-    /// overwrites a property initializer. On a non-nullable enum that yields the zero member
-    /// (<see cref="MailPostProcessingMode.None" />) — a real mode here, so an explicit null would
-    /// silently switch a working mailbox queue off.
+    /// 🔴 <b>No folder at all is a configuration error rather than a mode</b> (AB#5372): the trigger
+    /// start FAILS naming the three valid modes. <c>None = 0</c> existed until then — "leave it in
+    /// the source folder" — and was a defect. Nothing in OctoMesh records which mail was already
+    /// processed, the mailbox IS the bookkeeping, and the three modes work precisely because each
+    /// takes the message out of what the next poll reads. Leaving it there re-reads the same
+    /// <see cref="MaxMessagesPerPoll" /> messages for ever and never reaches the mail behind the cap,
+    /// so the import runs for ever, reports success and imports nothing new (AB#5336).
+    /// </para>
+    /// <para>
+    /// Still nullable and still only read through <c>ResolveEffectivePostProcessingMode</c>, never
+    /// directly: the pipeline definition deserializer is YamlDotNet, where a key that is PRESENT and
+    /// null overwrites a property initializer. On a non-nullable enum that would yield the zero
+    /// value, which is now no member at all; nullable, such a key reads as "unset" and the
+    /// derivation above decides.
     /// </para>
     /// <para>
     /// The attempt parking (<c>OctoMesh-Import-Attempt-N</c> / <c>OctoMesh-Import-Failed</c>
@@ -260,6 +268,12 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// Attribute on <see cref="SettingsConfiguration" /> holding the post-processing mode NAME
     /// (<see cref="MailPostProcessingMode" />). Names only — a number there is ignored, see
     /// <c>ConfigurationSettingsReader.ReadEnum</c>.
+    /// <para>
+    /// ⚠️ An unknown name means "not configured" and hands the decision back to
+    /// <see cref="PostProcessingMode" /> — with ONE exception: a stored <c>None</c> FAILS the trigger
+    /// start (AB#5372), because reading a removed mode as "not configured" would silently replace it
+    /// with the derived one.
+    /// </para>
     /// </summary>
     [PropertyGroup("Settings", 6)]
     public string? PostProcessingModeAttribute { get; set; }

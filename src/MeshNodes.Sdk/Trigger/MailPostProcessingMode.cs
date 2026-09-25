@@ -14,20 +14,30 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// record that it was never imported.
 /// </para>
 /// <para>
-/// Every member is an explicit operator choice. A pipeline that names none keeps the
-/// pre-AB#5345 behaviour, which each node derives from its own legacy properties — see
-/// the nodes' <c>ResolveEffectivePostProcessingMode</c>.
+/// 🔴 <b>There are exactly three modes, and every one of them takes the message OUT of the
+/// search the next poll runs</b> — moved out of the source folder, deleted, or flagged
+/// <c>\Seen</c> (which the IMAP channel's <c>NotSeen</c> search then skips). That is not a
+/// coincidence, it is the whole mechanism: <b>nothing in OctoMesh records which mail was already
+/// processed — the mailbox IS the bookkeeping.</b> A fourth member meaning "leave it where it
+/// is" existed until AB#5372 (<c>None = 0</c>) and was a defect: combined with the per-poll cap
+/// (<c>maxMessagesPerPoll</c>) it re-fetches the same first N messages on every poll and NEVER
+/// reaches the mail behind the cap, so the import runs for ever, reports success and imports
+/// nothing new — exactly the shape of AB#5336 (1697 mails, three pod restarts, no progress).
+/// AB#5345 specified three modes; the fourth was an artefact of implementing them.
+/// </para>
+/// <para>
+/// Every member is an explicit operator choice. A pipeline that names none has its mode DERIVED
+/// from its own legacy properties — see the nodes' <c>ResolveEffectivePostProcessingMode</c>,
+/// which now FAILS the trigger start where it used to fall through to <c>None</c>.
+/// </para>
+/// <para>
+/// ⚠️ The members keep the numbers they had. Persistence is by NAME on both routes
+/// (<c>ConfigurationSettingsReader.ReadEnum</c> refuses a purely numeric value outright, and
+/// YamlDotNet reads the name), so renumbering would buy nothing and risk everything.
 /// </para>
 /// </summary>
 public enum MailPostProcessingMode
 {
-    /// <summary>
-    /// Leave the message where it is and as it is. The derived mode of a pipeline that
-    /// configured no folders and no flags, and the only mode under which a mailbox is never
-    /// written to at all.
-    /// </summary>
-    None = 0,
-
     /// <summary>
     /// Mode A — source / done / failed folders. A message whose import was confirmed is moved to
     /// the done folder, one whose import was not is moved to the failed folder (when configured;

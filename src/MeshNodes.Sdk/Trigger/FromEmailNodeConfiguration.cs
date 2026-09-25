@@ -177,17 +177,26 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     /// ⚠️ UNSET is the migration path and means "keep doing what this pipeline already did":
     /// the mode is then DERIVED from the two legacy flags —
     /// <see cref="DeleteAfterProcessing" /> ⇒ <see cref="MailPostProcessingMode.Delete" />,
-    /// else <see cref="MarkAsRead" /> ⇒ <see cref="MailPostProcessingMode.MarkAsRead" />,
-    /// else <see cref="MailPostProcessingMode.None" />. Both flags on is not a lost combination:
-    /// a deleted message is expunged, so the <c>\Seen</c> flag it would also have carried is not
-    /// observable by anyone.
+    /// else <see cref="MarkAsRead" /> ⇒ <see cref="MailPostProcessingMode.MarkAsRead" />. Both flags
+    /// on is not a lost combination: a deleted message is expunged, so the <c>\Seen</c> flag it
+    /// would also have carried is not observable by anyone.
     /// </para>
     /// <para>
-    /// Nullable and only read through <c>ResolveEffectivePostProcessingMode</c>, never directly:
-    /// the pipeline definition deserializer is YamlDotNet, where a key that is PRESENT and null
-    /// overwrites a property initializer. On a non-nullable enum that yields the zero member
-    /// (<see cref="MailPostProcessingMode.None" />) — which is a real mode here, so an explicit
-    /// null would silently switch a working mailbox queue off.
+    /// 🔴 <b>There is no fourth mode that leaves the message alone, and neither flag set is a
+    /// configuration error rather than a mode</b> (AB#5372): the trigger start FAILS naming the three
+    /// valid modes. <c>None = 0</c> existed until then and was a defect. Nothing in OctoMesh records
+    /// which mail was already processed — the mailbox IS the bookkeeping, the IMAP search is
+    /// <c>NotSeen</c>, and the three modes work precisely because each takes the message out of that
+    /// search result. Leaving it in re-fetches the same <see cref="MaxMessagesPerPoll" /> messages on
+    /// every poll and never reaches the mail behind the cap, so the import runs for ever, reports
+    /// success and imports nothing new — the shape of AB#5336.
+    /// </para>
+    /// <para>
+    /// Still nullable and still only read through <c>ResolveEffectivePostProcessingMode</c>, never
+    /// directly: the pipeline definition deserializer is YamlDotNet, where a key that is PRESENT and
+    /// null overwrites a property initializer. On a non-nullable enum that would yield the zero
+    /// value, which is now no member at all; nullable, such a key reads as "unset" and the
+    /// derivation above decides — the same answer a pipeline that omits the key gets.
     /// </para>
     /// </summary>
     [PropertyGroup("Options", 4)]
@@ -261,6 +270,13 @@ public record FromEmailNodeConfiguration : TriggerNodeConfiguration
     /// <summary>
     /// Attribute holding the post-processing mode NAME (<see cref="MailPostProcessingMode" />).
     /// Names only — a number there is ignored, see <c>ConfigurationSettingsReader.ReadEnum</c>.
+    /// <para>
+    /// ⚠️ An unknown name means "not configured" and hands the decision back to
+    /// <see cref="PostProcessingMode" /> — with ONE exception: a stored <c>None</c> FAILS the trigger
+    /// start (AB#5372). It was a real, storable mode until then, so reading it as "not configured"
+    /// would silently replace an operator's "change nothing" with the derived mode and start writing
+    /// to their mailbox.
+    /// </para>
     /// </summary>
     [PropertyGroup("Settings", 3)]
     public string? PostProcessingModeAttribute { get; set; }

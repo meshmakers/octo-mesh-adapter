@@ -103,12 +103,29 @@ public class FromEmailNodeFlaggingTests
     }
 
     [Fact]
-    public void NeitherOptionConfigured_TouchesTheServerAtAllOnAnAllowedRun()
+    public void NeitherOptionConfigured_IsARefusedCONFIGURATIONRatherThanASilentNoOp()
     {
-        // "Leave the mailbox alone" has to stay reachable: an operator polling a shared folder
-        // read-only relies on the node not changing anything.
+        // AB#5372 reversed this expectation. It used to read "leave the mailbox alone has to stay
+        // reachable", as if a read-only poll of a shared folder were a supported setup. It is not:
+        // the mailbox is this trigger's ONLY record of what it already imported, so a run that writes
+        // nothing back hands the next poll the same maxMessagesPerPoll messages for ever and never
+        // reaches the mail behind the cap — the import runs for ever, reports success and imports
+        // nothing new (AB#5336). A gate that BLOCKED the write-back still writes nothing (see the
+        // tests above, unchanged); what is gone is the CONFIGURATION that writes nothing on a
+        // confirmed run.
+        Assert.ThrowsAny<Exception>(() => FromEmailNode.ResolveFlagDecision(
+            Config(markAsRead: false), writeBackAllowed: true));
+    }
+
+    [Fact]
+    public void NeitherOptionConfigured_StillWritesNothingWhenTheGateBlockedTheRun()
+    {
+        // The gate is checked BEFORE the mode is resolved, deliberately: a blocked run must leave the
+        // mailbox alone whatever the configuration says — including a configuration that is itself
+        // broken. Otherwise the AB#5372 guard would turn "this run did not confirm" into a throw and
+        // bury the AB#5337 rule underneath a configuration error.
         var decision = FromEmailNode.ResolveFlagDecision(
-            Config(markAsRead: false), writeBackAllowed: true);
+            Config(markAsRead: false), writeBackAllowed: false);
 
         Assert.False(decision.HasFlags);
         Assert.False(decision.Expunge);

@@ -212,6 +212,48 @@ public class FromEmailNodeSettingsResolutionTests
         Assert.Null(result.PostProcessingMode);
     }
 
+    [Theory]
+    [InlineData("None")]
+    [InlineData("none")]
+    [InlineData(" None ")]
+    public void AStoredNone_FailsSpeakingInsteadOfBeingReadAsNotConfigured(string stored)
+    {
+        // AB#5372. `None` is the one removed name that must NOT take the "unknown name means not
+        // configured" route above: it WAS storable, so an entity out there may still carry it, and
+        // degrading it to "not configured" hands the decision to the derivation — which on the
+        // accounting seed (markAsRead: true) is MarkAsRead. The node would then start flagging mail
+        // in a mailbox whose operator had asked it to change nothing. So it is heard, in StartAsync,
+        // where the settings overlay is resolved before the poll loop exists.
+        var ex = Assert.ThrowsAny<Exception>(() => FromEmailNode.ResolveEffectiveConfiguration(
+            GlobalConfigWith($$$"""{"attributes":{"EmailImportPostProcessingMode":"{{{stored}}}"}}"""),
+            DefinitionConfig()));
+
+        // The message has to say what happened, where, and what to put there instead.
+        Assert.Contains("FromEmail@1", ex.Message);
+        Assert.Contains("EmailImportPostProcessingMode", ex.Message);
+        Assert.Contains("REMOVED (AB#5372)", ex.Message);
+        Assert.Contains("the mailbox IS the bookkeeping", ex.Message);
+        Assert.Contains("MoveToFolders, Delete or MarkAsRead", ex.Message);
+        Assert.Contains("MarkAsRead is the lightest equivalent", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("MoveToFolders", MailPostProcessingMode.MoveToFolders)]
+    [InlineData("Delete", MailPostProcessingMode.Delete)]
+    [InlineData("MarkAsRead", MailPostProcessingMode.MarkAsRead)]
+    public void TheThreeValidModes_StillResolveUnchanged(string stored, MailPostProcessingMode expected)
+    {
+        // The guard above must not cost the three names that are the point of the setting, and the
+        // members keep their numbers — persistence is by NAME on both routes, so AB#5372 renumbered
+        // nothing.
+        var result = FromEmailNode.ResolveEffectiveConfiguration(
+            GlobalConfigWith($$$"""{"attributes":{"EmailImportPostProcessingMode":"{{{stored}}}"}}"""),
+            DefinitionConfig());
+
+        Assert.Equal(expected, result.PostProcessingMode);
+        Assert.Equal(expected, FromEmailNode.ResolveEffectivePostProcessingMode(result));
+    }
+
     [Fact]
     public void AModeNameIsReadCaseInsensitively()
     {
@@ -286,6 +328,16 @@ public class MailPostProcessingModeDerivationTests
         PostProcessingMode = mode,
     };
 
+    private const string GraphSettingsName = "GraphImportSettings";
+
+    private static IGlobalConfiguration GraphGlobalConfigWith(string rawJson)
+    {
+        var g = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => g.IsDefined(GraphSettingsName)).Returns(true);
+        A.CallTo(() => g.GetRawJson(GraphSettingsName)).Returns(rawJson);
+        return g;
+    }
+
     private static FromMicrosoftGraphEmailNodeConfiguration Graph(
         string? doneFolder = null, string? failedFolder = null,
         MailPostProcessingMode? mode = null) => new()
@@ -318,12 +370,25 @@ public class MailPostProcessingModeDerivationTests
     }
 
     [Fact]
-    public void ImapWithNeitherFlag_DerivesNone()
+    public void ImapWithNeitherFlagNorFolder_FailsSpeakingInsteadOfLeavingTheMailboxAlone()
     {
-        // "Leave the mailbox alone" has to stay reachable: an operator polling a shared folder
-        // read-only relies on the node changing nothing.
-        Assert.Equal(MailPostProcessingMode.None,
-            FromEmailNode.ResolveEffectivePostProcessingMode(Imap(markAsRead: false)));
+        // AB#5372, and this is the reversal: this used to derive `None` — "leave the mailbox alone",
+        // which reads like a legitimate read-only poll and is not one. The mailbox is the trigger's
+        // ONLY record of what it already imported, so a pass that changes nothing hands the next pass
+        // the same maxMessagesPerPoll messages and never reaches the mail behind them: the import
+        // runs for ever, reports success and imports nothing new (AB#5336 — 1697 mails, three pod
+        // restarts, no progress).
+        var ex = Assert.ThrowsAny<Exception>(
+            () => FromEmailNode.ResolveEffectivePostProcessingMode(Imap(markAsRead: false)));
+
+        Assert.Contains("FromEmail@1", ex.Message);
+        Assert.Contains("no post-processing mode is configured and none can be derived", ex.Message);
+        // The reason, so an operator learns WHY there is no such mode ...
+        Assert.Contains("the mailbox IS the bookkeeping", ex.Message);
+        Assert.Contains("imports nothing new", ex.Message);
+        // ... and the three valid modes plus the legacy properties that still derive them.
+        Assert.Contains("MoveToFolders, Delete or MarkAsRead", ex.Message);
+        Assert.Contains("deleteAfterProcessing", ex.Message);
     }
 
     [Fact]
@@ -378,12 +443,25 @@ public class MailPostProcessingModeDerivationTests
     }
 
     [Fact]
-    public void ExplicitNone_WritesNothing()
+    public void EveryModeTheEnumStillHas_ChangesTheMailbox()
     {
-        Assert.False(FromEmailNode
-            .ResolveFlagDecision(Imap(markAsRead: true, mode: MailPostProcessingMode.None),
-                writeBackAllowed: true)
-            .HasFlags);
+        // AB#5372 in one assertion: there is no longer a mode under which a confirmed import leaves
+        // the message exactly as the server has it. MoveToFolders writes no FLAGS (the move is the
+        // whole post-processing, see above), so the check is per mode rather than "some flag".
+        foreach (var mode in Enum.GetValues<MailPostProcessingMode>())
+        {
+            var decision = FromEmailNode.ResolveFlagDecision(
+                Imap(markAsRead: true, deleteAfterProcessing: true, doneFolder: "INBOX/Done",
+                    mode: mode), writeBackAllowed: true);
+
+            if (mode == MailPostProcessingMode.MoveToFolders)
+            {
+                Assert.False(decision.HasFlags);
+                continue;
+            }
+
+            Assert.True(decision.HasFlags);
+        }
     }
 
     [Fact]
@@ -403,11 +481,45 @@ public class MailPostProcessingModeDerivationTests
     // ---- Graph: derived from the folder properties --------------------------------------
 
     [Fact]
-    public void GraphWithoutFolders_DerivesNone()
+    public void GraphWithoutFolders_FailsSpeakingInsteadOfLeavingTheMessageInTheSourceFolder()
     {
-        // Byte for byte what the node did before AB#5345 when no folder was configured.
-        Assert.Equal(MailPostProcessingMode.None,
-            FromMicrosoftGraphEmailNode.ResolveEffectivePostProcessingMode(Graph()));
+        // AB#5372. The Graph resolver's fall-through was `None` — "leave it in the source folder" —
+        // and that is the same non-queue as on IMAP: the message is handed back to the next poll for
+        // ever while the mail behind the cap is never reached. No live M365 tenant sits here (the
+        // settings page will not activate a channel without mailbox, source and done folder), but a
+        // hand-made pipeline could, and it would have failed silently instead of on deploy.
+        var ex = Assert.ThrowsAny<Exception>(
+            () => FromMicrosoftGraphEmailNode.ResolveEffectivePostProcessingMode(Graph()));
+
+        Assert.Contains("FromMicrosoftGraphEmail@1", ex.Message);
+        Assert.Contains("no post-processing mode is configured and none can be derived", ex.Message);
+        Assert.Contains("the mailbox IS the bookkeeping", ex.Message);
+        Assert.Contains("MoveToFolders, Delete or MarkAsRead", ex.Message);
+        // This channel has no legacy flags — the only derivation is from a folder path.
+        Assert.Contains("moveToFolderPathOnSuccess", ex.Message);
+    }
+
+    [Fact]
+    public void AStoredNoneOnTheGraphChannel_FailsSpeakingToo()
+    {
+        // The guard sits in the shared settings reader, so both channels answer the same way — and
+        // the suggestion is the channel's own: MoveToFolders is the only Graph mode with somewhere to
+        // park a message whose attempts are exhausted.
+        var definition = Graph("Archive/Done") with
+        {
+            SettingsConfiguration = GraphSettingsName,
+            PostProcessingModeAttribute = "EmailImportPostProcessingMode",
+        };
+
+        var ex = Assert.ThrowsAny<Exception>(
+            () => FromMicrosoftGraphEmailNode.ResolveEffectiveConfiguration(
+                GraphGlobalConfigWith(
+                    """{"attributes":{"EmailImportPostProcessingMode":"None"}}"""),
+                definition));
+
+        Assert.Contains("FromMicrosoftGraphEmail@1", ex.Message);
+        Assert.Contains("REMOVED (AB#5372)", ex.Message);
+        Assert.Contains("MoveToFolders is what this channel has always done", ex.Message);
     }
 
     [Theory]

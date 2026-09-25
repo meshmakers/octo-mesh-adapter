@@ -228,7 +228,7 @@ internal static class TimeRangeSeriesShaper
                     seriesValues = [];
                     foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Series))
                     {
-                        var scalar = convert(column.Name, ToScalar(source[column.ValueProperty]));
+                        var scalar = convert(column.Name, ColumnScalar(source[column.ValueProperty]));
                         if (scalar is not null)
                         {
                             seriesValues.Add(new KeyValuePair<string, object?>(column.Name, scalar));
@@ -254,7 +254,7 @@ internal static class TimeRangeSeriesShaper
 
                 foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Value))
                 {
-                    var scalar = convert(column.Name, ToScalar(value[column.ValueProperty]));
+                    var scalar = convert(column.Name, ColumnScalar(value[column.ValueProperty]));
                     if (scalar is not null)
                     {
                         attributes[column.Name] = scalar;
@@ -297,6 +297,19 @@ internal static class TimeRangeSeriesShaper
     /// </summary>
     public static object? ToScalar(JsonNode? node, bool parseDateStrings = true)
         => node is JsonValue value ? JsonScalar.ToClr(value, parseDateStrings) : null;
+
+    /// <summary>
+    /// A column value as the archive stores it: a date in UTC, like the window boundaries. A date
+    /// string carrying an offset ("+02:00", as some grid operators write DocumentCreationDateTime)
+    /// parses to a LOCAL DateTime, and the archive would store that wall clock as UTC — shifted by the
+    /// host's offset, invisible in a UTC container and two hours off on a CEST laptop.
+    /// </summary>
+    private static object? ColumnScalar(JsonNode? node) => ToScalar(node) switch
+    {
+        DateTime dt => NormaliseToUtc(dt),
+        DateTimeOffset dto => dto.UtcDateTime,
+        var other => other
+    };
 
     /// <summary>
     /// Treats an unspecified kind as UTC, matching how the archive stores and returns window

@@ -136,6 +136,39 @@ public class TimeRangeSeriesShaperTests
     }
 
     [Fact]
+    public void DateColumnsAreStoredAsUtcWhateverOffsetTheSourceCarries()
+    {
+        // Some grid operators write DocumentCreationDateTime with an offset ("+02:00") where the
+        // others write "Z". The window boundaries were always normalised to UTC; a date COLUMN was
+        // passed through, and a date string carrying an offset parses to a LOCAL DateTime - so the
+        // archive stored the host's wall clock as UTC, off by the host's offset (two hours on a CEST
+        // host, none in a UTC container, which is why it only showed on a laptop).
+        var c = Config();
+        c.Columns.Add(new TimeRangeSeriesColumn
+        {
+            Name = "SourceDocumentDate", ValueProperty = "CreationTime", Scope = TimeRangeSeriesColumnScope.Series
+        });
+        var series = TimeRangeSeriesShaper.Shape(Parse(
+            $$"""
+              [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.01", "QuantityUnit": "kWh", "CreationTime": "2026-07-15T09:54:05+02:00",
+                  "EnergyQuantities": [ { "From": "2026-07-14T22:00:00Z", "To": "2026-07-14T22:15:00Z", "Quantity": 1.0 } ] },
+                { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.02", "QuantityUnit": "kWh", "CreationTime": "2026-07-15T07:54:05Z",
+                  "EnergyQuantities": [ { "From": "2026-07-14T22:00:00Z", "To": "2026-07-14T22:15:00Z", "Quantity": 2.0 } ] } ]
+              """), c, out _);
+
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out _);
+
+        var expected = new DateTime(2026, 7, 15, 7, 54, 5, DateTimeKind.Utc);
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r =>
+        {
+            var stored = Assert.IsType<DateTime>(r.Attributes["SourceDocumentDate"]);
+            Assert.Equal(DateTimeKind.Utc, stored.Kind);
+            Assert.Equal(expected, stored);
+        });
+    }
+
+    [Fact]
     public void TheWinningValueNamesItsOwnSourceObject()
     {
         // The anchor reflects the latest window; its series-scoped attributes must come from the

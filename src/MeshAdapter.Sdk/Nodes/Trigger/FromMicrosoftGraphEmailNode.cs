@@ -697,14 +697,15 @@ internal class FromMicrosoftGraphEmailNode(
     /// <summary>
     /// Resolves a '/'-separated folder path (relative to the mailbox root) to the folder id.
     /// With <paramref name="createLeafIfMissing"/> the LAST segment is created when absent —
-    /// parent segments must exist.
+    /// parent segments must exist. A folder whose own name contains a slash is addressed with
+    /// <c>\/</c> (AB#5385); see <see cref="SplitFolderPath"/>.
     /// </summary>
     private async Task<string> ResolveFolderIdAsync(string accessToken, string mailbox, string folderPath,
         bool createLeafIfMissing)
     {
         using var client = CreateGraphClient(accessToken);
 
-        var segments = folderPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var segments = SplitFolderPath(folderPath);
         if (segments.Length == 0)
         {
             throw new InvalidOperationException($"Mail folder path '{folderPath}' is empty");
@@ -762,6 +763,57 @@ internal class FromMicrosoftGraphEmailNode(
         }
 
         return parentId!;
+    }
+
+    /// <summary>
+    ///     Splits a Graph folder path into its segments (AB#5385). The separator is the unescaped
+    ///     <c>/</c>; <c>\/</c> stands for a literal slash INSIDE a folder name and is unescaped
+    ///     here, so <c>Inbox/02_Steuern \/ Finanzen/1_Tecob GmbH</c> yields <c>Inbox</c>,
+    ///     <c>02_Steuern / Finanzen</c> and <c>1_Tecob GmbH</c>.
+    /// </summary>
+    /// <remarks>
+    ///     Only the backslash directly in front of a slash is an escape; every other backslash is
+    ///     part of the name (Outlook allows it). Segments are trimmed and empty ones are dropped,
+    ///     exactly as the plain <c>Split('/')</c> did before, so an existing path resolves as it
+    ///     always has — a path without <c>\/</c> is not affected. The result is the DISPLAY name
+    ///     the caller passes to the Graph <c>displayName eq</c> filter (where the caller still
+    ///     doubles every <c>'</c>) or creates the leaf folder with.
+    /// </remarks>
+    internal static string[] SplitFolderPath(string folderPath)
+    {
+        var segments = new List<string>();
+        var current = new StringBuilder();
+        for (var i = 0; i < folderPath.Length; i++)
+        {
+            var c = folderPath[i];
+            if (c == '\\' && i + 1 < folderPath.Length && folderPath[i + 1] == '/')
+            {
+                current.Append('/');
+                i++;
+                continue;
+            }
+
+            if (c == '/')
+            {
+                AddSegment();
+                continue;
+            }
+
+            current.Append(c);
+        }
+
+        AddSegment();
+        return segments.ToArray();
+
+        void AddSegment()
+        {
+            var segment = current.ToString().Trim();
+            current.Clear();
+            if (segment.Length > 0)
+            {
+                segments.Add(segment);
+            }
+        }
     }
 
     private async Task<string?> TryGetWellKnownFolderIdAsync(HttpClient client, string mailbox, string segment)

@@ -497,6 +497,28 @@ Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nest
 - `lastWriteTimeUtc` is written with an explicit UTC format rather than the round-trip specifier, so the same instant reads identically regardless of the value's `Kind` and a consumer can build a stable file identity from it
 - `source` stamp lets a consumer scope its bookkeeping without repeating the connection values
 
+#### ListMailFoldersNode
+
+Lists the folders of a mailbox in exactly the syntax the channel's mail trigger accepts (AB#5370), so a settings page can offer a picker instead of a free-text path. Read-only.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Channel` / `ChannelPath` | string | `Imap` or `Graph` (case-insensitive); the path wins when it resolves |
+| `ImapServerConfiguration` | string | IMAP: the `EMailReceiverConfiguration` the `FromEmail@1` trigger polls (`Uses` association required) |
+| `GraphServerConfiguration` | string | Graph: the `MicrosoftGraphConfiguration` with the app registration |
+| `GraphMailbox` | string | Graph: fallback mailbox when the settings carry none |
+| `GraphSettingsConfiguration` / `GraphMailboxAttribute` | string | Graph: settings entity + attribute the trigger reads its mailbox from; a value there wins |
+| `MaxFolders` | int | Cap on the listed folders (default 500); the output says `truncated: true` when it cut something off |
+| `TimeoutSeconds` | int | Budget for the whole listing (default 60) |
+| `TargetPath` | string | Where `{ channel, delimiter, mailbox, folders: [ { path, displayName, depth } ], truncated }` is written |
+
+**Path contract** — `path` is the string to store in the trigger's folder setting:
+- IMAP: the folder's `FullName` as the server reports it (server delimiter, e.g. `INBOX.Finanzen.Rechnungen` on Dovecot), walked recursively with MailKit `GetSubfoldersAsync`; no client-side reassembly
+- Graph: display names from the root joined with `/`, a `/` inside a name escaped as `\/` (`MailFolderPathSyntax.JoinGraphPath`; `SplitGraphPath` is the inverse the trigger adopts in AB#5385 part 3)
+- Depth-first, in server order; `depth` 0 is a root folder
+
+**Failures** throw with an operator-worded message (no node-path prefix, the HTTP route hands it to the UI): IMAP authentication rejected, TLS handshake refused, host unreachable, no answer in time; Graph token refused, 401, 403 (`Mail.Read` application permission / admin consent), 404 mailbox not found.
+
 #### SftpDownloadNode
 
 Downloads exactly one file and writes its decoded content to the target path. Read counterpart of `SftpUploadNode`.

@@ -57,6 +57,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<CreateUpdateInfoNode>()
             .RegisterNode<CreateFileSystemItemUpdateNode>()
             .RegisterNode<GetFileSystemContentNode>()
+            .RegisterNode<ListMailFoldersNode>()
             .RegisterNode<ApplyChangesNode>()
             .RegisterNode<ApplyChangesNode2>()
             .RegisterNode<FilterLatestUpdateInfoNode>()

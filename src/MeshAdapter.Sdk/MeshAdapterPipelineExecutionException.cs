@@ -1204,4 +1204,26 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "worked. " + MailboxIsTheBookkeeping +
             $" Store MoveToFolders, Delete or MarkAsRead instead; {suggestion}");
     }
+
+    /// <summary>
+    ///     AB#5370: listing a mailbox's folders failed. <paramref name="reason" /> is already worded
+    ///     for the operator who configured the connection (see <c>MailFolderListingException</c>) and
+    ///     is passed through WITHOUT the usual node-path prefix: the HTTP route hands this message
+    ///     straight to the settings page, where "[ListMailFolders]:" is noise to the person who has to
+    ///     fix a password or a permission. The channel names the card it belongs to.
+    /// </summary>
+    public static Exception MailFolderListingFailed(string channel, string reason, Exception inner)
+    {
+        var channelLabel = channel == "Graph" ? "Microsoft 365" : "IMAP";
+        return new MeshAdapterPipelineExecutionException($"{channelLabel}: {reason}", inner);
+    }
+
+    /// <summary>AB#5370: the channel to list is neither <c>Imap</c> nor <c>Graph</c>.</summary>
+    public static Exception MailFolderChannelInvalid(INodeContext nodeContext, string? value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: the mail channel must be 'Imap' or 'Graph', got " +
+            (string.IsNullOrWhiteSpace(value) ? "nothing" : $"'{value}'") +
+            " — set channel on the node, or channelPath to where the request carries it.");
+    }
 }

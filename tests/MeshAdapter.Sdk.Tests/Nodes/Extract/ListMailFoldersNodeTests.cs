@@ -29,10 +29,38 @@ public class ListMailFoldersNodeTests : NodeTestBase
     // ------------------------------------------------------------------ Graph path syntax
 
     [Fact]
-    public void GraphPath_SlashInsideAName_IsEscaped()
+    public void GraphPath_SlashAndBackslashInsideAName_AreEscaped()
     {
         Assert.Equal(@"02_Steuern \/ Finanzen", MailFolderPathSyntax.EscapeGraphSegment("02_Steuern / Finanzen"));
+        Assert.Equal(@"a\\b", MailFolderPathSyntax.EscapeGraphSegment(@"a\b"));
+        Assert.Equal(@"\\\/", MailFolderPathSyntax.EscapeGraphSegment(@"\/"));
         Assert.Equal("Rechnungen", MailFolderPathSyntax.EscapeGraphSegment("Rechnungen"));
+    }
+
+    [Theory]
+    [InlineData(new object[] { new[] { @"a\", "b" } })]                       // trailing backslash WITH a child — the case that broke '/'-only escaping
+    [InlineData(new object[] { new[] { @"\", "leaf" } })]                     // a backslash alone as the parent
+    [InlineData(new object[] { new[] { "parent", @"\" } })]                   // … and as the leaf
+    [InlineData(new object[] { new[] { @"\/", "x" } })]                       // backslash followed by slash inside one name
+    [InlineData(new object[] { new[] { @"a\\/b", @"c/\d" } })]
+    [InlineData(new object[] { new[] { "Verträge / Rechnungen", "Ärzte", "日本語 / テスト", "emoji 📁/📂" } })]
+    [InlineData(new object[] { new[] { "/", "//", @"\\" } })]
+    public void GraphPath_Split_IsTheExactInverseOfJoin_ForEveryName(string[] names)
+    {
+        var joined = MailFolderPathSyntax.JoinGraphPath(names);
+
+        Assert.Equal(names, MailFolderPathSyntax.SplitGraphPath(joined));
+    }
+
+    [Fact]
+    public void GraphPath_TrailingBackslashWithChild_DoesNotCollapseIntoOneName()
+    {
+        // The regression the full escaping exists for: with '/'-only escaping this joined to
+        // a\/b and split back into the single name "a/b".
+        var joined = MailFolderPathSyntax.JoinGraphPath([@"a\", "b"]);
+
+        Assert.Equal(@"a\\/b", joined);
+        Assert.Equal([@"a\", "b"], MailFolderPathSyntax.SplitGraphPath(joined));
     }
 
     [Fact]
@@ -60,8 +88,11 @@ public class ListMailFoldersNodeTests : NodeTestBase
         // empty segments dropped — exactly the trigger's historical split.
         Assert.Equal(["Archive", "Rechnungen_Verträge", "ToDo"],
             MailFolderPathSyntax.SplitGraphPath(" Archive / Rechnungen_Verträge//ToDo "));
-        // A backslash that is not followed by '/' is an ordinary character.
+        // A backslash before anything but '/' or '\' is an ordinary character, so a path stored
+        // before the rule existed reads exactly as it always did.
+        Assert.Equal([@"Rechnungen\Verträge", "Done"], MailFolderPathSyntax.SplitGraphPath(@"Rechnungen\Verträge/Done"));
         Assert.Equal([@"A\B", "C"], MailFolderPathSyntax.SplitGraphPath(@"A\B/C"));
+        Assert.Equal([@"trailing\"], MailFolderPathSyntax.SplitGraphPath(@"trailing\"));
         Assert.Empty(MailFolderPathSyntax.SplitGraphPath("   "));
         Assert.Empty(MailFolderPathSyntax.SplitGraphPath(null));
     }
@@ -282,9 +313,15 @@ public class ListMailFoldersNodeTests : NodeTestBase
         Assert.Contains("box@example.com", forbidden);
         Assert.Contains("ErrorAccessDenied", forbidden);
 
-        var unauthorized = GraphMailboxAccess.DescribeGraphFailure(401, "", "box@example.com");
-        Assert.Contains("(401)", unauthorized);
+        var unauthorized = GraphMailboxAccess.DescribeGraphFailure(401,
+            """{"error":{"code":"InvalidAuthenticationToken","message":"Access token has expired or is not yet valid."}}""",
+            "box@example.com");
+        Assert.Contains("mailbox 'box@example.com' (401)", unauthorized);
+        Assert.Contains("(Access token has expired or is not yet valid.)", unauthorized);
         Assert.Contains("client secret", unauthorized);
+
+        var unauthorizedNoBody = GraphMailboxAccess.DescribeGraphFailure(401, "", "box@example.com");
+        Assert.Contains("mailbox 'box@example.com' (401).", unauthorizedNoBody);
 
         var notFound = GraphMailboxAccess.DescribeGraphFailure(404,
             """{"error":{"code":"ErrorInvalidUser","message":"The requested user 'x' is invalid."}}""",
@@ -413,6 +450,138 @@ public class ListMailFoldersNodeTests : NodeTestBase
     }
 
     [Fact]
+    public void Settings_ToString_NeverPrintsTheSecret()
+    {
+        var imap = Imap.ToString();
+        Assert.Contains("imap.example.com", imap);
+        Assert.Contains("Password = ***", imap);
+        Assert.DoesNotContain("Password = x", imap);
+
+        var graph = new GraphMailboxAccess.GraphAppCredentials
+        {
+            AzureTenantId = "tenant", ClientId = "client", ClientSecret = "top-secret"
+        }.ToString();
+        Assert.Contains("client", graph);
+        Assert.DoesNotContain("top-secret", graph);
+        Assert.Contains("ClientSecret = ***", graph);
+    }
+
+    [Fact]
+    public async Task Graph_NoMailboxConfigured_ThrowsBeforeAnyRequest()
+    {
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Status(HttpStatusCode.OK));
+        var (etl, http) = GraphContext(handler);
+        var config = GraphRouteConfig() with { ChannelPath = null, Channel = "Graph", GraphMailbox = null };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var node = new ListMailFoldersNode(next, etl, http, NullLogger<ListMailFoldersNode>.Instance);
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal("Microsoft 365: No Microsoft 365 mailbox is configured yet — enter the mailbox address and save before choosing a folder.",
+            ex.Message);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Theory]
+    [InlineData(0, 60, "maxFolders must be positive, got 0")]
+    [InlineData(-5, 60, "maxFolders must be positive, got -5")]
+    [InlineData(500, 0, "timeoutSeconds must be positive, got 0")]
+    [InlineData(500, -1, "timeoutSeconds must be positive, got -1")]
+    public async Task NonPositiveLimits_AreRefusedBeforeAnyRequest(int maxFolders, int timeoutSeconds, string expected)
+    {
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Status(HttpStatusCode.OK));
+        var (etl, http) = GraphContext(handler);
+        var config = GraphRouteConfig() with
+        {
+            ChannelPath = null, Channel = "Graph", MaxFolders = maxFolders, TimeoutSeconds = timeoutSeconds
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var node = new ListMailFoldersNode(next, etl, http, NullLogger<ListMailFoldersNode>.Instance);
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(expected, ex.Message);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task Graph_SignInUnreachable_NamesTheSignInEndpoint()
+    {
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Throws(new HttpRequestException("No such host is known (login.microsoftonline.com:443)")));
+        var (etl, http) = GraphContext(handler);
+        var config = GraphRouteConfig() with { ChannelPath = null, Channel = "Graph" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var node = new ListMailFoldersNode(next, etl, http, NullLogger<ListMailFoldersNode>.Instance);
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.StartsWith("Microsoft 365: Microsoft 365 sign-in (login.microsoftonline.com) is not reachable from the adapter: No such host", ex.Message);
+        Assert.IsType<HttpRequestException>(ex.InnerException?.InnerException);
+    }
+
+    [Fact]
+    public async Task Graph_GraphUnreachableAfterSignIn_NamesGraph()
+    {
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json("""{"access_token":"tok"}"""),
+            SequencedHttpMessageHandler.Throws(new HttpRequestException("Connection refused (graph.microsoft.com:443)")));
+        var (etl, http) = GraphContext(handler);
+        var config = GraphRouteConfig() with { ChannelPath = null, Channel = "Graph" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var node = new ListMailFoldersNode(next, etl, http, NullLogger<ListMailFoldersNode>.Instance);
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.StartsWith("Microsoft 365: Microsoft Graph is not reachable from the adapter: Connection refused", ex.Message);
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task Graph_TokenRefused_NamesTheCredentials()
+    {
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Json(
+                """{"error":"invalid_client","error_description":"AADSTS7000215: Invalid client secret provided."}""",
+                HttpStatusCode.Unauthorized));
+        var (etl, http) = GraphContext(handler);
+        var config = GraphRouteConfig() with { ChannelPath = null, Channel = "Graph" };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var node = new ListMailFoldersNode(next, etl, http, NullLogger<ListMailFoldersNode>.Instance);
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal("Microsoft 365: Microsoft 365 rejected the app registration's credentials (HTTP 401, invalid_client): " +
+                     "AADSTS7000215: Invalid client secret provided. Check the Azure tenant ID, client ID and client secret.",
+            ex.Message);
+    }
+
+    [Fact]
+    public async Task Graph_BudgetSpent_ThrowsTheTimeoutWording_NotABareCancellation()
+    {
+        // A target that accepts and never answers. The client's own timeout is switched off, so
+        // the node's budget is the only thing that ends this — and it must end with the
+        // operator wording, whatever the configured budget is.
+        var handler = new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Hangs());
+        var (etl, http) = GraphContext(handler);
+        var config = GraphRouteConfig() with { ChannelPath = null, Channel = "Graph", TimeoutSeconds = 1 };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var node = new ListMailFoldersNode(next, etl, http, NullLogger<ListMailFoldersNode>.Instance);
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal("Microsoft 365: Listing the mailbox did not finish within 1 seconds.", ex.Message);
+        Assert.IsAssignableFrom<OperationCanceledException>(ex.InnerException);
+        A.CallTo(() => next(dataContext, nodeContext)).MustNotHaveHappened();
+    }
+
+    [Fact]
     public async Task UnknownChannel_ThrowsAConfigurationError()
     {
         var (etl, http) = GraphContext(new SequencedHttpMessageHandler(SequencedHttpMessageHandler.Status(HttpStatusCode.OK)));
@@ -424,7 +593,7 @@ public class ListMailFoldersNodeTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.Contains("must be 'Imap' or 'Graph'", ex.Message);
-        Assert.Contains("'Exchange'", ex.Message);
+        Assert.StartsWith("The mail channel must be 'Imap' or 'Graph', got 'Exchange'", ex.Message);
+        Assert.DoesNotContain("[", ex.Message);
     }
 }

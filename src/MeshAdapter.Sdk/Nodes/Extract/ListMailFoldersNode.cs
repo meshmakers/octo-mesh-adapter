@@ -47,7 +47,7 @@ public class ListMailFoldersNode(
     {
         var c = nodeContext.GetNodeConfiguration<ListMailFoldersNodeConfiguration>();
 
-        var channel = ResolveChannel(dataContext, c, nodeContext);
+        var channel = ResolveChannel(dataContext, c);
         var maxFolders = c.MaxFolders ?? ListMailFoldersNodeConfiguration.DefaultMaxFolders;
         if (maxFolders <= 0)
         {
@@ -97,8 +97,7 @@ public class ListMailFoldersNode(
     ///     The channel to list: <c>channelPath</c> when it resolves to a value, else <c>channel</c>.
     ///     Anything but the two known names is a configuration (or request) error and says so.
     /// </summary>
-    private static string ResolveChannel(IDataContext dataContext, ListMailFoldersNodeConfiguration c,
-        INodeContext nodeContext)
+    private static string ResolveChannel(IDataContext dataContext, ListMailFoldersNodeConfiguration c)
     {
         string? raw = null;
         if (!string.IsNullOrWhiteSpace(c.ChannelPath))
@@ -111,8 +110,7 @@ public class ListMailFoldersNode(
             raw = c.Channel;
         }
 
-        return NormalizeChannel(raw) ?? throw MeshAdapterPipelineExecutionException.MailFolderChannelInvalid(
-            nodeContext, raw);
+        return NormalizeChannel(raw) ?? throw MeshAdapterPipelineExecutionException.MailFolderChannelInvalid(raw);
     }
 
     /// <summary>
@@ -183,7 +181,10 @@ public class ListMailFoldersNode(
         {
             try
             {
-                await client.DisconnectAsync(true, CancellationToken.None);
+                // A polite LOGOUT only while the budget is not spent: after the timeout fired the
+                // server may never answer it, and the route would wait a second budget for nothing.
+                await client.DisconnectAsync(quit: !cancellationToken.IsCancellationRequested,
+                    CancellationToken.None);
             }
             catch (Exception ex)
             {

@@ -28,8 +28,18 @@ internal static class ImapMailboxAccess
         public required string Username { get; init; }
         public required string Password { get; init; }
         public required bool IsSslEnabled { get; init; }
+
+        /// <summary>
+        ///     Not read by the listing — kept because it IS an attribute of the entity and the
+        ///     trigger's single-folder default: this record has to bind the entity exactly like the
+        ///     trigger's private one does, or the trigger cannot adopt it.
+        /// </summary>
         public string Folder { get; init; } = "INBOX";
         // ReSharper restore UnusedAutoPropertyAccessor.Global
+
+        /// <summary>A record prints its members; the password is never one of them.</summary>
+        public override string ToString() =>
+            $"{nameof(ImapServerSettings)} {{ {nameof(Host)} = {Host}, {nameof(Port)} = {Port}, {nameof(Username)} = {Username}, {nameof(Password)} = ***, {nameof(IsSslEnabled)} = {IsSslEnabled}, {nameof(Folder)} = {Folder} }}";
     }
 
     /// <summary>

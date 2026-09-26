@@ -514,10 +514,10 @@ Lists the folders of a mailbox in exactly the syntax the channel's mail trigger 
 
 **Path contract** — `path` is the string to store in the trigger's folder setting:
 - IMAP: the folder's `FullName` as the server reports it (server delimiter, e.g. `INBOX.Finanzen.Rechnungen` on Dovecot), walked recursively with MailKit `GetSubfoldersAsync`; no client-side reassembly
-- Graph: display names from the root joined with `/`, a `/` inside a name escaped as `\/` (`MailFolderPathSyntax.JoinGraphPath`; `SplitGraphPath` is the inverse the trigger adopts in AB#5385 part 3)
+- Graph: display names from the root joined with `/`; inside a name `/` → `\/` and `\` → `\\` (`MailFolderPathSyntax.JoinGraphPath`; `SplitGraphPath` is the exact inverse — it consumes only those two escapes, any other `\x` stays literal — which the trigger adopts at merge, AB#5385 part 3)
 - Depth-first, in server order; `depth` 0 is a root folder
 
-**Failures** throw with an operator-worded message (no node-path prefix, the HTTP route hands it to the UI): IMAP authentication rejected, TLS handshake refused, host unreachable, no answer in time; Graph token refused, 401, 403 (`Mail.Read` application permission / admin consent), 404 mailbox not found.
+**Failures** throw with an operator-worded message (no node-path prefix): IMAP authentication rejected, TLS handshake refused, host unreachable, no answer in time; Graph token refused, 401, 403 (`Mail.Read` application permission / admin consent), 404 mailbox not found. The HTTP route answers a throwing execution with **HTTP 500 and `{ "errorMessage": "<message>" }`** (`HttpRequestService.SendRequestAsync`, AB#5370 — before that the body was empty), so the message reaches the caller.
 
 #### SftpDownloadNode
 

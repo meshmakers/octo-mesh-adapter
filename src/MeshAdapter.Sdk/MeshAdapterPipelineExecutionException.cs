@@ -1218,11 +1218,14 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return new MeshAdapterPipelineExecutionException($"{channelLabel}: {reason}", inner);
     }
 
-    /// <summary>AB#5370: the channel to list is neither <c>Imap</c> nor <c>Graph</c>.</summary>
-    public static Exception MailFolderChannelInvalid(INodeContext nodeContext, string? value)
+    /// <summary>
+    ///     AB#5370: the channel to list is neither <c>Imap</c> nor <c>Graph</c>. Prefix-less like
+    ///     <see cref="MailFolderListingFailed" /> — it lands on the same settings card.
+    /// </summary>
+    public static Exception MailFolderChannelInvalid(string? value)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: the mail channel must be 'Imap' or 'Graph', got " +
+            "The mail channel must be 'Imap' or 'Graph', got " +
             (string.IsNullOrWhiteSpace(value) ? "nothing" : $"'{value}'") +
             " — set channel on the node, or channelPath to where the request carries it.");
     }

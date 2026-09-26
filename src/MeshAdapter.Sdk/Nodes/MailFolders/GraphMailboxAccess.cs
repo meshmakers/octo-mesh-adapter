@@ -35,6 +35,10 @@ internal static class GraphMailboxAccess
         public required string ClientId { get; init; }
         public required string ClientSecret { get; init; }
         // ReSharper restore UnusedAutoPropertyAccessor.Global
+
+        /// <summary>A record prints its members; the secret is never one of them.</summary>
+        public override string ToString() =>
+            $"{nameof(GraphAppCredentials)} {{ {nameof(AzureTenantId)} = {AzureTenantId}, {nameof(ClientId)} = {ClientId}, {nameof(ClientSecret)} = *** }}";
     }
 
     /// <summary>One folder as Graph reports it, with what the walk needs to go on.</summary>
@@ -46,7 +50,7 @@ internal static class GraphMailboxAccess
     internal static async Task<string> AcquireAppTokenAsync(IHttpClientFactory httpClientFactory,
         GraphAppCredentials credentials, CancellationToken cancellationToken)
     {
-        using var client = httpClientFactory.CreateClient();
+        using var client = CreateClient(httpClientFactory);
         var tokenUrl = $"https://login.microsoftonline.com/{Uri.EscapeDataString(credentials.AzureTenantId)}/oauth2/v2.0/token";
         var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
@@ -162,8 +166,21 @@ internal static class GraphMailboxAccess
 
     internal static HttpClient CreateGraphClient(IHttpClientFactory httpClientFactory, string accessToken)
     {
-        var client = httpClientFactory.CreateClient();
+        var client = CreateClient(httpClientFactory);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        return client;
+    }
+
+    /// <summary>
+    ///     The node's cancellation token is the ONLY time budget. <see cref="HttpClient.Timeout" />
+    ///     defaults to 100 s and cancels with a bare <see cref="TaskCanceledException" /> that
+    ///     nobody can tell from a caller's cancellation — with a configured budget above 100 s the
+    ///     operator would have seen that instead of the "did not finish within …" wording.
+    /// </summary>
+    private static HttpClient CreateClient(IHttpClientFactory httpClientFactory)
+    {
+        var client = httpClientFactory.CreateClient();
+        client.Timeout = Timeout.InfiniteTimeSpan;
         return client;
     }
 

@@ -222,6 +222,9 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         FromEmailNodeConfiguration definitionConfig)
     {
         var processedUids = new HashSet<UniqueId>();
+        // AB#5385: the folder the last poll actually used, for the poll-level status line — the
+        // folder may come from the settings entity and the definition may name none.
+        var lastKnownFolder = ResolveSourceFolderName(definitionConfig, serverConfig);
         
         while (!_cancellationTokenSource!.Token.IsCancellationRequested)
         {
@@ -231,6 +234,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 // a setting is operating state and the node must read it where it uses it, not
                 // freeze a copy of it for the lifetime of the trigger.
                 var nodeConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, definitionConfig);
+                lastKnownFolder = ResolveSourceFolderName(nodeConfig, serverConfig);
 
                 // AB#5341: an EMPTY import window fetches nothing. Skipping the whole pass — before
                 // the connection, before the search — is the point: leaving the cut-off unset
@@ -249,6 +253,13 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                             "window reopens.",
                             nodeConfig.WindowOpenAttribute, nodeConfig.SettingsConfiguration);
                     }
+
+                    // AB#5385: a closed window is a poll outcome too — the card would otherwise
+                    // show a stale line and the operator would read a stopped import.
+                    await context.ReportStatusAsync(
+                        MailPollStatusLine.Info(DateTime.UtcNow, serverConfig.Username, lastKnownFolder,
+                            "import window closed (no open fiscal year), nothing fetched"),
+                        cancellationToken: _cancellationTokenSource.Token);
 
                     await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),
                         _cancellationTokenSource.Token);
@@ -279,6 +290,13 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 // MaxMessagesPerPoll per pass and let a backlog drain over consecutive polls.
                 var pendingUids = uids.Where(uid => !processedUids.Contains(uid)).ToList();
                 var batchUids = ApplyBatchCap(pendingUids, ResolveMaxMessagesPerPoll(nodeConfig));
+
+                // AB#5385: what this poll did, reported to the pipeline's StatusMessage below.
+                var counts = new MailPollCounts
+                {
+                    Seen = batchUids.Count,
+                    Backlog = pendingUids.Count - batchUids.Count
+                };
 
                 if (batchUids.Count < pendingUids.Count)
                 {
@@ -317,14 +335,20 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     {
                         var senderAddress = message.From?.Mailboxes?.FirstOrDefault()?.Address;
                         if (senderAddress == null || !senderAddress.Contains(nodeConfig.SenderFilter))
+                        {
+                            counts.Skipped++;
                             continue;
+                        }
                     }
                     
                     // Apply subject filter if specified
                     if (!string.IsNullOrWhiteSpace(nodeConfig.SubjectFilter))
                     {
                         if (message.Subject == null || !message.Subject.Contains(nodeConfig.SubjectFilter))
+                        {
+                            counts.Skipped++;
                             continue;
+                        }
                     }
                     
                     var emailData = new EmailData
@@ -417,6 +441,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                         // keep their flags and an operator who repairs the binding still has them.
                         logger.LogWarning("FromEmail: {Reason} Skipping batch of {Count} email(s).",
                             binding.RejectReason, newEmails.Count);
+                        counts.Skipped += newEmails.Count;
                     }
                     else
                     {
@@ -434,6 +459,16 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                             var confirmation =
                                 MailSuccessPath.Evaluate(nodeConfig.SuccessPath, executionResult as JsonNode);
                             writeBackAllowed = MailSuccessPath.IsPostProcessingAllowed(confirmation);
+
+                            // One execution per batch, so the batch is imported or failed as a whole.
+                            if (writeBackAllowed)
+                            {
+                                counts.Imported += newEmails.Count;
+                            }
+                            else
+                            {
+                                counts.Failed += newEmails.Count;
+                            }
 
                             if (confirmation == MailRunConfirmation.NotConfirmed)
                             {
@@ -477,6 +512,7 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                                 "FromEmail: the pipeline run failed for a batch of {Count} mail(s); " +
                                 "their server-side flags are left untouched so the mails are not lost.",
                                 newEmails.Count);
+                            counts.Failed += newEmails.Count;
                         }
                     }
                 }
@@ -499,6 +535,12 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 }
 
                 await folder.CloseAsync();
+
+                // AB#5385: the poll's outcome, on the pipeline entity where the import card reads
+                // it. Never throws and never blocks the loop (see ITriggerContext.ReportStatusAsync).
+                await context.ReportStatusAsync(
+                    MailPollStatusLine.Success(DateTime.UtcNow, serverConfig.Username, lastKnownFolder, counts),
+                    cancellationToken: _cancellationTokenSource.Token);
                 
                 // Wait for the polling interval
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds), _cancellationTokenSource.Token);
@@ -511,6 +553,12 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error while polling for emails");
+                // AB#5385: THE point of the status line — a poll that fails every time (a folder
+                // spelled with the wrong separator, a rejected password) used to be a "Deployed"
+                // pipeline with an empty status for days; now the exception text reaches the card.
+                await context.ReportStatusAsync(
+                    MailPollStatusLine.Error(DateTime.UtcNow, serverConfig.Username, lastKnownFolder, ex.Message),
+                    isError: true, cancellationToken: _cancellationTokenSource.Token);
                 
                 // Wait before retrying
                 await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);

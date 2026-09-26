@@ -40,8 +40,10 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// mailbox root — the pipeline never looks at the inbox unless the path
     /// points there. A folder whose own name contains a slash is written with
     /// <c>\/</c> — "Inbox/02_Steuern \/ Finanzen" addresses the folder
-    /// "02_Steuern / Finanzen" below the inbox (AB#5385); the same escape works in
-    /// <see cref="MoveToFolderPathOnSuccess"/> and <see cref="MoveToFolderPathOnFailure"/>.
+    /// "02_Steuern / Finanzen" below the inbox (AB#5385) — and a backslash with
+    /// <c>\\</c>; any other backslash is literal. The same escapes work in
+    /// <see cref="MoveToFolderPathOnSuccess"/> and <see cref="MoveToFolderPathOnFailure"/>,
+    /// and <c>ListMailFolders@1</c> emits paths in exactly this form (AB#5370).
     /// Optional when <see cref="SettingsConfiguration"/> supplies it
     /// (the settings value takes precedence).
     /// </summary>

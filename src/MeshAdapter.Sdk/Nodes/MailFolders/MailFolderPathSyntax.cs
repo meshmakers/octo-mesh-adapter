@@ -20,8 +20,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.MailFolders;
 ///     still reads exactly as it did.
 ///     </para>
 ///     <para>
-///     <c>FromMicrosoftGraphEmail@1</c> adopts <see cref="SplitGraphPath" /> at merge (AB#5385
-///     part 3; until then it splits on every <c>/</c>). The picker stores what
+///     <c>FromMicrosoftGraphEmail@1</c> resolves its source, done and failed folder paths with
+///     <see cref="SplitGraphPath" /> (AB#5385 part 3), and prints the names in its "available
+///     folders" hint through <see cref="EscapeGraphSegment" />. The picker stores what
 ///     <see cref="JoinGraphPath(string?, string)" /> returns, and the trigger resolves it with
 ///     <see cref="SplitGraphPath" /> — the two MUST stay inverses.
 ///     </para>

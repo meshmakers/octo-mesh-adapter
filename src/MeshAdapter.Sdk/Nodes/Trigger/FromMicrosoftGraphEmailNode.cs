@@ -12,6 +12,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.MailFolders;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
@@ -722,22 +723,25 @@ internal class FromMicrosoftGraphEmailNode(
     /// <summary>
     /// Resolves a '/'-separated folder path (relative to the mailbox root) to the folder id.
     /// With <paramref name="createLeafIfMissing"/> the LAST segment is created when absent —
-    /// parent segments must exist. A folder whose own name contains a slash is addressed with
-    /// <c>\/</c> (AB#5385); see <see cref="SplitFolderPath"/>.
+    /// parent segments must exist. The path syntax is the channel's ONE rule,
+    /// <see cref="MailFolderPathSyntax.SplitGraphPath"/> (AB#5385 part 3, shared with
+    /// <c>ListMailFolders@1</c>, AB#5370): a slash inside a folder name is written <c>\/</c>, a
+    /// backslash <c>\\</c>; any other backslash is literal, so a path without those two escapes
+    /// resolves exactly as the plain <c>Split('/')</c> did.
     /// </summary>
     private async Task<string> ResolveFolderIdAsync(string accessToken, string mailbox, string folderPath,
         bool createLeafIfMissing)
     {
         using var client = CreateGraphClient(accessToken);
 
-        var segments = SplitFolderPath(folderPath);
-        if (segments.Length == 0)
+        var segments = MailFolderPathSyntax.SplitGraphPath(folderPath);
+        if (segments.Count == 0)
         {
             throw new InvalidOperationException($"Mail folder path '{folderPath}' is empty");
         }
 
         string? parentId = null;
-        for (var i = 0; i < segments.Length; i++)
+        for (var i = 0; i < segments.Count; i++)
         {
             var segment = segments[i];
             var escaped = segment.Replace("'", "''");
@@ -767,7 +771,7 @@ internal class FromMicrosoftGraphEmailNode(
 
             if (folderId == null)
             {
-                var isLeaf = i == segments.Length - 1;
+                var isLeaf = i == segments.Count - 1;
                 if (!isLeaf || !createLeafIfMissing || parentId == null)
                 {
                     var available = await ListFolderNamesAsync(client, mailbox, parentId);
@@ -790,57 +794,6 @@ internal class FromMicrosoftGraphEmailNode(
         return parentId!;
     }
 
-    /// <summary>
-    ///     Splits a Graph folder path into its segments (AB#5385). The separator is the unescaped
-    ///     <c>/</c>; <c>\/</c> stands for a literal slash INSIDE a folder name and is unescaped
-    ///     here, so <c>Inbox/02_Steuern \/ Finanzen/1_Tecob GmbH</c> yields <c>Inbox</c>,
-    ///     <c>02_Steuern / Finanzen</c> and <c>1_Tecob GmbH</c>.
-    /// </summary>
-    /// <remarks>
-    ///     Only the backslash directly in front of a slash is an escape; every other backslash is
-    ///     part of the name (Outlook allows it). Segments are trimmed and empty ones are dropped,
-    ///     exactly as the plain <c>Split('/')</c> did before, so an existing path resolves as it
-    ///     always has — a path without <c>\/</c> is not affected. The result is the DISPLAY name
-    ///     the caller passes to the Graph <c>displayName eq</c> filter (where the caller still
-    ///     doubles every <c>'</c>) or creates the leaf folder with.
-    /// </remarks>
-    internal static string[] SplitFolderPath(string folderPath)
-    {
-        var segments = new List<string>();
-        var current = new StringBuilder();
-        for (var i = 0; i < folderPath.Length; i++)
-        {
-            var c = folderPath[i];
-            if (c == '\\' && i + 1 < folderPath.Length && folderPath[i + 1] == '/')
-            {
-                current.Append('/');
-                i++;
-                continue;
-            }
-
-            if (c == '/')
-            {
-                AddSegment();
-                continue;
-            }
-
-            current.Append(c);
-        }
-
-        AddSegment();
-        return segments.ToArray();
-
-        void AddSegment()
-        {
-            var segment = current.ToString().Trim();
-            current.Clear();
-            if (segment.Length > 0)
-            {
-                segments.Add(segment);
-            }
-        }
-    }
-
     private async Task<string?> TryGetWellKnownFolderIdAsync(HttpClient client, string mailbox, string segment)
     {
         var wellKnownUrl =
@@ -858,7 +811,9 @@ internal class FromMicrosoftGraphEmailNode(
     /// <summary>
     /// Lists the folder display names at a level (root or child folders of a parent) so a
     /// failed path resolution can tell the user what the folders are actually called —
-    /// Outlook shows localized names for the standard folders, Graph does not.
+    /// Outlook shows localized names for the standard folders, Graph does not. Each name is
+    /// printed as a path SEGMENT (<see cref="MailFolderPathSyntax.EscapeGraphSegment"/>), so a
+    /// name copied from the hint is valid in the folder setting as it stands.
     /// </summary>
     private async Task<string> ListFolderNamesAsync(HttpClient client, string mailbox, string? parentId)
     {
@@ -880,7 +835,9 @@ internal class FromMicrosoftGraphEmailNode(
                     .Where(n => n != null)
                     .ToList()
                 : [];
-            return names.Count == 0 ? "(none)" : string.Join(", ", names.Select(n => $"'{n}'"));
+            return names.Count == 0
+                ? "(none)"
+                : string.Join(", ", names.Select(n => $"'{MailFolderPathSyntax.EscapeGraphSegment(n!)}'"));
         }
         catch
         {

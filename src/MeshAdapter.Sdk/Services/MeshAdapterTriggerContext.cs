@@ -104,6 +104,32 @@ internal class MeshAdapterTriggerContext(
     }
 
     /// <inheritdoc />
+    public override async Task ReportStatusAsync(string message, bool isError = false,
+        CancellationToken cancellationToken = default)
+    {
+        // AB#5385: beside the execution reports, through the same reporter — it already owns the
+        // hub client and the never-throw contract. Mirrors the SDK host (AdapterTriggerContext);
+        // without a reporter the line has nowhere to go and is dropped silently, exactly like the
+        // execution reports.
+        if (_executionReporter == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _executionReporter.ReportPipelineStatusAsync(PipelineRtEntityId, message, isError, DateTime.UtcNow);
+        }
+        catch (Exception ex)
+        {
+            // The reporter swallows on its own; this is the belt to its braces, because a status
+            // line must never take a poll loop down.
+            _logger.LogDebug(ex, "[{TenantId}] Reporting the status line of pipeline {PipelineRtEntityId} failed",
+                TenantId, PipelineRtEntityId);
+        }
+    }
+
+    /// <inheritdoc />
     public override async Task<object?> EndExecutePipelineAsync(Guid pipelineExecutionId)
     {
         if (!_pipelineRegistryService.TryGetPipelineRegistration(TenantId, PipelineRtEntityId,

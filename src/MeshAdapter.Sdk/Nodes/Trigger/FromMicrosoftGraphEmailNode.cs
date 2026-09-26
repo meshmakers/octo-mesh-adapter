@@ -231,6 +231,7 @@ internal class FromMicrosoftGraphEmailNode(
         // The mailbox the last poll actually used, for the poll-level error message: the mailbox
         // may come from the settings entity, in which case the definition carries none at all.
         var lastKnownMailbox = definitionConfig.Mailbox;
+        var lastKnownFolder = definitionConfig.FolderPath;
         // AB#5260: a failure folder that cannot be resolved must not take the import
         // down. Once the path turns out to be unusable we degrade to "skip exhausted
         // messages" (the pre-AB#5142 behaviour) instead of failing every poll — the
@@ -260,6 +261,7 @@ internal class FromMicrosoftGraphEmailNode(
                 var nodeConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, definitionConfig);
                 var postProcessingMode = ResolveEffectivePostProcessingMode(nodeConfig);
                 lastKnownMailbox = nodeConfig.Mailbox;
+                lastKnownFolder = nodeConfig.FolderPath;
 
                 if (!string.Equals(resolvedSourcePath, nodeConfig.FolderPath, StringComparison.Ordinal))
                 {
@@ -327,6 +329,9 @@ internal class FromMicrosoftGraphEmailNode(
 
                 var messages = await GetMessagesAsync(accessToken, nodeConfig, sourceFolderId);
 
+                // AB#5385: what this poll did, reported to the pipeline's StatusMessage below.
+                var counts = new MailPollCounts { Seen = messages.Count };
+
                 foreach (var message in messages)
                 {
                     if (_cancellationTokenSource.Token.IsCancellationRequested)
@@ -337,6 +342,7 @@ internal class FromMicrosoftGraphEmailNode(
                     var messageId = message.GetProperty("id").GetString();
                     if (messageId == null)
                     {
+                        counts.Skipped++;
                         continue;
                     }
 
@@ -412,6 +418,7 @@ internal class FromMicrosoftGraphEmailNode(
                                 subject, nodeConfig.MaxAttemptsPerMessage, AttemptCategoryPrefix);
                         }
 
+                        counts.Skipped++;
                         continue;
                     }
 
@@ -420,6 +427,7 @@ internal class FromMicrosoftGraphEmailNode(
                         (fromAddress == null || !fromAddress.Contains(nodeConfig.SenderFilter,
                             StringComparison.OrdinalIgnoreCase)))
                     {
+                        counts.Skipped++;
                         continue;
                     }
 
@@ -445,6 +453,7 @@ internal class FromMicrosoftGraphEmailNode(
                     {
                         logger.LogWarning("FromMicrosoftGraphEmail: {Reason} Skipping message '{MessageId}'.",
                             binding.RejectReason, messageId);
+                        counts.Skipped++;
                         continue;
                     }
 
@@ -482,6 +491,7 @@ internal class FromMicrosoftGraphEmailNode(
                         logger.LogError(ex,
                             "Pipeline run failed for mail '{Subject}' (attempt {Attempt}/{MaxAttempts}); message stays in '{Folder}'",
                             emailData.Subject, attempts + 1, nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                        counts.Failed++;
                         continue;
                     }
 
@@ -503,6 +513,7 @@ internal class FromMicrosoftGraphEmailNode(
                             "still completed (attempt {Attempt}/{MaxAttempts}); the message stays in '{Folder}'",
                             emailData.Subject, nodeConfig.SuccessPath, attempts + 1,
                             nodeConfig.MaxAttemptsPerMessage, nodeConfig.FolderPath);
+                        counts.Failed++;
                         continue;
                     }
 
@@ -530,10 +541,17 @@ internal class FromMicrosoftGraphEmailNode(
                     await ApplyPostProcessingAsync(accessToken, nodeConfig.Mailbox, messageId,
                         postProcessingMode, targetFolderId);
 
+                    counts.Imported++;
                     logger.LogInformation(
                         "Processed mail '{Subject}' from '{From}' ({AttachmentCount} attachments)",
                         emailData.Subject, fromAddress, emailData.Attachments.Count);
                 }
+
+                // AB#5385: the poll's outcome, on the pipeline entity where the import card reads
+                // it. Never throws and never blocks the loop (see ITriggerContext.ReportStatusAsync).
+                await context.ReportStatusAsync(
+                    MailPollStatusLine.Success(DateTime.UtcNow, nodeConfig.Mailbox, nodeConfig.FolderPath, counts),
+                    cancellationToken: _cancellationTokenSource.Token);
 
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),
                     _cancellationTokenSource.Token);
@@ -554,6 +572,13 @@ internal class FromMicrosoftGraphEmailNode(
                 resolvedFailedPath = null;
                 logger.LogError(ex, "Error while polling Microsoft Graph mailbox '{Mailbox}'",
                     lastKnownMailbox);
+                // AB#5385: THE point of the status line — a poll that fails every time (a folder
+                // that does not exist, a revoked consent) used to be a "Deployed" pipeline with an
+                // empty status for days; now the exception text, which for a missing folder lists
+                // the folders that do exist, reaches the import card.
+                await context.ReportStatusAsync(
+                    MailPollStatusLine.Error(DateTime.UtcNow, lastKnownMailbox, lastKnownFolder, ex.Message),
+                    isError: true, cancellationToken: _cancellationTokenSource.Token);
                 // Guard the backoff delay: a cancel during StopAsync makes Task.Delay throw
                 // TaskCanceledException, which — being raised inside this catch — would escape
                 // uncaught (the sibling catch (OperationCanceledException) does not cover it) and
@@ -697,14 +722,15 @@ internal class FromMicrosoftGraphEmailNode(
     /// <summary>
     /// Resolves a '/'-separated folder path (relative to the mailbox root) to the folder id.
     /// With <paramref name="createLeafIfMissing"/> the LAST segment is created when absent —
-    /// parent segments must exist.
+    /// parent segments must exist. A folder whose own name contains a slash is addressed with
+    /// <c>\/</c> (AB#5385); see <see cref="SplitFolderPath"/>.
     /// </summary>
     private async Task<string> ResolveFolderIdAsync(string accessToken, string mailbox, string folderPath,
         bool createLeafIfMissing)
     {
         using var client = CreateGraphClient(accessToken);
 
-        var segments = folderPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var segments = SplitFolderPath(folderPath);
         if (segments.Length == 0)
         {
             throw new InvalidOperationException($"Mail folder path '{folderPath}' is empty");
@@ -762,6 +788,57 @@ internal class FromMicrosoftGraphEmailNode(
         }
 
         return parentId!;
+    }
+
+    /// <summary>
+    ///     Splits a Graph folder path into its segments (AB#5385). The separator is the unescaped
+    ///     <c>/</c>; <c>\/</c> stands for a literal slash INSIDE a folder name and is unescaped
+    ///     here, so <c>Inbox/02_Steuern \/ Finanzen/1_Tecob GmbH</c> yields <c>Inbox</c>,
+    ///     <c>02_Steuern / Finanzen</c> and <c>1_Tecob GmbH</c>.
+    /// </summary>
+    /// <remarks>
+    ///     Only the backslash directly in front of a slash is an escape; every other backslash is
+    ///     part of the name (Outlook allows it). Segments are trimmed and empty ones are dropped,
+    ///     exactly as the plain <c>Split('/')</c> did before, so an existing path resolves as it
+    ///     always has — a path without <c>\/</c> is not affected. The result is the DISPLAY name
+    ///     the caller passes to the Graph <c>displayName eq</c> filter (where the caller still
+    ///     doubles every <c>'</c>) or creates the leaf folder with.
+    /// </remarks>
+    internal static string[] SplitFolderPath(string folderPath)
+    {
+        var segments = new List<string>();
+        var current = new StringBuilder();
+        for (var i = 0; i < folderPath.Length; i++)
+        {
+            var c = folderPath[i];
+            if (c == '\\' && i + 1 < folderPath.Length && folderPath[i + 1] == '/')
+            {
+                current.Append('/');
+                i++;
+                continue;
+            }
+
+            if (c == '/')
+            {
+                AddSegment();
+                continue;
+            }
+
+            current.Append(c);
+        }
+
+        AddSegment();
+        return segments.ToArray();
+
+        void AddSegment()
+        {
+            var segment = current.ToString().Trim();
+            current.Clear();
+            if (segment.Length > 0)
+            {
+                segments.Add(segment);
+            }
+        }
     }
 
     private async Task<string?> TryGetWellKnownFolderIdAsync(HttpClient client, string mailbox, string segment)

@@ -38,7 +38,11 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// Path of the mail folder to poll, segments separated by '/'
     /// (e.g. "Archive/Invoices/ToDo"). The path is resolved relative to the
     /// mailbox root — the pipeline never looks at the inbox unless the path
-    /// points there. Optional when <see cref="SettingsConfiguration"/> supplies it
+    /// points there. A folder whose own name contains a slash is written with
+    /// <c>\/</c> — "Inbox/02_Steuern \/ Finanzen" addresses the folder
+    /// "02_Steuern / Finanzen" below the inbox (AB#5385); the same escape works in
+    /// <see cref="MoveToFolderPathOnSuccess"/> and <see cref="MoveToFolderPathOnFailure"/>.
+    /// Optional when <see cref="SettingsConfiguration"/> supplies it
     /// (the settings value takes precedence).
     /// </summary>
     [PropertyGroup("Connection", 2)]
@@ -49,6 +53,7 @@ public record FromMicrosoftGraphEmailNodeConfiguration : TriggerNodeConfiguratio
     /// that message completed successfully (e.g. "Archive/Invoices/Done").
     /// The leaf folder is created if it does not exist yet (its parent path must
     /// exist). Messages whose pipeline run failed stay in the source folder.
+    /// Same syntax as <see cref="FolderPath"/> (a slash inside a name is <c>\/</c>).
     /// A value from <see cref="SettingsConfiguration"/> takes precedence.
     /// </summary>
     [PropertyGroup("Connection", 3)]

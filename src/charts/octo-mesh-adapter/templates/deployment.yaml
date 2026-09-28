@@ -42,50 +42,59 @@ spec:
             - sh
             - -c
             - |
-              echo "=== Alpine CA Certificate Setup ==="
-              echo "Installing CA certificates package..."
-              apk add --no-cache ca-certificates
+              # 🔴 AB#5303 item 3 — `set -e`, and no network. The previous version ran
+              # `apk add ca-certificates` first; when that failed on a transient DNS error the
+              # script carried on, `update-ca-certificates` was not found, the CA was NEVER merged,
+              # and the last line still printed "✓ CA certificates updated successfully" and exited
+              # 0. Measured on a local kind cluster 2026-09-28: two of three running adapter pods
+              # carried the stock 119-certificate bundle and failed to verify the controller's
+              # certificate. They stayed connected only because the SDK's hub transport bypassed
+              # validation unconditionally — so a trust mechanism that fails open was hidden by a
+              # transport that never checked. Both halves are fixed; this is the half that must not
+              # lie.
+              set -eu
 
-              echo "Creating CA certificates directory..."
-              mkdir -p /usr/local/share/ca-certificates/
+              echo "=== CA certificate setup ==="
 
-              echo "Splitting CA bundle into individual certificates..."
-              cd /usr/local/share/ca-certificates/
-
-              # Split the CA bundle into individual certificates using awk
-              awk '
-              BEGIN { cert_count = 0 }
-              /-----BEGIN CERTIFICATE-----/ {
-              cert_count++
-              filename = sprintf("meshmakers-%02d.crt", cert_count)
-              print "Extracting certificate " cert_count " to " filename
-              }
-              /-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/ {
-              if (filename) print > filename
-              }
-              /-----END CERTIFICATE-----/ {
-              close(filename)
-              filename = ""
-              }
-              ' /mounted-certs/root-ca.pem
-
-              echo "Individual certificates created:"
-              ls -la /usr/local/share/ca-certificates/meshmakers-*.crt
-
-              echo "Updating CA certificates..."
-              update-ca-certificates
-
-              echo "Verifying CA certificate integration..."
-              if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
-              cert_count=$(grep -c "BEGIN CERTIFICATE" /etc/ssl/certs/ca-certificates.crt)
-              echo "✓ Total certificates in bundle: $cert_count"
+              if [ ! -s /mounted-certs/root-ca.pem ]; then
+                echo "ERROR: /mounted-certs/root-ca.pem is missing or empty." >&2
+                exit 1
               fi
 
-              echo "Copying updated bundle to shared volume..."
-              cp /etc/ssl/certs/ca-certificates.crt /shared-certs/ca-certificates.crt
-              cp -r /etc/ssl/certs/ /shared-certs/
+              # `|| true`: grep exits 1 on zero matches, and under `set -e` that would kill the
+              # container with an EMPTY log — a crash loop nobody can diagnose. Measured; keep it.
+              added=$(grep -c "BEGIN CERTIFICATE" /mounted-certs/root-ca.pem || true)
+              if [ "$added" -lt 1 ]; then
+                echo "ERROR: /mounted-certs/root-ca.pem contains no PEM certificate." >&2
+                exit 1
+              fi
+              echo "Certificates to add: $added"
 
-              echo "✓ CA certificates updated for Alpine successfully"
+              # alpine ships ca-certificates-bundle, so the stock bundle is present without apk and
+              # without a network round trip. Appending is all update-ca-certificates would do.
+              base=/etc/ssl/certs/ca-certificates.crt
+              if [ ! -s "$base" ]; then
+                echo "ERROR: no stock CA bundle at $base in this image." >&2
+                exit 1
+              fi
+
+              before=$(grep -c "BEGIN CERTIFICATE" "$base")
+
+              cp -r /etc/ssl/certs/. /shared-certs/
+              cat "$base" /mounted-certs/root-ca.pem > /shared-certs/ca-certificates.crt
+
+              after=$(grep -c "BEGIN CERTIFICATE" /shared-certs/ca-certificates.crt)
+              echo "Bundle: $before -> $after certificates"
+
+              # The assertion the old script lacked. Counting is enough and needs no openssl: the
+              # failure being guarded against is "nothing was merged", not a malformed PEM.
+              expected=$((before + added))
+              if [ "$after" -ne "$expected" ]; then
+                echo "ERROR: expected $expected certificates in the merged bundle, found $after." >&2
+                exit 1
+              fi
+
+              echo "✓ CA certificates merged into the shared trust store"
           volumeMounts:
             - name: custom-ca-certs
               mountPath: /mounted-certs

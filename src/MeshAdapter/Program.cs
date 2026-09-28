@@ -27,15 +27,16 @@ await adapterBuilder.RunAsync(args, builder =>
     // Add the adapter service to startup and shutdown the adapter
     builder.Services.AddSingleton<IAdapterService, MeshAdapterService>();
 
-    // AB#4924 — a process is a pool member when OCTO_ADAPTERPOOL__POOLTENANTID and
-    // OCTO_ADAPTERPOOL__POOLRTID are set. The order matters and is not cosmetic:
+    // AB#4924 — a process is a pool member when OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID and
+    // OCTO_ADAPTERPOOL__ADAPTERPOOLRTID are set. The order matters and is not cosmetic:
     // AddOctoMeshAdapterPoolMember() TryAdds the lease-aware IAdapterTenantScope and the lease work
     // item, so it has to win over the registrations AddOctoMeshAdapter() brings; and
     // AddOctoMeshAdapter() has to run afterwards regardless, because it registers
     // MeshContextCreatorService after AddDataPipeline() and a leased execution needs an
     // IMeshEtlContext. Getting either order wrong fails at the first lease, not at startup.
-    var poolMemberOptions = new AdapterPoolMemberOptions();
-    builder.Configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(poolMemberOptions);
+    // AB#5303 item 5 — the same guard the SDK builders use, so a configured-but-unbound section
+    // cannot reach this `if` and quietly compose a dedicated adapter instead of a member.
+    var poolMemberOptions = AdapterPoolMemberConfigurationGuard.BindAndVerify(builder.Configuration);
     if (poolMemberOptions.IsEnabled)
     {
         builder.Services.AddOctoMeshAdapterPoolMember();

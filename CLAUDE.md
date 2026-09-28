@@ -462,7 +462,9 @@ weclapp, modbus-plug, modbus-socket, finapi, eda) still carry the old key and ha
 ### The chart can deploy a pool member (AB#4924 §9.4)
 
 `adapterPool.poolTenantId` + `adapterPool.poolRtId` turn the deployment into a pool member: the two
-render as `OCTO_ADAPTERPOOL__POOLTENANTID` / `__POOLRTID`, and the member then gets **neither**
+render as `OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID` / `__ADAPTERPOOLRTID` (the values keys are *not*
+the env names — see `_env.tpl`; emitting the short spelling binds nothing, which is AB#5303 item 5),
+and the member then gets **neither**
 `OCTO_ADAPTER__DEDICATEDTENANTID` **nor** `OCTO_ADAPTER__ADAPTERRTID`. Before this, neither value had
 any route into the container, so an `AdapterPool` workload deployed a pod that started, found
 `AdapterPoolMemberOptions.IsEnabled` false, logged *"started without a configured pool … Doing

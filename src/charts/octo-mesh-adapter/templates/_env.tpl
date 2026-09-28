@@ -165,6 +165,21 @@
 {{- end }}
 - name: OCTO_ADAPTER__COMMUNICATIONCONTROLLERSERVICESURI
   value: {{ .Values.communicationControllerServiceUri | quote }}
+{{- if .Values.ignoreCertificateValidation }}
+{{/*
+  🔴 AB#5303 items 1+2. Rendered ONLY when set, and never `false`: an absent variable and a
+  false one mean the same thing to the SDK, and the absent one cannot be mistaken for a
+  deliberate choice in `kubectl describe pod`.
+
+  Until AB#5303 this variable had no route into the container at all, and the one place that
+  read it set ServicePointManager, which SocketsHttpHandler ignores. It now turns off TLS
+  certificate validation for every outgoing Octo call of the process — and the SDK refuses it
+  when ASPNETCORE_ENVIRONMENT says Production. Development and private-PKI clusters only; the
+  supported answer for the latter is a trusted CA in the image (AB#5303 item 3), not this.
+*/}}
+- name: OCTO_ADAPTER__IGNORECERTIFICATEVALIDATION
+  value: "true"
+{{- end }}
 - name: OCTO_ADAPTER__ADAPTERCKTYPEID
   value: "System.Communication/Adapter"
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL

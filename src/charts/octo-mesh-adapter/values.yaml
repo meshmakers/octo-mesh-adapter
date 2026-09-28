@@ -42,6 +42,12 @@ adapterPool:
   # RtId of the AdapterPool entity in the lending tenant.
   poolRtId: ""
   
+# 🔴 Turns OFF TLS certificate validation for every outgoing Octo service call of this pod
+# (AB#5303). Development and private-PKI clusters only — the SDK refuses it outright when
+# ASPNETCORE_ENVIRONMENT is Production, and the supported answer for a private CA is to trust
+# it in the image rather than to stop checking. False renders no variable at all.
+ignoreCertificateValidation: false
+
 # The communication controller service uri
 communicationControllerServiceUri: ""
 

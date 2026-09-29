@@ -147,6 +147,8 @@ resources:
   limits:
     memory: 3Gi
 
+# /healthz/live evaluates NO health check on purpose: liveness is about the process. A
+# communication-controller outage must never restart every adapter in the estate at once.
 livenessProbe:
   httpGet:
     path: /healthz/live
@@ -154,13 +156,23 @@ livenessProbe:
   initialDelaySeconds: 10
   periodSeconds: 15
   failureThreshold: 3
+# /healthz/ready reports the adapter hub REGISTRATION since AB#5409: an adapter the controller has
+# no registration for cannot be configured, deployed to, or reached by the HTTP activator, and used
+# to answer 200 anyway (five prod-1 adapters sat deaf for eleven hours behind green probes).
+# failureThreshold is generous on purpose — 12 x 10s = 2 minutes — so an ordinary reconnect
+# (controller rollout, node drain, network blip) never flips the pod out of the Service endpoints.
+# The adapter itself additionally stays ready for Adapter:HubReadinessGracePeriod (5 min) while it
+# is still working on its FIRST registration, so a fresh pod is never punished for a controller
+# that is not up yet.
+# Note: a failing readiness probe does not restart a pod. The self-heal for a registration that
+# never comes back is Adapter:HubRegistrationRecoveryTimeout (15 min) inside the adapter.
 readinessProbe:
   httpGet:
     path: /healthz/ready
     port: http
   initialDelaySeconds: 15
   periodSeconds: 10
-  failureThreshold: 3
+  failureThreshold: 12
 
 autoscaling:
   enabled: false

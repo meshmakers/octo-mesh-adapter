@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Duende.IdentityModel;
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
@@ -209,6 +211,100 @@ public class HttpRequestServiceTests
         var responseBody = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
         var parsed = JsonNode.Parse(responseBody)!.AsObject();
         Assert.Equal("success", parsed["result"]?.ToString());
+    }
+
+    // AB#5370: a node that throws used to answer with a 500 and an EMPTY body — nothing between
+    // the route delegate and Kestrel turned the exception into a response. The node's message is
+    // the one thing the caller can act on, so it is the error body now.
+
+    /// <summary>
+    ///     The orchestrator's wrapper; its constructors are not public, so the test derives from it
+    ///     to build the chain a failed execution really produces.
+    /// </summary>
+    private sealed class OrchestratorException : DataPipelineException
+    {
+        public OrchestratorException(string message) : base(message)
+        {
+        }
+
+        public OrchestratorException(string message, Exception inner) : base(message, inner)
+        {
+        }
+    }
+
+    private static async Task<(int Status, string? ContentType, JsonObject Body)> ReadErrorResponse(
+        HttpContext context)
+    {
+        context.Response.Body.Position = 0;
+        using var reader = new StreamReader(context.Response.Body);
+        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+        return (context.Response.StatusCode, context.Response.ContentType, JsonNode.Parse(body)!.AsObject());
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_NodeThrows_Answers500WithTheNodesMessageAsErrorBody()
+    {
+        // The chain the orchestrator builds: DataPipelineException("Error in node '…': …") around
+        // the node's own PipelineExecutionException.
+        var nodeError = MeshAdapterPipelineExecutionException.MailFolderListingFailed("Graph",
+            "Microsoft Graph denied access to mailbox 'box@example.com' (403).", new Exception("http"));
+        var options = CreateRouteOptions("/api/throws", HttpMethod.Post, _ =>
+            throw new OrchestratorException($"Error in node 'ListMailFolders[0]': {nodeError.Message}", nodeError));
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/throws");
+        context.Response.Body = new MemoryStream();
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        var (status, contentType, body) = await ReadErrorResponse(context);
+        Assert.Equal(StatusCodes.Status500InternalServerError, status);
+        Assert.Equal("application/json", contentType);
+        Assert.Equal("Microsoft 365: Microsoft Graph denied access to mailbox 'box@example.com' (403).",
+            body["errorMessage"]!.GetValue<string>());
+        Assert.Single(body);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_OtherExceptionThrows_Answers500WithItsMessage()
+    {
+        var options = CreateRouteOptions("/api/boom", HttpMethod.Get, _ =>
+            throw new InvalidOperationException("Mail folder path '' is empty"));
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("GET", $"/{TenantId}/api/boom");
+        context.Response.Body = new MemoryStream();
+
+        Assert.True(await _service.SendRequestAsync(context));
+
+        var (status, _, body) = await ReadErrorResponse(context);
+        Assert.Equal(StatusCodes.Status500InternalServerError, status);
+        Assert.Equal("Mail folder path '' is empty", body["errorMessage"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void ExtractNodeErrorMessage_UnwrapsToTheInnermostPipelineException()
+    {
+        var inner = MeshAdapterPipelineExecutionException.MailFolderChannelInvalid("Exchange");
+        var wrapped = new OrchestratorException(
+            $"Error in node 'ForEach[1]': Error in node 'ListMailFolders[0]': {inner.Message}",
+            new OrchestratorException($"Error in node 'ListMailFolders[0]': {inner.Message}", inner));
+
+        Assert.Equal(inner.Message, HttpRequestService.ExtractNodeErrorMessage(wrapped));
+    }
+
+    [Fact]
+    public void ExtractNodeErrorMessage_StripsThePrefixChainWhenNoPipelineExceptionIsInside()
+    {
+        var wrapped = new OrchestratorException(
+            "Error in node 'ForEach[1]': Error in node 'MakeHttpRequest[2]': Object reference not set",
+            new NullReferenceException("Object reference not set"));
+
+        Assert.Equal("Object reference not set", HttpRequestService.ExtractNodeErrorMessage(wrapped));
+        // A prefix that is not the orchestrator's stays as it is.
+        Assert.Equal("Error in node without the colon", HttpRequestService.ExtractNodeErrorMessage(
+            new OrchestratorException("Error in node without the colon")));
+        Assert.Equal("Exception", HttpRequestService.ExtractNodeErrorMessage(new Exception("")));
     }
 
     [Fact]

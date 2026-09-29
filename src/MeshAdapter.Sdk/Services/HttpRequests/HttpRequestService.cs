@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Duende.IdentityModel;
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.AspNetCore.Authentication;
@@ -259,13 +261,77 @@ internal class HttpRequestService(
             input["query"] = query;
         }
 
-        var r = await route.ExecuteFunc(input, callerContext);
+        JsonNode? r;
+        try
+        {
+            r = await route.ExecuteFunc(input, callerContext);
+        }
+        catch (Exception ex)
+        {
+            // AB#5370: until here a node that threw answered the caller with a 500 and an EMPTY
+            // body — the orchestrator wraps the node's exception in a DataPipelineException, the
+            // trigger rethrows everything but a RuntimeRepositoryException, and neither the route
+            // middleware nor the host has an exception handler (the developer exception page made
+            // it look fine locally). The node's message is the one thing the caller can act on —
+            // ListMailFolders@1 words it for the operator — so it becomes the error body.
+            var message = ExtractNodeErrorMessage(ex);
+            logger.LogError(ex, "Route {Method} {Path} failed: {Message}", context.Request.Method, path, message);
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            context.Response.ContentType = MimeTypes.MimeTypeJson;
+            await context.Response.WriteAsync(new JsonObject { ["errorMessage"] = message }.ToJsonString());
+            return true;
+        }
+
         if (r != null)
         {
             context.Response.ContentType = MimeTypes.MimeTypeJson;
             await context.Response.WriteAsync(r.ToJsonString());
         }
         return true;
+    }
+
+    /// <summary>
+    ///     The message the route reports for a failed execution (AB#5370): the innermost
+    ///     <see cref="PipelineExecutionException" /> in the chain — the node's own words — and,
+    ///     when there is none, the outermost message with the orchestrator's
+    ///     <c>Error in node '…': </c> prefix chain stripped. Never the stack, never the type name.
+    /// </summary>
+    internal static string ExtractNodeErrorMessage(Exception exception)
+    {
+        PipelineExecutionException? innermost = null;
+        for (Exception? current = exception; current != null; current = current.InnerException)
+        {
+            if (current is PipelineExecutionException pipelineException)
+            {
+                innermost = pipelineException;
+            }
+        }
+
+        var message = innermost?.Message ?? exception.Message;
+        if (exception is DataPipelineException || innermost == null)
+        {
+            message = StripNodePrefixes(message);
+        }
+
+        return string.IsNullOrWhiteSpace(message) ? exception.GetType().Name : message;
+    }
+
+    private const string NodePrefixStart = "Error in node '";
+
+    private static string StripNodePrefixes(string message)
+    {
+        while (message.StartsWith(NodePrefixStart, StringComparison.Ordinal))
+        {
+            var end = message.IndexOf("': ", NodePrefixStart.Length, StringComparison.Ordinal);
+            if (end < 0)
+            {
+                break;
+            }
+
+            message = message[(end + 3)..];
+        }
+
+        return message;
     }
     
     /// <summary>

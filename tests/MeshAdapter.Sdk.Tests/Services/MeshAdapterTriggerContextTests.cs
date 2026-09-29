@@ -108,6 +108,55 @@ public class MeshAdapterTriggerContextTests
     }
 
     [Fact]
+    public async Task ReportStatusAsync_ForwardsTheLineToTheReporter()
+    {
+        // AB#5385: the trigger context is the node's only handle; the line reaches the controller
+        // through the same reporter that carries the execution start/end reports.
+        await _sut.ReportStatusAsync("2026-09-26T17:40:12Z · seen 12, imported 12",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        A.CallTo(() => _executionReporter.ReportPipelineStatusAsync(
+                _pipelineRtEntityId, "2026-09-26T17:40:12Z · seen 12, imported 12", false, A<DateTime>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ReportStatusAsync_ErrorFlagIsForwarded()
+    {
+        await _sut.ReportStatusAsync("ERROR folder not found", isError: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        A.CallTo(() => _executionReporter.ReportPipelineStatusAsync(
+                _pipelineRtEntityId, "ERROR folder not found", true, A<DateTime>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ReportStatusAsync_ReporterThrows_DoesNotPropagate()
+    {
+        // A status line must never take a poll loop down.
+        A.CallTo(() => _executionReporter.ReportPipelineStatusAsync(
+                A<RtEntityId>._, A<string>._, A<bool>._, A<DateTime>._))
+            .ThrowsAsync(new InvalidOperationException("hub gone"));
+
+        await _sut.ReportStatusAsync("line", cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task ReportStatusAsync_WithoutReporter_IsANoOp()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(_pipelineRegistryService);
+        services.AddSingleton(_etlDataOrchestrator);
+        services.AddSingleton(_contextCreatorService);
+        var sut = new MeshAdapterTriggerContext(services.BuildServiceProvider(), TenantId,
+            OctoObjectId.GenerateNewId(), _pipelineRtEntityId, A.Fake<INodeContext>(), A.Fake<IGlobalConfiguration>());
+
+        await sut.ReportStatusAsync("line", cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task EndExecutePipelineAsync_WithExecutionResult_ReportsOutputData()
     {
         // Arrange

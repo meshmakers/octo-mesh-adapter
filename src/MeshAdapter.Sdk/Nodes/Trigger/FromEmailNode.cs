@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Mail;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using MailKit;
 using MailKit.Net.Imap;
@@ -8,6 +9,7 @@ using MailKit.Security;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
 using MimeKit;
@@ -21,9 +23,41 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder callerBinder)
     : ITriggerPipelineNode
 {
+    /// <summary>The node as a pipeline definition names it — used in configuration errors.</summary>
+    private const string NodeType = "FromEmail@1";
+
+    /// <summary>
+    ///     AB#5372: what an operator of THIS channel does to get a mode, appended to the
+    ///     "no mode configured" error. Named properties rather than prose, because the person
+    ///     reading the log has the pipeline definition (or the settings entity) in front of them.
+    /// </summary>
+    private const string HowToFix =
+        "The legacy derivation is still honoured, so configuring doneFolder/failedFolder " +
+        "(MoveToFolders), deleteAfterProcessing (Delete) or markAsRead (MarkAsRead) works too — " +
+        "but markAsRead: false together with deleteAfterProcessing: false and no folders describes " +
+        "no queue at all, which is the configuration you have.";
+
+    /// <summary>AB#5372: the repair hint for a settings entity that still stores <c>None</c>.</summary>
+    private const string RemovedModeSuggestion =
+        "MarkAsRead is the lightest equivalent and the one this channel derives by default — with " +
+        "onlyUnread it leaves an unimported mail unread and offers it again.";
+
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
     private ImapClient? _imapClient;
+
+    /// <summary>
+    ///     AB#5337: the "no successPath configured, so nothing is flagged" warning is worth saying
+    ///     once per process rather than once per polling interval.
+    /// </summary>
+    private bool _successPathWarningLogged;
+
+    /// <summary>
+    ///     AB#5341: "the import window is closed, nothing is fetched" is worth saying once per
+    ///     closed stretch rather than once per polling interval. Reset when the window reopens, so
+    ///     the next close is announced again.
+    /// </summary>
+    private bool _windowClosedLogged;
     
     // ReSharper disable once ClassNeverInstantiated.Local
     private record EmailServerConfiguration
@@ -50,6 +84,37 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                 c.ServerConfiguration);
         }
 
+        // AB#5345: the settings entity has the last word, so validate what will actually be USED,
+        // not what the definition happens to say.
+        var effective = ResolveEffectiveConfiguration(context.GlobalConfiguration, c);
+
+        // AB#5337: a confirmation path that cannot name exactly one value is a configuration
+        // mistake, and it has to be heard when the pipeline is deployed rather than be read as
+        // "never confirmed" on every poll for the rest of the adapter's life.
+        if (!string.IsNullOrWhiteSpace(effective.SuccessPath) &&
+            !MailSuccessPath.TryParse(effective.SuccessPath, out _))
+        {
+            throw MeshAdapterPipelineExecutionException.InvalidValue(context.NodeContext, effective.SuccessPath);
+        }
+
+        // AB#5372: the post-processing mode is resolved HERE, unconditionally and before the poll
+        // loop exists — a configuration that yields no mode throws out of this call. It used to be
+        // evaluated only inside the log branch below, i.e. only for a pipeline that names a settings
+        // configuration, so a definition that could not work started happily and polled a mailbox it
+        // never changed. The three valid modes are the mailbox's bookkeeping (see
+        // MailPostProcessingMode): a trigger that changes nothing re-imports the same capped batch
+        // for ever and never reaches the mail behind the cap.
+        var postProcessingMode = ResolveEffectivePostProcessingMode(effective);
+
+        if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
+        {
+            logger.LogInformation(
+                "FromEmail: runtime settings resolved from configuration '{Settings}' " +
+                "(folder='{Folder}', postProcessing={Mode}, interval={Interval}s, onlyUnread={OnlyUnread})",
+                c.SettingsConfiguration, effective.SourceFolder, postProcessingMode,
+                effective.PollingIntervalSeconds, effective.OnlyUnread);
+        }
+
         var serverConfig = context.GlobalConfiguration.GetValue<EmailServerConfiguration>(c.ServerConfiguration);
         
         _cancellationTokenSource = new CancellationTokenSource();
@@ -60,6 +125,75 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         
         // Start polling task
         _pollingTask = Task.Run(async () => await PollForEmailsAsync(context, serverConfig, c), _cancellationTokenSource.Token);
+    }
+
+    /// <summary>
+    ///     Returns a copy of <paramref name="c" /> with every RUNTIME setting resolved from the
+    ///     optional settings configuration (well-known name
+    ///     <see cref="FromEmailNodeConfiguration.SettingsConfiguration" />), AB#5345.
+    ///     <para>
+    ///     One rule, and it is also the migration path: <b>a value found in the settings wins, the
+    ///     node property is the fallback.</b> A pipeline that names no settings configuration, or
+    ///     whose settings entity is absent, undefined or malformed, is returned unchanged and
+    ///     therefore behaves exactly as it did before this existed.
+    ///     </para>
+    ///     <para>
+    ///     Connection details are deliberately NOT here: host, port, user, password, TLS and the
+    ///     default folder have always lived on the <c>System.Communication/EMailReceiverConfiguration</c>
+    ///     entity that <see cref="FromEmailNodeConfiguration.ServerConfiguration" /> names — the
+    ///     definition only ever carried a pointer to them.
+    ///     </para>
+    /// </summary>
+    internal static FromEmailNodeConfiguration ResolveEffectiveConfiguration(
+        IGlobalConfiguration globalConfiguration, FromEmailNodeConfiguration c)
+    {
+        var attributes = ConfigurationSettingsReader.TryGetAttributes(
+            globalConfiguration, c.SettingsConfiguration);
+        if (attributes is null)
+        {
+            return c;
+        }
+
+        return c with
+        {
+            PollingIntervalSeconds =
+                ConfigurationSettingsReader.ReadPositiveInt(attributes, c.PollingSecondsAttribute)
+                ?? c.PollingIntervalSeconds,
+            OnlyUnread = ConfigurationSettingsReader.ReadBool(attributes, c.OnlyUnreadAttribute)
+                         ?? c.OnlyUnread,
+            // AB#5372: read through MailPostProcessingModeSetting, not ReadEnum directly — a stored
+            // `None` is the one name that must NOT degrade to "not configured", because the derived
+            // replacement would start writing to a mailbox whose operator asked for no writes.
+            PostProcessingMode =
+                MailPostProcessingModeSetting.Read(attributes, c.PostProcessingModeAttribute,
+                    NodeType, RemovedModeSuggestion) ?? c.PostProcessingMode,
+            SourceFolder = ConfigurationSettingsReader.ReadString(attributes, c.SourceFolderAttribute)
+                           ?? c.SourceFolder,
+            DoneFolder = ConfigurationSettingsReader.ReadString(attributes, c.DoneFolderAttribute)
+                         ?? c.DoneFolder,
+            FailedFolder = ConfigurationSettingsReader.ReadString(attributes, c.FailedFolderAttribute)
+                           ?? c.FailedFolder,
+            // Zero-tolerant on purpose: 0 is this property's documented "no limit" opt-out, so it
+            // has to survive the trip through the settings entity instead of reading as "unset".
+            MaxMessagesPerPoll =
+                ConfigurationSettingsReader.ReadInt(attributes, c.MaxMessagesPerPollAttribute)
+                ?? c.MaxMessagesPerPoll,
+            SinceDate = ConfigurationSettingsReader.ReadDateTime(attributes, c.SinceDateAttribute)
+                        ?? c.SinceDate,
+            SinceDaysBack = ConfigurationSettingsReader.ReadInt(attributes, c.SinceDaysBackAttribute)
+                            ?? c.SinceDaysBack,
+            // AB#5341: the import window itself. Unset leaves the definition's value, which
+            // ResolveWindowOpen reads as OPEN — so a tenant that never computes this keeps polling
+            // exactly as before.
+            WindowOpen = ConfigurationSettingsReader.ReadBool(attributes, c.WindowOpenAttribute)
+                         ?? c.WindowOpen,
+            SenderFilter = ConfigurationSettingsReader.ReadString(attributes, c.SenderFilterAttribute)
+                           ?? c.SenderFilter,
+            SubjectFilter = ConfigurationSettingsReader.ReadString(attributes, c.SubjectFilterAttribute)
+                            ?? c.SubjectFilter,
+            SuccessPath = ConfigurationSettingsReader.ReadString(attributes, c.SuccessPathAttribute)
+                          ?? c.SuccessPath,
+        };
     }
 
     private async Task ConnectAndAuthenticateAsync(EmailServerConfiguration config)
@@ -84,50 +218,137 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         }
     }
 
-    private async Task PollForEmailsAsync(ITriggerContext context, EmailServerConfiguration serverConfig, FromEmailNodeConfiguration nodeConfig)
+    private async Task PollForEmailsAsync(ITriggerContext context, EmailServerConfiguration serverConfig,
+        FromEmailNodeConfiguration definitionConfig)
     {
         var processedUids = new HashSet<UniqueId>();
+        // AB#5385: the folder the last poll actually used, for the poll-level status line — the
+        // folder may come from the settings entity and the definition may name none.
+        var lastKnownFolder = ResolveSourceFolderName(definitionConfig, serverConfig);
         
         while (!_cancellationTokenSource!.Token.IsCancellationRequested)
         {
             try
             {
+                // AB#5345: the settings are resolved HERE, once per poll, not once in StartAsync —
+                // a setting is operating state and the node must read it where it uses it, not
+                // freeze a copy of it for the lifetime of the trigger.
+                var nodeConfig = ResolveEffectiveConfiguration(context.GlobalConfiguration, definitionConfig);
+                lastKnownFolder = ResolveSourceFolderName(nodeConfig, serverConfig);
+
+                // AB#5341: an EMPTY import window fetches nothing. Skipping the whole pass — before
+                // the connection, before the search — is the point: leaving the cut-off unset
+                // instead would mean "no date filter", and with `onlyUnread` switched off that is
+                // the unbounded SearchQuery.All which killed the adapter on prod-1 (AB#5336). The
+                // trigger stays registered and resumes by itself when the window reopens; the
+                // operator's own enable switch is not touched.
+                if (!ResolveWindowOpen(nodeConfig))
+                {
+                    if (!_windowClosedLogged)
+                    {
+                        _windowClosedLogged = true;
+                        logger.LogInformation(
+                            "FromEmail: the import window is closed ('{Attribute}' is false on the '{Configuration}' " +
+                            "settings), so no mail is fetched. Polling continues and resumes on its own once the " +
+                            "window reopens.",
+                            nodeConfig.WindowOpenAttribute, nodeConfig.SettingsConfiguration);
+                    }
+
+                    // AB#5385: a closed window is a poll outcome too — the card would otherwise
+                    // show a stale line and the operator would read a stopped import.
+                    await context.ReportStatusAsync(
+                        MailPollStatusLine.Info(DateTime.UtcNow, serverConfig.Username, lastKnownFolder,
+                            "import window closed (no open fiscal year), nothing fetched"),
+                        cancellationToken: _cancellationTokenSource.Token);
+
+                    await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds),
+                        _cancellationTokenSource.Token);
+                    continue;
+                }
+
+                _windowClosedLogged = false;
+
                 // Ensure we're connected
                 if (!_imapClient!.IsConnected)
                 {
                     await ConnectAndAuthenticateAsync(serverConfig);
                 }
                 
-                // Open the folder
-                var folder = await _imapClient.GetFolderAsync(serverConfig.Folder);
+                // Open the folder. The polled folder is the connection entity's `Folder` unless the
+                // settings/definition name one — which they do wherever the three-folder mode needs
+                // a source that belongs to the same triple as done and failed (AB#5345).
+                var folder = await _imapClient.GetFolderAsync(ResolveSourceFolderName(nodeConfig, serverConfig));
                 await folder.OpenAsync(FolderAccess.ReadWrite);
                 
-                // Search for unread messages
-                var searchQuery = nodeConfig.OnlyUnread ? SearchQuery.NotSeen : SearchQuery.All;
-                var uids = await folder.SearchAsync(searchQuery);
-                
+                // Search for messages. The date cut-off is applied SERVER-SIDE (AB#5340) so a mailbox
+                // with years of history never reaches the client in the first place.
+                var uids = await folder.SearchAsync(BuildSearchQuery(nodeConfig));
+
+                // AB#5336: never fetch the whole search result. Every message below is downloaded in full
+                // and its attachments are base64-encoded into the batch, so an unbounded result set is an
+                // out-of-memory failure (1697 mails killed the adapter on prod-1/gastroacker). Take at most
+                // MaxMessagesPerPoll per pass and let a backlog drain over consecutive polls.
+                var pendingUids = uids.Where(uid => !processedUids.Contains(uid)).ToList();
+                var batchUids = ApplyBatchCap(pendingUids, ResolveMaxMessagesPerPoll(nodeConfig));
+
+                // AB#5385: what this poll did, reported to the pipeline's StatusMessage below.
+                var counts = new MailPollCounts
+                {
+                    Seen = batchUids.Count,
+                    Backlog = pendingUids.Count - batchUids.Count
+                };
+
+                if (batchUids.Count < pendingUids.Count)
+                {
+                    logger.LogInformation(
+                        "FromEmail: taking {Taken} of {Pending} pending message(s) this poll; the remainder follows on the next poll(s).",
+                        batchUids.Count, pendingUids.Count);
+                }
+
+                // AB#5339: the server's INTERNALDATE for this batch, the fallback receive time for a
+                // mail whose `Date:` header is missing or unparsable. Fetched for the whole batch in
+                // one round trip, before any message is downloaded — a failure here is a connection
+                // problem that the downloads below would hit anyway, so it bubbles to the poll
+                // handler rather than being softened into "no fallback available".
+                var internalDates = await FetchInternalDatesAsync(folder, batchUids);
+
                 // Process new emails
                 var newEmails = new List<EmailData>();
-                foreach (var uid in uids)
+
+                // AB#5337: the UIDs that actually made it into the batch. Messages the client-side
+                // filters below rejected are deliberately absent — they were never processed, so
+                // nothing may be written back to the server for them.
+                var batchedUids = new List<UniqueId>();
+                foreach (var uid in batchUids)
                 {
-                    if (processedUids.Contains(uid))
-                        continue;
-                    
                     var message = await folder.GetMessageAsync(uid);
-                    
+
+                    // Mark the UID as examined BEFORE the client-side filters below (AB#5336). The
+                    // filters skip with `continue`, so a message they reject never reached the
+                    // bookkeeping further down and is offered again on the next poll. Without a cap
+                    // that was merely wasteful; with one, rejected messages occupy the budget on every
+                    // pass and starve everything behind them indefinitely.
+                    processedUids.Add(uid);
+
                     // Apply sender filter if specified
                     if (!string.IsNullOrWhiteSpace(nodeConfig.SenderFilter))
                     {
                         var senderAddress = message.From?.Mailboxes?.FirstOrDefault()?.Address;
                         if (senderAddress == null || !senderAddress.Contains(nodeConfig.SenderFilter))
+                        {
+                            counts.Skipped++;
                             continue;
+                        }
                     }
                     
                     // Apply subject filter if specified
                     if (!string.IsNullOrWhiteSpace(nodeConfig.SubjectFilter))
                     {
                         if (message.Subject == null || !message.Subject.Contains(nodeConfig.SubjectFilter))
+                        {
+                            counts.Skipped++;
                             continue;
+                        }
                     }
                     
                     var emailData = new EmailData
@@ -136,7 +357,9 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                         From = message.From?.ToString(),
                         FromAddress = message.From?.Mailboxes?.FirstOrDefault()?.Address,
                         To = message.To?.ToString(),
-                        Date = message.Date.DateTime,
+                        // AB#5339: never write year 1 — see ResolveReceivedAt.
+                        Date = ResolveReceivedAt(message.Date,
+                            internalDates.TryGetValue(uid, out var internalDate) ? internalDate : null),
                         Body = message.TextBody ?? message.HtmlBody,
                         HtmlBody = message.HtmlBody,
                         TextBody = message.TextBody,
@@ -157,6 +380,15 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                                 attachment.Length = memoryStream.Length;
                             }
 
+                            // AB#5338: many senders declare a PDF as application/octet-stream. The
+                            // shared Stage Document pipeline keys on the DECLARED type and routes
+                            // anything but application/pdf through its image->PDF branch, which
+                            // REPLACES the stored bytes with a blank render — a 90 KB invoice became
+                            // a 5.6 KB empty page on prod-1/gastroacker. Correct the type from the
+                            // content, as the Graph channel has done since AB#4433.
+                            attachment.ContentType = AttachmentContentType.NormalizePdf(
+                                attachment.FileName, attachment.ContentType, attachment.Data);
+
                             return attachment;
                         }).ToList() ?? new List<AttachmentData>()
                     };
@@ -166,21 +398,17 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     PopulateAuthentication(emailData, message);
 
                     newEmails.Add(emailData);
-                    processedUids.Add(uid);
-                    
-                    // Mark as read if configured
-                    if (nodeConfig.MarkAsRead)
-                    {
-                        await folder.AddFlagsAsync(uid, MessageFlags.Seen, true);
-                    }
-                    
-                    // Delete if configured
-                    if (nodeConfig.DeleteAfterProcessing)
-                    {
-                        await folder.AddFlagsAsync(uid, MessageFlags.Deleted, true);
-                    }
+                    batchedUids.Add(uid);
+
+                    // AB#5337: NOTHING is flagged here. `\Seen` and `\Deleted` are written back only
+                    // after the pipeline ran and succeeded — see below.
                 }
-                
+
+                // AB#5337: gate for the server-side write-back further down. It stays false
+                // unless the run came back — a throw skips straight past the assignment — and, where
+                // a successPath is configured, unless the pipeline also confirmed the import.
+                var writeBackAllowed = false;
+
                 // Trigger the pipeline if we have new emails
                 if (newEmails.Count > 0)
                 {
@@ -209,28 +437,110 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
                     var binding = await callerBinder.BindAsync(context.TenantId, nodeConfig.CallerBinding, sender);
                     if (binding.Rejected)
                     {
+                        // Not an execution: the batch was never handed to the pipeline, so the mails
+                        // keep their flags and an operator who repairs the binding still has them.
                         logger.LogWarning("FromEmail: {Reason} Skipping batch of {Count} email(s).",
                             binding.RejectReason, newEmails.Count);
+                        counts.Skipped += newEmails.Count;
                     }
                     else
                     {
-                        await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                        try
                         {
-                            VerifiedPrincipal = binding.Principal,
-                            CallerTrust = binding.Trust
-                        }, emailBatch);
+                            var executionResult = await context.ExecuteAsync(
+                                new ExecutePipelineOptions(DateTime.UtcNow)
+                                {
+                                    VerifiedPrincipal = binding.Principal,
+                                    CallerTrust = binding.Trust
+                                }, emailBatch);
 
-                        logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                            // AB#5337: returning is not the same as importing, so where the
+                            // pipeline was asked to confirm, its confirmation decides.
+                            var confirmation =
+                                MailSuccessPath.Evaluate(nodeConfig.SuccessPath, executionResult as JsonNode);
+                            writeBackAllowed = MailSuccessPath.IsPostProcessingAllowed(confirmation);
+
+                            // One execution per batch, so the batch is imported or failed as a whole.
+                            if (writeBackAllowed)
+                            {
+                                counts.Imported += newEmails.Count;
+                            }
+                            else
+                            {
+                                counts.Failed += newEmails.Count;
+                            }
+
+                            if (confirmation == MailRunConfirmation.NotConfirmed)
+                            {
+                                logger.LogWarning(
+                                    "FromEmail: the pipeline run for {Count} mail(s) ended without setting " +
+                                    "'{SuccessPath}' to true — a node may have reported an error and stopped its " +
+                                    "branch while the execution still completed. The mails keep their server-side " +
+                                    "flags so they are not lost.",
+                                    newEmails.Count, nodeConfig.SuccessPath);
+                            }
+                            else
+                            {
+                                if (confirmation == MailRunConfirmation.NotConfigured &&
+                                    !_successPathWarningLogged)
+                                {
+                                    _successPathWarningLogged = true;
+                                    logger.LogWarning(
+                                        "FromEmail: no 'successPath' is configured, so a batch whose import branch " +
+                                        "stopped on a reported node error cannot be told apart from an imported " +
+                                        "one, and the mails are flagged either way. Configure 'successPath' and " +
+                                        "have the pipeline write that flag as the last step of its import branch " +
+                                        "to make the write-back conditional on the import itself.");
+                                }
+
+                                logger.LogInformation("Processed {Count} new emails", newEmails.Count);
+                            }
+                        }
+                        catch (OperationCanceledException) when (_cancellationTokenSource.Token
+                                                                     .IsCancellationRequested)
+                        {
+                            // Adapter shutdown, not a batch failure — unwind to the poll loop's
+                            // cancellation handling without touching the mailbox.
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            // AB#5337: swallowed on purpose so the poll finishes cleanly WITHOUT the
+                            // write-back below. The mails keep their server-side state, which is the
+                            // only durable record that they were never imported.
+                            logger.LogError(ex,
+                                "FromEmail: the pipeline run failed for a batch of {Count} mail(s); " +
+                                "their server-side flags are left untouched so the mails are not lost.",
+                                newEmails.Count);
+                            counts.Failed += newEmails.Count;
+                        }
                     }
                 }
-                
-                // Expunge deleted messages if any were deleted
-                if (nodeConfig.DeleteAfterProcessing && newEmails.Count > 0)
+
+                // AB#5337: the server-side bookkeeping happens HERE, after the run, and never for
+                // a run that threw — `writeBackAllowed` is still false then, because the assignment
+                // sits behind the await. Doing it inside the UID loop above destroyed a receipt on
+                // every failure: the mail was already `\Seen`, the default `onlyUnread: true` search
+                // never offers it again, and nothing about the missing document is visible to
+                // anyone.
+                //
+                // A failed batch is NOT retried by the next poll of this process: `processedUids`
+                // (AB#5336) already holds these UIDs, which is what keeps a permanently failing mail
+                // from being re-downloaded and re-run every polling interval. That set is
+                // process-local, so a restart does offer the mail again — deliberately: the mail is
+                // still there, unread and unflagged, and that is the property this fix buys.
+                if (batchedUids.Count > 0)
                 {
-                    await folder.ExpungeAsync();
+                    await ApplyPostProcessingAsync(folder, batchedUids, nodeConfig, writeBackAllowed);
                 }
-                
+
                 await folder.CloseAsync();
+
+                // AB#5385: the poll's outcome, on the pipeline entity where the import card reads
+                // it. Never throws and never blocks the loop (see ITriggerContext.ReportStatusAsync).
+                await context.ReportStatusAsync(
+                    MailPollStatusLine.Success(DateTime.UtcNow, serverConfig.Username, lastKnownFolder, counts),
+                    cancellationToken: _cancellationTokenSource.Token);
                 
                 // Wait for the polling interval
                 await Task.Delay(TimeSpan.FromSeconds(nodeConfig.PollingIntervalSeconds), _cancellationTokenSource.Token);
@@ -243,6 +553,12 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error while polling for emails");
+                // AB#5385: THE point of the status line — a poll that fails every time (a folder
+                // spelled with the wrong separator, a rejected password) used to be a "Deployed"
+                // pipeline with an empty status for days; now the exception text reaches the card.
+                await context.ReportStatusAsync(
+                    MailPollStatusLine.Error(DateTime.UtcNow, serverConfig.Username, lastKnownFolder, ex.Message),
+                    isError: true, cancellationToken: _cancellationTokenSource.Token);
                 
                 // Wait before retrying
                 await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
@@ -273,6 +589,437 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         
         _imapClient?.Dispose();
         _cancellationTokenSource?.Dispose();
+    }
+
+    /// <summary>
+    ///     Builds the IMAP search predicate. The date cut-off (AB#5340) is ANDed onto the read-state
+    ///     predicate so the server, not the client, discards everything outside the window.
+    /// </summary>
+    internal static SearchQuery BuildSearchQuery(FromEmailNodeConfiguration nodeConfig)
+    {
+        var query = nodeConfig.OnlyUnread ? SearchQuery.NotSeen : SearchQuery.All;
+        var since = ResolveSinceDate(nodeConfig);
+
+        return since.HasValue
+            ? SearchQuery.And(query, SearchQuery.DeliveredAfter(since.Value))
+            : query;
+    }
+
+    /// <summary>
+    ///     Effective per-poll cap: the configured value, or
+    ///     <see cref="FromEmailNodeConfiguration.DefaultMaxMessagesPerPoll" /> when none is set. An
+    ///     explicit null must not read as 0 — see the remark on the property.
+    /// </summary>
+    internal static int ResolveMaxMessagesPerPoll(FromEmailNodeConfiguration nodeConfig)
+    {
+        return nodeConfig.MaxMessagesPerPoll ?? FromEmailNodeConfiguration.DefaultMaxMessagesPerPoll;
+    }
+
+    /// <summary>
+    ///     Caps one polling pass at <paramref name="maxMessagesPerPoll" /> messages (AB#5336). A value
+    ///     &lt;= 0 disables the cap and restores the unbounded pre-fix behaviour.
+    /// </summary>
+    internal static List<UniqueId> ApplyBatchCap(List<UniqueId> pendingUids, int maxMessagesPerPoll)
+    {
+        return maxMessagesPerPoll > 0 && pendingUids.Count > maxMessagesPerPoll
+            ? pendingUids.Take(maxMessagesPerPoll).ToList()
+            : pendingUids;
+    }
+
+    /// <summary>
+    ///     Resolves the effective IMAP <c>SINCE</c> cut-off (AB#5340).
+    ///     <see cref="FromEmailNodeConfiguration.SinceDate" /> wins when both are configured;
+    ///     <see cref="FromEmailNodeConfiguration.SinceDaysBack" /> is the relative fallback. Returns
+    ///     <c>null</c> when neither is set, which keeps the previous unbounded behaviour.
+    /// </summary>
+    internal static DateTime? ResolveSinceDate(FromEmailNodeConfiguration nodeConfig)
+    {
+        if (nodeConfig.SinceDate.HasValue)
+        {
+            return nodeConfig.SinceDate.Value.Date;
+        }
+
+        if (nodeConfig.SinceDaysBack is > 0)
+        {
+            return DateTime.UtcNow.Date.AddDays(-nodeConfig.SinceDaysBack.Value);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Effective import-window state (AB#5341): the configured value, or OPEN when none is set.
+    ///     An unset value must not read as <c>false</c> — see the remark on the property — because
+    ///     that would switch off every already deployed pipeline that never heard of this.
+    /// </summary>
+    internal static bool ResolveWindowOpen(FromEmailNodeConfiguration nodeConfig)
+    {
+        return nodeConfig.WindowOpen ?? true;
+    }
+
+    /// <summary>
+    ///     Reads the IMAP <c>INTERNALDATE</c> of a batch in one FETCH (AB#5339). Only messages the
+    ///     server actually reports a value for appear in the result.
+    /// </summary>
+    private static async Task<Dictionary<UniqueId, DateTimeOffset>> FetchInternalDatesAsync(
+        IMailFolder folder, IList<UniqueId> uids)
+    {
+        if (uids.Count == 0)
+        {
+            return new Dictionary<UniqueId, DateTimeOffset>();
+        }
+
+        var summaries = await folder.FetchAsync(uids,
+            MessageSummaryItems.UniqueId | MessageSummaryItems.InternalDate);
+
+        var internalDates = new Dictionary<UniqueId, DateTimeOffset>(summaries.Count);
+        foreach (var summary in summaries)
+        {
+            if (summary.InternalDate.HasValue)
+            {
+                internalDates[summary.UniqueId] = summary.InternalDate.Value;
+            }
+        }
+
+        return internalDates;
+    }
+
+    /// <summary>
+    ///     Resolves when the mail was received (AB#5339). The <c>Date:</c> header wins when it is
+    ///     there and parsable; MimeKit reports both a MISSING and an unparsable header as
+    ///     <see cref="DateTimeOffset.MinValue" />, and writing that straight through produced
+    ///     <c>sourceReceivedAt = 0001-01-01T00:00:00Z</c> on the staged document — a timestamp that
+    ///     sorts to the very front of the inbox and falls outside every fiscal year, so the receipt
+    ///     cannot be assigned at all (prod-1/gastroacker: 67 mails from one sender that emits no
+    ///     <c>Date:</c> header).
+    ///     <para>
+    ///     Falls back to the server's IMAP <c>INTERNALDATE</c> — when the message was delivered,
+    ///     which is what the accounting import wants anyway and is also the value the AB#5340
+    ///     <c>SINCE</c> window is evaluated against, so a mail inside the configured period cannot
+    ///     get a date outside it. Returns <c>null</c> when neither is available: "unknown" is a
+    ///     state the consumer can handle, year 1 is not.
+    ///     </para>
+    ///     <para>
+    ///     Both sources are read with <see cref="DateTimeOffset.DateTime" /> — the wall-clock time
+    ///     as stated, without the offset — because that is what the header path has always emitted;
+    ///     converting to UTC here would shift every existing timestamp.
+    ///     </para>
+    /// </summary>
+    internal static DateTime? ResolveReceivedAt(DateTimeOffset headerDate, DateTimeOffset? internalDate)
+    {
+        if (IsUsableDate(headerDate))
+        {
+            return headerDate.DateTime;
+        }
+
+        if (internalDate.HasValue && IsUsableDate(internalDate.Value))
+        {
+            return internalDate.Value.DateTime;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     A date is usable unless it is the year-1 sentinel every "no value" path produces —
+    ///     MimeKit's unset <c>Date:</c>, an unparsable one, and a default-valued INTERNALDATE alike.
+    /// </summary>
+    private static bool IsUsableDate(DateTimeOffset value)
+    {
+        return value.Year > 1;
+    }
+
+    /// <summary>
+    ///     What one finished polling pass may write back to the IMAP server (AB#5337).
+    /// </summary>
+    /// <param name="Flags">The flags to add to the batch's messages; <see cref="MessageFlags.None" /> means no write.</param>
+    /// <param name="Expunge">Whether the folder must be expunged afterwards, which is what actually removes them.</param>
+    internal readonly record struct EmailFlagDecision(MessageFlags Flags, bool Expunge)
+    {
+        internal bool HasFlags => Flags != MessageFlags.None;
+    }
+
+    /// <summary>
+    ///     Decides the server-side FLAG write-back for a finished poll (AB#5337, AB#5345). The
+    ///     decision is taken AFTER the pipeline ran and only when
+    ///     <see cref="MailSuccessPath.IsPostProcessingAllowed" /> let it through; otherwise nothing
+    ///     is written at all, so the mail stays exactly as the server has it and is still there to
+    ///     be imported.
+    ///     <para>
+    ///     This used to happen per message inside the fetch loop, before the pipeline was even
+    ///     invoked. Under the default <c>onlyUnread: true</c> the next poll asks the server for
+    ///     <c>NOT SEEN</c>, so a mail flagged ahead of a failing run was never offered again — a
+    ///     receipt lost on a bookkeeping input channel, with nothing missing that anyone would
+    ///     notice (prod-1/gastroacker, 2026-09-23).
+    ///     </para>
+    ///     <para>
+    ///     Covers the two FLAG modes only (<see cref="MailPostProcessingMode.Delete" /> and
+    ///     <see cref="MailPostProcessingMode.MarkAsRead" />);
+    ///     <see cref="MailPostProcessingMode.MoveToFolders" /> writes no flags and is carried out by
+    ///     <see cref="ApplyPostProcessingAsync" />.
+    ///     </para>
+    /// </summary>
+    /// <remarks>
+    ///     🔴 The legacy branch is load-bearing, not tidiness: a pipeline that names NO
+    ///     <c>postProcessingMode</c> keeps reading its two flags INDEPENDENTLY, so the combination
+    ///     "mark read AND delete" still produces one write carrying both. Collapsing that onto the
+    ///     derived single mode would be invisible in practice (an expunged message's <c>\Seen</c>
+    ///     flag is observable by nobody) but it would change what reaches the server on a fleet of
+    ///     deployed pipelines, and this method's whole job is that nothing about them changes.
+    /// </remarks>
+    internal static EmailFlagDecision ResolveFlagDecision(FromEmailNodeConfiguration nodeConfig,
+        bool writeBackAllowed)
+    {
+        if (!writeBackAllowed)
+        {
+            return new EmailFlagDecision(MessageFlags.None, false);
+        }
+
+        var mode = ResolveEffectivePostProcessingMode(nodeConfig);
+
+        if (nodeConfig.PostProcessingMode is null && mode is MailPostProcessingMode.Delete
+                or MailPostProcessingMode.MarkAsRead)
+        {
+            var legacyFlags = MessageFlags.None;
+            if (nodeConfig.MarkAsRead)
+            {
+                legacyFlags |= MessageFlags.Seen;
+            }
+
+            if (nodeConfig.DeleteAfterProcessing)
+            {
+                legacyFlags |= MessageFlags.Deleted;
+            }
+
+            // `\Deleted` alone only marks; the messages disappear when the folder is expunged.
+            return new EmailFlagDecision(legacyFlags, nodeConfig.DeleteAfterProcessing);
+        }
+
+        return mode switch
+        {
+            MailPostProcessingMode.Delete => new EmailFlagDecision(MessageFlags.Deleted, true),
+            MailPostProcessingMode.MarkAsRead => new EmailFlagDecision(MessageFlags.Seen, false),
+            _ => new EmailFlagDecision(MessageFlags.None, false),
+        };
+    }
+
+    /// <summary>
+    ///     The post-processing mode actually in force (AB#5345): the configured one, or — when none
+    ///     is configured — the one DERIVED from what this pipeline already said.
+    /// </summary>
+    /// <remarks>
+    ///     The derivation is the migration, and it covers every combination of the pre-AB#5345
+    ///     properties that describes a working queue: a done/failed folder (both new, so only a
+    ///     pipeline that opted in has one) means the three-folder mode; otherwise
+    ///     <c>deleteAfterProcessing</c> wins over <c>markAsRead</c>, because a message that is
+    ///     deleted and expunged cannot meaningfully also be "read".
+    ///     <para>
+    ///     🔴 <b>With neither flag and no folder there is NOTHING to derive, and this throws</b>
+    ///     (AB#5372). It used to answer <c>None</c> — "leave the mailbox alone" — which reads like a
+    ///     legitimate read-only poll and is not one: the mailbox is this trigger's only record of
+    ///     what it has already imported, so a pass that changes nothing hands the next pass the same
+    ///     <c>maxMessagesPerPoll</c> messages and never reaches the mail behind them. The import then
+    ///     runs for ever, reports success and imports nothing new (AB#5336). Failing at the trigger
+    ///     start is the whole point: a mailbox queue that cannot work has to be heard on deploy.
+    ///     </para>
+    /// </remarks>
+    internal static MailPostProcessingMode ResolveEffectivePostProcessingMode(
+        FromEmailNodeConfiguration nodeConfig)
+    {
+        if (nodeConfig.PostProcessingMode.HasValue)
+        {
+            return nodeConfig.PostProcessingMode.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(nodeConfig.DoneFolder) ||
+            !string.IsNullOrWhiteSpace(nodeConfig.FailedFolder))
+        {
+            return MailPostProcessingMode.MoveToFolders;
+        }
+
+        if (nodeConfig.DeleteAfterProcessing)
+        {
+            return MailPostProcessingMode.Delete;
+        }
+
+        if (nodeConfig.MarkAsRead)
+        {
+            return MailPostProcessingMode.MarkAsRead;
+        }
+
+        throw MeshAdapterPipelineExecutionException.MailPostProcessingModeNotConfigured(
+            NodeType, HowToFix);
+    }
+
+    /// <summary>
+    ///     The folder this trigger polls: the settings/definition <c>sourceFolder</c> when one is
+    ///     given, otherwise the connection entity's <c>Folder</c> — which is where it has always
+    ///     lived and where a plain single-folder import still configures it.
+    /// </summary>
+    internal static string ResolveSourceFolderName(FromEmailNodeConfiguration nodeConfig,
+        string connectionFolder)
+    {
+        return string.IsNullOrWhiteSpace(nodeConfig.SourceFolder) ? connectionFolder : nodeConfig.SourceFolder;
+    }
+
+    private static string ResolveSourceFolderName(FromEmailNodeConfiguration nodeConfig,
+        EmailServerConfiguration serverConfig)
+    {
+        return ResolveSourceFolderName(nodeConfig, serverConfig.Folder);
+    }
+
+    /// <summary>
+    ///     Carries out the mode's post-processing for one finished poll (AB#5345).
+    ///     <paramref name="importConfirmed" /> is the BUSINESS outcome — an inbox item was created —
+    ///     as the pipeline reported it through <c>successPath</c>, never "the execution did not
+    ///     throw"; a run that threw never reaches here at all.
+    /// </summary>
+    private async Task ApplyPostProcessingAsync(IMailFolder folder, IList<UniqueId> uids,
+        FromEmailNodeConfiguration nodeConfig, bool importConfirmed)
+    {
+        if (ResolveEffectivePostProcessingMode(nodeConfig) == MailPostProcessingMode.MoveToFolders)
+        {
+            await MoveBatchAsync(folder, uids, nodeConfig, importConfirmed);
+            return;
+        }
+
+        var flagDecision = ResolveFlagDecision(nodeConfig, importConfirmed);
+        if (flagDecision.HasFlags)
+        {
+            await folder.AddFlagsAsync(uids, flagDecision.Flags, true);
+        }
+
+        if (flagDecision.Expunge)
+        {
+            await folder.ExpungeAsync();
+        }
+    }
+
+    /// <summary>
+    ///     Three-folder mode: a confirmed batch goes to the done folder, an unconfirmed one to the
+    ///     failed folder. A target that is not configured or cannot be resolved leaves the batch
+    ///     where it is and is logged — never fails the poll: the folder path is operator-entered
+    ///     text, and a typo in it must cost the move, not the import.
+    /// </summary>
+    private async Task MoveBatchAsync(IMailFolder folder, IList<UniqueId> uids,
+        FromEmailNodeConfiguration nodeConfig, bool importConfirmed)
+    {
+        var targetPath = importConfirmed ? nodeConfig.DoneFolder : nodeConfig.FailedFolder;
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            logger.LogWarning(
+                "FromEmail: postProcessingMode is MoveToFolders but no {Which} folder is configured; " +
+                "{Count} mail(s) stay in the source folder.",
+                importConfirmed ? "done" : "failed", uids.Count);
+            return;
+        }
+
+        IMailFolder? target;
+        try
+        {
+            target = await ResolveFolderAsync(targetPath, createLeafIfMissing: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex,
+                "FromEmail: could not resolve the folder '{Folder}'; {Count} mail(s) stay in the source folder.",
+                targetPath, uids.Count);
+            return;
+        }
+
+        if (target == null)
+        {
+            logger.LogError(
+                "FromEmail: the folder '{Folder}' does not exist and its parent path could not be walked; " +
+                "{Count} mail(s) stay in the source folder.",
+                targetPath, uids.Count);
+            return;
+        }
+
+        await folder.MoveToAsync(uids, target);
+        logger.LogInformation("FromEmail: moved {Count} mail(s) to '{Folder}' ({Outcome}).",
+            uids.Count, targetPath, importConfirmed ? "import confirmed" : "import NOT confirmed");
+    }
+
+    /// <summary>
+    ///     Resolves a <c>/</c>-separated folder path against the mailbox, creating the LEAF when
+    ///     <paramref name="createLeafIfMissing" /> is set (its parents must exist). Returns
+    ///     <c>null</c> when the path cannot be walked.
+    /// </summary>
+    /// <remarks>
+    ///     The verbatim lookup is tried FIRST, because that is how this node has always addressed
+    ///     the polled folder and a name that already carries the server's own delimiter must keep
+    ///     working. Only when that fails is the path split on <c>/</c> and walked segment by
+    ///     segment from the personal namespace — IMAP servers do not agree on a hierarchy
+    ///     delimiter (Dovecot commonly uses <c>.</c>, others <c>/</c>), so an operator writing
+    ///     <c>Archive/Invoices/Done</c> must not have to know which one their server picked.
+    ///     A folder whose NAME contains a <c>/</c> is consequently not addressable by path.
+    /// </remarks>
+    private async Task<IMailFolder?> ResolveFolderAsync(string path, bool createLeafIfMissing)
+    {
+        try
+        {
+            return await _imapClient!.GetFolderAsync(path);
+        }
+        catch (FolderNotFoundException)
+        {
+            // Not there under that literal name — walk it instead.
+        }
+
+        var segments = SplitFolderPath(path);
+        if (segments.Count == 0 || _imapClient!.PersonalNamespaces.Count == 0)
+        {
+            return null;
+        }
+
+        var current = _imapClient.GetFolder(_imapClient.PersonalNamespaces[0]);
+        for (var i = 0; i < segments.Count; i++)
+        {
+            IMailFolder? next;
+            try
+            {
+                next = await current.GetSubfolderAsync(segments[i]);
+            }
+            catch (FolderNotFoundException)
+            {
+                next = null;
+            }
+
+            if (next == null)
+            {
+                // Only the LEAF may be created — a missing parent is a path the operator has to
+                // fix, and creating one silently would invent a folder tree nobody asked for.
+                if (i != segments.Count - 1 || !createLeafIfMissing)
+                {
+                    return null;
+                }
+
+                next = await current.CreateAsync(segments[i], true);
+            }
+
+            // A server that answers a create/lookup with nothing is a path we cannot walk any
+            // further; treated as "unresolvable" rather than dereferenced.
+            if (next == null)
+            {
+                return null;
+            }
+
+            current = next;
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    ///     Splits an operator-entered folder path into its segments. <c>/</c> is the ONE separator
+    ///     this node understands on input; the server's own delimiter is applied by MailKit when the
+    ///     walk asks for a subfolder.
+    /// </summary>
+    internal static IReadOnlyList<string> SplitFolderPath(string? path)
+    {
+        return string.IsNullOrWhiteSpace(path)
+            ? []
+            : path.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     /// <summary>
@@ -337,9 +1084,20 @@ public class EmailData
     public string? To { get; set; }
     
     /// <summary>
-    /// Email date
+    /// When the message was received. <b>Nullable</b> since AB#5339: a mail may carry no usable
+    /// <c>Date:</c> header at all, and the IMAP trigger falls back to the server's INTERNALDATE
+    /// before giving up.
     /// </summary>
-    public DateTime Date { get; set; }
+    /// <remarks>
+    /// 🔴 A null here means <b>unknown</b> and must stay distinguishable from a date. The
+    /// non-nullable predecessor made "no date" indistinguishable from
+    /// <c>0001-01-01T00:00:00</c> — written through to <c>UploadedDocument.SourceReceivedAt</c> it
+    /// sorts to the very front of the accounting inbox and falls outside every fiscal year, so the
+    /// receipt cannot be assigned to a period. Consumers read this via JSONPath (<c>$.key.Date</c>)
+    /// and land on <c>CreateUpdateInfo@1</c>, which writes a JSON null as a null attribute value
+    /// and skips a path that matches nothing — both are "unknown", which is the truth.
+    /// </remarks>
+    public DateTime? Date { get; set; }
     
     /// <summary>
     /// Email body (text or HTML)

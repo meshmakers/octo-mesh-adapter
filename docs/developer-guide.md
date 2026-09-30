@@ -978,7 +978,7 @@ directly. The **parent** rtId is parsed from the document and not checked; a pip
 read it from the store upstream has to establish that itself.
 
 **Ordering between competing deliveries is the archive's job**, via its opt-in
-`Archive.ConflictPrecedence` (System.StreamData 1.11.0). Map the ranking columns — a quality code,
+`Archive.ConflictPrecedence` (System.StreamData 1.13.0). Map the ranking columns — a quality code,
 the source document's own date — into the archive through `Columns` and declare them as the
 archive's precedence keys; the stored value is then independent of the order rows arrive in.
 

@@ -65,7 +65,7 @@ public record TimeRangeSeriesColumn
 /// </para>
 /// <para>
 /// <b>Ordering.</b> This node does not decide which of two deliveries for the same window wins —
-/// the archive does, via its opt-in <c>ConflictPrecedence</c> (System.StreamData 1.11.0), an ordered
+/// the archive does, via its opt-in <c>ConflictPrecedence</c> (System.StreamData 1.13.0), an ordered
 /// list of keys compared lexicographically. Map the columns that rank a delivery — a quality code,
 /// the source document's own date — into the archive via <see cref="Columns" />, declare them as the
 /// archive's precedence keys, and the surviving value is the same whichever write arrives first.

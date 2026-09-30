@@ -1,0 +1,40 @@
+# Spike 2 / Phase E3b — host smoke pipeline.
+#
+# Two-node pipeline that exposes an HTTP trigger and routes the JSON
+# body through LlmQuery@1 (our new provider-agnostic node) against
+# local Ollama running nemotron-3-nano:4b.
+#
+# Deploy via octo-cli:
+#   octo-cli -c DeployPipeline \
+#     -aid <adapter-rt-id> \
+#     -pid <pipeline-rt-id> \
+#     -f tests/MeshAdapter.Sdk.IntegrationTests/TestData/llmquery-smoke-pipeline.yaml
+#
+# Trigger via curl:
+#   curl -k -X POST https://localhost:5020/test/llmquery \
+#     -H "Content-Type: application/json" \
+#     -d '{"text": "your text to summarize"}' | jq .
+#
+# Expected response: JSON object with the original text + a `summary`
+# field populated by Ollama through the LlmQuery node.
+
+triggers:
+  - type: FromHttpRequest@1
+    path: /test/llmquery
+    method: POST
+
+transformations:
+  - type: LlmQuery@1
+    provider: OpenAICompatible
+    baseUrl: http://localhost:11434/v1/
+    apiKey: ollama
+    model: nemotron-3-nano:4b
+    question: "Summarize the following text in exactly one sentence."
+    systemPrompt: "You are a concise summarizer. Reply with one sentence only."
+    responseFormat: text
+    maxTokens: 200
+    temperature: 0.2
+    timeoutSeconds: 60
+    path: $.body.text
+    targetPath: $.summary
+    continueOnError: false

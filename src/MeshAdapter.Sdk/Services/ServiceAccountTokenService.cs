@@ -27,6 +27,23 @@ public interface IServiceAccountTokenService
     Task EnsureTokenAsync(ITenantRepository tenantRepository, string wellKnownName);
 
     /// <summary>
+    ///     Acquires a valid access token for the named ServiceAccountConfiguration and
+    ///     returns it <b>without touching the adapter-global <see cref="IServiceClientAccessToken" /></b>
+    ///     Tokens are cached per <c>(tenantId, wellKnownName)</c>
+    ///     (60 s expiry buffer, single-flight acquisition), so two nodes referencing different
+    ///     service accounts never receive each other's token. Returns <c>null</c> when the
+    ///     configuration cannot be resolved or the grant fails — callers decide their own
+    ///     fallback (a warning is logged).
+    /// </summary>
+    /// <param name="tenantRepository">The tenant repository to read the configuration from</param>
+    /// <param name="tenantId">Tenant the configuration belongs to. Part of the cache key —
+    ///     two tenants with a same-named ServiceAccountConfiguration must never share a token.</param>
+    /// <param name="wellKnownName">Well-known name of the ServiceAccountConfiguration entity</param>
+    /// <param name="cancellationToken">Cancellation token (bounded by the caller's timeout budget)</param>
+    Task<string?> GetAccessTokenAsync(ITenantRepository tenantRepository, string tenantId, string wellKnownName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     ///     Acquires a <b>delegated</b> access token that runs on the end user's <c>sub</c> — the
     ///     service account of <paramref name="wellKnownName" /> acting on behalf of the caller who
     ///     presented <paramref name="subjectToken" /> (OctoMesh delegation grant, AB#5026/AB#5031).
@@ -153,6 +170,24 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     private DateTime _tokenExpiresAt = DateTime.MinValue;
 
+    /// <summary>Safety margin for the keyed token cache — mirrors <see cref="IdentityCacheSkew" />.</summary>
+    private static readonly TimeSpan ExpiryBuffer = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    ///     Keyed token cache for <see cref="GetAccessTokenAsync" />: key is
+    ///     <c>tenantId::wellKnownName</c>. Deliberately separate from <see cref="_tokenExpiresAt" />
+    ///     (the adapter's own service identity) and from <see cref="_identityCache" /> (identity
+    ///     answers, not credentials).
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<TokenCacheKey, CachedToken> _cache = new();
+
+    /// <summary>In-flight acquisitions, one per cache key, removed when the acquisition completes.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<TokenCacheKey, Lazy<Task<CachedToken?>>> _inFlight =
+        new();
+
+    /// <summary>Upper bound for one acquisition flight (configuration read, discovery, token request). Internal for tests.</summary>
+    internal TimeSpan AcquisitionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
         ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
         IOptions<MeshAdapterConfiguration> meshAdapterConfiguration)
@@ -250,6 +285,172 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             configuration.ClientId, mode.Value, _tokenExpiresAt);
     }
 
+    /// <summary>Structured, case-insensitive cache key; a joined string could alias two pairs.</summary>
+    private readonly record struct TokenCacheKey
+    {
+        public TokenCacheKey(string tenantId, string wellKnownName)
+        {
+            TenantId = tenantId.ToLowerInvariant();
+            WellKnownName = wellKnownName.ToLowerInvariant();
+        }
+
+        public string TenantId { get; }
+        public string WellKnownName { get; }
+    }
+
+    internal sealed record CachedToken(string AccessToken, DateTime ExpiresAtUtc)
+    {
+        public bool IsValid => DateTime.UtcNow < ExpiresAtUtc - ExpiryBuffer;
+
+        /// <summary>Redacts the token — record auto-ToString would print it into any log/exception.</summary>
+        public override string ToString() =>
+            $"CachedToken {{ AccessToken = <redacted>, ExpiresAtUtc = {ExpiresAtUtc:O} }}";
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> GetAccessTokenAsync(ITenantRepository tenantRepository,
+        string tenantId, string wellKnownName, CancellationToken cancellationToken = default)
+    {
+        // The key must name the tenant the configuration is read from, or one tenant's token
+        // could be cached under another tenant's key.
+        if (!string.IsNullOrWhiteSpace(tenantRepository.TenantId)
+            && !string.Equals(tenantRepository.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"tenantId '{tenantId}' does not match the repository's tenant '{tenantRepository.TenantId}'.",
+                nameof(tenantId));
+        }
+
+        var cacheKey = new TokenCacheKey(tenantId, wellKnownName);
+
+        if (_cache.TryGetValue(cacheKey, out var cached) && cached.IsValid)
+        {
+            return cached.AccessToken;
+        }
+
+        // Single-flight per key. The flight runs detached from the callers' tokens so one cancelled
+        // caller cannot abort the round trip the others wait for.
+        var flight = _inFlight.GetOrAdd(cacheKey, key => new Lazy<Task<CachedToken?>>(
+            () => AcquireAndCacheAsync(tenantRepository, wellKnownName, key),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+
+        var acquired = await flight.Value.WaitAsync(cancellationToken);
+        return acquired?.AccessToken;
+    }
+
+    private async Task<CachedToken?> AcquireAndCacheAsync(ITenantRepository tenantRepository,
+        string wellKnownName, TokenCacheKey cacheKey)
+    {
+        using var flightTimeout = new CancellationTokenSource(AcquisitionTimeout);
+        var work = AcquireTokenAsync(tenantRepository, wellKnownName, flightTimeout.Token);
+        try
+        {
+            var acquired = await work.WaitAsync(flightTimeout.Token);
+            if (acquired is not null)
+            {
+                _cache[cacheKey] = acquired;
+            }
+
+            return acquired;
+        }
+        catch (OperationCanceledException) when (flightTimeout.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Acquiring a token for service account '{wellKnownName}' did not complete within " +
+                $"{AcquisitionTimeout.TotalSeconds:0} s; the identity server or the configuration read is not responding.");
+        }
+        finally
+        {
+            // The repository read cannot be cancelled and may outlive the timeout; keep the key
+            // registered until it finishes so no further reads pile up on a hung repository.
+            if (work.IsCompleted)
+            {
+                _inFlight.TryRemove(cacheKey, out _);
+            }
+            else
+            {
+                _ = work.ContinueWith(completed => _inFlight.TryRemove(cacheKey, out _),
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Resolves the ServiceAccountConfiguration entity and performs the client-credentials
+    ///     grant for <see cref="GetAccessTokenAsync" />. Virtual so unit tests can substitute the
+    ///     network round-trip while exercising the cache-keying and side-effect contracts.
+    /// </summary>
+    protected virtual async Task<CachedToken?> AcquireTokenAsync(ITenantRepository tenantRepository,
+        string wellKnownName, CancellationToken cancellationToken)
+    {
+        // No WaitAsync here: the caller bounds the flight and must see this task complete only
+        // when the (uncancellable) read really has.
+        var configuration = await ReadConfigurationAsync(tenantRepository, wellKnownName);
+        if (configuration == null)
+        {
+            return null;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Same resolution contract as EnsureTokenAsync and AcquireDelegatedTokenAsync: an empty
+        // IssuerUri means the adapter's own installation and an empty TenantId the adapter's own
+        // tenant (AB#5115); a configuration without a usable secret is impersonated with the
+        // adapter's identity (AB#5114); discovery accepts split-horizon issuers (AB#5112). Bypassing
+        // these here left the keyed path failing on exactly the seeds the other two paths accept.
+        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
+        if (issuerUri == null)
+        {
+            return null;
+        }
+
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        var mode = SelectAcquisitionMode(configuration, wellKnownName);
+        if (mode == null)
+        {
+            return null;
+        }
+
+        // Contract is null on failure; only cancellation (the flight bound) surfaces as an exception.
+        TokenResponse response;
+        try
+        {
+            var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri),
+                cancellationToken);
+            if (disco.IsError)
+            {
+                _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}", issuerUri, disco.Error);
+                return null;
+            }
+
+            var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
+            response = await _tokenHttpClient.RequestTokenAsync(tokenRequest, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Token acquisition for '{WellKnownName}' failed against {IssuerUri}",
+                wellKnownName, issuerUri);
+            return null;
+        }
+
+        if (response.IsError || string.IsNullOrEmpty(response.AccessToken))
+        {
+            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}", issuerUri, response.Error);
+            return null;
+        }
+
+        var expiresAt = DateTime.UtcNow.AddSeconds(response.ExpiresIn);
+        _logger.LogInformation(
+            "Service account token acquired for '{WellKnownName}' (client {ClientId}, {Mode}), expires at {ExpiresAt}",
+            wellKnownName, configuration.ClientId, mode.Value, expiresAt);
+
+        return new CachedToken(response.AccessToken, expiresAt);
+    }
+
     /// <inheritdoc />
     public async Task<string?> AcquireDelegatedTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
         string subjectToken, CancellationToken cancellationToken = default)
@@ -269,7 +470,8 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        var configuration = await ReadConfigurationAsync(tenantRepository, wellKnownName);
+        // The repository API takes no cancellation token; WaitAsync keeps the flight bound anyway.
+        var configuration = await ReadConfigurationAsync(tenantRepository, wellKnownName).WaitAsync(cancellationToken);
         if (configuration == null)
         {
             return null;

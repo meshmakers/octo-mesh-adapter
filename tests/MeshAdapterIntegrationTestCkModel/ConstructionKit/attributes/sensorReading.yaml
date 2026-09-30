@@ -5,6 +5,12 @@ attributes:
     valueType: String
   - id: Temperature
     valueType: Double
+  # Conflict-precedence keys (System.StreamData 1.13.0): a rank code numbered best-first and the
+  # source document's own date
+  - id: Quality
+    valueType: Int
+  - id: SourceDate
+    valueType: DateTime
   # Record-typed attribute for testing dotted stream-data column paths (Amount.Value / Amount.Unit)
   - id: Amount
     valueType: Record

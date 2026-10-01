@@ -156,8 +156,21 @@ internal static class TimeRangeSeriesShaper
     }
 
     /// <summary>
+    /// True when the value carries a window the archive can store: both boundaries readable and the
+    /// end after the start. The one rule for "usable", shared by the anchor selection and the row
+    /// mapping — a value that produces no archive row must not shape the anchor either.
+    /// </summary>
+    public static bool HasUsableWindow(JsonObject value, SaveTimeRangeSeriesInArchiveNodeConfiguration c)
+    {
+        var from = ReadDateTime(value, c.FromProperty);
+        var to = ReadDateTime(value, c.ToProperty);
+        return from is not null && to is not null && to > from;
+    }
+
+    /// <summary>
     /// Picks the value the anchor entity reflects: the one with the latest window end when the
-    /// anchor carries a window, otherwise the last one in document order.
+    /// anchor carries a window, otherwise the last one in document order. Expects values that passed
+    /// <see cref="HasUsableWindow" />.
     /// </summary>
     public static JsonObject SelectAnchorValue(
         IReadOnlyList<JsonObject> values, SaveTimeRangeSeriesInArchiveNodeConfiguration c)
@@ -238,6 +251,7 @@ internal static class TimeRangeSeriesShaper
                     seriesValuesBySource[source] = seriesValues;
                 }
 
+                // Same rule as HasUsableWindow, spelled out here because the row needs the values.
                 var from = ReadDateTime(value, c.FromProperty);
                 var to = ReadDateTime(value, c.ToProperty);
                 if (from is null || to is null || to <= from)

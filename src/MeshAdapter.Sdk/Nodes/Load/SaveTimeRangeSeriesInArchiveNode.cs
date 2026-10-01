@@ -6,6 +6,7 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -82,8 +83,28 @@ internal class SaveTimeRangeSeriesInArchiveNode(
             return;
         }
 
-        await ResolveAndPersistAnchorsAsync(series, ckTypeId, c, nodeContext);
-        await WriteArchiveRowsAsync(series, ckTypeId, c, nodeContext);
+        // Everything that can make the archive write fail or silently store nothing is checked before
+        // the first anchor is persisted: the anchors are committed in their own transaction, so a
+        // failure afterwards would leave entities behind that no archive row belongs to.
+        await EnsureArchiveAcceptsAsync(ckTypeId, c);
+
+        // A series is only worth an anchor if at least one of its values yields an archive row.
+        var writable = series.Where(s => s.Values.Any(v => TimeRangeSeriesShaper.HasUsableWindow(v, c))).ToList();
+        if (writable.Count < series.Count)
+        {
+            nodeContext.Warning(
+                $"Skipped {series.Count - writable.Count} series without a single usable " +
+                $"[{c.FromProperty}, {c.ToProperty}) window; no anchor is written for them.");
+        }
+
+        if (writable.Count == 0)
+        {
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        await ResolveAndPersistAnchorsAsync(writable, ckTypeId, c, nodeContext);
+        await WriteArchiveRowsAsync(writable, ckTypeId, c, nodeContext);
 
         await next(dataContext, nodeContext);
     }
@@ -94,6 +115,12 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         {
             throw new InvalidOperationException(
                 "SaveTimeRangeSeriesInArchive: archiveRtId is required.");
+        }
+
+        if (!OctoObjectId.TryParse(c.ArchiveRtId, out _))
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archiveRtId '{c.ArchiveRtId}' is not a valid RtId.");
         }
 
         if (c.Columns.Count == 0)
@@ -112,6 +139,40 @@ internal class SaveTimeRangeSeriesInArchiveNode(
             throw new InvalidOperationException(
                 "SaveTimeRangeSeriesInArchive: parentRtIdProperty, parentCkTypeId and " +
                 "parentAssociationRoleId must be configured together or not at all.");
+        }
+    }
+
+    /// <summary>
+    /// Refuses a write the archive would not take: an archive that does not exist, is not a
+    /// time-range archive, is not activated, or targets another CK type. The last one is the
+    /// dangerous case — the repository drops rows of a foreign type without an error, so the node
+    /// would report success with anchors and no measurements.
+    /// </summary>
+    private async Task EnsureArchiveAcceptsAsync(
+        RtCkId<CkTypeId> ckTypeId, SaveTimeRangeSeriesInArchiveNodeConfiguration c)
+    {
+        var tenantContext = await systemContext.FindTenantContextAsync(etlContext.TenantId);
+        var snapshot = await tenantContext.GetArchiveRuntimeStore().GetAsync(new OctoObjectId(c.ArchiveRtId))
+            ?? throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' does not exist.");
+
+        if (!snapshot.IsTimeRange)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' is not a time-range archive.");
+        }
+
+        if (snapshot.Status != CkArchiveStatus.Activated)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' is {snapshot.Status}, not Activated.");
+        }
+
+        if (snapshot.TargetCkTypeId != ckTypeId)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' stores '{snapshot.TargetCkTypeId}', " +
+                $"but the node is configured for '{ckTypeId}'; every row would be dropped.");
         }
     }
 
@@ -143,26 +204,45 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         // like any other business-data node. A narrower identity that hides an existing anchor makes
         // the node insert a duplicate rather than fail, which is the right trade here: the
         // alternative (System) would write unstamped entities nobody can scope afterwards.
-        var session = await etlContext.GetSessionForAsync(c.Identity);
+        using var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
+        // No "take = number of names": two anchors can share a name (see below), and a page cut at
+        // the name count would then hide the anchor of a later series, which would get a second one.
         var existing = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
             session,
             ckTypeId,
             RtEntityQueryOptions.Create().FieldIn(nameof(RtEntity.RtWellKnownName), wellKnownNames),
             0,
-            wellKnownNames.Count);
+            int.MaxValue);
         await session.CommitTransactionAsync();
 
+        // Duplicates are possible: a narrower identity that could not see an existing anchor inserts
+        // a second one (the trade-off described above). Take the same one every time, so the archive
+        // rows of a series keep landing on one anchor, and say so.
         var existingByName = existing.Items
             .Where(e => !string.IsNullOrEmpty(e.RtWellKnownName))
-            .ToDictionary(e => e.RtWellKnownName!, StringComparer.Ordinal);
+            .GroupBy(e => e.RtWellKnownName!, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    if (g.Count() > 1)
+                    {
+                        nodeContext.Warning(
+                            $"{g.Count()} anchors share the well-known name '{g.Key}'; using the one with the lowest RtId.");
+                    }
+
+                    return g.OrderBy(e => e.RtId.ToString(), StringComparer.Ordinal).First();
+                },
+                StringComparer.Ordinal);
 
         var entityUpdates = new List<EntityUpdateInfo<RtEntity>>();
         var associationUpdates = new List<AssociationUpdateInfo>();
 
         foreach (var shaped in series)
         {
-            var winner = TimeRangeSeriesShaper.SelectAnchorValue(shaped.Values, c);
+            var winner = TimeRangeSeriesShaper.SelectAnchorValue(
+                shaped.Values.Where(v => TimeRangeSeriesShaper.HasUsableWindow(v, c)).ToList(), c);
 
             if (existingByName.TryGetValue(shaped.WellKnownName, out var stored))
             {
@@ -203,7 +283,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         // AB#5028 / AB#5127 — scoped, same identity as the lookup above: the anchors are tenant
         // business data and carry a creator stamp. A separate session because the lookup's
         // transaction is already committed.
-        var writeSession = await etlContext.GetSessionForAsync(c.Identity);
+        using var writeSession = await etlContext.GetSessionForAsync(c.Identity);
         writeSession.StartTransaction();
         var operationResult = new OperationResult();
         await etlContext.TenantRepository.ApplyChangesAsync(
@@ -237,7 +317,9 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         var winnerEnd = TimeRangeSeriesShaper.ReadDateTime(winner, c.ToProperty);
         if (winnerEnd is null)
         {
-            return true;
+            // Cannot happen for a value with a usable window; if it ever does, an end that cannot be
+            // compared must not displace a stored one.
+            return false;
         }
 
         var storedEnd = RtPathEvaluator.GetValue(

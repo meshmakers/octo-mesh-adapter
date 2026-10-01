@@ -257,6 +257,52 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         sameQualityRows[0].SourceDate.Should().Be(NewerDocument);
     }
 
+    [Fact]
+    public async Task UnknownArchive_ThrowsBeforeAnyAnchorIsWritten()
+    {
+        // Arrange — the anchors are committed in their own transaction, so everything that can make
+        // the archive write fail has to be refused before them.
+        fixture.EnsureInitialized();
+        var key = UniqueKey("NO-ARCHIVE");
+
+        // Act
+        var act = () => ExecuteNodeAsync(OctoObjectId.GenerateNewId(),
+            Series(key, new[] { Value(0, 10.0, Measured, OlderDocument) }));
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*does not exist*");
+        (await CountAnchorsAsync(key)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ASeriesWithoutAUsableWindow_GetsNoAnchor_AndAMalformedValueDoesNotShapeOne()
+    {
+        // Arrange — a value whose window ends before it starts yields no archive row, so it must not
+        // create an anchor either, nor be the value an anchor reflects.
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_MalformedWindows", withPrecedence: false);
+        var keyOnlyMalformed = UniqueKey("MALFORMED-ONLY");
+        var keyMixed = UniqueKey("MALFORMED-MIXED");
+
+        // Act
+        await ExecuteNodeAsync(archiveRtId,
+            Series(keyOnlyMalformed, new[] { Reversed(Value(0, 99.0, Measured, OlderDocument)) }),
+            Series(keyMixed, new[]
+            {
+                Value(0, 10.0, Measured, OlderDocument),
+                Reversed(Value(1, 99.0, Measured, NewerDocument))
+            }));
+
+        // Assert
+        (await CountAnchorsAsync(keyOnlyMalformed)).Should().Be(0);
+
+        var anchor = await GetSingleAnchorAsync(keyMixed);
+        var rows = await ReadRowsAsync(archiveRtId, anchor.RtId);
+        rows.Should().ContainSingle();
+        rows[0].Temperature.Should().Be(10.0);
+        (await CountRowsAsync(archiveRtId)).Should().Be(1);
+    }
+
     /// <summary>
     /// Writes two competing deliveries for the same three windows in both arrival orders, each order on
     /// its own anchor, and returns the stored rows of both anchors.
@@ -395,6 +441,28 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
         await fixture.RefreshArchiveAsync(archiveRtId);
+    }
+
+    /// <summary>Swaps the window boundaries of a value, which makes its window unusable.</summary>
+    private static JsonObject Reversed(JsonObject value)
+    {
+        (value["from"], value["to"]) = (value["to"]!.DeepClone(), value["from"]!.DeepClone());
+        return value;
+    }
+
+    private async Task<int> CountAnchorsAsync(string wellKnownName)
+    {
+        var tenantRepository = fixture.GetSystemContext().GetSystemTenantRepository();
+        using var session = await tenantRepository.GetSessionAsync();
+        session.StartTransaction();
+        var result = await tenantRepository.GetRtEntitiesByTypeAsync(
+            session,
+            new RtCkId<CkTypeId>(fixture.TestCkTypeId),
+            RtEntityQueryOptions.Create().FieldIn(nameof(RtEntity.RtWellKnownName), new List<string> { wellKnownName }),
+            0,
+            10);
+        await session.CommitTransactionAsync();
+        return result.Items.Count();
     }
 
     /// <summary>Asserts exactly one anchor exists for the series key and returns it.</summary>

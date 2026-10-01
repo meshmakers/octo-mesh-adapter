@@ -57,6 +57,9 @@ public class SessionIdentityClassificationTests
             ["Load/DeployPipelineNode.cs"] = (0, 1),
             ["Load/EMailSenderNode.cs"] = (0, 1),
             ["Load/SaveTimeRangeStreamDataInArchive.cs"] = (0, 1),
+            // Writes the tenant's own anchor entities, so both sites are scoped — unlike its
+            // sibling above, whose single site is a system-side orphan guard.
+            ["Load/SaveTimeRangeSeriesInArchiveNode.cs"] = (2, 0),
             ["Load/SftpUploadNode.cs"] = (0, 1),
             ["Load/ToDiscordNode.cs"] = (0, 2),
             ["Load/UpdateRtEntityIfNewerNode.cs"] = (1, 0),
@@ -110,8 +113,12 @@ public class SessionIdentityClassificationTests
         // 32 sites, not the 31 the work item estimated — ToDiscord@1 opens two (the entity lookup
         // and the binary download) and both had to be decided separately. AB#5127 did not add or
         // remove a site: it turned all 15 scoped ones into config-selected ones (counted as scoped,
-        // default Caller), so the totals are unchanged.
-        Assert.Equal(15, actual.Sum(v => v.Scoped));
+        // default Caller), so the totals were unchanged.
+        //
+        // 34 now: SaveTimeRangeSeriesInArchive@1 added two scoped sites (the anchor lookup and the
+        // anchor write). The totals are asserted rather than derived so that adding a session to a
+        // node is a deliberate act — a new site has to be classified above AND counted here.
+        Assert.Equal(17, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
 

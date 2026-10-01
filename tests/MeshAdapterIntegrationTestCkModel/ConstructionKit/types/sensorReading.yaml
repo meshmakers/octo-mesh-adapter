@@ -11,3 +11,9 @@ types:
   - id: ${this}/Amount
     name: Amount
     isOptional: true
+  - id: ${this}/Quality
+    name: Quality
+    isOptional: true
+  - id: ${this}/SourceDate
+    name: SourceDate
+    isOptional: true

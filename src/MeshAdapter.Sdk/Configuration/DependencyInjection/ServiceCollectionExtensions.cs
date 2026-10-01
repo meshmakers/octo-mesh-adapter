@@ -64,6 +64,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<BackfillFromRtEntityNode>()
             .RegisterNode<SaveStreamDataInArchiveNode>()
             .RegisterNode<SaveTimeRangeStreamDataInArchiveNode>()
+            .RegisterNode<SaveTimeRangeSeriesInArchiveNode>()
             .RegisterNode<UpdateRtEntityIfNewerNode>()
             .RegisterNode<SimulateEnergyMeasurementsNode>()
             .RegisterNode<GetOrCreateRtEntitiesByTypeNode>()

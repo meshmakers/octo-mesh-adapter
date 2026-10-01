@@ -46,6 +46,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<SignalSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeStreamDataInArchiveNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeSeriesInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<UpdateRtEntityIfNewerNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GrafanaProvisionTenantNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GrafanaDeprovisionTenantNodeConfiguration>();

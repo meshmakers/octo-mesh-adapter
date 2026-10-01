@@ -66,6 +66,16 @@ secrets:
   # `ValueOverride` the controller sends. Unlike the four cluster secrets this
   # one is OPTIONAL: unset means the adapter connects anonymously.
   serviceAccountClientSecret: ""
+  # IronOCR licence key, consumed by `PdfOcrExtraction@1` (AB#5449). Supplied at
+  # deploy time like the services' AutoMapper key — it used to be hardcoded in the
+  # node's source, which made every rotation a code change and put a live
+  # commercial key into every clone of the repository. Accepts a plaintext string
+  # or the `{valueFrom: {secretKeyRef: ...}}` map, same as the two secrets above.
+  # OPTIONAL by design: only the OCR node needs it and most tenants never run OCR,
+  # so an adapter without it starts normally and only `PdfOcrExtraction@1` fails,
+  # naming this setting. Requiring it at startup would take the whole adapter
+  # fleet down the day the licence expires.
+  ironOcrLicenseKey: ""
   # content of the root ca certificate chain
   rootCa: ""
 

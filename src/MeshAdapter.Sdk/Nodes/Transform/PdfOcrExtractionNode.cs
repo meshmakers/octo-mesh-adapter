@@ -6,6 +6,8 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
+using Microsoft.Extensions.Options;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
@@ -13,7 +15,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 [NodeConfiguration(typeof(PdfOcrExtractionNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
+internal partial class PdfOcrExtractionNode(
+    NodeDelegate next,
+    IOptions<MeshAdapterConfiguration> meshAdapterConfiguration) : IPipelineNode
 {
     /// <summary>
     /// Header the merged OCR supplement is introduced with. It is prose on purpose: the
@@ -154,8 +158,18 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
             if (!handledByTextLayer)
             {
 
-            // Initialize IronOCR with explicit configuration
-            License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
+            // The licence key comes from configuration, never from the source (AB#5449). It is
+            // read HERE — on the OCR path, after the text-layer branch has declined — so an
+            // adapter without a key still starts and still serves every other node and every
+            // text-layer PDF. A startup check would take the whole fleet down the day the licence
+            // expires, including the adapters that never OCR anything.
+            var licenseKey = meshAdapterConfiguration.Value.IronOcrLicenseKey;
+            if (string.IsNullOrWhiteSpace(licenseKey))
+            {
+                throw MeshAdapterPipelineExecutionException.IronOcrLicenseKeyMissing(nodeContext);
+            }
+
+            License.LicenseKey = licenseKey;
             var ocr = new IronTesseract();
             
             if (!string.IsNullOrEmpty(config.Language))

@@ -38,7 +38,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="IronOcr" Version="2026.9.4" />
+        <PackageReference Include="IronOcr" Version="2026.10.2" />
         <!-- Cover-sheet rendering (RenderDataSheetPdf) + PDF merge (MergePdf) for
              the accounting BMD handover export. QuestPDF Community license is set
              in RenderDataSheetPdfNode; PdfSharp (MIT) does the page-level merge. -->
@@ -53,9 +53,9 @@
              forwarded e-mail body (HTML or plain text) into a receipt PDF via QuestPDF. -->
         <PackageReference Include="AngleSharp" Version="1.8.0" />
         <PackageReference Include="IronOcr.Languages.German" Version="2020.11.2" />
-        <PackageReference Include="IronOcr.Linux" Version="2026.9.4" />
-        <PackageReference Include="IronOcr.MacOs" Version="2026.9.4" />
-        <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.9.4" />
+        <PackageReference Include="IronOcr.Linux" Version="2026.10.2" />
+        <PackageReference Include="IronOcr.MacOs" Version="2026.10.2" />
+        <PackageReference Include="IronOcr.MacOs.ARM" Version="2026.10.2" />
         <PackageReference Include="Meshmakers.Octo.Sdk.SimulationNodes" Version="$(OctoCommVersion)" />
         <!-- Phase 3 cut: adapter base classes + pipeline framework moved out of
              Sdk.Common to dedicated packages in octo-communication-sdk. -->

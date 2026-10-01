@@ -148,4 +148,26 @@
 {{- if .Values.secrets.serviceAccountClientSecret }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_ADAPTER__CLIENTSECRET" "value" .Values.secrets.serviceAccountClientSecret "legacyKey" "serviceAccountClientSecret" "context" .) }}
 {{- end }}
+{{/*
+  AB#5449 — IronOCR licence key for `PdfOcrExtraction@1`. Until now it sat in
+  plain text in the node's source, so every rotation was a code change and every
+  clone of the repository carried a live commercial key. It travels the same way
+  the services' AutoMapper key does: configuration at deploy time, never
+  compiled in.
+
+  Secret-flagged, so `octo-mesh.secretEnv` is used rather than a literal env
+  var — it accepts both the plaintext string and the
+  `{valueFrom: {secretKeyRef: ...}}` map the operator materialises, exactly like
+  `secrets.serviceAccountClientSecret` above.
+
+  Guarded by `if` for two reasons: `octo-mesh.secretEnv` FAILS on an empty value,
+  and this key is optional BY DESIGN. Only one node needs it and most tenants
+  never run OCR, so an adapter without it must still start and serve everything
+  else — `PdfOcrExtraction@1` fails on first use with a message naming this
+  setting. A startup requirement here would take every adapter in the estate
+  down the day the licence expires, including the ones that never OCR anything.
+*/}}
+{{- if .Values.secrets.ironOcrLicenseKey }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_ADAPTER__IRONOCRLICENSEKEY" "value" .Values.secrets.ironOcrLicenseKey "legacyKey" "ironOcrLicenseKey" "context" .) }}
+{{- end }}
 {{- end }}

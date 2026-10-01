@@ -36,6 +36,22 @@ public class MeshAdapterConfiguration
     public string[] AdditionalValidIssuers { get; set; } = [];
 
     /// <summary>
+    /// License key for IronOCR, consumed by <c>PdfOcrExtraction@1</c>. Supplied at deploy time
+    /// (env <c>OCTO_ADAPTER__IRONOCRLICENSEKEY</c>, chart value <c>secrets.ironOcrLicenseKey</c>)
+    /// rather than compiled in, the same way the services take their AutoMapper key — a licence
+    /// is a secret with an expiry date, and until AB#5449 this one sat in plain text in the node's
+    /// source, which meant every rotation was a code change and every clone carried the key.
+    /// <para>
+    /// 🔴 Deliberately optional and NOT validated at startup. Only one node needs it, most tenants
+    /// never run OCR at all, and the whole adapter fleet shares this configuration — a startup
+    /// check would take down every adapter in the estate the day the key expires, including the
+    /// ones that never call OCR. <c>PdfOcrExtraction@1</c> therefore fails on first use with a
+    /// message naming the setting; see <c>MeshAdapterPipelineExecutionException.IronOcrLicenseKeyMissing</c>.
+    /// </para>
+    /// </summary>
+    public string? IronOcrLicenseKey { get; set; }
+
+    /// <summary>
     /// Records an event per invocation of an anonymous trigger route. Off by default because such
     /// a route serves public webhooks, whose volume would dominate a tenant's event log - nothing
     /// prunes it. Opt in per environment with <c>OCTO_ADAPTER__AUDITANONYMOUSINVOCATIONS=true</c>

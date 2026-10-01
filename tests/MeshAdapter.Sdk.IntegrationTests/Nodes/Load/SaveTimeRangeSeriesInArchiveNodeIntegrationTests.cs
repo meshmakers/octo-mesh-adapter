@@ -181,6 +181,82 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         rows.Should().OnlyContain(r => r.Quality == Estimated && r.SourceDate == OlderDocument);
     }
 
+    [Fact]
+    public async Task SameWindowTwiceInOneBatch_WithoutConflictPrecedence_TheLaterRowWins()
+    {
+        // Arrange — archive writes go out as one multi-row statement, so two values for the same
+        // window land in the SAME statement. CrateDB applies the rows in order; the result has to be
+        // what two separate writes would have left: the later one.
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_DuplicateInBatch", withPrecedence: false);
+        var key = UniqueKey("DUP-LWW");
+
+        // Act
+        await ExecuteNodeAsync(archiveRtId, Series(key, new[]
+        {
+            Value(0, 10.0, Measured, NewerDocument),
+            Value(0, 90.0, Estimated, OlderDocument),
+            Value(1, 11.0, Measured, NewerDocument)
+        }));
+
+        // Assert
+        var anchor = await GetSingleAnchorAsync(key);
+        var rows = await ReadRowsAsync(archiveRtId, anchor.RtId);
+        rows.Should().HaveCount(2);
+        rows.Select(r => r.Temperature).Should().Equal(90.0, 11.0);
+        rows[0].Quality.Should().Be(Estimated);
+        rows[0].SourceDate.Should().Be(OlderDocument);
+    }
+
+    [Fact]
+    public async Task SameWindowTwiceInOneBatch_ConflictPrecedenceDecides_InEitherOrder()
+    {
+        // Arrange — the guard compares each row with the stored one. Inside one statement the
+        // "stored" row for the second occurrence is the first occurrence, so the precedence has to
+        // hold within a batch exactly as it does across batches.
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_DuplicateInBatchGuarded", withPrecedence: true);
+        var keyWorseFirst = UniqueKey("DUP-GUARD-12");
+        var keyBetterFirst = UniqueKey("DUP-GUARD-21");
+        var keySameQuality = UniqueKey("DUP-GUARD-DATE");
+
+        // Act
+        await ExecuteNodeAsync(archiveRtId,
+            Series(keyWorseFirst, new[]
+            {
+                Value(0, 90.0, Estimated, NewerDocument),
+                Value(0, 10.0, Measured, OlderDocument)
+            }),
+            Series(keyBetterFirst, new[]
+            {
+                Value(0, 10.0, Measured, OlderDocument),
+                Value(0, 90.0, Estimated, NewerDocument)
+            }),
+            Series(keySameQuality, new[]
+            {
+                Value(0, 20.0, Measured, NewerDocument),
+                Value(0, 10.0, Measured, OlderDocument)
+            }));
+
+        // Assert — quality decides first, whichever occurrence comes first in the batch
+        foreach (var key in new[] { keyWorseFirst, keyBetterFirst })
+        {
+            var anchor = await GetSingleAnchorAsync(key);
+            var rows = await ReadRowsAsync(archiveRtId, anchor.RtId);
+            rows.Should().ContainSingle();
+            rows[0].Temperature.Should().Be(10.0);
+            rows[0].Quality.Should().Be(Measured);
+            rows[0].SourceDate.Should().Be(OlderDocument);
+        }
+
+        // ... and the newer document on equal quality, although it comes first in the batch
+        var sameQualityAnchor = await GetSingleAnchorAsync(keySameQuality);
+        var sameQualityRows = await ReadRowsAsync(archiveRtId, sameQualityAnchor.RtId);
+        sameQualityRows.Should().ContainSingle();
+        sameQualityRows[0].Temperature.Should().Be(20.0);
+        sameQualityRows[0].SourceDate.Should().Be(NewerDocument);
+    }
+
     /// <summary>
     /// Writes two competing deliveries for the same three windows in both arrival orders, each order on
     /// its own anchor, and returns the stored rows of both anchors.

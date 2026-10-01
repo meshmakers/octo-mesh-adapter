@@ -69,6 +69,7 @@ public record TimeRangeSeriesColumn
 /// list of keys compared lexicographically. Map the columns that rank a delivery — a quality code,
 /// the source document's own date — into the archive via <see cref="Columns" />, declare them as the
 /// archive's precedence keys, and the surviving value is the same whichever write arrives first.
+/// Writes that are equal in every key are not ordered; the row stored first stays.
 /// </para>
 /// </remarks>
 [NodeName("SaveTimeRangeSeriesInArchive", 1)]

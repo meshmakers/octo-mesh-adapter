@@ -981,7 +981,7 @@ read it from the store upstream has to establish that itself.
 `Archive.ConflictPrecedence` (System.StreamData 1.13.0). Map the ranking columns — a quality code,
 the source document's own date — into the archive through `Columns` and declare them as the
 archive's precedence keys; the stored value is then independent of the order rows arrive in, for
-rows the keys tell apart (rows equal in every key keep the one stored first).
+rows the keys tell apart (of rows equal in every key the later one replaces the stored row).
 
 **Enum columns store the integer CK key, not the name.** Nodes that go through `CreateUpdateInfo@1`
 get the mapping for free from `RtPathEvaluator.SetValue`; this node skips the RtEntity round trip and

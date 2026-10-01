@@ -303,6 +303,120 @@ public class PdfOcrExtractionNodeTests : NodeTestBase
         A.CallTo(next).MustNotHaveHappened();
     }
 
+    // --- AB#5465: the merge path (AB#5259) must not lose the text layer when OCR fails -----
+    // Observed live: a hybrid-looking invoice selected the merge path, the OCR branch threw
+    // (no licence key), `continueOnError: true` swallowed it, and the downstream AI node found
+    // nothing at the target path — both invoices ended INCOMPLETE, where before AB#5259 the
+    // text layer alone had produced an AccountingDocument. The licence is only how it was
+    // found; any OCR failure (transient, corrupt page, memory, timeout) destroyed the read.
+    // The missing licence is also the one OCR failure a unit test can provoke for real, so the
+    // fixtures below are a genuine text-layer PDF through the genuine branch, not a fake.
+
+    /// <summary>
+    /// The prod-1 shape: total labels in the text layer, no figure next to any of them, and
+    /// long enough to clear <c>MinTextLayerChars</c>. The heuristic reports it incomplete and
+    /// the node runs OCR in addition — i.e. the merge path is selected.
+    /// </summary>
+    private Task<string> RenderHybridLookingInvoicePdfAsync() => RenderTextPdfAsync(
+        "Potenzialwerkstatt Mag. Halina Gruber\n" +
+        "Rechnung 26034 vom 12.09.2026\n" +
+        "Leistungsbetrag gesamt\n" +
+        "MWSt 20%\n" +
+        "Bruttosumme\n" +
+        "Zahlbar innerhalb von 14 Tagen ohne Abzug.");
+
+    [Fact]
+    public async Task ProcessObjectAsync_MergePathAndOcrFails_ContinueOnError_KeepsTheTextLayerAndWarns()
+    {
+        var pdf = await RenderHybridLookingInvoicePdfAsync();
+
+        var config = new PdfOcrExtractionNodeConfiguration
+        {
+            Path = "$.pdf", TargetPath = "$.text", Language = "de",
+            IncludeConfidence = true, ContinueOnError = true
+        };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger(config);
+        A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(pdf);
+
+        // No licence key: the merge path is selected, the OCR branch throws.
+        await CreateNode(next, null).ProcessObjectAsync(dataContext, nodeContext);
+
+        // The pipeline continues (as configured) AND the text layer is in place.
+        VerifyNextCalled(next, dataContext, nodeContext);
+        var text = CapturedString(dataContext, "$.text");
+        Assert.NotNull(text);
+        Assert.Contains("26034", text);
+        Assert.Contains("Bruttosumme", text);
+        // Nothing from OCR can have been merged in.
+        Assert.DoesNotContain(PdfOcrExtractionNode.OcrSupplementMarker, text);
+
+        // The same write shape as the success path, so consumers see an identical context.
+        A.CallTo(() => dataContext.Set("$.text", A<string>._,
+                config.DocumentMode, config.TargetValueKind, config.TargetValueWriteMode))
+            .MustHaveHappenedOnceExactly();
+
+        // No confidence is claimed for a read the node KNOWS is incomplete: 100 is the stamp of
+        // a clean text layer, a Tesseract score is a measurement of a read that never happened.
+        Assert.Null(CapturedValue(dataContext, "$.Confidence"));
+
+        // The operator has to be able to tell this apart from a clean extraction: one warning
+        // naming BOTH facts — OCR failed, and the text layer was kept, so amounts may be missing.
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Matches(m => m.Contains("OCR failed") && m.Contains("text layer")
+                                            && m.Contains("amounts")), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_MergePathAndOcrFails_NoContinueOnError_StillThrowsAfterWritingTheTextLayer()
+    {
+        var pdf = await RenderHybridLookingInvoicePdfAsync();
+
+        var config = new PdfOcrExtractionNodeConfiguration
+            { Path = "$.pdf", TargetPath = "$.text", Language = "de", ContinueOnError = false };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger(config);
+        A.CallTo(() => dataContext.Get<string>("$.pdf")).Returns(pdf);
+
+        // A hard failure stays a hard failure — the fallback must not convert it into a success.
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next, null).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("OCTO_ADAPTER__IRONOCRLICENSEKEY", ex.Message);
+        A.CallTo(next).MustNotHaveHappened();
+
+        // ... but the text layer that WAS read is surfaced before the error, and the warning
+        // says why the result is degraded.
+        var text = CapturedString(dataContext, "$.text");
+        Assert.NotNull(text);
+        Assert.Contains("26034", text);
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Matches(m => m.Contains("OCR failed") && m.Contains("text layer")),
+                A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NoTextLayerAndOcrFails_WritesNothingAndDoesNotClaimAFallback()
+    {
+        // An image carries no text layer, so OCR is the ONLY source. When it fails there is
+        // nothing to fall back to and the node must behave exactly as before AB#5465: no
+        // target write, no fallback warning, the error is reported and the pipeline continues
+        // only because `continueOnError` says so.
+        var config = new PdfOcrExtractionNodeConfiguration
+            { Path = "$.image", TargetPath = "$.text", Language = "de", ContinueOnError = true };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger(config);
+        A.CallTo(() => dataContext.Get<string>("$.image")).Returns(RenderPngWithBars());
+
+        await CreateNode(next, null).ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyNextCalled(next, dataContext, nodeContext);
+        Assert.Null(CapturedValue(dataContext, "$.text"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustNotHaveHappened();
+        A.CallTo(() => logger.Error(A<string>._, A<string>._,
+                A<string>.That.Contains("Error during PDF OCR extraction"), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
     /// <summary>A tiny PNG with black bars — no text layer, so it forces the OCR path.</summary>
     private static string RenderPngWithBars()
     {

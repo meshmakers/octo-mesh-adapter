@@ -66,6 +66,16 @@
 {{- define "octo-mesh.env" -}}
 - name: ASPNETCORE_URLS
   value: "http://+:80"
+# Our own ActivitySources, declared to the injected .NET auto-instrumentation.
+# The adapter hosts the same StreamData engine as the platform services, so the
+# same two sources are emitted here — and the same rule applies: the SDK inside
+# the process subscribes to them (Meshmakers.Octo.Services.Observability) but
+# deliberately carries no trace exporter in the cluster, because a second one
+# would duplicate every HTTP span the injector already sends. Naming them here
+# is what gets these spans out. Mirrors the identical block in the octo-mesh
+# chart; keep the two lists in step.
+- name: OTEL_DOTNET_AUTO_TRACES_ADDITIONAL_SOURCES
+  value: "Meshmakers.Octo.StreamData,Meshmakers.Octo.StreamData.Crate"
 {{- $name := "OCTO_ADAPTER" }}
 {{ include "octo-mesh.system-env" . }}
 {{ include "octo-mesh.broker-env" (dict "global" . "name" $name) }}

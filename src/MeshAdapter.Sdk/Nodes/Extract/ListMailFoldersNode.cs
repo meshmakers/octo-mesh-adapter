@@ -163,7 +163,7 @@ public class ListMailFoldersNode(
         var settings = etlContext.GlobalConfiguration.GetValue<ImapMailboxAccess.ImapServerSettings>(
             c.ImapServerConfiguration);
 
-        using var client = await ImapMailboxAccess.ConnectAndAuthenticateAsync(settings, timeout, cancellationToken);
+        using var client = await ImapMailboxAccess.ConnectAndAuthenticateAsync(settings, timeout, cancellationToken, logger);
         try
         {
             var listing = await ImapMailboxAccess.ListFoldersAsync(client, maxFolders, cancellationToken);

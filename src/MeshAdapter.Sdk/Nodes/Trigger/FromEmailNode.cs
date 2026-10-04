@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using MimeKit;
 
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.MailFolders;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
@@ -119,6 +120,9 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         
         _cancellationTokenSource = new CancellationTokenSource();
         _imapClient = new ImapClient();
+        // Tolerate an unreachable revocation service, refuse every other certificate defect —
+        // MailKit's default refused imap.gmail.com from a developer Mac for that alone.
+        MailServerCertificateValidation.Apply(_imapClient, logger);
         
         // Connect and authenticate
         await ConnectAndAuthenticateAsync(serverConfig);

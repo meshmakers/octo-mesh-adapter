@@ -203,13 +203,22 @@ internal class AnthropicAiQueryNode(
             // system prompt still promises tools. Without a correction the model imitates tool
             // calls as text and fabricates their results (observed on prod-1: invented invoice
             // data in the accounting chat). Append an explicit no-tools instruction instead.
+            // 5.10.2026: the same correction when the pipeline EXPECTS tools (it delegates to the
+            // caller, names a service account or a tool list) but no MCP server URL resolved at
+            // all — the AiConfiguration entity of a fresh or local tenant carries no McpServerUrl.
+            // That case skipped the suffix entirely, and the accounting chat answered "which
+            // invoices are open" with invented tool calls and invented invoices.
+            var mcpExpected = ExpectsMcpTools(config);
             var systemPrompt = BuildEffectiveSystemPrompt(config.SystemPrompt,
-                mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl), mcpToolCount: mcpTools?.Count ?? 0);
+                mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl) || mcpExpected, mcpToolCount: mcpTools?.Count ?? 0);
             if (!ReferenceEquals(systemPrompt, config.SystemPrompt))
             {
-                nodeContext.Warning(
-                    "MCP is configured but no tools are available — appending a no-tools instruction " +
-                    "to the system prompt so the model does not simulate tool calls.");
+                nodeContext.Warning(string.IsNullOrEmpty(mcpServerUrl)
+                    ? "The pipeline expects MCP tools but no MCP server URL is configured (AiConfiguration." +
+                      "McpServerUrl / node mcpServerUrl) — appending a no-tools instruction to the system " +
+                      "prompt so the model does not simulate tool calls."
+                    : "MCP is configured but no tools are available — appending a no-tools instruction " +
+                      "to the system prompt so the model does not simulate tool calls.");
             }
 
             // Load conversation history if configured
@@ -235,6 +244,14 @@ internal class AnthropicAiQueryNode(
 
             // Execute Claude API call (with optional tool use loop)
             var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
+
+            // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
+            // as API content blocks, never as text. Its "results" are invented, so the answer is
+            // refused rather than shown (the accounting chat would render invented invoices).
+            if (config.ResponseFormat != "json" && ContainsSimulatedToolCalls(aiResponse))
+            {
+                throw new InvalidOperationException(SimulatedToolCallsMessage);
+            }
 
             if (string.IsNullOrEmpty(aiResponse))
             {
@@ -280,6 +297,42 @@ internal class AnthropicAiQueryNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    ///     True when the node's configuration promises tools to the model: it delegates to the
+    ///     caller, authenticates to MCP with a service account, or names a tool list. Such a node
+    ///     without a resolvable MCP URL must get the no-tools correction like one whose server
+    ///     is down.
+    /// </summary>
+    internal static bool ExpectsMcpTools(AnthropicAiQueryNodeConfiguration config)
+    {
+        return config.McpDelegateToCaller ||
+               !string.IsNullOrEmpty(config.McpServiceAccountConfigName) ||
+               config.McpToolNames is { Length: > 0 };
+    }
+
+    /// <summary>Thrown when the model answered with tool-call markup as text (see <see cref="ContainsSimulatedToolCalls" />).</summary>
+    internal const string SimulatedToolCallsMessage =
+        "The AI answered with simulated tool calls (tool-call markup in the text) — its results are " +
+        "invented, not queried. The answer was refused. Check that the MCP server URL " +
+        "(AiConfiguration.McpServerUrl) is configured and reachable so real tools are available.";
+
+    /// <summary>
+    ///     Does a TEXT answer carry tool-call markup? Real tool use never does — it arrives as
+    ///     <c>tool_use</c> content blocks — so any of these tags in the text means the model
+    ///     imitated a tool and made its result up (observed 5.10.2026: <c>&lt;tool_call&gt;</c> +
+    ///     <c>&lt;tool_response&gt;</c> with invented invoices, on a tenant without an MCP URL).
+    /// </summary>
+    internal static bool ContainsSimulatedToolCalls(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        foreach (var tag in new[] { "<tool_call>", "<tool_response>", "<function_calls>", "<tool_use>" })
+        {
+            if (text.Contains(tag, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+
+        return false;
     }
 
     /// <summary>

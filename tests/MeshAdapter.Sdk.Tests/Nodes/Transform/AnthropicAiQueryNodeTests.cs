@@ -312,6 +312,37 @@ public class AnthropicAiQueryNodeTests
     // errors used to be invisible or a bare status code. The messages below are what lands in
     // the RtPipelineExecution audit record, so they must name the cause and stay actionable.
 
+    // ------------------------------------------------------------------ 5.10.2026: tools promised, none available
+
+    [Fact]
+    public void ExpectsMcpTools_WhenDelegatingOrAuthenticatingOrNamingTools()
+    {
+        Assert.False(AnthropicAiQueryNode.ExpectsMcpTools(new AnthropicAiQueryNodeConfiguration { Question = "q" }));
+        Assert.True(AnthropicAiQueryNode.ExpectsMcpTools(new AnthropicAiQueryNodeConfiguration { Question = "q", McpDelegateToCaller = true }));
+        Assert.True(AnthropicAiQueryNode.ExpectsMcpTools(new AnthropicAiQueryNodeConfiguration { Question = "q", McpServiceAccountConfigName = "ServiceAccountConfig" }));
+        Assert.True(AnthropicAiQueryNode.ExpectsMcpTools(new AnthropicAiQueryNodeConfiguration { Question = "q", McpToolNames = ["query_entities_simple"] }));
+        Assert.False(AnthropicAiQueryNode.ExpectsMcpTools(new AnthropicAiQueryNodeConfiguration { Question = "q", McpToolNames = [] }));
+    }
+
+    [Theory]
+    [InlineData("Ich schaue nach!\n\n<tool_call>\n{\"name\": \"query_entities_simple\"}\n</tool_call>\n<tool_response>{}</tool_response>")]
+    [InlineData("<TOOL_CALL>x</TOOL_CALL>")]
+    [InlineData("<function_calls><invoke name=\"q\"/></function_calls>")]
+    public void ContainsSimulatedToolCalls_FlagsToolMarkupInText(string text)
+    {
+        Assert.True(AnthropicAiQueryNode.ContainsSimulatedToolCalls(text));
+    }
+
+    [Theory]
+    [InlineData("Es sind drei Rechnungen offen: RE-1, RE-2 und RE-3.")]
+    [InlineData("Der Begriff tool_call kommt hier ohne spitze Klammern vor.")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void ContainsSimulatedToolCalls_LeavesOrdinaryAnswersAlone(string? text)
+    {
+        Assert.False(AnthropicAiQueryNode.ContainsSimulatedToolCalls(text));
+    }
+
     [Fact]
     public void BuildTruncationMessage_NamesTheLimitAndTheFixes()
     {

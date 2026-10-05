@@ -107,6 +107,19 @@
 # chart; keep the two lists in step.
 - name: OTEL_DOTNET_AUTO_TRACES_ADDITIONAL_SOURCES
   value: "Meshmakers.Octo.StreamData,Meshmakers.Octo.StreamData.Crate"
+{{- /*
+  AB#5478 section 2.3: the level comes from the environment now, not from a
+  hard-coded minlevel="Debug" in the adapter repository. Omitted unless set, and
+  nlog.config then falls back to Info.
+*/}}
+{{- if .Values.logLevel }}
+- name: OCTO_LOG_LEVEL
+  value: {{ .Values.logLevel | quote }}
+{{- end }}
+{{- if .Values.logLevelRoot }}
+- name: OCTO_LOG_LEVEL_ROOT
+  value: {{ .Values.logLevelRoot | quote }}
+{{- end }}
 {{- $name := "OCTO_ADAPTER" }}
 {{ include "octo-mesh.system-env" . }}
 {{ include "octo-mesh.broker-env" (dict "global" . "name" $name) }}

@@ -70,7 +70,7 @@ internal static class GraphMailboxAccess
         catch (HttpRequestException ex)
         {
             throw new MailFolderListingException(
-                $"Microsoft 365 sign-in (login.microsoftonline.com) is not reachable from the adapter: {ex.Message}", ex);
+                $"Microsoft 365 sign-in (login.microsoftonline.com) is not reachable from the import service: {ex.Message}", ex);
         }
 
         using (response)
@@ -202,7 +202,7 @@ internal static class GraphMailboxAccess
             catch (HttpRequestException ex)
             {
                 throw new MailFolderListingException(
-                    $"Microsoft Graph is not reachable from the adapter: {ex.Message}", ex);
+                    $"Microsoft Graph is not reachable from the import service: {ex.Message}", ex);
             }
 
             if ((int)status < 200 || (int)status >= 300)

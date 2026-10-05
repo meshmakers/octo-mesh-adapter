@@ -244,7 +244,7 @@ public class TestImportConnectionNode(
         catch (HttpRequestException ex)
         {
             checks.Add(new Check("botToken", false,
-                $"The Bot Framework sign-in endpoint is not reachable from the adapter: {ex.Message}"));
+                $"The Bot Framework sign-in endpoint is not reachable from the import service: {ex.Message}"));
         }
     }
 
@@ -283,7 +283,7 @@ public class TestImportConnectionNode(
         catch (HttpRequestException ex)
         {
             checks.Add(new Check("bridge", false,
-                $"The Signal bridge at {apiBase} is not reachable from the adapter: {ex.Message}"));
+                $"The Signal bridge at {apiBase} is not reachable from the import service: {ex.Message}"));
             return;
         }
 

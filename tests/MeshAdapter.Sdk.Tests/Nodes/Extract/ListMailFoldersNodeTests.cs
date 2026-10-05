@@ -519,7 +519,7 @@ public class ListMailFoldersNodeTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.StartsWith("Microsoft 365: Microsoft 365 sign-in (login.microsoftonline.com) is not reachable from the adapter: No such host", ex.Message);
+        Assert.StartsWith("Microsoft 365: Microsoft 365 sign-in (login.microsoftonline.com) is not reachable from the import service: No such host", ex.Message);
         Assert.IsType<HttpRequestException>(ex.InnerException?.InnerException);
     }
 
@@ -537,7 +537,7 @@ public class ListMailFoldersNodeTests : NodeTestBase
         var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.StartsWith("Microsoft 365: Microsoft Graph is not reachable from the adapter: Connection refused", ex.Message);
+        Assert.StartsWith("Microsoft 365: Microsoft Graph is not reachable from the import service: Connection refused", ex.Message);
         Assert.Equal(2, handler.CallCount);
     }
 

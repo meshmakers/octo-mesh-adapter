@@ -1208,6 +1208,20 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     }
 
     /// <summary>
+    ///     Post-processing <c>MarkAsRead</c> while the poll searches ALL mails (5.10.2026): the
+    ///     \Seen flag only takes a mail out of a <c>NotSeen</c> search, so this pair re-imports the
+    ///     same capped batch for ever. Raised at trigger start, so the deploy says so.
+    /// </summary>
+    public static Exception MailMarkAsReadNeedsOnlyUnread(string nodeType)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeType}]: post-processing mode MarkAsRead needs onlyUnread = true — the read flag " +
+            "only takes a mail out of the next poll when the poll searches unread mails. " +
+            MailboxIsTheBookkeeping +
+            " Switch onlyUnread on (the settings' EmailImportOnlyUnread), or use MoveToFolders or Delete.");
+    }
+
+    /// <summary>
     ///     A settings entity still stores the post-processing mode <c>None</c>, which AB#5372
     ///     removed. Deliberately louder than the reader's usual "an unknown name means not
     ///     configured": that fallback would silently replace an operator's stored decision with a

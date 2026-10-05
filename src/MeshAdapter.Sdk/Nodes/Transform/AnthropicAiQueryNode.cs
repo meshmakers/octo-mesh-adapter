@@ -544,6 +544,68 @@ internal class AnthropicAiQueryNode(
         return config.Temperature;
     }
 
+    /// <summary>
+    ///     The Messages API body for one round (5.10.2026, prompt caching). The system prompt and
+    ///     the tool list are the parts that repeat verbatim from round to round and from turn to
+    ///     turn of a chat — a tool list alone is thousands of tokens — so both carry an
+    ///     <c>ephemeral</c> cache breakpoint: the system prompt as its one block, the tools on
+    ///     their LAST entry (a breakpoint caches everything before it in the request, tools come
+    ///     first). The model then reuses the processed prefix instead of reading it again, which
+    ///     is what the first seconds of every follow-up answer went into. A request without a
+    ///     system prompt sends none; without tools, no <c>tools</c> key.
+    /// </summary>
+    internal static Dictionary<string, object> BuildRequestBody(string model, int maxTokens, double temperature,
+        string? systemPrompt, List<object> messages, List<JsonElement>? mcpTools)
+    {
+        var requestObj = new Dictionary<string, object>
+        {
+            ["model"] = model,
+            ["max_tokens"] = maxTokens,
+            ["temperature"] = temperature,
+            ["messages"] = messages
+        };
+
+        if (!string.IsNullOrEmpty(systemPrompt))
+        {
+            requestObj["system"] = new object[]
+            {
+                new Dictionary<string, object>
+                {
+                    ["type"] = "text",
+                    ["text"] = systemPrompt,
+                    ["cache_control"] = new Dictionary<string, string> { ["type"] = "ephemeral" }
+                }
+            };
+        }
+
+        if (mcpTools is { Count: > 0 })
+        {
+            var tools = new List<object>(mcpTools.Count);
+            for (var i = 0; i < mcpTools.Count; i++)
+            {
+                if (i < mcpTools.Count - 1)
+                {
+                    tools.Add(mcpTools[i]);
+                    continue;
+                }
+
+                // The last tool carries the breakpoint: copy its members and add cache_control.
+                var last = new Dictionary<string, object>();
+                foreach (var property in mcpTools[i].EnumerateObject())
+                {
+                    last[property.Name] = property.Value;
+                }
+
+                last["cache_control"] = new Dictionary<string, string> { ["type"] = "ephemeral" };
+                tools.Add(last);
+            }
+
+            requestObj["tools"] = tools;
+        }
+
+        return requestObj;
+    }
+
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
         string model, int maxTokens, double temperature, string systemPrompt, string? mcpServerUrl, string userPrompt,
         List<JsonElement>? mcpTools, INodeContext nodeContext, List<object>? historyMessages = null)
@@ -562,21 +624,8 @@ internal class AnthropicAiQueryNode(
 
         for (var round = 0; round < (config.MaxToolRounds + 1); round++)
         {
-            // Build request
-            var requestObj = new Dictionary<string, object>
-            {
-                ["model"] = model,
-                ["max_tokens"] = maxTokens,
-                ["temperature"] = temperature,
-                ["system"] = systemPrompt,
-                ["messages"] = messages
-            };
-
-            // Add tools if MCP is configured
-            if (mcpTools is { Count: > 0 })
-            {
-                requestObj["tools"] = mcpTools;
-            }
+            // Build request — system prompt and tool list carry prompt-cache breakpoints.
+            var requestObj = BuildRequestBody(model, maxTokens, temperature, systemPrompt, messages, mcpTools);
 
             var jsonRequest = JsonSerializer.Serialize(requestObj, JsonOptions);
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")

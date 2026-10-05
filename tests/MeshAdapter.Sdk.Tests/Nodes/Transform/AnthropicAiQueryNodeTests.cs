@@ -343,6 +343,48 @@ public class AnthropicAiQueryNodeTests
         Assert.False(AnthropicAiQueryNode.ContainsSimulatedToolCalls(text));
     }
 
+    // ------------------------------------------------------------------ 5.10.2026: prompt caching
+
+    [Fact]
+    public void BuildRequestBody_PutsCacheBreakpointsOnSystemPromptAndLastTool()
+    {
+        var tools = new List<JsonElement>
+        {
+            JsonSerializer.Deserialize<JsonElement>("{\"name\":\"a\",\"description\":\"A\",\"input_schema\":{\"type\":\"object\"}}"),
+            JsonSerializer.Deserialize<JsonElement>("{\"name\":\"b\",\"description\":\"B\",\"input_schema\":{\"type\":\"object\"}}")
+        };
+        var messages = new List<object> { new { role = "user", content = "hi" } };
+
+        var body = AnthropicAiQueryNode.BuildRequestBody("claude-x", 100, 0.3, "You are …", messages, tools);
+        var json = JsonSerializer.Serialize(body);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var system = root.GetProperty("system");
+        Assert.Equal(JsonValueKind.Array, system.ValueKind);
+        Assert.Equal("You are …", system[0].GetProperty("text").GetString());
+        Assert.Equal("ephemeral", system[0].GetProperty("cache_control").GetProperty("type").GetString());
+
+        var toolsOut = root.GetProperty("tools");
+        Assert.Equal(2, toolsOut.GetArrayLength());
+        Assert.False(toolsOut[0].TryGetProperty("cache_control", out _));
+        Assert.Equal("b", toolsOut[1].GetProperty("name").GetString());
+        Assert.Equal("ephemeral", toolsOut[1].GetProperty("cache_control").GetProperty("type").GetString());
+        Assert.Equal("object", toolsOut[1].GetProperty("input_schema").GetProperty("type").GetString());
+        Assert.Equal(100, root.GetProperty("max_tokens").GetInt32());
+    }
+
+    [Fact]
+    public void BuildRequestBody_WithoutSystemPromptOrTools_SendsNeither()
+    {
+        var body = AnthropicAiQueryNode.BuildRequestBody("claude-x", 100, 0.0, "", new List<object>(), null);
+
+        Assert.False(body.ContainsKey("system"));
+        Assert.False(body.ContainsKey("tools"));
+        var empty = AnthropicAiQueryNode.BuildRequestBody("claude-x", 100, 0.0, null, new List<object>(), new List<JsonElement>());
+        Assert.False(empty.ContainsKey("tools"));
+    }
+
     [Fact]
     public void BuildTruncationMessage_NamesTheLimitAndTheFixes()
     {

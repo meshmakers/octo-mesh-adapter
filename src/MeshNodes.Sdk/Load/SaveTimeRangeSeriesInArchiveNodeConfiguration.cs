@@ -128,7 +128,7 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     /// YamlDotNet, which has no node deserializer for <c>IReadOnlyList&lt;T&gt;</c> — a config
     /// declaring one compiles, unit-tests fine (C# constructs it directly) and then fails at
     /// registration with "No node deserializer was able to deserialize the node into type
-    /// IReadOnlyList`1[...]". Every other node config in this assembly uses
+    /// <c>IReadOnlyList&lt;T&gt;</c>". Every other node config in this assembly uses
     /// <c>ICollection&lt;T&gt;</c> or <c>List&lt;T&gt;</c>.
     /// </remarks>
     [PropertyGroup("Columns", 0)]

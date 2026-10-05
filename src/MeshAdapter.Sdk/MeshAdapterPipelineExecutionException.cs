@@ -1248,4 +1248,16 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             (string.IsNullOrWhiteSpace(value) ? "nothing" : $"'{value}'") +
             " — set channel on the node, or channelPath to where the request carries it.");
     }
+
+    /// <summary>
+    ///     The import channel to test is none of <c>Imap</c>, <c>Graph</c>, <c>Teams</c>, <c>Signal</c>.
+    ///     Prefix-less like <see cref="MailFolderChannelInvalid" /> — it lands on the settings page.
+    /// </summary>
+    public static Exception ImportConnectionChannelInvalid(string? value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            "The import channel must be 'Imap', 'Graph', 'Teams' or 'Signal', got " +
+            (string.IsNullOrWhiteSpace(value) ? "nothing" : $"'{value}'") +
+            " — set channel on the node, or channelPath to where the request carries it.");
+    }
 }

@@ -66,6 +66,37 @@
 {{- define "octo-mesh.env" -}}
 - name: ASPNETCORE_URLS
   value: "http://+:80"
+{{- /*
+  AB#5478 §2.1 + §2.2 — per-tenant identity for this workload.
+
+  Both halves of the identity were collapsed across tenants before this. The pod
+  label app.kubernetes.io/name is the CHART name, identical for every adapter of
+  every tenant in the cluster, and the in-process SDK fell back to the entry
+  assembly name, equally shared. So every tenant's adapter arrived in Dash0 as a
+  single service — measured on test-2: 127,976 requests at p95 3.19 s with no way
+  to tell whose latency that was.
+
+  OTEL_SERVICE_NAME is the release name, which under the operator already reads
+  {tenantId}-{workloadName} and is already the value of the
+  app.kubernetes.io/service label. Metrics, traces and logs therefore land on the
+  SAME name: metrics and traces because container env beats everything the operator
+  would otherwise derive, logs because the Dash0Monitoring transform reads that
+  label. One value, three signals.
+
+  octo.tenant.id carries the tenant as its own dimension on every span, metric and
+  log record of this pod, with no code change. One spelling fleet-wide — the
+  engine's own `tenant` / `streamdata.tenant` attributes are being unified onto
+  this key, so do not introduce a fourth.
+
+  Guarded on tenantId because the chart defaults it to "" for out-of-band installs;
+  an empty value would publish `octo.tenant.id=` as a real, wrong attribute.
+*/}}
+- name: OTEL_SERVICE_NAME
+  value: {{ include "octo-mesh.service-fullname" . | quote }}
+{{- if .Values.tenantId }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ printf "octo.tenant.id=%s" .Values.tenantId | quote }}
+{{- end }}
 # Our own ActivitySources, declared to the injected .NET auto-instrumentation.
 # The adapter hosts the same StreamData engine as the platform services, so the
 # same two sources are emitted here — and the same rule applies: the SDK inside

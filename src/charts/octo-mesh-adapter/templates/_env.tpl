@@ -28,6 +28,42 @@
 {{- end }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
+{{- include "octo-mesh.secretEncryption-env" . }}
+{{- end }}
+
+{{/*
+  AB#5536 — SECRET attribute key ring (concept AB#5528 §3.5), bound by the engine as
+  SecretEncryption:Keys:<kid> / :ActiveKeyId / :LegacyV1Key. The communication operator
+  supplies it as secrets.secretEncryption.* for workloads with ReceivesClusterSecrets=true
+  (keys + legacy key as valueFrom maps into {release}-octo-secrets, the active key id as a
+  plain string). Rendered only when provided: an adapter without the ring still starts,
+  and only writing or reading a SECRET attribute fails with a configuration error.
+  The key id keeps its case in the variable name — it is the id the engine writes into
+  the enc:v2:<kid>: header.
+*/}}
+{{- define "octo-mesh.secretEncryption-env" -}}
+{{- $se := .Values.secrets.secretEncryption | default dict }}
+{{- $keys := $se.keys | default dict }}
+{{- range $kid, $value := $keys }}
+{{- if not (regexMatch "^[a-z0-9]{1,32}$" $kid) }}
+{{- fail (printf "secrets.secretEncryption.keys: key id '%s' must be 1-32 lowercase letters or digits" $kid) }}
+{{- end }}
+{{ include "octo-mesh.secretEnv" (dict "envName" (printf "OCTO_SECRETENCRYPTION__KEYS__%s" $kid) "value" $value "legacyKey" (printf "secretEncryptionKey-%s" $kid) "context" $) }}
+{{- end }}
+{{- if $keys }}
+{{- $active := $se.activeKeyId | default "" }}
+{{- if and (not $active) (eq (len $keys) 1) }}
+{{- $active = keys $keys | first }}
+{{- end }}
+{{- if not (hasKey $keys $active) }}
+{{- fail (printf "secrets.secretEncryption.activeKeyId '%s' is not a key id of secrets.secretEncryption.keys (%s)" $active (keys $keys | sortAlpha | join ", ")) }}
+{{- end }}
+- name: OCTO_SECRETENCRYPTION__ACTIVEKEYID
+  value: {{ $active | quote }}
+{{- end }}
+{{- if $se.legacyV1Key }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SECRETENCRYPTION__LEGACYV1KEY" "value" $se.legacyV1Key "legacyKey" "secretEncryptionLegacyV1Key" "context" $) }}
+{{- end }}
 {{- end }}
 
 {{- define "octo-mesh.broker-env" -}}

@@ -407,6 +407,10 @@ The controller side of the wire (which `ValueOverride` paths are projected, why 
 documented in `octo-communication-controller-services/CLAUDE.md` → "Phase 4 — the credentials reach
 the adapter pod (AB#5072)".
 
+## SECRET attribute key ring in the chart (AB#5536)
+
+The runtime engine binds `SecretEncryption:Keys:<kid>`, `SecretEncryption:ActiveKeyId` and `SecretEncryption:LegacyV1Key` (concept `octo-construction-kit-engine/docs/concept-secret-attribute-type.md` §3.5). The chart renders them from `secrets.secretEncryption.{keys,activeKeyId,legacyV1Key}` as `OCTO_SECRETENCRYPTION__KEYS__<kid>`, `OCTO_SECRETENCRYPTION__ACTIVEKEYID` and `OCTO_SECRETENCRYPTION__LEGACYV1KEY` (inside `octo-mesh.system-env`). The communication operator supplies them for `ReceivesClusterSecrets=true` workloads — keys and legacy key as `valueFrom` maps into `{release}-octo-secrets`, the active key id as a plain string. Optional: nothing is rendered when unset, the adapter starts, and only SECRET attribute access fails. The key id keeps its case in the variable name (lowercase, validated) because it is the id in the `enc:v2:<kid>:` header; an empty `activeKeyId` with exactly one key selects that key, with several keys it fails the render.
+
 ## Helm chart publishing (AB#4948)
 
 `src/charts/octo-mesh-adapter` is packaged on every build and published to two

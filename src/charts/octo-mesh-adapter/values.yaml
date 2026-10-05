@@ -97,6 +97,19 @@ secrets:
   # naming this setting. Requiring it at startup would take the whole adapter
   # fleet down the day the licence expires.
   ironOcrLicenseKey: ""
+  # SECRET attribute key ring (AB#5536), rendered as OCTO_SECRETENCRYPTION__*
+  # (SecretEncryption:Keys:<kid> / ActiveKeyId / LegacyV1Key). Normally supplied
+  # by the communication operator for workloads with ReceivesClusterSecrets=true
+  # (keys/legacyV1Key as `{valueFrom: {secretKeyRef: ...}}` maps). Plaintext
+  # strings are accepted for hand-written values files. OPTIONAL: empty renders
+  # nothing; the adapter starts and only SECRET attribute access fails.
+  #   keys:          { k1: <base64 32-byte key> }   # ids: 1-32 lowercase letters/digits
+  #   activeKeyId:   k1                              # empty + one key = that key
+  #   legacyV1Key:   <key for legacy enc:v1 values>  # = the instance secret (k1)
+  secretEncryption:
+    keys: {}
+    activeKeyId: ""
+    legacyV1Key: ""
   # content of the root ca certificate chain
   rootCa: ""
 

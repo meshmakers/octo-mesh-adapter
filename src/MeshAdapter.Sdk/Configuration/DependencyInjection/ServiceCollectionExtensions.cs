@@ -191,6 +191,10 @@ public static class ServiceCollectionExtensions
 
         services.AddOctoServiceInfrastructure();
 
+        // AB#5538: Secret markers in the data context reflect the key ring (keyMissing for an unknown
+        // key id) - one registration for every entity-reading node, see PipelineSecretMarkerRegistration.
+        services.AddHostedService<PipelineSecretMarkerRegistration>();
+
         services.AddSingleton<IContextCreatorService, MeshContextCreatorService>();
         services.AddScoped<IWellKnownNameLoader, WellKnownNameLoader>();
 

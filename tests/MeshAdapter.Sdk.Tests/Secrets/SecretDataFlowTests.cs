@@ -185,6 +185,23 @@ public class SecretDataFlowTests : SessionNodeTestBase
         Assert.True(value is IReadOnlyDictionary<string, object?> or IDictionary<string, object?> or RtSecretValue);
     }
 
+    [Theory]
+    [InlineData("""{"read":{"isSet":false,"keyMissing":true}}""")]
+    [InlineData("""{"read":{"isSet":true,"setAt":"2026-10-06T08:00:00Z"}}""")]
+    public async Task WriteBack_AKeyMissingOrSetAtMarkerFromARead_MeansUnchanged(string json)
+    {
+        // AB#5538: the marker of an unreadable value (unknown key id) copied back must not clear or
+        // overwrite it - same as {"isSet":true}.
+        var updates = await RunCreateUpdateThenApply(json, "$.read");
+
+        var value = Assert.Single(updates).RtEntity!.Attributes["Password"];
+        Assert.IsNotType<string>(value);
+        var converted = AttributeValueConverter.ConvertAttributeValue(AttributeValueTypesDto.Secret, value);
+        var secret = Assert.IsType<RtSecretValue>(converted);
+        Assert.True(secret.IsPending);
+        Assert.Equal(SecretValueState.NotSet, SecretValueStates.GetReadState(secret, (Func<string?, bool>?)null));
+    }
+
     [Fact]
     public async Task ApplyChanges_MergingUpdates_KeepsAndReconcilesClearSecretAttributes()
     {

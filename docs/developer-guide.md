@@ -119,6 +119,10 @@ Fetches entities related through associations.
 `RevealSecret@1` (AB#5538, concept AB#5528 decision 6) is the only way for a pipeline to obtain the
 plaintext of a CK attribute of value type `Secret`. Every other node — `GetRtEntitiesById@1`,
 `GetRtEntitiesByType@1`, queries, `FromWatchRtEntity@1` — sees the marker `{"isSet": true|false}`.
+A stored value whose key id is not in the adapter's key ring reads as `{"isSet": false, "keyMissing": true}`,
+exactly what `RevealSecret@1` returns for it (null). The adapter registers its key ring as the classifier
+of the pipeline serialiser at startup (`PipelineSecretMarkerRegistration`). Copying any marker back into
+`CreateUpdateInfo@1` / `ApplyChanges@2` means "unchanged".
 
 | Setting | Type | Required | Meaning |
 |---|---|---|---|

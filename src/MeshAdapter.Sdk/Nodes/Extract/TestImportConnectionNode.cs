@@ -101,6 +101,8 @@ public class TestImportConnectionNode(
 
         var settings = etlContext.GlobalConfiguration.GetValue<ImapMailboxAccess.ImapServerSettings>(
             c.ImapServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(settings.Password);
         var server = $"{settings.Host}:{settings.Port}";
 
         MailKit.Net.Imap.ImapClient client;
@@ -322,8 +324,11 @@ public class TestImportConnectionNode(
                 nameof(c.GraphServerConfiguration), c.GraphServerConfiguration ?? "");
         }
 
-        return etlContext.GlobalConfiguration.GetValue<GraphMailboxAccess.GraphAppCredentials>(
+        var credentials = etlContext.GlobalConfiguration.GetValue<GraphMailboxAccess.GraphAppCredentials>(
             c.GraphServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(credentials.ClientSecret);
+        return credentials;
     }
 
     /// <summary>The app token, as a passed check; null (and a failed check) when it was refused.</summary>

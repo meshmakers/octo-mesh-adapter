@@ -195,6 +195,26 @@ public class TestImportConnectionNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task Graph_TheClientSecretFromConfiguration_IsRegisteredAsSecret()
+    {
+        // AB#5538: the check result travels through the data context (debug snapshots, the HTTP
+        // response); a credential echoed in a provider error must be masked there.
+        var handler = new SequencedHttpMessageHandler(
+            SequencedHttpMessageHandler.Status(HttpStatusCode.BadRequest,
+                """{"error":"unauthorized_client","error_description":"AADSTS700016: Application not found."}"""));
+        var config = RouteConfig();
+        var (dataContext, nodeContext, next) = PrepareTest(config,
+            new JsonObject { ["body"] = new JsonObject { ["channel"] = "Graph" } });
+        SetupGetSimpleValueByPath(dataContext, "$.body.channel", "Graph");
+        var ctx = GraphContext(handler);
+
+        await new TestImportConnectionNode(next, ctx.Etl, ctx.Http, NullLogger<TestImportConnectionNode>.Instance)
+            .ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("***", nodeContext.SecretRegistry!.Redact("secret"));
+    }
+
+    [Fact]
     public async Task Graph_TokenRefused_StopsAtTheFirstCheck()
     {
         var handler = new SequencedHttpMessageHandler(

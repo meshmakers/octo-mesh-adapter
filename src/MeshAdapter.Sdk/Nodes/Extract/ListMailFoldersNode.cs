@@ -162,6 +162,8 @@ public class ListMailFoldersNode(
 
         var settings = etlContext.GlobalConfiguration.GetValue<ImapMailboxAccess.ImapServerSettings>(
             c.ImapServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(settings.Password);
 
         using var client = await ImapMailboxAccess.ConnectAndAuthenticateAsync(settings, timeout, cancellationToken, logger);
         try
@@ -206,6 +208,8 @@ public class ListMailFoldersNode(
 
         var credentials = etlContext.GlobalConfiguration.GetValue<GraphMailboxAccess.GraphAppCredentials>(
             c.GraphServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(credentials.ClientSecret);
 
         var mailbox = ResolveGraphMailbox(etlContext.GlobalConfiguration, c);
         if (string.IsNullOrWhiteSpace(mailbox))

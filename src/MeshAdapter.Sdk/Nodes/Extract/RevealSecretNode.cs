@@ -28,6 +28,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 /// data context of this execution.
 /// </para>
 /// <para>
+/// A value whose key id is not in the adapter's key ring (restore from another environment) is treated
+/// as not set: <c>null</c> at the target and an error in the execution log naming the key id, never the
+/// value (decisions 2026-10-06, item 2). A tampered value with a known key id, strict-mode clear text and
+/// a host without any key ring still fail the node.
+/// </para>
+/// <para>
 /// Order matters: the plaintext is registered with <see cref="INodeContext.RegisterSecret" />
 /// <b>before</b> it is written, so no snapshot can ever capture it unmasked.
 /// </para>
@@ -82,20 +88,30 @@ public class RevealSecretNode(
         }
 
         var secret = ReadSecretValue(entity, segments);
+        var accessContext = new SecretAccessContext(etlContext.TenantId, ckTypeId.ToString(), attributePath);
         string? plaintext = null;
-        if (secret != null && RtSecretValueWireFormat.IsSet(secret))
+        // Decisions 2026-10-06, item 2: classify first, never decrypting for it. A value whose key id is not
+        // in this adapter's key ring (restore from another environment) reads as NOT SET - null at the
+        // target plus an error log naming the key id, never the value. A host without any key ring keeps
+        // failing (configuration problem, see the catch below): it reports every protected value as
+        // KeyMissing, which must not be mistaken for "re-enter this value".
+        var readInfo = secret == null
+            ? default
+            : secretAttributeProtector.DescribeSecret(secret, accessContext);
+        if (readInfo.KeyMissing && secretAttributeProtector.IsConfigured)
+        {
+            LogKeyMissing(nodeContext, attributePath, ckTypeId, rtId, readInfo.KeyId);
+        }
+        else if (secret != null && (readInfo.IsSet || readInfo.KeyMissing))
         {
             try
             {
-                plaintext = secretAttributeProtector.Unprotect(secret,
-                    new SecretAccessContext(etlContext.TenantId, ckTypeId.ToString(), attributePath));
+                plaintext = secretAttributeProtector.Unprotect(secret, accessContext);
             }
-            catch (UnknownSecretKeyIdException e)
+            catch (UnknownSecretKeyIdException)
             {
-                throw MeshAdapterPipelineExecutionException.RevealSecretFailed(nodeContext,
-                    $"attribute '{attributePath}' of '{ckTypeId}@{rtId}' was encrypted with key id " +
-                    $"'{secret.KeyId}', which this adapter's key ring does not contain. The value has to be " +
-                    "entered again.", e);
+                // The ring changed between classification and decrypt: same outcome as above.
+                LogKeyMissing(nodeContext, attributePath, ckTypeId, rtId, secret.KeyId);
             }
             catch (SecretEncryptionNotConfiguredException e)
             {
@@ -112,6 +128,7 @@ public class RevealSecretNode(
             }
             catch (CryptographicException e)
             {
+                // Tampered / wrong key with a KNOWN key id: an integrity problem, not a missing key - fails.
                 throw MeshAdapterPipelineExecutionException.RevealSecretFailed(nodeContext,
                     $"attribute '{attributePath}' of '{ckTypeId}@{rtId}' cannot be decrypted: the stored value " +
                     "is damaged or was encrypted with a different key.", e);
@@ -133,6 +150,15 @@ public class RevealSecretNode(
         dataContext.Set(c.TargetPath, plaintext, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
+    }
+
+    private static void LogKeyMissing(INodeContext nodeContext, string attributePath, RtCkId<CkTypeId> ckTypeId,
+        OctoObjectId rtId, string? keyId)
+    {
+        nodeContext.Error(
+            "Secret attribute {0} of {1}@{2} is stored, but encrypted with key id '{3}', which this adapter's key " +
+            "ring does not contain; treated as not set (null written). Add the key to the ring or enter the value " +
+            "again.", attributePath, ckTypeId, rtId, keyId ?? "?");
     }
 
     private static OctoObjectId ResolveRtId(RevealSecretNodeConfiguration c, IDataContext dataContext,

@@ -62,14 +62,14 @@ public class RevealSecretNodeTests : SessionNodeTestBase
     }
 
     private static (DataContextImpl DataContext, INodeContext NodeContext, DefaultPipelineDebugger Debugger) Context(
-        RevealSecretNodeConfiguration config, string json = "{}")
+        RevealSecretNodeConfiguration config, string json = "{}", IPipelineLogger? logger = null)
     {
         var dataContext = new DataContextImpl(JsonDocument.Parse(json));
         var debugger = new DefaultPipelineDebugger(NullLoggerFactory.Instance);
         debugger.RegisterPipelineRtEntityId(new RtEntityId("Test/Pipeline", OctoObjectId.GenerateNewId()),
             Guid.NewGuid());
         var root = NodeContext.CreateRootNodeContext(new ServiceCollection().BuildServiceProvider(),
-            A.Fake<IPipelineLogger>(), dataContext, debugger);
+            logger ?? A.Fake<IPipelineLogger>(), dataContext, debugger);
         return (dataContext, root.RegisterChildNode("RevealSecret@1", 0, config, dataContext), debugger);
     }
 
@@ -235,17 +235,62 @@ public class RevealSecretNodeTests : SessionNodeTestBase
     }
 
     [Fact]
-    public async Task Reveal_UnknownKeyId_FailsNamingTheKeyIdButNotTheValue()
+    public async Task Reveal_UnknownKeyId_WritesNullAndLogsAnErrorNamingTheKeyIdButNotTheValue()
     {
+        // Decisions 2026-10-06, item 2: a value encrypted with a key that is not in the ring (restore from
+        // another environment) is treated as not set - null at the target plus an error log.
         var foreign = SecretTestSupport.CreateProtector("k9");
         StubEntity(EntityWithPassword(foreign.Protect(Plaintext)));
+        var logger = A.Fake<IPipelineLogger>();
+        var next = A.Fake<NodeDelegate>();
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = SecretTestSupport.CkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p"
+        }, logger: logger);
+
+        await Node(next).ProcessObjectAsync(dc, nc);
+
+        Assert.True(dc.Exists("$.p"));
+        Assert.Null(dc.Get<string>("$.p"));
+        A.CallTo(() => next.Invoke(dc, nc)).MustHaveHappenedOnceExactly();
+        var errors = Fake.GetCalls(logger).Where(c => c.Method.Name == nameof(IPipelineLogger.Error)).ToList();
+        Assert.Single(errors);
+        var logged = string.Join("|", errors.SelectMany(c => c.Arguments)
+            .SelectMany(a => a is object[] list ? list.Cast<object?>() : new[] { a }).Select(a => a?.ToString()));
+        Assert.Contains("k9", logged);
+        Assert.Contains("Password", logged);
+        Assert.DoesNotContain(Plaintext, logged);
+    }
+
+    [Fact]
+    public async Task Reveal_TamperedValueWithKnownKeyId_Fails()
+    {
+        var envelope = _protector.Protect(Plaintext).Envelope!;
+        // Flip one character of the ciphertext: the key id stays known, the authentication tag fails.
+        var last = envelope[^2] == 'A' ? 'B' : 'A';
+        StubEntity(EntityWithPassword(RtSecretValue.Protected(envelope[..^2] + last + envelope[^1])));
         var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
         {
             CkTypeId = SecretTestSupport.CkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p"
         });
 
-        await AssertFails(() => Node(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, nc), "'k9'");
+        await AssertFails(() => Node(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, nc), "damaged");
         Assert.False(dc.Exists("$.p"));
+    }
+
+    [Fact]
+    public async Task Reveal_PlaceholderLookingProtectedValue_IsAnOrdinaryValue()
+    {
+        const string placeholderLooking = "<insert secret here>";
+        StubEntity(EntityWithPassword(_protector.Protect(placeholderLooking)));
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = SecretTestSupport.CkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p"
+        });
+
+        await Node(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, nc);
+
+        Assert.Equal(placeholderLooking, dc.Get<string>("$.p"));
     }
 
     [Fact]
@@ -253,6 +298,9 @@ public class RevealSecretNodeTests : SessionNodeTestBase
     {
         StubEntity(EntityWithPassword(RtSecretValue.LegacyPlaintext(Plaintext)));
         var strict = A.Fake<ISecretAttributeProtector>();
+        A.CallTo(() => strict.IsConfigured).Returns(true);
+        A.CallTo(() => strict.DescribeSecret(A<RtSecretValue>._, A<SecretAccessContext?>._))
+            .Returns(new SecretReadInfo(SecretValueState.Set, SecretStorageForm.Plaintext, null, null));
         A.CallTo(() => strict.Unprotect(A<RtSecretValue>._, A<SecretAccessContext?>._))
             .Throws(new LegacyPlaintextSecretRejectedException(SecretTestSupport.TenantId));
         var (dc, nc, _) = Context(new RevealSecretNodeConfiguration

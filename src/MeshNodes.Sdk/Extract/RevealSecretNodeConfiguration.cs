@@ -17,9 +17,11 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 /// and <c>SetPipelineExecutionResult@1</c> show <c>***</c> instead.
 /// </para>
 /// <para>
-/// A Secret that is not set (absent, <c>null</c> or a placeholder) writes <c>null</c> to the target.
-/// An unknown entity, an attribute that is not a Secret, missing key material or an unknown key id
-/// fail the node; no message carries the value.
+/// A Secret that is not set (absent, <c>null</c>, empty or corrupt) writes <c>null</c> to the target. A
+/// value whose key id is not in the adapter's key ring (e.g. after a restore from another environment)
+/// is treated as not set as well: <c>null</c> plus an error in the execution log naming the key id. An
+/// unknown entity, an attribute that is not a Secret, a host without key ring, strict-mode clear text or
+/// a tampered value fail the node; no message carries the value.
 /// </para>
 /// </remarks>
 [NodeName("RevealSecret", 1)]

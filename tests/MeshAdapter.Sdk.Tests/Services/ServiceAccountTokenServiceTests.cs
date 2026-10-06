@@ -644,10 +644,10 @@ public class ServiceAccountTokenServiceTests
     [InlineData(null, false)]
     [InlineData("", false)]
     [InlineData("   ", false)]
-    [InlineData("<insert client secret here>", false)]
-    [InlineData("  <placeholder>", false)]
+    [InlineData("<insert client secret here>", true)]
+    [InlineData("TODO_SET_CLIENT_SECRET", true)]
     [InlineData("s3cr3t", true)]
-    public void IsSecretUsable_AnEmptyOrPlaceholderSecretMeansNoSecret(string? secret, bool expected)
+    public void IsSecretUsable_OnlyAnEmptySecretMeansNoSecret(string? secret, bool expected)
     {
         Assert.Equal(expected, ServiceAccountTokenService.IsSecretUsable(secret));
     }
@@ -713,8 +713,10 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_ASecretThatCannotBeDecrypted_NeverFallsBackToImpersonation()
+    public async Task EnsureTokenAsync_ASecretWithAnUnknownKeyId_NeverFallsBackToImpersonation()
     {
+        // Decisions 2026-10-06, item 2: KeyMissing is "stored but unusable" - no token, and no
+        // impersonation either (that would silently change the identity the pipeline runs as).
         var foreign = Secrets.SecretTestSupport.CreateProtector("k9");
         SetupConfigurationWithSecretValue(TenantId, foreign.Protect(ClientSecret));
         var handler = new IdentityEndpointHandler(
@@ -727,8 +729,45 @@ public class ServiceAccountTokenServiceTests
 
         Assert.Equal(0, handler.CallCount);
         A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+        Assert.Contains(logger.Messages, m => m.Contains("'k9'") && m.Contains("not in the key ring"));
+        Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret));
+    }
+
+    [Fact]
+    public async Task EnsureTokenAsync_ATamperedSecret_NeverFallsBackToImpersonation()
+    {
+        var protector = Secrets.SecretTestSupport.CreateProtector();
+        var envelope = protector.Protect(ClientSecret).Envelope!;
+        var flipped = envelope[^2] == 'A' ? 'B' : 'A';
+        SetupConfigurationWithSecretValue(TenantId, RtSecretValue.Protected(envelope[..^2] + flipped + envelope[^1]));
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, OwnIdentity(), logger: logger, protector: protector);
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal(0, handler.CallCount);
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
         Assert.Contains(logger.Messages, m => m.Contains("cannot be decrypted"));
         Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret));
+    }
+
+    [Fact]
+    public async Task EnsureTokenAsync_APlaceholderLookingProtectedSecret_IsAnOrdinarySecret()
+    {
+        // Decisions 2026-10-06, item 1: a "<...>" value entered through an API is a real secret.
+        var protector = Secrets.SecretTestSupport.CreateProtector();
+        SetupConfigurationWithSecretValue(TenantId, protector.Protect("<insert client secret here>"));
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity(), protector: protector);
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        var form = handler.LastTokenForm!;
+        Assert.Equal("client_credentials", form["grant_type"]);
+        Assert.False(form.ContainsKey("requested_client_id"));
     }
 
     [Fact]
@@ -736,6 +775,9 @@ public class ServiceAccountTokenServiceTests
     {
         SetupConfigurationWithSecretValue(TenantId, RtSecretValue.LegacyPlaintext(ClientSecret));
         var strict = A.Fake<ISecretAttributeProtector>();
+        A.CallTo(() => strict.IsConfigured).Returns(true);
+        A.CallTo(() => strict.DescribeSecret(A<RtSecretValue>._, A<SecretAccessContext?>._))
+            .Returns(new SecretReadInfo(SecretValueState.Set, SecretStorageForm.Plaintext, null, null));
         A.CallTo(() => strict.Unprotect(A<RtSecretValue>._, A<SecretAccessContext?>._))
             .Throws(new LegacyPlaintextSecretRejectedException(TenantId));
         var handler = new IdentityEndpointHandler(
@@ -753,7 +795,8 @@ public class ServiceAccountTokenServiceTests
     [Fact]
     public async Task EnsureTokenAsync_AnUnsetSecretTypedClientSecret_SelectsImpersonation()
     {
-        // A placeholder in a Secret slot reads as "not set" - the AB#5114 path, as for an empty string.
+        // A legacy clear-text seed placeholder in a Secret slot reads as "not set" until the migration
+        // converts it - the AB#5114 path, as for an empty string.
         SetupConfigurationWithSecretValue(TenantId, RtSecretValue.LegacyPlaintext("<insert client secret here>"));
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("impersonated-token", expiresIn: 300));

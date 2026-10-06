@@ -144,12 +144,17 @@ plaintext of a CK attribute of value type `Secret`. Every other node — `GetRtE
 Behaviour:
 - The entity is read in process and decrypted with `ISecretAttributeProtector.Unprotect`; every reveal
   counts `octo.secrets.decrypt{tenant,ckType,attribute,service}`. The value is never logged.
-- Not set (absent, `null`, placeholder) → `null` is written to `targetPath`.
+- Not set (absent, `null`, empty, corrupt) → `null` is written to `targetPath`. A placeholder-looking
+  value (`<…>`, `TODO_SET_*`) entered through an API is an ordinary value; only legacy clear-text
+  placeholders still waiting for the encrypt sweep read as not set.
+- Unknown key id (the value was encrypted with a key that is not in this adapter's key ring, e.g. after
+  a restore from another environment) → treated as not set: `null` is written and an error naming the
+  key id (never the value) goes to the execution log. The value becomes readable once the key is added.
 - A legacy clear-text value (stored before the attribute became Secret) is returned during the
   transition and counted as a plaintext read.
 - Unknown CK type or attribute, an attribute that is not `Secret`, an entity that is not found (or not
-  readable by the identity), missing key ring (`SecretEncryption:Keys`), an unknown key id or a damaged
-  value fail the node. No error message carries the value.
+  readable by the identity), missing key ring (`SecretEncryption:Keys`), strict-mode clear text or a
+  damaged value with a known key id fail the node. No error message carries the value.
 - The plaintext is registered with `INodeContext.RegisterSecret` before it is written, so debug
   snapshots, dry-run intents, the execution log and `SetPipelineExecutionResult@1` show `***`.
 
@@ -175,7 +180,8 @@ Behaviour:
   (CK cache, top level and record members, replaces the SDK's no-op `IConfigurationSecretAttributeResolver`);
   an unresolvable type falls back to the known System.Communication credential names with a warning.
 - `ServiceAccountTokenService` decrypts a Secret-typed `ClientSecret` in process; a secret that is set
-  but cannot be decrypted fails the token acquisition instead of falling back to impersonation.
+  but cannot be decrypted, or whose key id is not in the key ring, yields no token (error log without
+  the value) instead of falling back to impersonation.
 
 #### GetRtEntitiesByWellKnownNameTypeNode
 

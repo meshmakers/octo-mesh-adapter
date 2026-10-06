@@ -26,9 +26,10 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 public record RevealSecretNodeConfiguration : TargetPathNodeConfiguration
 {
     /// <summary>
-    /// Identity the entity is read as: <c>Caller</c> (default), <c>ServiceAccount</c> or <c>System</c>
-    /// (AB#5127). The caller must be allowed to read the entity — data permissions apply to the read,
-    /// decryption itself needs no extra permission.
+    /// Identity the entity is read as: <c>Caller</c> (default) or <c>ServiceAccount</c> (AB#5127). The
+    /// identity must be allowed to read the entity — data permissions apply to the read, decryption
+    /// itself needs no extra permission. <c>System</c> is refused: it bypasses data permissions, so it
+    /// would let anyone who may edit a pipeline reveal every credential of the tenant.
     /// </summary>
     [PropertyGroup("Execution", 100)]
     public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.Caller;

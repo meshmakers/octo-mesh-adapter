@@ -51,6 +51,17 @@ public class RevealSecretNode(
                 "attributeName is not set.");
         }
 
+        // AB#5538 review: System bypasses every data permission (AB#5127) and is ungated at deploy time
+        // until AB#5128. On a decrypting node that would let anyone who may edit a pipeline reveal every
+        // credential of the tenant, so the read must run as a principal whose roles an administrator
+        // controls: the caller or the pipeline's service account. Refused before anything is read.
+        if (c.Identity == NodeExecutionIdentity.System)
+        {
+            throw MeshAdapterPipelineExecutionException.RevealSecretFailed(nodeContext,
+                "identity 'System' is not allowed. Use 'Caller' or 'ServiceAccount'; the identity must be " +
+                "allowed to read the entity.");
+        }
+
         var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
         var rtId = ResolveRtId(c, dataContext, nodeContext);
         var segments = ResolveSecretPath(ckTypeId, c.AttributeName.Trim(), nodeContext);
@@ -59,7 +70,6 @@ public class RevealSecretNode(
         // AB#5028 — scoped by default (AB#5127 Identity): the entity is read as whoever the
         // execution acts as, so data permissions decide whether the caller may see the entity at all.
         // Revealing never widens reach: a secret on an entity the identity cannot read is "not found".
-        // System would let any pipeline author decrypt any credential of the tenant.
         var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         var entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session, new RtEntityId(ckTypeId, rtId));

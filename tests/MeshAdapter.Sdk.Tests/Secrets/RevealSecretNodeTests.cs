@@ -287,19 +287,43 @@ public class RevealSecretNodeTests : SessionNodeTestBase
     }
 
     [Fact]
-    public async Task Reveal_SystemIdentity_OpensASystemSession()
+    public async Task Reveal_SystemIdentity_IsRefusedBeforeAnythingIsReadOrDecrypted()
     {
-        GivenSystemSessionIsExpected();
-        StubEntity(EntityWithPassword(_protector.Protect(Plaintext)));
+        // System bypasses data permissions; a pipeline author must not be able to reveal every
+        // credential of the tenant with it (AB#5538 review).
+        var protector = A.Fake<ISecretAttributeProtector>();
         var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
         {
             CkTypeId = SecretTestSupport.CkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p",
             Identity = NodeExecutionIdentity.System
         });
+        var next = A.Fake<NodeDelegate>();
+
+        await AssertFails(() => Node(next, protector).ProcessObjectAsync(dc, nc), "'System' is not allowed");
+
+        AssertNoSessionOpened();
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
+            .MustNotHaveHappened();
+        A.CallTo(protector).Where(call => call.Method.Name == nameof(ISecretAttributeProtector.Unprotect))
+            .MustNotHaveHappened();
+        A.CallTo(() => next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.Null(dc.Get<string>("$.p"));
+    }
+
+    [Fact]
+    public async Task Reveal_ServiceAccountIdentity_OpensAServiceAccountSession()
+    {
+        StubEntity(EntityWithPassword(_protector.Protect(Plaintext)));
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = SecretTestSupport.CkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p",
+            Identity = NodeExecutionIdentity.ServiceAccount
+        });
 
         await Node(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, nc);
 
         Assert.Equal(Plaintext, dc.Get<string>("$.p"));
+        AssertServiceAccountSessionOpened();
     }
 
     [Fact]

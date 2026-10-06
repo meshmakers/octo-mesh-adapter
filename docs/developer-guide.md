@@ -129,7 +129,7 @@ plaintext of a CK attribute of value type `Secret`. Every other node — `GetRtE
 | `attributeName` | string | yes | Secret attribute, case-insensitive (`Password`/`password`); a dotted path reaches a Secret inside single `Record` attributes (`Settings.ApiKey`); record arrays are refused |
 | `targetPath` | JSONPath string | default `$` | Where the plaintext is written |
 | `targetValueWriteMode`, `targetValueKind`, `documentMode` | enums | defaults `Overwrite`, `Simple`, `Extend` | Usual target write options |
-| `identity` | `Caller` \| `ServiceAccount` \| `System` | default `Caller` | Identity the entity is read as (data permissions apply to the read) |
+| `identity` | `Caller` \| `ServiceAccount` | default `Caller` | Identity the entity is read as (data permissions apply to the read). `System` is refused: it bypasses data permissions and would let any pipeline author reveal every credential of the tenant |
 | `description` | string | | Optional description |
 
 ```yaml

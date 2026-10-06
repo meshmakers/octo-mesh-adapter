@@ -169,6 +169,11 @@ Behaviour:
 - **Credentials from configuration** (SMTP password, SFTP password/key, Graph/bot client secrets,
   Discord token, Grafana admin password, HTTP API keys, Anthropic key) are registered as secret when a
   node resolves them, so they are masked in diagnostics.
+- **Configurations copied into the data context** (`GetPipelineConfigByCkTypeId@1`, and the SDK's
+  `GetPipelineConfigByWellKnownName@1`) carry Secret values revealed by the controller; their values are
+  registered as secret first. The Secret attribute names come from `CkConfigurationSecretAttributeResolver`
+  (CK cache, top level and record members, replaces the SDK's no-op `IConfigurationSecretAttributeResolver`);
+  an unresolvable type falls back to the known System.Communication credential names with a warning.
 - `ServiceAccountTokenService` decrypts a Secret-typed `ClientSecret` in process; a secret that is set
   but cannot be decrypted fails the token acquisition instead of falling back to impersonation.
 

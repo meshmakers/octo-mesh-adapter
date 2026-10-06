@@ -466,7 +466,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     }
 
     /// <summary>
-    /// Reads <c>ClientSecret</c> of the configuration entity. Before System.Communication 3.40 it is a
+    /// Reads <c>ClientSecret</c> of the configuration entity. Before System.Communication 3.41 it is a
     /// <c>String</c>; afterwards a <c>Secret</c> (AB#5528), read as an <see cref="RtSecretValue" />
     /// that is decrypted here, in process (a counted <c>octo.secrets.decrypt</c>). Reading the secret
     /// with <c>as string</c> would yield null, and an empty secret silently selects the impersonation
@@ -483,7 +483,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             case null:
                 return true;
             case string text:
-                // ClientSecret is still a String attribute (System.Communication before 3.40): the stored
+                // ClientSecret is still a String attribute (System.Communication before 3.41): the stored
                 // text is legacy clear text. An exact legacy seed placeholder (TODO_SET_<NAME> or a single
                 // <...>) reads as not set, as the engine reads such a value in a Secret slot until the
                 // migration converts it (decisions 2026-10-06, item 1).

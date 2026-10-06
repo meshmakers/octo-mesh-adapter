@@ -501,6 +501,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
                     return true;
                 }
                 catch (Exception e) when (e is SecretEncryptionNotConfiguredException or UnknownSecretKeyIdException
+                                              or LegacyPlaintextSecretRejectedException
                                               or System.Security.Cryptography.CryptographicException)
                 {
                     _logger.LogError(

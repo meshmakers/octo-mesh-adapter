@@ -249,6 +249,22 @@ public class RevealSecretNodeTests : SessionNodeTestBase
     }
 
     [Fact]
+    public async Task Reveal_StrictModeRejectsLegacyPlaintext_FailsWithAClearReason()
+    {
+        StubEntity(EntityWithPassword(RtSecretValue.LegacyPlaintext(Plaintext)));
+        var strict = A.Fake<ISecretAttributeProtector>();
+        A.CallTo(() => strict.Unprotect(A<RtSecretValue>._, A<SecretAccessContext?>._))
+            .Throws(new LegacyPlaintextSecretRejectedException(SecretTestSupport.TenantId));
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = SecretTestSupport.CkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p"
+        });
+
+        await AssertFails(() => Node(A.Fake<NodeDelegate>(), strict).ProcessObjectAsync(dc, nc), "strict mode");
+        Assert.Null(dc.Get<string>("$.p"));
+    }
+
+    [Fact]
     public async Task Reveal_WithoutKeyRing_Fails()
     {
         StubEntity(EntityWithPassword(_protector.Protect(Plaintext)));

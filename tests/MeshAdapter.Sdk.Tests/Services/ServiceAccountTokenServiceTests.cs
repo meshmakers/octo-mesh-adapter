@@ -732,6 +732,25 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
+    public async Task EnsureTokenAsync_StrictModeRejectingALegacySecret_NeverFallsBackToImpersonation()
+    {
+        SetupConfigurationWithSecretValue(TenantId, RtSecretValue.LegacyPlaintext(ClientSecret));
+        var strict = A.Fake<ISecretAttributeProtector>();
+        A.CallTo(() => strict.Unprotect(A<RtSecretValue>._, A<SecretAccessContext?>._))
+            .Throws(new LegacyPlaintextSecretRejectedException(TenantId));
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, OwnIdentity(), logger: logger, protector: strict);
+
+        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+
+        Assert.Equal(0, handler.CallCount);
+        Assert.Contains(logger.Messages, m => m.Contains("cannot be decrypted"));
+        Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret));
+    }
+
+    [Fact]
     public async Task EnsureTokenAsync_AnUnsetSecretTypedClientSecret_SelectsImpersonation()
     {
         // A placeholder in a Secret slot reads as "not set" - the AB#5114 path, as for an empty string.

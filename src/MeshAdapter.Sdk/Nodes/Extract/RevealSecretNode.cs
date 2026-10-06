@@ -103,6 +103,13 @@ public class RevealSecretNode(
                     $"attribute '{attributePath}' of '{ckTypeId}@{rtId}' cannot be decrypted: the adapter has no " +
                     "secret key ring configured (SecretEncryption:Keys / OCTO_SECRETENCRYPTION__KEYS__<kid>).", e);
             }
+            catch (LegacyPlaintextSecretRejectedException e)
+            {
+                throw MeshAdapterPipelineExecutionException.RevealSecretFailed(nodeContext,
+                    $"attribute '{attributePath}' of '{ckTypeId}@{rtId}' is still stored as clear text, which strict " +
+                    "mode (SecretEncryption:StrictMode) rejects. Run the secret encrypt sweep or enter the value again.",
+                    e);
+            }
             catch (CryptographicException e)
             {
                 throw MeshAdapterPipelineExecutionException.RevealSecretFailed(nodeContext,

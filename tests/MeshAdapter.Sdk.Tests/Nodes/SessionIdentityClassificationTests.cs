@@ -50,6 +50,7 @@ public class SessionIdentityClassificationTests
             ["Extract/GetRtEntitiesByIdNode.cs"] = (1, 0),
             ["Extract/GetRtEntitiesByTypeNode.cs"] = (1, 0),
             ["Extract/GetRtEntitiesByWellKnownNameTypeNode.cs"] = (1, 0),
+            ["Extract/RevealSecretNode.cs"] = (1, 0),
 
             // --- Load --------------------------------------------------------------------------
             ["Load/ApplyChangesNode.cs"] = (0, 1),
@@ -118,7 +119,7 @@ public class SessionIdentityClassificationTests
         // 34 now: SaveTimeRangeSeriesInArchive@1 added two scoped sites (the anchor lookup and the
         // anchor write). The totals are asserted rather than derived so that adding a session to a
         // node is a deliberate act — a new site has to be classified above AND counted here.
-        Assert.Equal(17, actual.Sum(v => v.Scoped));
+        Assert.Equal(18, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
 

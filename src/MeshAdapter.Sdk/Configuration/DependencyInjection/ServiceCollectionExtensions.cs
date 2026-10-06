@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<WriteVerifiedCallerNode>()
             .RegisterNode<ResolveNotificationChannelNode>()
             .RegisterNode<GetRtEntitiesByIdNode>()
+            .RegisterNode<RevealSecretNode>()
             .RegisterNode<CheckDuplicateNode>()
             .RegisterNode<ComputeFileHashNode>()
             .RegisterNode<RenderDataSheetPdfNode>()

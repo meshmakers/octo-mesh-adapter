@@ -13,6 +13,10 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<DataMappingNodeConfiguration>();
+        // AB#5538: mapping compares and converts values - a Secret can be neither source nor target.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.SourceValueType, "sourceValueType");
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.TargetValueType, "targetValueType");
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, c.Path);
 
         var value = GetValueByConfiguredType(dataContext, nodeContext, c.Path, c.SourceValueType);
 

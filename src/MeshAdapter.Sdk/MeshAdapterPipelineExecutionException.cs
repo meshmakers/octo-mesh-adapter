@@ -27,6 +27,19 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     /// </summary>
     public string? ResponseBody { get; private init; }
 
+    /// <summary>
+    /// <c>RevealSecret@1</c> (AB#5538) could not reveal a secret. The reason names the entity, the
+    /// attribute and what went wrong - never the value, which is the one thing this node must not
+    /// leak through its errors.
+    /// </summary>
+    public static Exception RevealSecretFailed(INodeContext nodeContext, string reason, Exception? inner = null)
+    {
+        var message = $"[{nodeContext.NodePath}]: RevealSecret: {reason}";
+        return inner == null
+            ? new MeshAdapterPipelineExecutionException(message)
+            : new MeshAdapterPipelineExecutionException(message, inner);
+    }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");

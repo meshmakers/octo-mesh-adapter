@@ -137,7 +137,8 @@ internal class ExportDataPointMappingsNode(NodeDelegate next, IMeshEtlContext et
             if (identityByType.TryGetValue(ckTypeIdStr, out var configuredAttribute))
             {
                 var raw = entity.GetAttributeValueOrDefault(configuredAttribute);
-                identityValue = raw as string ?? raw?.ToString();
+                // AB#5538: a Secret attribute is never an identity (its ToString is "***").
+                identityValue = raw is RtSecretValue ? null : raw as string ?? raw?.ToString();
                 if (!string.IsNullOrWhiteSpace(identityValue))
                 {
                     identityAttribute = configuredAttribute;

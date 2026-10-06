@@ -55,6 +55,8 @@ public class ToDiscordNode(
                 nodeContext, nameof(c.ServerConfiguration), c.ServerConfiguration);
         }
         var cfg = etlContext.GlobalConfiguration.GetValue<DiscordConfiguration>(c.ServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(cfg.BotToken);
 
         var channelId = ResolveStringValue(dataContext, c.ChannelIdPath, c.ChannelId);
         if (string.IsNullOrWhiteSpace(channelId) || !IsSnowflake(channelId))

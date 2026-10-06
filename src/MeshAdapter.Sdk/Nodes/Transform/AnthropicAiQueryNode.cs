@@ -43,6 +43,8 @@ internal class AnthropicAiQueryNode(
         {
             // Resolve API key: prefer ApiKeyConfigurationName over direct ApiKey
             var apiKey = ResolveApiKey(config, etlContext, nodeContext);
+            // AB#5538: the API key is masked in every diagnostic output of this execution.
+            nodeContext.RegisterSecret(apiKey);
             if (string.IsNullOrEmpty(apiKey))
             {
                 throw new ArgumentException(

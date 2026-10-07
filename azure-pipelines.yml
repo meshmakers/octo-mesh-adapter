@@ -168,6 +168,28 @@ stages:
               filePath: '$(System.DefaultWorkingDirectory)/scripts/createDocumentation.ps1'
               arguments: '-configuration $(buildConfiguration)'
 
+          # Chart tests (AB#4924, decision E3): renders the chart with `helm template`
+          # (no cluster) and asserts that a pool member never receives the DB/admin/
+          # CrateDB passwords or the SECRET key ring, with the dedicated adapter as the
+          # positive control. Runs before the docker push and `helm package`, so a
+          # chart regression stops the build before anything is published. Same on
+          # every branch (main, test/*, dev/*, r-tags). helm comes from the agent pool
+          # (the same binary HelmDeploy@0 uses below); missing helm fails loudly
+          # instead of letting the script's assertions run against an empty render.
+          - task: Bash@3
+            displayName: 'Chart tests (E3 pool member secrets)'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(System.DefaultWorkingDirectory)'
+              script: |
+                set -euo pipefail
+                if ! command -v helm >/dev/null 2>&1; then
+                  echo "##vso[task.logissue type=error]helm not found on the agent - the chart tests need it (same as HelmDeploy@0 package)."
+                  exit 1
+                fi
+                helm version --short
+                bash tests/chart/test-chart.sh
+
           # Multi-arch docker build: arm64 for Apple-Silicon dev clusters
           # + edge devices, amd64 for everything else.
           - template: templates/steps/build-and-push-docker.yml@pipelineTemplates

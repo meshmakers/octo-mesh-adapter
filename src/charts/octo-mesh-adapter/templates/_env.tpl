@@ -172,6 +172,13 @@
   value: {{ .Values.adapterRtId | quote }}
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL
   value: {{ .Values.reportingServiceUri | quote }}
+{{/*
+  AB#5628 — tenant check for client-credentials tokens. Always rendered: an
+  empty value would bind as the enum's zero value, which is Enforce as well,
+  but the explicit value makes the mode readable in `kubectl describe pod`.
+*/}}
+- name: OCTO_ADAPTER__SERVICETOKENENFORCEMENT
+  value: {{ .Values.serviceTokenEnforcement | default "Enforce" | quote }}
 {{- if .Values.authUri }}
 - name: OCTO_ADAPTER__AUTHORITYURL
   value: {{ .Values.authUri | quote }}

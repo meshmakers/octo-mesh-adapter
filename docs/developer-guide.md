@@ -1492,7 +1492,11 @@ both logged and written to the tenant's event log (see **Route audit** below):
    For client-credentials tokens the check can be relaxed per environment with
    `ServiceTokenEnforcement=Warn` (`OCTO_ADAPTER__SERVICETOKENENFORCEMENT=Warn`): the request then
    passes, but is logged and recorded as a warning event ("would be denied") naming the client id
-   and the token tenant. User tokens are always enforced.
+   and the token tenant. User tokens are always enforced. In Kubernetes the chart value
+   `serviceTokenEnforcement` sets the variable; per tenant it is overridden on the adapter entity
+   with a `ValueOverride` (Path `serviceTokenEnforcement`, Value `Warn`) or a `ValuesYaml` line,
+   followed by a redeploy of the adapter. Adapters built on this SDK with their own chart (EDA)
+   need the same value in their chart.
 3. When roles are configured the caller must hold at least one — `403 Forbidden` otherwise.
    Without roles a valid token of the right tenant is enough.
 

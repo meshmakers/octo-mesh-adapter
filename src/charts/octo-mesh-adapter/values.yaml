@@ -61,6 +61,18 @@ authUri: ""
 # (OPERATOR__ADDITIONALVALIDISSUERS__<n>). Empty = only authUri is accepted.
 additionalValidIssuers: []
 
+# Tenant check for client-credentials tokens on secured FromHttpRequest@2 routes
+# (AB#5628, MeshAdapterConfiguration.ServiceTokenEnforcement):
+#  - Enforce: a service token whose tenant_id is not this adapter's tenant, or
+#    that carries none, is answered with 403 and a warning event.
+#  - Warn: the request passes, the warning event says it would have been
+#    denied. Rollout mode only - collect the callers, fix their acr_values,
+#    then go back to Enforce.
+# Per tenant: set a ValueOverride (Path serviceTokenEnforcement, Value Warn) or
+# a ValuesYaml line on the adapter entity (System.Communication DeployableWorkload,
+# runtime state, kept across blueprint re-apply) and redeploy the adapter.
+serviceTokenEnforcement: "Enforce"
+
 # Client id of the adapter's own confidential OAuth client (AB#5072). Written
 # by the communication controller as a `ValueOverride` at deploy time from the
 # `ServiceAccountConfiguration` it provisions per adapter (AB#5027). Empty =

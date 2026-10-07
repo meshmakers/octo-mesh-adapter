@@ -178,6 +178,13 @@ internal sealed class LeasedPipelineWorkItem(
     ///     of the tenant on leave. That participant's <c>EnterLeaseAsync</c> is deliberately a no-op
     ///     because only the work item knows <i>which</i> pipeline the lease was granted for — this is
     ///     the method that comment refers to.
+    ///     <para>
+    ///         The registration starts <b>no trigger nodes</b> on a pool member (AB#5863 / AB#5828,
+    ///         <c>PipelineRegistryService</c> in the communication SDK): the lease is the trigger. A
+    ///         started <c>FromPipelineTriggerEvent@1</c> bound the borrower's durable trigger queue on
+    ///         the member's never-started bus and then hung its stop for 30 s on leave, draining the
+    ///         member after every leased cron run.
+    ///     </para>
     /// </remarks>
     private async Task<string?> RegisterAsync(string tenantId, PipelineConfigurationDto pipeline)
     {

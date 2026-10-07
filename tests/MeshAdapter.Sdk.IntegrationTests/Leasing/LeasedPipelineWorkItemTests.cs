@@ -7,6 +7,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -154,6 +155,83 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
     }
 
     /// <summary>
+    ///     🔴 AB#5863 / AB#5828 — a leased pipeline whose trigger subscribes to the bus (the canonical
+    ///     cron form, <c>FromPipelineTriggerEvent@1</c>) must run and release cleanly.
+    /// </summary>
+    /// <remarks>
+    ///     The member never starts its bus, so the real trigger declared and bound the borrower's
+    ///     durable trigger queue on an unstarted bus at registration and its stop then waited for the
+    ///     endpoint's ready state forever (AB#4968 pattern), bounded only by the 30 s
+    ///     <c>TriggerStopTimeout</c>. The leave of <c>PipelineRegistryLeaseParticipant</c> failed, the
+    ///     release came back <c>Drained</c> and the member took no further work. The stand-in trigger
+    ///     here behaves the same way — its stop never completes — and records whether it was ever
+    ///     started: on a member it must not be, because the lease is the trigger.
+    /// </remarks>
+    [Fact]
+    public async Task ALeasedPipelineWithABusTriggerRunsWithoutStartingItAndReleasesCleanly()
+    {
+        fixture.EnsureInitialized();
+        HangingBusTriggerNode.Reset();
+        await using var member = await PoolMember.CreateAsync(fixture);
+
+        var output = await member.LeaseAndRunAsync(TwoTenantLeaseFixture.TenantA,
+            trigger: new HangingBusTriggerNodeConfiguration());
+
+        using var _ = new AssertionScope();
+        var release = member.HubClient.Releases[^1];
+        release.Success.Should().BeTrue($"the pipeline itself succeeded: {release.StatusMessage}");
+        release.Reason.Should().Be(LeaseReleaseReasonDto.Completed,
+            "no lease participant may fail to leave, so the member must not drain");
+        member.IsDraining.Should().BeFalse("the member must stay available for the next lease");
+        output.Should().Contain(TwoTenantLeaseFixture.MarkerOf(TwoTenantLeaseFixture.TenantA));
+        HangingBusTriggerNode.StartCount.Should().Be(0,
+            "a pool member must not subscribe to the borrower's trigger endpoints (AB#5828)");
+        HangingBusTriggerNode.StopCount.Should().Be(0);
+
+        // And the next lease on the same member is served, not refused.
+        await member.LeaseAndRunAsync(TwoTenantLeaseFixture.TenantB,
+            trigger: new HangingBusTriggerNodeConfiguration());
+        member.HubClient.Releases[^1].Reason.Should().Be(LeaseReleaseReasonDto.Completed);
+        member.HubClient.Releases[^1].Success.Should().BeTrue();
+    }
+
+    /// <summary>
+    ///     A trigger that behaves like <c>FromPipelineTriggerEvent@1</c> on a member's unstarted bus:
+    ///     its stop never returns. Counts are static because the node is created by the node lookup,
+    ///     not by the test; the collection runs sequentially.
+    /// </summary>
+    [NodeName("HangingBusTrigger", 1)]
+    internal record HangingBusTriggerNodeConfiguration : TriggerNodeConfiguration;
+
+    [NodeConfiguration(typeof(HangingBusTriggerNodeConfiguration))]
+    internal sealed class HangingBusTriggerNode : ITriggerPipelineNode
+    {
+        private static int _startCount;
+        private static int _stopCount;
+
+        public static int StartCount => Volatile.Read(ref _startCount);
+        public static int StopCount => Volatile.Read(ref _stopCount);
+
+        public static void Reset()
+        {
+            Interlocked.Exchange(ref _startCount, 0);
+            Interlocked.Exchange(ref _stopCount, 0);
+        }
+
+        public Task StartAsync(ITriggerContext context)
+        {
+            Interlocked.Increment(ref _startCount);
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(ITriggerContext context)
+        {
+            Interlocked.Increment(ref _stopCount);
+            return new TaskCompletionSource().Task;
+        }
+    }
+
+    /// <summary>
     ///     A pool member composed the real way, with the real work item.
     /// </summary>
     private sealed class PoolMember : IAsyncDisposable
@@ -173,6 +251,8 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
         }
 
         public LeasedTenantIsolationTests.RecordingHubClient HubClient { get; }
+
+        public bool IsDraining => _services.GetRequiredService<AdapterPoolClient>().IsDraining;
         private LeasedTenantIsolationTests.FakeIdentityService Identity { get; }
 
         public static async Task<PoolMember> CreateAsync(TwoTenantLeaseFixture fixture)
@@ -225,7 +305,8 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
                 .RegisterNode<GetRtEntitiesByTypeNode>()
                 // SetPipelineExecutionResult@1 is built in — AddDataPipeline() already registers it,
                 // and registering it again throws on the duplicate node name.
-                .RegisterTriggerNode<LeasedTenantIsolationTests.LeaseProbeTriggerNode>();
+                .RegisterTriggerNode<LeasedTenantIsolationTests.LeaseProbeTriggerNode>()
+                .RegisterTriggerNode<HangingBusTriggerNode>();
 
             // 🔴 AFTER AddDataPipeline(), which registers the SDK's DefaultContextCreatorService with a
             // plain AddSingleton — last registration wins. A real mesh-adapter host has the same
@@ -242,11 +323,11 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
         ///     The pipeline the lease carries: read the leased tenant's marker entities, then declare
         ///     the whole data root — input included — as the execution result.
         /// </summary>
-        private async Task<PipelineConfigurationDto> BuildPipelineAsync()
+        private async Task<PipelineConfigurationDto> BuildPipelineAsync(TriggerNodeConfiguration? trigger = null)
         {
             var definition = new NodeDefinitionRoot
             {
-                Triggers = [new LeasedTenantIsolationTests.LeaseProbeTriggerNodeConfiguration()],
+                Triggers = [trigger ?? new LeasedTenantIsolationTests.LeaseProbeTriggerNodeConfiguration()],
                 Transformations =
                 [
                     new GetRtEntitiesByTypeNodeConfiguration
@@ -270,9 +351,9 @@ public class LeasedPipelineWorkItemTests(TwoTenantLeaseFixture fixture) : IClass
         }
 
         public async Task<string> LeaseAndRunAsync(string tenantId, string? input = null,
-            string? executionId = null)
+            string? executionId = null, TriggerNodeConfiguration? trigger = null)
         {
-            var pipeline = await BuildPipelineAsync();
+            var pipeline = await BuildPipelineAsync(trigger);
             await LeaseAsync(tenantId, pipeline, executionId ?? Guid.NewGuid().ToString(), input);
             return HubClient.Releases[^1].OutputData ?? string.Empty;
         }

@@ -536,6 +536,21 @@ operator (correctly) withholding the tier the render itself would have failed. H
 name and replica set are still rendered; they are not secrets and a connection needs an address either
 way. A *dedicated* adapter still fails to render without the two secrets, verified explicitly.
 
+### E3: what a member gets of the estate-wide secrets — pinned by `tests/chart/test-chart.sh`
+
+Decision E3 (2026-10-07): a pool member gets the **IronOCR licence**, and **never** the database /
+admin / CrateDB passwords or the SECRET attribute key ring (`OCTO_SECRETENCRYPTION__*`). The operator
+withholds the cluster-secret tier from an `AdapterPool` (its `AppendClusterSecretsTests`); the chart
+withholds them again, in the env **and** in the chart-owned `<fullname>-backend` Secret — the Secret
+used to pack plaintext DB passwords and key ring values for a member if a values file carried them,
+even though no env var referenced them (fixed AB#4924, `secret.yaml` + `hasPlaintextBackendSecret`).
+
+`tests/chart/test-chart.sh` (bash + helm, no cluster) renders the chart with `member-values.yaml`
+(operator shape **plus** sentinel values for every forbidden secret) in two shapes and with
+`dedicated-values.yaml` as the positive control, and searches the **whole** render — sentinels also in
+base64. Run it after every chart change; it is not wired into CI yet (would be a `Bash@3` step before
+`helm package` in `azure-pipelines.yml`; the agent already has helm for `HelmDeploy@0`).
+
 ⚠️ What a member gets from the engine this way is a **detached** tenant context: it reads and writes
 entities but performs none of the model management the registry route performs (see
 `octo-construction-kit-engine-mongodb/CLAUDE.md`). Deliberate — those are writes on behalf of the

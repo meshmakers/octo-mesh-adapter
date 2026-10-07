@@ -159,12 +159,13 @@ externally via valueFrom.
 */}}
 {{- define "octo-mesh.hasPlaintextBackendSecret" -}}
 {{- $s := .Values.secrets -}}
-{{- if and $s.databaseUser (not (kindIs "map" $s.databaseUser)) -}}true
-{{- else if and $s.databaseAdmin (not (kindIs "map" $s.databaseAdmin)) -}}true
+{{- $member := include "octo-mesh.isPoolMember" . -}}
+{{- if and (not $member) $s.databaseUser (not (kindIs "map" $s.databaseUser)) -}}true
+{{- else if and (not $member) $s.databaseAdmin (not (kindIs "map" $s.databaseAdmin)) -}}true
 {{- else if and $s.rabbitmq (not (kindIs "map" $s.rabbitmq)) -}}true
-{{- else if and $s.streamDataPassword (not (kindIs "map" $s.streamDataPassword)) -}}true
+{{- else if and (not $member) $s.streamDataPassword (not (kindIs "map" $s.streamDataPassword)) -}}true
 {{- else if and $s.serviceAccountClientSecret (not (kindIs "map" $s.serviceAccountClientSecret)) -}}true
-{{- else if include "octo-mesh.hasPlaintextSecretEncryption" . -}}true
+{{- else if and (not $member) (include "octo-mesh.hasPlaintextSecretEncryption" .) -}}true
 {{- end -}}
 {{- end -}}
 

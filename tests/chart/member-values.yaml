@@ -1,0 +1,34 @@
+# AB#4924 E3 — an adapter pool member as the communication operator renders it, PLUS every
+# installation-wide secret a member must never receive. The secrets are supplied on purpose: the
+# chart has to withhold them even when a values file (hand-written, or an operator regression)
+# hands them over. Each carries a sentinel value so the test can search the whole render for it.
+tenantId: ""
+adapterRtId: ""
+adapterPool:
+  poolTenantId: "lender"
+  poolRtId: "49240000000000000000aa01"
+communicationControllerServiceUri: "https://communication.example.test/"
+reportingServiceUri: "https://reporting.example.test/"
+authUri: "https://identity.example.test/"
+serviceAccountClientId: "octo-pool-member-sa"
+secrets:
+  # Mandatory for every adapter (the broker is not tenant data).
+  rabbitmq:
+    valueFrom:
+      secretKeyRef: { name: "member-octo-secrets", key: "rabbitmq" }
+  serviceAccountClientSecret:
+    valueFrom:
+      secretKeyRef: { name: "member-octo-secrets", key: "serviceAccountClientSecret" }
+  # E3: a pool member DOES get the IronOCR licence.
+  ironOcrLicenseKey:
+    valueFrom:
+      secretKeyRef: { name: "member-octo-secrets", key: "ironOcrLicenseKey" }
+  # E3: a pool member must NEVER get these.
+  databaseUser: "SENTINEL-DATABASE-USER-PASSWORD"
+  databaseAdmin: "SENTINEL-DATABASE-ADMIN-PASSWORD"
+  streamDataPassword: "SENTINEL-STREAMDATA-PASSWORD"
+  secretEncryption:
+    keys:
+      k1: "SENTINEL-KEYRING-K1"
+    activeKeyId: "k1"
+    legacyV1Key: "SENTINEL-KEYRING-LEGACY-V1"

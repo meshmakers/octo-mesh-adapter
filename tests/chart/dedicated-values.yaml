@@ -1,0 +1,37 @@
+# AB#4924 E3 positive control — a DEDICATED adapter as the communication operator renders it for a
+# workload with ReceivesClusterSecrets=true. It must get everything a member is denied, so that a
+# member assertion that passes cannot be passing only because the chart renders nothing at all.
+tenantId: "meshtest"
+adapterRtId: "49240000000000000000bb01"
+communicationControllerServiceUri: "https://communication.example.test/"
+reportingServiceUri: "https://reporting.example.test/"
+authUri: "https://identity.example.test/"
+serviceAccountClientId: "octo-adapter-sa"
+secrets:
+  rabbitmq:
+    valueFrom:
+      secretKeyRef: { name: "dedicated-octo-secrets", key: "rabbitmq" }
+  serviceAccountClientSecret:
+    valueFrom:
+      secretKeyRef: { name: "dedicated-octo-secrets", key: "serviceAccountClientSecret" }
+  ironOcrLicenseKey:
+    valueFrom:
+      secretKeyRef: { name: "dedicated-octo-secrets", key: "ironOcrLicenseKey" }
+  databaseUser:
+    valueFrom:
+      secretKeyRef: { name: "dedicated-octo-secrets", key: "databaseUser" }
+  databaseAdmin:
+    valueFrom:
+      secretKeyRef: { name: "dedicated-octo-secrets", key: "databaseAdmin" }
+  streamDataPassword:
+    valueFrom:
+      secretKeyRef: { name: "dedicated-octo-secrets", key: "streamDataPassword" }
+  secretEncryption:
+    keys:
+      k1:
+        valueFrom:
+          secretKeyRef: { name: "dedicated-octo-secrets", key: "secretEncryptionKey-k1" }
+    activeKeyId: "k1"
+    legacyV1Key:
+      valueFrom:
+        secretKeyRef: { name: "dedicated-octo-secrets", key: "secretEncryptionLegacyV1Key" }

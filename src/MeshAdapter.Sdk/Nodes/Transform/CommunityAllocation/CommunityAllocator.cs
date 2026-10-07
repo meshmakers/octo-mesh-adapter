@@ -16,7 +16,7 @@ internal readonly record struct AllocationMember(
 /// <summary>Consumer result of one slot.</summary>
 /// <param name="RtId">Metering point rtId.</param>
 /// <param name="ShareUnits">Community share a_i in whole units of the resolution.</param>
-/// <param name="Quality">Quality written with the share.</param>
+/// <param name="Quality">Quality written with the share: the worst input quality of the slot (V-2).</param>
 /// <param name="Missing">True when the raw value was missing and counted as 0.</param>
 internal readonly record struct ConsumerAllocation(string RtId, long ShareUnits, string Quality, bool Missing);
 
@@ -24,7 +24,7 @@ internal readonly record struct ConsumerAllocation(string RtId, long ShareUnits,
 /// <param name="RtId">Metering point rtId.</param>
 /// <param name="OfferedUnits">Offered generation o_p in whole units of the resolution.</param>
 /// <param name="SurplusUnits">Undistributed surplus u_p in whole units of the resolution.</param>
-/// <param name="Quality">Quality written with both registers.</param>
+/// <param name="Quality">Quality written with both registers: the worst input quality of the slot (V-2).</param>
 /// <param name="Missing">True when the raw value was missing and counted as 0.</param>
 internal readonly record struct ProducerAllocation(
     string RtId, long OfferedUnits, long SurplusUnits, string Quality, bool Missing);
@@ -200,20 +200,23 @@ internal sealed class CommunityAllocator
             }
         }
 
+        // V-2: every register of the slot depends on every input of the slot (E and W are sums over
+        // all members), so all of them carry the WORST input quality of the slot; a missing value
+        // counts with MissingQuality (ALC-04).
+        var slotQuality = WorstQuality(consumers, producers);
+
         var consumerResults = new ConsumerAllocation[consumers.Count];
         for (var i = 0; i < consumers.Count; i++)
         {
             var missing = consumers[i].Value is null;
-            consumerResults[i] = new ConsumerAllocation(consumers[i].RtId, shares[i],
-                missing ? MissingQuality : consumers[i].Quality, missing);
+            consumerResults[i] = new ConsumerAllocation(consumers[i].RtId, shares[i], slotQuality, missing);
         }
 
         var producerResults = new ProducerAllocation[producers.Count];
         for (var p = 0; p < producers.Count; p++)
         {
             var missing = producers[p].Value is null;
-            producerResults[p] = new ProducerAllocation(producers[p].RtId, offered[p], surplus[p],
-                missing ? MissingQuality : producers[p].Quality, missing);
+            producerResults[p] = new ProducerAllocation(producers[p].RtId, offered[p], surplus[p], slotQuality, missing);
         }
 
         var result = new SlotAllocation(consumerResults, producerResults, consumption, w, e, a, s, negative);
@@ -271,6 +274,37 @@ internal sealed class CommunityAllocator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Rank of a quality name, higher is worse: L1 (measured) &lt; L2 (interpolated) &lt; Manual
+    /// (entered or corrected by a user, not a measurement) &lt; L3 (estimate). Any other name ranks
+    /// worst of all, so an unknown quality can never upgrade a slot.
+    /// </summary>
+    internal static int QualityRank(string? quality)
+        => quality switch
+        {
+            "L1" => 1,
+            "L2" => 2,
+            "Manual" => 3,
+            "L3" => 4,
+            _ => 5
+        };
+
+    /// <summary>The worst input quality of a slot (V-2); MissingQuality for a missing value.</summary>
+    internal string WorstQuality(IReadOnlyList<AllocationMember> consumers, IReadOnlyList<AllocationMember> producers)
+    {
+        string? worst = null;
+        foreach (var member in consumers.Concat(producers))
+        {
+            var quality = member.Value is null ? MissingQuality : member.Quality;
+            if (worst is null || QualityRank(quality) > QualityRank(worst))
+            {
+                worst = quality;
+            }
+        }
+
+        return worst ?? MissingQuality;
     }
 
     private static void Fail(string message)

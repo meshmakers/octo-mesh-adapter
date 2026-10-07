@@ -553,8 +553,9 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
 
         var c2 = output.Records!.Single(r => r.MeteringPointRtId == C2);
         Assert.All(c2.EnergyQuantities, q => Assert.Equal("L3", q.Quality));
+        // V-2: C1 delivered L1, but the slot has missing inputs, so its share is L3 as well.
         var c1 = output.Records!.Single(r => r.MeteringPointRtId == C1);
-        Assert.All(c1.EnergyQuantities, q => Assert.Equal("L1", q.Quality));
+        Assert.All(c1.EnergyQuantities, q => Assert.Equal("L3", q.Quality));
         Assert.Equal(96, output.Summary![0].MissingProducerValues);
         Assert.Equal(96, output.Summary![0].MissingConsumerValues);
         Assert.Null(output.Summary![0].SurplusRatio);
@@ -575,8 +576,25 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
         Assert.Equal(96, surplus.EnergyQuantities.Count);
         Assert.Equal(0m, offered.EnergyQuantities[0].Quantity);
         Assert.Equal("L2", offered.EnergyQuantities[0].Quality);
+        // V-2: the L1 consumers take the worst input quality of the slot (the L2 producer).
+        Assert.All(output.Records!.Where(r => r.MeteringPointRtId == C1 || r.MeteringPointRtId == C2)
+            .SelectMany(r => r.EnergyQuantities), q => Assert.Equal("L2", q.Quality));
         Assert.Equal(0.3m, offered.EnergyQuantities[^1].Quantity);
         Assert.Equal(0.1m, surplus.EnergyQuantities[^1].Quantity);
+    }
+
+    [Fact]
+    public async Task ManualInput_IsReadAsManual_AndMarksTheWholeSlot()
+    {
+        // Basic.Energy DataQuality key 4 = Manual (e.g. /manualMeteringEntry). It must not pass as L1:
+        // the slot carries the worst input quality (V-2) and Manual ranks below L2.
+        Fill(C1, ConsumerIn, _ => 0.1);
+        Fill(C2, ConsumerIn, _ => 0.1, quality: 2);
+        Fill(P1, ProducerIn, _ => 0.3, quality: 4);
+
+        var output = await RunAsync(Config());
+
+        Assert.All(output.Records!.SelectMany(r => r.EnergyQuantities), q => Assert.Equal("Manual", q.Quality));
     }
 
     [Fact]

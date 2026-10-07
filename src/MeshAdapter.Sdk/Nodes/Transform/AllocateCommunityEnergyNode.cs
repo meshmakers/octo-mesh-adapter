@@ -625,13 +625,18 @@ internal class AllocateCommunityEnergyNode(
 
     private static string FormatDay(DateOnly day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
-    /// <summary>Quality keys 1, 2, 3 become L1, L2, L3; any other present value becomes L1.</summary>
+    /// <summary>
+    /// Quality keys 1, 2, 3, 4 become L1, L2, L3, Manual (Basic.Energy DataQuality); any other present
+    /// value becomes L1. Manual is kept, not folded into L1, because the slot quality is the worst input
+    /// quality (V-2) and a manual value must not pass as a measurement.
+    /// </summary>
     internal static string QualityName(object? raw)
         => AsInt(raw) switch
         {
             2 => "L2",
             3 => "L3",
-            _ => raw is string s && s is "L1" or "L2" or "L3" ? s : "L1"
+            4 => "Manual",
+            _ => raw is string s && s is "L1" or "L2" or "L3" or "Manual" ? s : "L1"
         };
 
     internal static decimal? AsDecimal(object? raw)

@@ -179,7 +179,9 @@ public class CommunityAllocatorTests
         Assert.Equal("L3", r.Consumers[0].Quality);
         Assert.True(r.Consumers[0].Missing);
         Assert.Equal(600, r.Consumers[1].ShareUnits);
-        Assert.Equal("L2", r.Consumers[1].Quality);
+        // V-2: the slot has a missing input, so every register carries MissingQuality.
+        Assert.Equal("L3", r.Consumers[1].Quality);
+        Assert.Equal("L3", r.Producers[0].Quality);
     }
 
     [Fact]
@@ -192,6 +194,30 @@ public class CommunityAllocatorTests
         Assert.Equal("L3", r.Producers[0].Quality);
         Assert.Equal(400, r.Producers[1].OfferedUnits);
         Assert.Equal(400, r.Consumers[0].ShareUnits);
+    }
+
+    [Theory]
+    [InlineData("L1", "L1", "L1", "L1")]
+    [InlineData("L1", "L2", "L1", "L2")]
+    [InlineData("L2", "L1", "Manual", "Manual")]
+    [InlineData("Manual", "L3", "L1", "L3")]
+    [InlineData("L1", "L1", "X", "X")]
+    public void EveryRegister_CarriesTheWorstInputQualityOfTheSlot(string c1, string c2, string p1, string expected)
+    {
+        // V-2: L1 < L2 < Manual < L3 < anything unknown.
+        var r = Run([M("c1", 0.4m, quality: c1), M("c2", 0.2m, quality: c2)], [M("p1", 1.0m, quality: p1)]);
+
+        Assert.All(r.Consumers, c => Assert.Equal(expected, c.Quality));
+        Assert.Equal(expected, r.Producers[0].Quality);
+    }
+
+    [Fact]
+    public void QualityRank_OrdersMeasuredBeforeManualBeforeEstimate()
+    {
+        Assert.True(CommunityAllocator.QualityRank("L1") < CommunityAllocator.QualityRank("L2"));
+        Assert.True(CommunityAllocator.QualityRank("L2") < CommunityAllocator.QualityRank("Manual"));
+        Assert.True(CommunityAllocator.QualityRank("Manual") < CommunityAllocator.QualityRank("L3"));
+        Assert.True(CommunityAllocator.QualityRank("L3") < CommunityAllocator.QualityRank("Unknown"));
     }
 
     [Fact]
@@ -300,10 +326,12 @@ public class CommunityAllocatorTests
             var allocator = random.Next(4) == 0 ? new CommunityAllocator(0.01m, "L3") : _allocator;
             var r = Run(allocator, consumers, producers);
 
-            for (var i = 0; i < consumers.Length; i++)
-            {
-                Assert.Equal(consumers[i].Value is null ? "L3" : consumers[i].Quality, r.Consumers[i].Quality);
-            }
+            var worst = consumers.Concat(producers)
+                .Select(m => m.Value is null ? "L3" : m.Quality)
+                .OrderByDescending(CommunityAllocator.QualityRank)
+                .FirstOrDefault() ?? "L3";
+            Assert.All(r.Consumers, c => Assert.Equal(worst, c.Quality));
+            Assert.All(r.Producers, p => Assert.Equal(worst, p.Quality));
         }
     }
 

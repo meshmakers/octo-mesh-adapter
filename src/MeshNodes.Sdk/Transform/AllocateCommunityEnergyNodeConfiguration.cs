@@ -262,9 +262,10 @@ public record AllocateCommunityEnergyNodeConfiguration : NodeConfiguration
     public string QuantityUnit { get; init; } = "kWh";
 
     /// <summary>
-    /// Quality written for a slot whose input value is missing (the value then counts as 0). Default
-    /// <c>L3</c>. A present input passes its own quality on: keys 1, 2 and 3 become L1, L2 and L3,
-    /// any other key becomes L1.
+    /// Quality of a missing input value (the value then counts as 0). Default <c>L3</c>. Present inputs
+    /// are read as keys 1, 2, 3, 4 = L1, L2, L3, Manual (any other key = L1). Every register of a slot
+    /// carries the WORST input quality of that slot (decision V-2), ranked L1 &lt; L2 &lt; Manual &lt; L3,
+    /// so one missing value makes every register of the slot <c>MissingQuality</c>.
     /// </summary>
     [PropertyGroup("Output", 2)]
     public string MissingQuality { get; init; } = "L3";

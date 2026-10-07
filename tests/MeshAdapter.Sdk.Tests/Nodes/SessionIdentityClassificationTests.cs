@@ -81,6 +81,7 @@ public class SessionIdentityClassificationTests
             ["Transform/ImportDataPointMappingsNode.cs"] = (0, 1),
             ["Transform/ImportFromExcelNode.cs"] = (0, 1),
             ["Transform/SimulateEnergyMeasurementsNode.cs"] = (1, 0),
+            ["Transform/SimulateEnergyMeasurementsV2Node.cs"] = (1, 0),
             ["Transform/ValidateDataPointCoverageNode.cs"] = (1, 0),
             ["Transform/ExcelImport/WellKnownNameLoader.cs"] = (0, 1)
         };
@@ -124,7 +125,10 @@ public class SessionIdentityClassificationTests
         // node is a deliberate act — a new site has to be classified above AND counted here.
         //
         // 35 now: AllocateCommunityEnergy@1 (AB#5634) added one scoped (config-selected) site.
-        Assert.Equal(19, actual.Sum(v => v.Scoped));
+        //
+        // 36 now (20 scoped): SimulateEnergyMeasurements@2 (AB#5631) reads the anchors and their
+        // metering points like version 1 does.
+        Assert.Equal(20, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
 

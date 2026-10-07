@@ -73,6 +73,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<UpdateRtEntityIfNewerNode>()
             .RegisterNode<SimulateEnergyMeasurementsNode>()
             .RegisterNode<AllocateCommunityEnergyNode>()
+            .RegisterNode<SimulateEnergyMeasurementsV2Node>()
             .RegisterNode<GetOrCreateRtEntitiesByTypeNode>()
             .RegisterNode<GetAssociationTargetsNode>()
             .RegisterNode<DataMappingNode>()

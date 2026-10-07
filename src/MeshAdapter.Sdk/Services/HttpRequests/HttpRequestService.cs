@@ -41,6 +41,11 @@ internal class HttpRequestService(
     /// </summary>
     private const string TenantIdClaim = "tenant_id";
 
+    /// <summary>
+    /// Claim naming the client a token was issued to; the only identity a client-credentials token has.
+    /// </summary>
+    private const string ClientIdClaim = "client_id";
+
     public HttpRouteHandle CreateRoute(HttpRequestOptions options)
     {
         var key = new Tuple<string, string>(options.Method.ToString().ToUpper(), GetUri(options.Route));
@@ -92,7 +97,7 @@ internal class HttpRequestService(
         {
             var principalRoles = context.User.FindAll(JwtClaimTypes.Role).Select(c => c.Value).ToArray();
             verifiedPrincipal = new VerifiedPrincipal(
-                context.User.FindFirstValue(JwtClaimTypes.Subject) ?? context.User.FindFirstValue("client_id"),
+                context.User.FindFirstValue(JwtClaimTypes.Subject) ?? context.User.FindFirstValue(ClientIdClaim),
                 context.User.FindFirstValue(TenantIdClaim),
                 context.User.FindFirstValue(JwtClaimTypes.Email),
                 context.User.FindFirstValue(JwtClaimTypes.Name) ??
@@ -414,16 +419,25 @@ internal class HttpRequestService(
             return false;
         }
 
-        var subject = context.User.FindFirstValue(JwtClaimTypes.Subject);
+        var subject = context.User.FindFirstValue(JwtClaimTypes.Subject)
+                      ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var clientId = context.User.FindFirstValue(ClientIdClaim);
         var tenantId = context.User.FindFirstValue(TenantIdClaim);
 
         // An adapter serves exactly one tenant, so a token minted for another tenant of the same
-        // installation must not reach its routes. Only user tokens are compared: a client
-        // credentials token carries neither a subject nor a tenant, and allowed_tenants is
-        // deliberately ignored - it drives tenant selection, not authorization. Same rule as
-        // TenantAuthorizationMiddleware in octo-common-services.
-        if (subject != null &&
-            !string.Equals(tenantId, tenantOfAdapter, StringComparison.OrdinalIgnoreCase))
+        // installation must not reach its routes - and this runs before the role check, so the
+        // role names of another tenant never matter. Both kinds of token are compared: since
+        // AB#5032 identity stamps tenant_id on client-credentials tokens too (AB#5628).
+        // allowed_tenants is deliberately ignored - it drives tenant selection, not
+        // authorization. Same rule as TenantAuthorizationMiddleware in octo-common-services.
+        if (subject == null)
+        {
+            if (!await AllowServiceTokenAsync(context, route, tenantOfAdapter, clientId, tenantId))
+            {
+                return false;
+            }
+        }
+        else if (!string.Equals(tenantId, tenantOfAdapter, StringComparison.OrdinalIgnoreCase))
         {
             // A missing claim is a different story than a foreign tenant, and the audit trail is
             // read by an operator - naming tenant '' would leave them guessing which one it was.
@@ -439,6 +453,9 @@ internal class HttpRequestService(
                 BearerChallenge.ForInsufficientScope(BearerChallenge.TenantMismatch, []));
             return false;
         }
+
+        // A service token has no subject; the client id is what identifies it in the audit trail.
+        subject ??= clientId;
 
         // A blank entry cannot match a role and would make IsInRole throw, so it is
         // skipped rather than answered with a 500 - a malformed list denies access.
@@ -462,6 +479,56 @@ internal class HttpRequestService(
             $"Allowed {route.Method.ToString().ToUpper()} {route.Route} for subject {subject} " +
             $"of tenant '{tenantId}' with roles {string.Join(", ", roles)}.");
         return true;
+    }
+
+    /// <summary>
+    /// Decides whether a service token (no subject) may call a route of this adapter's tenant
+    /// (AB#5628). Its <c>tenant_id</c> must name the adapter tenant; a token without one cannot be
+    /// attributed to a tenant and is refused (fail closed). In
+    /// <see cref="ServiceTokenEnforcementMode.Warn"/> the request passes but the decision an
+    /// enforcing run would take is logged and recorded. Returns <c>false</c> after answering the
+    /// request with <c>403</c>.
+    /// </summary>
+    /// <remarks>
+    /// There is deliberately no cross-tenant allow-list as in octo-common-services: the platform
+    /// workers it exists for mint tenant-bound tokens, and that list is expected to stay empty
+    /// there too. A route that has to serve another tenant's machine is a design question, not a
+    /// configuration one.
+    /// </remarks>
+    private async Task<bool> AllowServiceTokenAsync(HttpContext context, HttpRequestOptions route,
+        string? tenantOfAdapter, string? clientId, string? tokenTenantId)
+    {
+        // A token without a tenant never matches, not even an adapter whose tenant is unset.
+        if (!string.IsNullOrEmpty(tokenTenantId) &&
+            string.Equals(tokenTenantId, tenantOfAdapter, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var reason = string.IsNullOrEmpty(tokenTenantId)
+            ? "the service token carries no tenant claim"
+            : $"the service token of tenant '{tokenTenantId}' does not serve this tenant";
+        var client = clientId ?? "<none>";
+
+        if (meshAdapterConfiguration.Value.ServiceTokenEnforcement == ServiceTokenEnforcementMode.Warn)
+        {
+            logger.LogWarning(
+                "Allowed {Method} {Route} for client {ClientId} of tenant {Tenant}, but it would be denied with " +
+                "ServiceTokenEnforcement=Enforce: {Reason}",
+                route.Method, route.Route, client, tenantOfAdapter, reason);
+            await eventService.StoreWarningEventAsync(tenantOfAdapter,
+                $"Allowed {route.Method.ToString().ToUpper()} {route.Route} for client {client}, but it would be " +
+                $"denied with ServiceTokenEnforcement=Enforce: {reason}.");
+            return true;
+        }
+
+        logger.LogWarning("Denied {Method} {Route} for client {ClientId} of tenant {Tenant}: {Reason}",
+            route.Method, route.Route, client, tenantOfAdapter, reason);
+        await eventService.StoreWarningEventAsync(tenantOfAdapter,
+            $"Denied {route.Method.ToString().ToUpper()} {route.Route} for client {client}: {reason}.");
+        Deny(context, StatusCodes.Status403Forbidden,
+            BearerChallenge.ForInsufficientScope(BearerChallenge.TenantMismatch, []));
+        return false;
     }
 
     /// <summary>

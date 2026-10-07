@@ -1430,6 +1430,7 @@ Return Result / Store in Time-Series / Send Notifications
 | `ReportingServiceUrl` | string | `https://localhost:5007` | Report service endpoint |
 | `AuthorityUrl` | string | `https://localhost:5003` | Identity service issuing the access tokens accepted by secured trigger nodes |
 | `AuditAnonymousInvocations` | bool | `false` | Stores an event per invocation of an anonymous trigger route. Opt in per environment; the decision always reaches the adapter log at debug level regardless |
+| `ServiceTokenEnforcement` | enum | `Enforce` | `Enforce` refuses a client-credentials token of another tenant, or one without `tenant_id`, with `403` on secured trigger routes; `Warn` lets it pass and records a warning event instead (AB#5628, env `OCTO_ADAPTER__SERVICETOKENENFORCEMENT`) |
 | `StreamDataHost` | string | `127.0.0.1` | CrateDB hostname |
 | `StreamDataUser` | string | `crate` | CrateDB user |
 | `StreamDataPassword` | string | (empty) | CrateDB password |
@@ -1481,12 +1482,17 @@ both logged and written to the tenant's event log (see **Route audit** below):
 
 1. A bearer token validated against `AuthorityUrl` (signature, issuer, audience, lifetime) —
    `401 Unauthorized` when missing or invalid.
-2. The token's tenant must be the tenant this adapter serves — `403 Forbidden` otherwise. Only
-   user tokens are compared: a client-credentials token carries neither a subject nor a tenant
-   claim, so machine callers are authorized by role alone. `allowed_tenants` is deliberately
+2. The token's tenant (`tenant_id`) must be the tenant this adapter serves — `403 Forbidden`
+   otherwise. This runs before the role check, so a role of the same name in another tenant never
+   opens a route. It applies to user tokens and, since AB#5628, to client-credentials tokens too
+   (no `sub` / name-identifier claim), which identity stamps with `tenant_id` since AB#5032. A token
+   without a tenant claim is rejected rather than waved through. `allowed_tenants` is deliberately
    ignored, it drives tenant selection rather than authorization (same rule as
-   `TenantAuthorizationMiddleware` in octo-common-services). A user token without a tenant claim
-   is rejected rather than waved through.
+   `TenantAuthorizationMiddleware` in octo-common-services). There is no cross-tenant allow-list.
+   For client-credentials tokens the check can be relaxed per environment with
+   `ServiceTokenEnforcement=Warn` (`OCTO_ADAPTER__SERVICETOKENENFORCEMENT=Warn`): the request then
+   passes, but is logged and recorded as a warning event ("would be denied") naming the client id
+   and the token tenant. User tokens are always enforced.
 3. When roles are configured the caller must hold at least one — `403 Forbidden` otherwise.
    Without roles a valid token of the right tenant is enough.
 

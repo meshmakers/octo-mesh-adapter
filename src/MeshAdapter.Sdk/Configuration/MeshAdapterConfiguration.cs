@@ -63,6 +63,17 @@ public class MeshAdapterConfiguration
     public bool AuditAnonymousInvocations { get; set; }
 
     /// <summary>
+    /// How a client-credentials token whose <c>tenant_id</c> is not the adapter's tenant is
+    /// treated on a secured trigger route (AB#5628). Defaults to
+    /// <see cref="ServiceTokenEnforcementMode.Enforce"/>: such a token, and one without a tenant
+    /// claim, is refused with <c>403</c>. An environment that still has to inventory its callers can
+    /// opt down without a release via <c>OCTO_ADAPTER__SERVICETOKENENFORCEMENT=Warn</c> (or
+    /// <c>--Adapter:ServiceTokenEnforcement=Warn</c>); the request then passes but is recorded as a
+    /// warning. User tokens are not affected - they are always compared.
+    /// </summary>
+    public ServiceTokenEnforcementMode ServiceTokenEnforcement { get; set; } = ServiceTokenEnforcementMode.Enforce;
+
+    /// <summary>
     /// Hostname of crate db server
     /// </summary>
     public string StreamDataHost { get; set; }

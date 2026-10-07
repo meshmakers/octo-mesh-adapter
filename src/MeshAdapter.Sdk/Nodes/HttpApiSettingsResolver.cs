@@ -56,6 +56,9 @@ internal static class HttpApiSettingsResolver
                 nodeContext, apiConfigurationName, settings.BaseUrl);
         }
 
+        // AB#5538: the API key is masked in every diagnostic output of this execution.
+        nodeContext.RegisterSecret(settings.ApiKey);
+
         return settings;
     }
 }

@@ -62,6 +62,8 @@ public class TeamsBotReplyNode(
                 nodeContext, nameof(c.ServerConfiguration), c.ServerConfiguration);
         }
         var cfg = etlContext.GlobalConfiguration.GetValue<BotConfiguration>(c.ServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(cfg.ClientSecret);
 
         var serviceUrl = dataContext.Get<string>(c.ServiceUrlPath);
         var conversationId = dataContext.Get<string>(c.ConversationIdPath);

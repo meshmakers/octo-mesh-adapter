@@ -226,7 +226,8 @@ internal class ImportDataPointMappingsNode(NodeDelegate next, IMeshEtlContext et
                 foreach (var entity in _all)
                 {
                     var raw = entity.GetAttributeValueOrDefault(attribute);
-                    var key = raw as string ?? raw?.ToString();
+                    // AB#5538: a Secret attribute is never an identity (its ToString is "***").
+                    var key = raw is RtSecretValue ? null : raw as string ?? raw?.ToString();
                     if (string.IsNullOrWhiteSpace(key)) continue;
                     if (!lookup.TryGetValue(key, out var bucket))
                     {

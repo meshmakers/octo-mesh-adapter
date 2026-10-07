@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using MimeKit;
 
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.MailFolders;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
@@ -105,6 +106,10 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         // MailPostProcessingMode): a trigger that changes nothing re-imports the same capped batch
         // for ever and never reaches the mail behind the cap.
         var postProcessingMode = ResolveEffectivePostProcessingMode(effective);
+        // 5.10.2026: MarkAsRead is only bookkeeping while the poll searches unread mails — with
+        // onlyUnread off, \Seen changes nothing about the next search and the same capped batch
+        // comes back every poll (the AB#5336 shape again, through a legal-looking pair of settings).
+        EnsurePostProcessingModeWorksWithSearch(postProcessingMode, effective.OnlyUnread);
 
         if (!string.IsNullOrWhiteSpace(c.SettingsConfiguration))
         {
@@ -119,6 +124,9 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
         
         _cancellationTokenSource = new CancellationTokenSource();
         _imapClient = new ImapClient();
+        // Tolerate an unreachable revocation service, refuse every other certificate defect —
+        // MailKit's default refused imap.gmail.com from a developer Mac for that alone.
+        MailServerCertificateValidation.Apply(_imapClient, logger);
         
         // Connect and authenticate
         await ConnectAndAuthenticateAsync(serverConfig);
@@ -849,6 +857,21 @@ internal class FromEmailNode(ILogger<FromEmailNode> logger, IChannelCallerBinder
 
         throw MeshAdapterPipelineExecutionException.MailPostProcessingModeNotConfigured(
             NodeType, HowToFix);
+    }
+
+    /// <summary>
+    ///     <see cref="MailPostProcessingMode.MarkAsRead" /> takes a mail out of the next poll ONLY
+    ///     through the <c>NotSeen</c> search, i.e. only while <c>onlyUnread</c> is on. Any other pair
+    ///     is fine: moving and deleting remove the mail from the source folder for every search.
+    ///     Raised at trigger start, like the other mode checks — a combination that cannot work
+    ///     is heard on deploy, not discovered as an ever-growing re-import.
+    /// </summary>
+    internal static void EnsurePostProcessingModeWorksWithSearch(MailPostProcessingMode mode, bool onlyUnread)
+    {
+        if (mode == MailPostProcessingMode.MarkAsRead && !onlyUnread)
+        {
+            throw MeshAdapterPipelineExecutionException.MailMarkAsReadNeedsOnlyUnread(NodeType);
+        }
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Security;
+using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.MailFolders;
 
@@ -48,9 +49,12 @@ internal static class ImapMailboxAccess
     ///     <see cref="DescribeConnectFailure" />.
     /// </summary>
     internal static async Task<ImapClient> ConnectAndAuthenticateAsync(ImapServerSettings settings,
-        TimeSpan timeout, CancellationToken cancellationToken)
+        TimeSpan timeout, CancellationToken cancellationToken, ILogger? logger = null)
     {
         var client = new ImapClient { Timeout = (int)Math.Min(timeout.TotalMilliseconds, int.MaxValue) };
+        // Same certificate policy as the trigger: an unreachable revocation service is tolerated,
+        // every other defect refused — see MailServerCertificateValidation.
+        MailServerCertificateValidation.Apply(client, logger);
         try
         {
             var options = settings.IsSslEnabled
@@ -81,9 +85,9 @@ internal static class ImapMailboxAccess
                                        "the mail server rejected the user name or password.",
             SslHandshakeException => $"The TLS handshake with {server} was refused: {ex.Message} " +
                                      "Check the SSL/TLS switch and the port (993 for SSL/TLS, 143 for STARTTLS).",
-            SocketException => $"The mail server {server} is not reachable from the adapter: {ex.Message}",
+            SocketException => $"The mail server {server} is not reachable from the import service: {ex.Message}",
             IOException { InnerException: SocketException inner } =>
-                $"The mail server {server} is not reachable from the adapter: {inner.Message}",
+                $"The mail server {server} is not reachable from the import service: {inner.Message}",
             OperationCanceledException or TimeoutException =>
                 $"The mail server {server} did not answer within {timeout.TotalSeconds:0} seconds.",
             ImapCommandException or ImapProtocolException =>

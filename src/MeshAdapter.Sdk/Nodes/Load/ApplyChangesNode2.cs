@@ -272,20 +272,54 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
         var lastEntity = last.RtEntity;
         if (lastEntity == null) return last;
 
-        // Merge all attributes — later updates win on conflicts
+        // Merge all attributes — later updates win on conflicts. AB#5538: the Secret clear lists
+        // (ClearSecretAttributes) merge the same way: a later non-empty value withdraws an earlier
+        // clear, a later clear drops an earlier value, and an "unchanged" value (null, "", marker)
+        // after a clear leaves the clear in place - so the engine never receives the contradictory
+        // "set and cleared" pair (rule message 23) for a merge it did not ask for.
         var mergedAttributes = new Dictionary<string, object?>();
+        var clearSecretAttributes = new List<string>();
         foreach (var update in updates)
         {
-            if (update.RtEntity == null) continue;
-            foreach (var kvp in update.RtEntity.Attributes)
+            if (update.RtEntity != null)
             {
-                if (mergedAttributes.TryGetValue(kvp.Key, out var existing) && !Equals(existing, kvp.Value))
+                foreach (var kvp in update.RtEntity.Attributes)
                 {
-                    nodeContext.Warning(
-                        $"Merging entity {last.GetRtEntityId()}: attribute '{kvp.Key}' has conflicting values " +
-                        $"('{existing}' vs '{kvp.Value}') — later value wins");
+                    if (clearSecretAttributes.Contains(kvp.Key, StringComparer.OrdinalIgnoreCase))
+                    {
+                        if (kvp.Value is not string { Length: > 0 })
+                        {
+                            // null, "" or a {"isSet": …} marker after a clear: the clear stands.
+                            continue;
+                        }
+
+                        clearSecretAttributes.RemoveAll(c =>
+                            string.Equals(c, kvp.Key, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    if (mergedAttributes.TryGetValue(kvp.Key, out var existing) && !Equals(existing, kvp.Value))
+                    {
+                        nodeContext.Warning(
+                            $"Merging entity {last.GetRtEntityId()}: attribute '{kvp.Key}' has conflicting values " +
+                            $"('{existing}' vs '{kvp.Value}') — later value wins");
+                    }
+
+                    mergedAttributes[kvp.Key] = kvp.Value;
                 }
-                mergedAttributes[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var cleared in update.ClearSecretAttributes ?? [])
+            {
+                foreach (var key in mergedAttributes.Keys
+                             .Where(k => string.Equals(k, cleared, StringComparison.OrdinalIgnoreCase)).ToList())
+                {
+                    mergedAttributes.Remove(key);
+                }
+
+                if (!clearSecretAttributes.Contains(cleared, StringComparer.OrdinalIgnoreCase))
+                {
+                    clearSecretAttributes.Add(cleared);
+                }
             }
         }
 
@@ -295,6 +329,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
             RtWellKnownName = lastEntity.RtWellKnownName
         };
 
-        return EntityUpdateInfo<RtEntity>.CreateUpdate(last.GetRtEntityId(), mergedEntity);
+        return EntityUpdateInfo<RtEntity>.CreateUpdate(last.GetRtEntityId(), mergedEntity,
+            clearSecretAttributes.Count > 0 ? clearSecretAttributes : null);
     }
 }

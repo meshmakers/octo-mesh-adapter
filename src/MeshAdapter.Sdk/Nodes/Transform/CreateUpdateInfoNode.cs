@@ -263,6 +263,13 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             };
         }
 
+        // AB#5538: a Secret read earlier arrives as the marker {"isSet": …}. Copied into an update it
+        // means "unchanged" - the engine's own reading of a marker - and must never become a value.
+        if (value is JsonObject marker && PipelineSecretValues.IsSecretMarker(marker))
+        {
+            return RtSecretValue.Pending(string.Empty);
+        }
+
         if (value is JsonObject jObject &&
             jObject.TryGetPropertyValue("CkRecordId", out var ckRecordIdNode) &&
             jObject.TryGetPropertyValue("Attributes", out var attributes) &&
@@ -293,7 +300,17 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 if (ckRecordGraphChild.AllAttributesByName.TryGetValue(kvp.Key, out var attribute))
                 {
                     var childValue = GetAttributeValue(nodeContext, kvp.Value);
-                    recordChild.SetAttributeValue(attribute.AttributeName, attribute.ValueType, childValue);
+                    if (attribute.ValueType == AttributeValueTypesDto.Secret && childValue is string plaintext)
+                    {
+                        // AB#5538: see PreserveSecretPlaintext - the plaintext must cross the data
+                        // context as a string, a pending RtSecretValue would arrive as "unchanged".
+                        recordChild.SetAttributeRawValue(attribute.AttributeName, plaintext);
+                        nodeContext.RegisterSecret(plaintext);
+                    }
+                    else
+                    {
+                        recordChild.SetAttributeValue(attribute.AttributeName, attribute.ValueType, childValue);
+                    }
                 }
                 else
                 {
@@ -317,7 +334,55 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
         RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, rtTypeWithAttributes, attributeName,
             convertedValue);
+        if (convertedValue is string plaintext)
+        {
+            PreserveSecretPlaintext(nodeContext, attributeName, plaintext, rtTypeWithAttributes);
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// AB#5538: writing a string into a <c>Secret</c> attribute is how a pipeline sets a secret (the
+    /// engine encrypts it on <c>ApplyChanges@2</c>; e.g. a refreshed OAuth token written back). The
+    /// path evaluator converts the string into a pending <see cref="RtSecretValue" />, but the update
+    /// travels to <c>ApplyChanges@2</c> through the data context, and every serialiser writes an
+    /// <see cref="RtSecretValue" /> only as the marker <c>{"isSet": …}</c> — which reads back as
+    /// "unchanged". The value would be silently dropped. So the plaintext is put back as a plain string
+    /// (the engine treats a string in a Secret slot as new input) and registered as secret, so debug
+    /// snapshots of the update show <c>***</c>. An empty string keeps meaning "unchanged".
+    /// Covers top-level attributes and dotted paths through single records; records given as JSON
+    /// objects are handled where they are built (<see cref="GetAttributeValue" />).
+    /// </summary>
+    private void PreserveSecretPlaintext(INodeContext nodeContext, string attributePath, string plaintext,
+        RtTypeWithAttributes root)
+    {
+        var target = root;
+        var name = attributePath;
+        var lastDot = attributePath.LastIndexOf('.');
+        if (lastDot > 0)
+        {
+            if (attributePath.IndexOfAny(['[', ']', '-', ':', '>']) >= 0)
+            {
+                return;
+            }
+
+            if (RtPathEvaluator.GetValue(ckCacheService, etlContext.TenantId, root,
+                    attributePath[..lastDot]) is not RtTypeWithAttributes parent)
+            {
+                return;
+            }
+
+            target = parent;
+            name = attributePath[(lastDot + 1)..];
+        }
+
+        var key = target.Attributes.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
+        if (key != null && target.Attributes[key] is RtSecretValue { IsPending: true })
+        {
+            target.SetAttributeRawValue(key, plaintext);
+            nodeContext.RegisterSecret(plaintext);
+        }
     }
 
     private static OctoObjectId? GetRtId(IDataContext dataContext, CreateUpdateInfoNodeConfiguration config)

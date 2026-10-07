@@ -31,6 +31,8 @@ public class GrafanaProvisionTenantNode(NodeDelegate next, HttpClient httpClient
         }
 
         var config = etlContext.GlobalConfiguration.GetValue<GrafanaConfig>(c.ServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(config.AdminPassword);
 
         var tenantId = !string.IsNullOrEmpty(c.TenantIdPath)
             ? dataContext.Get<string>(c.TenantIdPath)

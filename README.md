@@ -80,6 +80,22 @@ of `Meshmakers.Octo.MeshAdapter.Nodes` and uploads it as a build artifact. The `
 executable is deliberately not documented: it exposes no public API of its own, only the `Program`
 class the compiler generates for top-level statement apps.
 
+## Helm chart: SECRET attribute key ring (AB#5536)
+
+The runtime engine binds `SecretEncryption:Keys:<kid>`, `SecretEncryption:ActiveKeyId` and
+`SecretEncryption:LegacyV1Key` (concept `octo-construction-kit-engine/docs/concept-secret-attribute-type.md`
+§3.5). The chart in `src/charts/octo-mesh-adapter` renders them from
+`secrets.secretEncryption.{keys,activeKeyId,legacyV1Key}` as `OCTO_SECRETENCRYPTION__KEYS__<kid>`,
+`OCTO_SECRETENCRYPTION__ACTIVEKEYID` and `OCTO_SECRETENCRYPTION__LEGACYV1KEY` (inside
+`octo-mesh.system-env`).
+
+- The communication operator supplies them for `ReceivesClusterSecrets=true` workloads: keys and
+  the legacy key as `valueFrom` maps into `{release}-octo-secrets`, the active key id as a plain string.
+- Optional: nothing is rendered when unset, the adapter starts, and only SECRET attribute access fails.
+- The key id keeps its case in the variable name (lowercase, validated) because it is the id in the
+  `enc:v2:<kid>:` header.
+- An empty `activeKeyId` with exactly one key selects that key; with several keys it fails the render.
+
 ## License
 
 Proprietary - Meshmakers

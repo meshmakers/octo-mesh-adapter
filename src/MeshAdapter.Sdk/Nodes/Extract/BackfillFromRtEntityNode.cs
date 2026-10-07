@@ -99,7 +99,10 @@ internal class BackfillFromRtEntityNode(
             foreach (var path in missing)
             {
                 var value = persistedEntity.GetAttributeValueOrDefault(path);
-                if (value == null)
+                // AB#5538: archives never carry Secret columns (the engine excludes them); should a
+                // column spec name one anyway, the value is not copied into the update - an archive
+                // row is no place for a secret, not even as the {"isSet": ...} marker.
+                if (value is null or RtSecretValue)
                 {
                     continue;
                 }

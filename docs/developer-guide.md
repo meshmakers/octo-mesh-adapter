@@ -114,6 +114,79 @@ Fetches entities related through associations.
 
 **Output**: Multi-entity result with association mapping.
 
+#### RevealSecretNode
+
+`RevealSecret@1` (AB#5538, concept AB#5528 decision 6) is the only way for a pipeline to obtain the
+plaintext of a CK attribute of value type `Secret`. Every other node — `GetRtEntitiesById@1`,
+`GetRtEntitiesByType@1`, queries, `FromWatchRtEntity@1` — sees the marker `{"isSet": true|false}`.
+A stored value whose key id is not in the adapter's key ring reads as `{"isSet": false, "keyMissing": true}`,
+exactly what `RevealSecret@1` returns for it (null). The adapter registers its key ring as the classifier
+of the pipeline serialiser at startup (`PipelineSecretMarkerRegistration`). Copying any marker back into
+`CreateUpdateInfo@1` / `ApplyChanges@2` means "unchanged".
+
+| Setting | Type | Required | Meaning |
+|---|---|---|---|
+| `ckTypeId` | RtCkId (string, e.g. `System.Communication/EMailSenderConfiguration`) | one of `ckTypeId` / `ckTypeIdPath` | CK type of the entity |
+| `ckTypeIdPath` | JSONPath string | | Path to the CK type id |
+| `rtId` | OctoObjectId (24-hex string) | one of `rtId` / `rtIdPath` | Entity id; wins over `rtIdPath` |
+| `rtIdPath` | JSONPath string | | Path to the entity id |
+| `attributeName` | string | yes | Secret attribute, case-insensitive (`Password`/`password`); a dotted path reaches a Secret inside single `Record` attributes (`Settings.ApiKey`); record arrays are refused |
+| `targetPath` | JSONPath string | default `$` | Where the plaintext is written |
+| `targetValueWriteMode`, `targetValueKind`, `documentMode` | enums | defaults `Overwrite`, `Simple`, `Extend` | Usual target write options |
+| `identity` | `Caller` \| `ServiceAccount` | default `Caller` | Identity the entity is read as (data permissions apply to the read). `System` is refused: it bypasses data permissions and would let any pipeline author reveal every credential of the tenant |
+| `description` | string | | Optional description |
+
+```yaml
+- type: RevealSecret@1
+  ckTypeId: System.Communication/EMailSenderConfiguration
+  rtIdPath: $.config.rtId
+  attributeName: Password
+  targetPath: $.smtp.password
+  identity: ServiceAccount
+```
+
+Behaviour:
+- The entity is read in process and decrypted with `ISecretAttributeProtector.Unprotect`; every reveal
+  counts `octo.secrets.decrypt{tenant,ckType,attribute,service}`. The value is never logged.
+- Not set (absent, `null`, empty, corrupt) → `null` is written to `targetPath`. A placeholder-looking
+  value (`<…>`, `TODO_SET_*`) entered through an API is an ordinary value; only legacy clear-text
+  placeholders still waiting for the encrypt sweep read as not set.
+- Unknown key id (the value was encrypted with a key that is not in this adapter's key ring, e.g. after
+  a restore from another environment) → treated as not set: `null` is written and an error naming the
+  key id (never the value) goes to the execution log. The value becomes readable once the key is added.
+- A legacy clear-text value (stored before the attribute became Secret) is returned during the
+  transition and counted as a plaintext read.
+- Unknown CK type or attribute, an attribute that is not `Secret`, an entity that is not found (or not
+  readable by the identity), missing key ring (`SecretEncryption:Keys`), strict-mode clear text or a
+  damaged value with a known key id fail the node. No error message carries the value.
+- The plaintext is registered with `INodeContext.RegisterSecret` before it is written, so debug
+  snapshots, dry-run intents, the execution log and `SetPipelineExecutionResult@1` show `***`.
+
+#### Secret attributes in the other nodes (AB#5538)
+
+- **Reads** put only the marker into the data context. Change streams (`FromWatchRtEntity@1`) are not
+  normalised by the repository; strings found in Secret slots are wrapped by CK attribute type
+  (`Common/SecretAttributes.MaskLegacyValues`) so they serialise as the marker too.
+- **Writes**: a string written into a Secret attribute with `CreateUpdateInfo@1` is new input; the
+  engine encrypts it on `ApplyChanges@2`. Because the update crosses the data context, the node keeps
+  the plaintext as a plain string (a pending `RtSecretValue` would serialise as the marker and arrive as
+  "unchanged") and registers it as secret. A marker copied from a read means "unchanged"; `null` clears.
+  `ApplyChanges@2` merges `ClearSecretAttributes` of several updates for one entity.
+- **Type-switch nodes** (`ConvertDataType@1`, `SetPrimitiveValue@1`, `If@1`, `Switch@1`,
+  `ExecuteCSharp@1`, `DataMapping@1`) fail with "Secret not supported" for value type `Secret` or a
+  marker at a path they read. Test `….isSet` as Boolean instead.
+- **Credentials from configuration** (SMTP password, SFTP password/key, Graph/bot client secrets,
+  Discord token, Grafana admin password, HTTP API keys, Anthropic key) are registered as secret when a
+  node resolves them, so they are masked in diagnostics.
+- **Configurations copied into the data context** (`GetPipelineConfigByCkTypeId@1`, and the SDK's
+  `GetPipelineConfigByWellKnownName@1`) carry Secret values revealed by the controller; their values are
+  registered as secret first. The Secret attribute names come from `CkConfigurationSecretAttributeResolver`
+  (CK cache, top level and record members, replaces the SDK's no-op `IConfigurationSecretAttributeResolver`);
+  an unresolvable type falls back to the known System.Communication credential names with a warning.
+- `ServiceAccountTokenService` decrypts a Secret-typed `ClientSecret` in process; a secret that is set
+  but cannot be decrypted, or whose key id is not in the key ring, yields no token (error log without
+  the value) instead of falling back to impersonation.
+
 #### GetRtEntitiesByWellKnownNameTypeNode
 
 Retrieves entities by semantic well-known name identifiers.
@@ -918,6 +991,79 @@ Persists entity data to CrateDB time-series database.
 - RtWellKnownName (semantic name)
 - CkTypeId (type identifier)
 - Attributes (entity field values)
+
+#### SaveTimeRangeStreamDataInArchiveNode (`SaveTimeRangeStreamDataInArchive@1`)
+
+Writes rows that **already carry an `rtid`** to a windowed (`TimeRangeArchive`) archive. The window
+boundaries are read from the attribute paths named by `FromAttributePath` / `ToAttributePath` and
+removed from the attribute set so they do not reappear as user columns; a row without a usable
+window is skipped with a debug note.
+
+Before inserting it runs an **orphan guard**: the distinct source rtIds of the batch are grouped by
+CkTypeId and looked up, and the whole insert is refused naming the missing ids. That read uses a
+**system** session by decision (AB#5028) — under a narrow identity "you may not see it" would read as
+"it does not exist" and the node would refuse perfectly good measurements.
+
+Use `SaveTimeRangeSeriesInArchive@1` below instead when the pipeline would have to create a runtime
+entity per window just to satisfy this node's `rtid` requirement.
+
+#### SaveTimeRangeSeriesInArchiveNode (`SaveTimeRangeSeriesInArchive@1`)
+
+Ingests a whole series of windowed measurements into a `TimeRangeArchive`: **one anchor entity per
+series** plus one archive row per value, in a single node.
+
+It replaces a node composition that materialises one runtime entity per measured window
+(`CreateUpdateInfo@1` + `CreateAssociationUpdate@1` per window, two wildcard flattens,
+`UpdateRtEntityIfNewer@1`, `ApplyChanges@2`) in order to write one row. Measured on a real EDA
+replay: 316,268 windows in 4,530 s — 78 rows/s, 12.8 ms per window — with the database nowhere near
+the bottleneck. The runtime model only ever needs one anchor per series; on the same corpus that is
+16 entities instead of 316,268 candidates, at 0.79 ms per row.
+
+Input shape at `Path`: an array of series objects, each carrying the key fields plus an array of
+windowed values at `ValuesProperty`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Path` | string | JSONPath to the array of series |
+| `ArchiveRtId` | string | Target archive |
+| `CkTypeId` | string | CK type of the anchor entities |
+| `ValuesProperty` | string | Property on a series holding its array of windowed values |
+| `WellKnownNameFormat` | string | Anchor key, e.g. `"{MeteringPointRtId}_{MeterCode}"` — placeholders read series fields |
+| `FromProperty` / `ToProperty` | string | Window boundaries on a value |
+| `Columns` | list | `{ name, valueProperty, scope }` — `name` is the archive column / attribute path, `scope` is `Value` (default, read per window) or `Series` (read once from the series) |
+| `AnchorWindowFromAttribute` / `AnchorWindowToAttribute` | string? | Attribute paths the anchor's own window is written to; the `To` attribute also decides whether an existing anchor is advanced |
+| `ParentRtIdProperty` / `ParentCkTypeId` / `ParentAssociationRoleId` | string? | Parent association for newly created anchors — **all three or none** |
+| `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` (AB#5127) |
+
+**Order of operations, and why it is load-bearing:**
+
+1. Shape the series (pure `TimeRangeSeriesShaper`) and build the well-known names.
+2. Resolve every anchor in **one** query (`FieldIn(RtWellKnownName, …)`).
+3. Insert the missing anchors + parent associations, advance the existing ones, commit. A failed
+   write aborts the transaction and **throws**.
+4. Bulk-insert every value as an archive row.
+
+🔴 That order is what keeps the archive free of rows referencing entities that do not exist: every
+`rtid` handed to the archive was either read from the runtime store or written and confirmed. It is
+an invariant of the node, **not** a check performed afterwards — the post-hoc orphan guard in
+`SaveTimeRangeStreamDataInArchive@1` does not apply, because this node calls `InsertTimeRangeAsync`
+directly. The **parent** rtId is parsed from the document and not checked; a pipeline that does not
+read it from the store upstream has to establish that itself.
+
+**Ordering between competing deliveries is the archive's job**, via its opt-in
+`Archive.ConflictPrecedence` (System.StreamData 1.13.0). Map the ranking columns — a quality code,
+the source document's own date — into the archive through `Columns` and declare them as the
+archive's precedence keys; the stored value is then independent of the order rows arrive in, for
+rows the keys tell apart (of rows equal in every key the later one replaces the stored row).
+
+**Enum columns store the integer CK key, not the name.** Nodes that go through `CreateUpdateInfo@1`
+get the mapping for free from `RtPathEvaluator.SetValue`; this node skips the RtEntity round trip and
+therefore converts itself, routing through `RtPathEvaluator` on a scratch entity (memoised per
+column+value) rather than re-implementing the name→key rule. Without it every write fails on a
+CrateDB cast.
+
+Honours dry run (`DryRunHonouredLoadNodes.SaveTimeRangeSeriesInArchive`): the recorded intent carries
+the archive, the series and value counts and the anchors that would be written; nothing is persisted.
 
 #### EMailSenderNode
 

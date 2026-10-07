@@ -27,9 +27,41 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     /// </summary>
     public string? ResponseBody { get; private init; }
 
+    /// <summary>
+    /// <c>RevealSecret@1</c> (AB#5538) could not reveal a secret. The reason names the entity, the
+    /// attribute and what went wrong - never the value, which is the one thing this node must not
+    /// leak through its errors.
+    /// </summary>
+    public static Exception RevealSecretFailed(INodeContext nodeContext, string reason, Exception? inner = null)
+    {
+        var message = $"[{nodeContext.NodePath}]: RevealSecret: {reason}";
+        return inner == null
+            ? new MeshAdapterPipelineExecutionException(message)
+            : new MeshAdapterPipelineExecutionException(message, inner);
+    }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");
+    }
+
+    /// <summary>
+    /// Raised by <c>PdfOcrExtraction@1</c> when it is about to run OCR and no IronOCR licence key
+    /// is configured (AB#5449). Deliberately a per-execution failure rather than a startup check:
+    /// the key is needed by this one node, most adapters never run OCR, and validating it at
+    /// startup would take every adapter in the estate down the day the licence expires. The
+    /// message therefore has to carry the whole fix, because the operator seeing it is debugging
+    /// one pipeline, not the adapter's configuration.
+    /// </summary>
+    public static Exception IronOcrLicenseKeyMissing(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: no IronOCR license key is configured, so this document " +
+            "cannot be OCR'd. Set it via the environment variable OCTO_ADAPTER__IRONOCRLICENSEKEY " +
+            "(Helm value 'secrets.ironOcrLicenseKey' on the octo-mesh-adapter chart). The adapter " +
+            "starts without the key on purpose — only OCR needs it, so the failure appears here " +
+            "rather than at startup. Note that a PDF carrying a usable text layer never reaches " +
+            "OCR at all; this node only falls back to it for scans and image-only PDFs.");
     }
 
     public static Exception DelimitedValueNotScalar(INodeContext nodeContext, int recordIndex,
@@ -1189,6 +1221,20 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     }
 
     /// <summary>
+    ///     Post-processing <c>MarkAsRead</c> while the poll searches ALL mails (5.10.2026): the
+    ///     \Seen flag only takes a mail out of a <c>NotSeen</c> search, so this pair re-imports the
+    ///     same capped batch for ever. Raised at trigger start, so the deploy says so.
+    /// </summary>
+    public static Exception MailMarkAsReadNeedsOnlyUnread(string nodeType)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeType}]: post-processing mode MarkAsRead needs onlyUnread = true — the read flag " +
+            "only takes a mail out of the next poll when the poll searches unread mails. " +
+            MailboxIsTheBookkeeping +
+            " Switch onlyUnread on (the settings' EmailImportOnlyUnread), or use MoveToFolders or Delete.");
+    }
+
+    /// <summary>
     ///     A settings entity still stores the post-processing mode <c>None</c>, which AB#5372
     ///     removed. Deliberately louder than the reader's usual "an unknown name means not
     ///     configured": that fallback would silently replace an operator's stored decision with a
@@ -1226,6 +1272,18 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             "The mail channel must be 'Imap' or 'Graph', got " +
+            (string.IsNullOrWhiteSpace(value) ? "nothing" : $"'{value}'") +
+            " — set channel on the node, or channelPath to where the request carries it.");
+    }
+
+    /// <summary>
+    ///     The import channel to test is none of <c>Imap</c>, <c>Graph</c>, <c>Teams</c>, <c>Signal</c>.
+    ///     Prefix-less like <see cref="MailFolderChannelInvalid" /> — it lands on the settings page.
+    /// </summary>
+    public static Exception ImportConnectionChannelInvalid(string? value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            "The import channel must be 'Imap', 'Graph', 'Teams' or 'Signal', got " +
             (string.IsNullOrWhiteSpace(value) ? "nothing" : $"'{value}'") +
             " — set channel on the node, or channelPath to where the request carries it.");
     }

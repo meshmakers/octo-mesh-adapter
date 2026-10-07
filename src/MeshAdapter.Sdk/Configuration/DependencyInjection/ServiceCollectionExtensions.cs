@@ -1,3 +1,6 @@
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.Runtime.Engine.CrateDb.Configuration;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -46,6 +49,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<WriteVerifiedCallerNode>()
             .RegisterNode<ResolveNotificationChannelNode>()
             .RegisterNode<GetRtEntitiesByIdNode>()
+            .RegisterNode<RevealSecretNode>()
             .RegisterNode<CheckDuplicateNode>()
             .RegisterNode<ComputeFileHashNode>()
             .RegisterNode<RenderDataSheetPdfNode>()
@@ -58,12 +62,14 @@ public static class ServiceCollectionExtensions
             .RegisterNode<CreateFileSystemItemUpdateNode>()
             .RegisterNode<GetFileSystemContentNode>()
             .RegisterNode<ListMailFoldersNode>()
+            .RegisterNode<TestImportConnectionNode>()
             .RegisterNode<ApplyChangesNode>()
             .RegisterNode<ApplyChangesNode2>()
             .RegisterNode<FilterLatestUpdateInfoNode>()
             .RegisterNode<BackfillFromRtEntityNode>()
             .RegisterNode<SaveStreamDataInArchiveNode>()
             .RegisterNode<SaveTimeRangeStreamDataInArchiveNode>()
+            .RegisterNode<SaveTimeRangeSeriesInArchiveNode>()
             .RegisterNode<UpdateRtEntityIfNewerNode>()
             .RegisterNode<SimulateEnergyMeasurementsNode>()
             .RegisterNode<GetOrCreateRtEntitiesByTypeNode>()
@@ -125,6 +131,9 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+        // AB#5538: configurations copied into the data context register their Secret values by CK type.
+        services.Replace(ServiceDescriptor
+            .Singleton<IConfigurationSecretAttributeResolver, CkConfigurationSecretAttributeResolver>());
 
         // AB#5126 caller-binding seam. The binder enforces the per-trigger three-state policy for
         // every channel trigger and consumes a single IVerifiedCallerDirectory. That directory is now
@@ -184,6 +193,10 @@ public static class ServiceCollectionExtensions
             .AddCrateDbStreamDataRepository<ConfigureStreamDataConfiguration>();
 
         services.AddOctoServiceInfrastructure();
+
+        // AB#5538: Secret markers in the data context reflect the key ring (keyMissing for an unknown
+        // key id) - one registration for every entity-reading node, see PipelineSecretMarkerRegistration.
+        services.AddHostedService<PipelineSecretMarkerRegistration>();
 
         services.AddSingleton<IContextCreatorService, MeshContextCreatorService>();
         services.AddScoped<IWellKnownNameLoader, WellKnownNameLoader>();

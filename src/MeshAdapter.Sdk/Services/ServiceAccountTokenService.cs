@@ -4,6 +4,9 @@ using Meshmakers.Octo.Communication.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.Secrets;
+using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
@@ -139,6 +142,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     private readonly IServiceClientAccessToken _serviceClientAccessToken;
     private readonly AdapterOptions _adapterOptions;
     private readonly MeshAdapterConfiguration _meshAdapterConfiguration;
+    private readonly ISecretAttributeProtector? _secretAttributeProtector;
 
     /// <summary>
     ///     Cached service-account identities, keyed by <c>(TenantId, ClientId)</c> — the pair that
@@ -155,17 +159,20 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
         ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
-        IOptions<MeshAdapterConfiguration> meshAdapterConfiguration)
+        IOptions<MeshAdapterConfiguration> meshAdapterConfiguration,
+        ISecretAttributeProtector secretAttributeProtector)
         : this(serviceClientAccessToken, logger, SharedTokenHttpClient, adapterOptions.Value,
-            meshAdapterConfiguration.Value)
+            meshAdapterConfiguration.Value, secretAttributeProtector)
     {
     }
 
     /// <summary>Test seam: lets a unit test script the token endpoint without a server.</summary>
     internal ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
         ILogger<ServiceAccountTokenService> logger, HttpClient tokenHttpClient,
-        AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshAdapterConfiguration = null)
+        AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshAdapterConfiguration = null,
+        ISecretAttributeProtector? secretAttributeProtector = null)
     {
+        _secretAttributeProtector = secretAttributeProtector;
         _serviceClientAccessToken = serviceClientAccessToken;
         _logger = logger;
         _tokenHttpClient = tokenHttpClient;
@@ -174,14 +181,15 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     }
 
     /// <summary>
-    ///     Whether <paramref name="clientSecret" /> can authenticate a token request. A blueprint
-    ///     that provisions the configuration without a secret leaves the attribute empty, and an
-    ///     older seed leaves an angle-bracket placeholder (<c>&lt;insert secret here&gt;</c>) behind —
-    ///     both mean "no secret", not "this secret" (AB#5114).
+    ///     Whether <paramref name="clientSecret" /> can authenticate a token request: any non-blank
+    ///     value. A blueprint that provisions the configuration without a secret leaves the attribute
+    ///     empty, which means "no secret" (AB#5114). A placeholder-looking value is an ordinary secret
+    ///     (decisions 2026-10-06, item 1); legacy seed placeholders stored as clear text are mapped to
+    ///     "not set" when the attribute is read (<see cref="TryReadClientSecret" />).
     /// </summary>
     internal static bool IsSecretUsable(string? clientSecret)
     {
-        return !string.IsNullOrWhiteSpace(clientSecret) && !clientSecret.TrimStart().StartsWith('<');
+        return !string.IsNullOrWhiteSpace(clientSecret);
     }
 
     /// <summary>
@@ -439,7 +447,11 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
         var issuerUri = configEntity.GetAttributeValueOrDefault("IssuerUri") as string;
         var clientId = configEntity.GetAttributeValueOrDefault("ClientId") as string;
-        var clientSecret = configEntity.GetAttributeValueOrDefault("ClientSecret") as string;
+        if (!TryReadClientSecret(configEntity, wellKnownName, tenantRepository.TenantId, out var clientSecret))
+        {
+            return null;
+        }
+
         var tenantId = configEntity.GetAttributeValueOrDefault("TenantId") as string;
 
         if (string.IsNullOrWhiteSpace(clientId))
@@ -451,6 +463,86 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         }
 
         return new ServiceAccountCredentials(issuerUri ?? string.Empty, clientId, clientSecret, tenantId);
+    }
+
+    /// <summary>
+    /// Reads <c>ClientSecret</c> of the configuration entity. Before System.Communication 3.41 it is a
+    /// <c>String</c>; afterwards a <c>Secret</c> (AB#5528), read as an <see cref="RtSecretValue" />
+    /// that is decrypted here, in process (a counted <c>octo.secrets.decrypt</c>). Reading the secret
+    /// with <c>as string</c> would yield null, and an empty secret silently selects the impersonation
+    /// path (AB#5114) — so a secret that is stored but cannot be used (no keys, unknown key id —
+    /// <see cref="SecretValueState.KeyMissing" />, tampered, corrupt) fails the read instead, with an
+    /// error log naming the reason or key id, never the value.
+    /// </summary>
+    private bool TryReadClientSecret(RtEntity configEntity, string wellKnownName, string? tenantId,
+        out string? clientSecret)
+    {
+        clientSecret = null;
+        switch (configEntity.GetAttributeValueOrDefault("ClientSecret"))
+        {
+            case null:
+                return true;
+            case string text:
+                // ClientSecret is still a String attribute (System.Communication before 3.41): the stored
+                // text is legacy clear text. An exact legacy seed placeholder (TODO_SET_<NAME> or a single
+                // <...>) reads as not set, as the engine reads such a value in a Secret slot until the
+                // migration converts it (decisions 2026-10-06, item 1).
+                clientSecret = SecretAttributeConventions.IsLegacyPlaceholder(text) ? null : text;
+                return true;
+            case RtSecretValue when _secretAttributeProtector == null:
+                _logger.LogError(
+                    "ServiceAccountConfiguration '{WellKnownName}' stores ClientSecret as a Secret, but no secret protector is available, cannot acquire token",
+                    wellKnownName);
+                return false;
+            case RtSecretValue secret:
+                var accessContext = new SecretAccessContext(tenantId, configEntity.CkTypeId?.ToString(), "ClientSecret");
+                var readInfo = _secretAttributeProtector.DescribeSecret(secret, accessContext);
+                if (readInfo.KeyMissing && _secretAttributeProtector.IsConfigured)
+                {
+                    // Decisions 2026-10-06, item 2: stored, but the key id is not in this adapter's ring
+                    // (restore from another environment). Unusable like an undecryptable value: no token and,
+                    // deliberately, no impersonation fallback either.
+                    _logger.LogError(
+                        "ServiceAccountConfiguration '{WellKnownName}': ClientSecret is encrypted with key id '{KeyId}', which is not in the key ring; treated as not usable, cannot acquire token",
+                        wellKnownName, readInfo.KeyId);
+                    return false;
+                }
+
+                if (readInfo.Form == SecretStorageForm.Corrupt)
+                {
+                    // Stored, but can never be read (the engine logged a warning): unusable as well.
+                    _logger.LogError(
+                        "ServiceAccountConfiguration '{WellKnownName}': ClientSecret is stored in a form that cannot be read; cannot acquire token",
+                        wellKnownName);
+                    return false;
+                }
+
+                if (readInfo.State == SecretValueState.NotSet)
+                {
+                    return true;
+                }
+
+                try
+                {
+                    clientSecret = _secretAttributeProtector.Unprotect(secret, accessContext);
+                    return true;
+                }
+                catch (Exception e) when (e is SecretEncryptionNotConfiguredException or UnknownSecretKeyIdException
+                                              or LegacyPlaintextSecretRejectedException
+                                              or SecretEnvelopeNotAllowedException
+                                              or System.Security.Cryptography.CryptographicException)
+                {
+                    _logger.LogError(
+                        "ServiceAccountConfiguration '{WellKnownName}': ClientSecret cannot be decrypted ({Reason}), cannot acquire token",
+                        wellKnownName, e.GetType().Name);
+                    return false;
+                }
+            default:
+                _logger.LogWarning(
+                    "ServiceAccountConfiguration '{WellKnownName}': ClientSecret has an unexpected type, cannot acquire token",
+                    wellKnownName);
+                return false;
+        }
     }
 
     /// <inheritdoc />

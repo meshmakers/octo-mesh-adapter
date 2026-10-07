@@ -120,6 +120,8 @@ public class EMailSenderNode2(
 
             var eMailSenderConfiguration =
                 etlContext.GlobalConfiguration.GetValue<EMailSenderConfiguration>(c.ServerConfiguration);
+            // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+            nodeContext.RegisterSecret(eMailSenderConfiguration.Password);
 
             if (!etlContext.Properties.TryGetValue(EmailSemaphoresKey, out var semaphoresObj) ||
                 semaphoresObj is not Dictionary<string, SemaphoreSlim> semaphores)

@@ -6,6 +6,8 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
+using Microsoft.Extensions.Options;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
@@ -13,7 +15,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 [NodeConfiguration(typeof(PdfOcrExtractionNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
+internal partial class PdfOcrExtractionNode(
+    NodeDelegate next,
+    IOptions<MeshAdapterConfiguration> meshAdapterConfiguration) : IPipelineNode
 {
     /// <summary>
     /// Header the merged OCR supplement is introduced with. It is prose on purpose: the
@@ -57,7 +61,13 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
-        
+
+        // Both live OUTSIDE the try so the catch can degrade instead of discard (AB#5465):
+        // a text layer that was read successfully but is carried into the OCR branch for
+        // merging (AB#5259) has not been written anywhere yet when OCR throws.
+        string? textLayerToMerge = null;
+        var targetPathWritten = false;
+
         try
         {
             if (string.IsNullOrEmpty(config.Path))
@@ -101,10 +111,9 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
             // the FIGURES are embedded images, so the shortcut hands the AI stage an invoice
             // without a single amount (prod-1 2026-09-15, "26034 Lehrlingstraining": text
             // layer had "Gesamt"/"MWSt 20%"/"Bruttosumme", the amount column was one of 43
-            // stencil images). When set, this carries the text layer into the OCR branch
-            // below so both reads can be merged instead of one replacing the other. AB#5259.
-            string? textLayerToMerge = null;
-
+            // stencil images). When set, `textLayerToMerge` (declared above the try) carries
+            // the text layer into the OCR branch below so both reads can be merged instead of
+            // one replacing the other. AB#5259.
             var handledByTextLayer = false;
             if (isPdf && config.PreferTextLayer && !config.ExtractTables && !config.ExtractBarcodes)
             {
@@ -154,8 +163,18 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
             if (!handledByTextLayer)
             {
 
-            // Initialize IronOCR with explicit configuration
-            License.LicenseKey = "IRONOCR.MESHMAKERSGMBH.IRO250912.8133.59109-FC1A47E4E8-DIQDFCQLZZTUL5T-F2N36ZLSCQMG-23LQGHXXX55Q-IZPR6FYUCMKB-IQFDUBDINX2G-H6YOXX-L6GROAER3DWRUA-IRONOCR.DOTNET.LITE.SUB-3A6DS3.RENEW.SUPPORT.12.SEP.2026"; // Add license key if you have one
+            // The licence key comes from configuration, never from the source (AB#5449). It is
+            // read HERE — on the OCR path, after the text-layer branch has declined — so an
+            // adapter without a key still starts and still serves every other node and every
+            // text-layer PDF. A startup check would take the whole fleet down the day the licence
+            // expires, including the adapters that never OCR anything.
+            var licenseKey = meshAdapterConfiguration.Value.IronOcrLicenseKey;
+            if (string.IsNullOrWhiteSpace(licenseKey))
+            {
+                throw MeshAdapterPipelineExecutionException.IronOcrLicenseKeyMissing(nodeContext);
+            }
+
+            License.LicenseKey = licenseKey;
             var ocr = new IronTesseract();
             
             if (!string.IsNullOrEmpty(config.Language))
@@ -237,6 +256,7 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
                 config.TargetValueKind,
                 config.TargetValueWriteMode
             );
+            targetPathWritten = true;
 
             if (config.IncludeConfidence)
             {
@@ -255,6 +275,20 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
         }
         catch (Exception ex)
         {
+            if (textLayerToMerge is not null && !targetPathWritten)
+            {
+                // The merge path was selected and the OCR half failed. The text layer was read
+                // successfully and is still the better part of this document; discarding it
+                // would turn "amounts may be missing" into "no content at all" (observed live:
+                // the AI stage downstream logged "No content found at path" and two invoices
+                // ended INCOMPLETE where the text layer alone had produced a document before
+                // AB#5259). So the result degrades to the pre-AB#5259 behaviour instead of
+                // vanishing — written BEFORE the error is surfaced, and whatever
+                // ContinueOnError says: with it off the node still fails below, the write only
+                // makes the partial read visible to whoever debugs that failure. AB#5465.
+                WriteTextLayerFallback(dataContext, nodeContext, config, textLayerToMerge, ex);
+            }
+
             if (!config.ContinueOnError)
             {
                 throw MeshAdapterPipelineExecutionException.ProcessingError(nodeContext, ex);
@@ -266,6 +300,50 @@ internal partial class PdfOcrExtractionNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
     
+    /// <summary>
+    /// Writes the text layer of a hybrid-looking PDF to the target path after the OCR half of the
+    /// AB#5259 merge failed, so the result degrades to the pre-merge behaviour instead of
+    /// vanishing. Same <c>DocumentMode</c> / <c>TargetValueKind</c> / <c>TargetValueWriteMode</c>
+    /// as the success paths, so the context shape downstream is identical. Never throws: a
+    /// failing fallback must not mask the OCR error the caller is about to surface. AB#5465.
+    /// </summary>
+    private static void WriteTextLayerFallback(IDataContext dataContext, INodeContext nodeContext,
+        PdfOcrExtractionNodeConfiguration config, string textLayer, Exception ocrError)
+    {
+        try
+        {
+            dataContext.Set(
+                config.TargetPath,
+                textLayer,
+                config.DocumentMode,
+                config.TargetValueKind,
+                config.TargetValueWriteMode
+            );
+
+            // Deliberately NO confidence value, even when IncludeConfidence is set. The pure
+            // text-layer path writes 100 because that read is authoritative AND complete; the
+            // merged path writes Tesseract's score because part of that read is probabilistic.
+            // Neither statement is true here: the characters present are verbatim (so any low
+            // number would misdescribe them), but the node has positive evidence the read is
+            // incomplete — a total label without its figure is why OCR was attempted at all —
+            // so 100 would make this indistinguishable from a clean digital PDF, which is the
+            // one thing the warning below exists to prevent. Any constant in between would be
+            // invented and would collide with real OCR scores. Absence is the honest signal: no
+            // confidence is claimed for this read, and a consumer that gates on the confidence
+            // path reads "not confirmed" rather than a fabricated number.
+
+            // A WARNING naming both facts, so the operator can tell this apart from a clean
+            // extraction in the pipeline log — and from the Error the caller logs right after.
+            nodeContext.Warning(
+                $"OCR failed ({ocrError.Message}); kept the PDF text layer ({textLayer.Length} chars) as the result. " +
+                "That layer was judged incomplete (an amount label without an adjacent figure), so amounts may be missing from the extracted text.");
+        }
+        catch (Exception fallbackError)
+        {
+            nodeContext.Error($"Could not write the PDF text layer as a fallback after the OCR failure: {fallbackError.Message}");
+        }
+    }
+
     /// <summary>
     /// Extracts the embedded text layer of a digital PDF in reading order (PdfPig).
     /// Returns <c>null</c> on any parse failure — encrypted, malformed, or an image-only

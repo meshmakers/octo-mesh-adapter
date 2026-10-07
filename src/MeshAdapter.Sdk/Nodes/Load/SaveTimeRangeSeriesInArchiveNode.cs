@@ -1,0 +1,488 @@
+using System.Text.Json.Nodes;
+using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+
+/// <summary>
+/// Ingests whole series of windowed measurements into a <c>TimeRangeArchive</c>: one anchor entity
+/// per series plus one archive row per value, in a single node.
+/// </summary>
+/// <remarks>
+/// See <see cref="SaveTimeRangeSeriesInArchiveNodeConfiguration" /> for why this exists. The short
+/// version: the node composition it replaces materialises one runtime entity per measured window in
+/// order to write one time-series row, which costs roughly two dozen node executions per 15-minute
+/// slot. The runtime model only needs one anchor per series.
+/// <para>
+/// The shaping rules — anchor key, which value the anchor reflects, which values are unusable — live
+/// in <see cref="TimeRangeSeriesShaper" /> so they can be tested without a CK model or a database.
+/// What stays here is everything that needs one: resolving the anchors against the runtime store,
+/// building their attributes through the CK model, and the archive write.
+/// </para>
+/// </remarks>
+[NodeConfiguration(typeof(SaveTimeRangeSeriesInArchiveNodeConfiguration))]
+// ReSharper disable once ClassNeverInstantiated.Global
+internal class SaveTimeRangeSeriesInArchiveNode(
+    NodeDelegate next,
+    IMeshEtlContext etlContext,
+    ISystemContext systemContext,
+    ICkCacheService ckCacheService)
+    : IPipelineNode
+{
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
+    {
+        var c = nodeContext.GetNodeConfiguration<SaveTimeRangeSeriesInArchiveNodeConfiguration>();
+        ValidateConfiguration(c);
+
+        var seriesArray = dataContext.Get<JsonArray>(c.Path);
+        if (seriesArray == null || seriesArray.Count == 0)
+        {
+            nodeContext.Warning($"No series found at '{c.Path}'");
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        var series = TimeRangeSeriesShaper.Shape(seriesArray, c, out var unresolvedKeys);
+        if (unresolvedKeys > 0)
+        {
+            nodeContext.Warning(
+                $"Skipped {unresolvedKeys} series whose well-known name '{c.WellKnownNameFormat}' did not resolve.");
+        }
+
+        if (series.Count == 0)
+        {
+            nodeContext.Warning("No series carried both a well-known name and at least one value");
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        var ckTypeId = new RtCkId<CkTypeId>(c.CkTypeId);
+        var valueCount = series.Sum(s => s.Values.Count);
+
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.SaveTimeRangeSeriesInArchive, new
+            {
+                archiveRtId = c.ArchiveRtId,
+                path = c.Path,
+                ckTypeId = c.CkTypeId,
+                seriesCount = series.Count,
+                valueCount,
+                wouldWriteAnchors = series.Select(s => s.WellKnownName).ToList()
+            });
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        // Everything that can make the archive write fail or silently store nothing is checked before
+        // the first anchor is persisted: the anchors are committed in their own transaction, so a
+        // failure afterwards would leave entities behind that no archive row belongs to.
+        await EnsureArchiveAcceptsAsync(ckTypeId, c);
+
+        // A series is only worth an anchor if at least one of its values yields an archive row.
+        var writable = series.Where(s => s.Values.Any(v => TimeRangeSeriesShaper.HasUsableWindow(v, c))).ToList();
+        if (writable.Count < series.Count)
+        {
+            nodeContext.Warning(
+                $"Skipped {series.Count - writable.Count} series without a single usable " +
+                $"[{c.FromProperty}, {c.ToProperty}) window; no anchor is written for them.");
+        }
+
+        if (writable.Count == 0)
+        {
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        await ResolveAndPersistAnchorsAsync(writable, ckTypeId, c, nodeContext);
+        await WriteArchiveRowsAsync(writable, ckTypeId, c, nodeContext);
+
+        await next(dataContext, nodeContext);
+    }
+
+    private static void ValidateConfiguration(SaveTimeRangeSeriesInArchiveNodeConfiguration c)
+    {
+        if (string.IsNullOrWhiteSpace(c.ArchiveRtId))
+        {
+            throw new InvalidOperationException(
+                "SaveTimeRangeSeriesInArchive: archiveRtId is required.");
+        }
+
+        if (!OctoObjectId.TryParse(c.ArchiveRtId, out _))
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archiveRtId '{c.ArchiveRtId}' is not a valid RtId.");
+        }
+
+        if (c.Columns.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "SaveTimeRangeSeriesInArchive: at least one column is required — a write with no " +
+                "columns would store nothing but window boundaries.");
+        }
+
+        // All three parent settings or none: a half-configured association silently produces anchors
+        // with no parent, which only surfaces much later as an empty navigation.
+        var configured = new[] { c.ParentRtIdProperty, c.ParentCkTypeId, c.ParentAssociationRoleId }
+            .Count(p => !string.IsNullOrWhiteSpace(p));
+        if (configured is not 0 and not 3)
+        {
+            throw new InvalidOperationException(
+                "SaveTimeRangeSeriesInArchive: parentRtIdProperty, parentCkTypeId and " +
+                "parentAssociationRoleId must be configured together or not at all.");
+        }
+    }
+
+    /// <summary>
+    /// Refuses a write the archive would not take: an archive that does not exist, is not a
+    /// time-range archive, is not activated, or targets another CK type. The last one is the
+    /// dangerous case — the repository drops rows of a foreign type without an error, so the node
+    /// would report success with anchors and no measurements.
+    /// </summary>
+    private async Task EnsureArchiveAcceptsAsync(
+        RtCkId<CkTypeId> ckTypeId, SaveTimeRangeSeriesInArchiveNodeConfiguration c)
+    {
+        var tenantContext = await systemContext.FindTenantContextAsync(etlContext.TenantId);
+        var snapshot = await tenantContext.GetArchiveRuntimeStore().GetAsync(new OctoObjectId(c.ArchiveRtId))
+            ?? throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' does not exist.");
+
+        if (!snapshot.IsTimeRange)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' is not a time-range archive.");
+        }
+
+        if (snapshot.Status != CkArchiveStatus.Activated)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' is {snapshot.Status}, not Activated.");
+        }
+
+        if (snapshot.TargetCkTypeId != ckTypeId)
+        {
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: archive '{c.ArchiveRtId}' stores '{snapshot.TargetCkTypeId}', " +
+                $"but the node is configured for '{ckTypeId}'; every row would be dropped.");
+        }
+    }
+
+    /// <summary>
+    /// Looks every anchor up by well-known name in one query, assigns each one its canonical RtId,
+    /// and persists the new and advanced anchors plus their parent associations.
+    /// </summary>
+    /// <remarks>
+    /// This runs before the archive write on purpose, and it is what keeps the archive free of orphan
+    /// rows — rows whose <c>rtid</c> names an entity that does not exist. Every RtId handed to the
+    /// archive below is therefore either one this method READ from the runtime store, or one it wrote
+    /// and confirmed: a failed anchor write throws rather than continuing. That is an invariant of
+    /// this node, not a check performed later — the post-hoc guard in
+    /// <see cref="SaveTimeRangeStreamDataInArchiveNode" /> does not apply here, because this node
+    /// calls <c>InsertTimeRangeAsync</c> directly. Keep the order and keep the failure hard; the
+    /// orphan-row class of bug has happened before and is invisible until somebody joins the archive
+    /// back to the runtime model.
+    /// </remarks>
+    private async Task ResolveAndPersistAnchorsAsync(
+        IReadOnlyList<ShapedSeries> series,
+        RtCkId<CkTypeId> ckTypeId,
+        SaveTimeRangeSeriesInArchiveNodeConfiguration c,
+        INodeContext nodeContext)
+    {
+        var wellKnownNames = series.Select(s => s.WellKnownName).ToList();
+
+        // AB#5028 / AB#5127 — scoped (config-selected, default Caller): this reads and writes the
+        // tenant's own measurement entities, so it must be stamped and subject to data permissions
+        // like any other business-data node. A narrower identity that hides an existing anchor makes
+        // the node insert a duplicate rather than fail, which is the right trade here: the
+        // alternative (System) would write unstamped entities nobody can scope afterwards.
+        using var session = await etlContext.GetSessionForAsync(c.Identity);
+        session.StartTransaction();
+        // No "take = number of names": two anchors can share a name (see below), and a page cut at
+        // the name count would then hide the anchor of a later series, which would get a second one.
+        var existing = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(
+            session,
+            ckTypeId,
+            RtEntityQueryOptions.Create().FieldIn(nameof(RtEntity.RtWellKnownName), wellKnownNames),
+            0,
+            int.MaxValue);
+        await session.CommitTransactionAsync();
+
+        // Duplicates are possible: a narrower identity that could not see an existing anchor inserts
+        // a second one (the trade-off described above). Take the same one every time, so the archive
+        // rows of a series keep landing on one anchor, and say so.
+        var existingByName = existing.Items
+            .Where(e => !string.IsNullOrEmpty(e.RtWellKnownName))
+            .GroupBy(e => e.RtWellKnownName!, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    if (g.Count() > 1)
+                    {
+                        nodeContext.Warning(
+                            $"{g.Count()} anchors share the well-known name '{g.Key}'; using the one with the lowest RtId.");
+                    }
+
+                    return g.OrderBy(e => e.RtId.ToString(), StringComparer.Ordinal).First();
+                },
+                StringComparer.Ordinal);
+
+        var entityUpdates = new List<EntityUpdateInfo<RtEntity>>();
+        var associationUpdates = new List<AssociationUpdateInfo>();
+
+        foreach (var shaped in series)
+        {
+            var winner = TimeRangeSeriesShaper.SelectAnchorValue(
+                shaped.Values.Where(v => TimeRangeSeriesShaper.HasUsableWindow(v, c)).ToList(), c);
+
+            if (existingByName.TryGetValue(shaped.WellKnownName, out var stored))
+            {
+                shaped.RtId = stored.RtId;
+
+                if (!ShouldAdvanceAnchor(stored, winner, c))
+                {
+                    // The stored anchor already reflects a newer window. Its archive rows are still
+                    // written below — only the runtime snapshot stays where it is.
+                    continue;
+                }
+
+                var updated = BuildAnchorEntity(ckTypeId, shaped.WellKnownName, shaped.SourceOf(winner), winner, c);
+                updated.RtId = stored.RtId;
+                entityUpdates.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(
+                    new RtEntityId(ckTypeId, stored.RtId), updated));
+                continue;
+            }
+
+            shaped.RtId = OctoObjectId.GenerateNewId();
+
+            var inserted = BuildAnchorEntity(ckTypeId, shaped.WellKnownName, shaped.SourceOf(winner), winner, c);
+            inserted.RtId = shaped.RtId;
+            entityUpdates.Add(EntityUpdateInfo<RtEntity>.CreateInsert(inserted));
+
+            var association = BuildParentAssociation(shaped, ckTypeId, c, nodeContext);
+            if (association is not null)
+            {
+                associationUpdates.Add(association);
+            }
+        }
+
+        if (entityUpdates.Count == 0 && associationUpdates.Count == 0)
+        {
+            return;
+        }
+
+        // AB#5028 / AB#5127 — scoped, same identity as the lookup above: the anchors are tenant
+        // business data and carry a creator stamp. A separate session because the lookup's
+        // transaction is already committed.
+        using var writeSession = await etlContext.GetSessionForAsync(c.Identity);
+        writeSession.StartTransaction();
+        var operationResult = new OperationResult();
+        await etlContext.TenantRepository.ApplyChangesAsync(
+            writeSession, entityUpdates, associationUpdates, operationResult);
+
+        if (operationResult.HasErrors || operationResult.HasFatalErrors)
+        {
+            await writeSession.AbortTransactionAsync();
+            // Aborting leaves the freshly generated RtIds uncommitted, so continuing would write rows
+            // referencing entities that do not exist — and nothing downstream would catch it. Failing
+            // here is what makes the no-orphan invariant hold.
+            throw new InvalidOperationException(
+                $"SaveTimeRangeSeriesInArchive: persisting {entityUpdates.Count} anchor entity/entities " +
+                $"failed ({operationResult.GetMessages()}); refusing to write archive rows that would " +
+                "reference them.");
+        }
+
+        await writeSession.CommitTransactionAsync();
+        nodeContext.Debug(
+            $"Persisted {entityUpdates.Count} anchor entity/entities and {associationUpdates.Count} association(s)");
+    }
+
+    private bool ShouldAdvanceAnchor(
+        RtEntity stored, JsonObject winner, SaveTimeRangeSeriesInArchiveNodeConfiguration c)
+    {
+        if (c.AnchorWindowToAttribute is null)
+        {
+            return true;
+        }
+
+        var winnerEnd = TimeRangeSeriesShaper.ReadDateTime(winner, c.ToProperty);
+        if (winnerEnd is null)
+        {
+            // Cannot happen for a value with a usable window; if it ever does, an end that cannot be
+            // compared must not displace a stored one.
+            return false;
+        }
+
+        var storedEnd = RtPathEvaluator.GetValue(
+            ckCacheService, etlContext.TenantId, stored, c.AnchorWindowToAttribute) switch
+        {
+            DateTime dt => TimeRangeSeriesShaper.NormaliseToUtc(dt),
+            DateTimeOffset dto => dto.UtcDateTime,
+            _ => (DateTime?)null
+        };
+
+        return storedEnd is null || winnerEnd.Value > storedEnd.Value;
+    }
+
+    private RtEntity BuildAnchorEntity(
+        RtCkId<CkTypeId> ckTypeId,
+        string wellKnownName,
+        JsonObject series,
+        JsonObject value,
+        SaveTimeRangeSeriesInArchiveNodeConfiguration c)
+    {
+        var entity = new RtEntity
+        {
+            CkTypeId = ckTypeId,
+            RtWellKnownName = wellKnownName,
+            RtChangedDateTime = DateTime.UtcNow
+        };
+
+        foreach (var column in c.Columns)
+        {
+            var source = column.Scope == TimeRangeSeriesColumnScope.Series ? series : value;
+            var scalar = TimeRangeSeriesShaper.ToScalar(source[column.ValueProperty]);
+            if (scalar is not null)
+            {
+                // Through the CK model rather than straight into the attribute dictionary: an
+                // attribute path like "Amount.Value" has to materialise the Amount record, which
+                // only the model knows the shape of.
+                RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, entity, column.Name, scalar);
+            }
+        }
+
+        if (c.AnchorWindowFromAttribute is not null
+            && TimeRangeSeriesShaper.ReadDateTime(value, c.FromProperty) is { } from)
+        {
+            RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, entity,
+                c.AnchorWindowFromAttribute, from);
+        }
+
+        if (c.AnchorWindowToAttribute is not null
+            && TimeRangeSeriesShaper.ReadDateTime(value, c.ToProperty) is { } to)
+        {
+            RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, entity,
+                c.AnchorWindowToAttribute, to);
+        }
+
+        return entity;
+    }
+
+    private static AssociationUpdateInfo? BuildParentAssociation(
+        ShapedSeries shaped,
+        RtCkId<CkTypeId> ckTypeId,
+        SaveTimeRangeSeriesInArchiveNodeConfiguration c,
+        INodeContext nodeContext)
+    {
+        if (c.ParentRtIdProperty is null)
+        {
+            return null;
+        }
+
+        var text = TimeRangeSeriesShaper
+            .ToScalar(shaped.Series[c.ParentRtIdProperty], parseDateStrings: false)?.ToString();
+        if (string.IsNullOrWhiteSpace(text) || !OctoObjectId.TryParse(text, out var parentRtId))
+        {
+            nodeContext.Warning(
+                $"Series '{shaped.WellKnownName}' has no usable parent RtId at '{c.ParentRtIdProperty}'; " +
+                "the anchor is created without a parent association.");
+            return null;
+        }
+
+        return AssociationUpdateInfo.CreateInsert(
+            new RtEntityId(ckTypeId, shaped.RtId),
+            new RtEntityId(new RtCkId<CkTypeId>(c.ParentCkTypeId!), parentRtId),
+            new RtCkId<CkAssociationRoleId>(c.ParentAssociationRoleId!));
+    }
+
+    /// <summary>
+    /// Maps a raw JSON scalar onto the value the archive column stores, using the CK model rather
+    /// than a second copy of its rules.
+    /// </summary>
+    /// <remarks>
+    /// Conversion goes through <see cref="RtPathEvaluator" /> on a scratch entity — the same code
+    /// that decides what an attribute value becomes everywhere else — so the enum name-to-key rule
+    /// cannot drift away from it. Non-string scalars are returned untouched: a double, a timestamp
+    /// or a boolean is already what the column wants, and only a string can be an enum name.
+    /// </remarks>
+    private object? ConvertColumnValue(
+        RtCkId<CkTypeId> ckTypeId,
+        string columnName,
+        object? raw,
+        Dictionary<(string Column, string Raw), object?> cache)
+    {
+        if (raw is not string text)
+        {
+            return raw;
+        }
+
+        var key = (columnName, text);
+        if (cache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var scratch = new RtEntity { CkTypeId = ckTypeId };
+        RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, scratch, columnName, text);
+        var converted = RtPathEvaluator.GetValue(ckCacheService, etlContext.TenantId, scratch, columnName);
+        cache[key] = converted;
+        return converted;
+    }
+
+    /// <summary>
+    /// Writes every value of every series in a single bulk insert. Ordering between competing writes
+    /// for the same window is the archive's business, not this node's — see the archive's
+    /// <c>ConflictPrecedence</c>.
+    /// </summary>
+    private async Task WriteArchiveRowsAsync(
+        IReadOnlyList<ShapedSeries> series,
+        RtCkId<CkTypeId> ckTypeId,
+        SaveTimeRangeSeriesInArchiveNodeConfiguration c,
+        INodeContext nodeContext)
+    {
+        // The archive stores an Enum attribute as its integer KEY, so the raw "L1" that arrives in
+        // the document has to become 1 before it reaches an integer column — the composition this
+        // node replaces got that for free by routing every value through an RtEntity, which is
+        // exactly the round trip being removed here. Only a string can be an enum name, so only
+        // strings are converted, and the conversion is memoised per (column, value): the distinct
+        // set is a handful of OBIS codes, units and quality codes, while the doubles and timestamps
+        // that make up the bulk never touch the CK model at all.
+        var conversions = new Dictionary<(string Column, string Raw), object?>();
+        var points = TimeRangeSeriesShaper.BuildRows(series, ckTypeId, c,
+            (column, raw) => ConvertColumnValue(ckTypeId, column, raw, conversions),
+            out var skippedNoWindow);
+
+        if (skippedNoWindow > 0)
+        {
+            nodeContext.Debug(
+                $"Skipped {skippedNoWindow} value(s) without a usable [{c.FromProperty}, {c.ToProperty}) window.");
+        }
+
+        if (points.Count == 0)
+        {
+            nodeContext.Warning("No archive rows to write");
+            return;
+        }
+
+        var tenantContext = await systemContext.FindTenantContextAsync(etlContext.TenantId);
+        var streamDataRepo = tenantContext.GetStreamDataRepository()
+            ?? throw new InvalidOperationException(
+                $"Stream data repository is not available for tenant '{etlContext.TenantId}'. " +
+                "Ensure AddCrateDbStreamDataRepository() was called during startup.");
+
+        await streamDataRepo.EnsureDatabaseCreatedAsync();
+
+        nodeContext.Debug(
+            $"Inserting {points.Count} time-range data point(s) for {series.Count} series into archive '{c.ArchiveRtId}'");
+        await streamDataRepo.InsertTimeRangeAsync(new OctoObjectId(c.ArchiveRtId), points);
+    }
+}

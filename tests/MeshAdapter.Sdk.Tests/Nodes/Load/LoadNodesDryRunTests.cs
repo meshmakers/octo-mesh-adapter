@@ -179,10 +179,11 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         Assert.Contains(DryRunHonouredLoadNodes.GrafanaDeprovisionTenant, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SaveStreamDataInArchive, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SaveTimeRangeStreamDataInArchive, DryRunHonouredLoadNodes.All);
+        Assert.Contains(DryRunHonouredLoadNodes.SaveTimeRangeSeriesInArchive, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SftpDelete, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SftpUpload, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.ToDiscord, DryRunHonouredLoadNodes.All);
-        Assert.Equal(11, DryRunHonouredLoadNodes.All.Count);
+        Assert.Equal(12, DryRunHonouredLoadNodes.All.Count);
     }
 
     /// <summary>

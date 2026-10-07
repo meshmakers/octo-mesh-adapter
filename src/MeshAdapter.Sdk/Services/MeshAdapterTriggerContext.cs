@@ -42,21 +42,16 @@ internal class MeshAdapterTriggerContext(
         var pipelineExecutionId = Guid.NewGuid();
         _logger.LogDebug("[{TenantId}] Running pipeline for pipeline {PipelineRtEntityId} as run with execution id {PipelineExecutionId}", TenantId,
             PipelineRtEntityId, pipelineExecutionId);
-        var etlContext = await _contextCreatorService.CreateEtlContext<IMeshEtlContext>(pipelineRegistration, executePipelineOptions, pipelineExecutionId);
-
-        IPipelineDebugger? debugger = null;
-        if (pipelineRegistration.IsDebuggingEnabled)
-        {
-            _logger.LogWarning("[{TenantId}] Debugging enabled for pipeline {PipelineRtEntityId} with execution id {PipelineExecutionId}", TenantId,
-                PipelineRtEntityId, pipelineExecutionId);
-
-            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
-            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
-        }
 
         DateTime startedDateTime = DateTime.UtcNow;
 
-        // Report execution start to communication controller
+        // Report execution start to communication controller — BEFORE the execution context exists
+        // (AB#5493). Mirrors the SDK host (AdapterTriggerContext). Everything the start report needs
+        // is known here, and a failure in context creation (MeshContextCreatorService →
+        // ISystemContext.FindTenantRepositoryAsync: "System tenant database does not exist") used
+        // to throw past the reporter: the controller never saw an execution, PipelineStatistics
+        // froze and octo.pipeline.execution.failures stayed at zero while the finAPI cron trigger
+        // failed on every tick for four days (prod-1).
         if (_executionReporter != null)
         {
             await _executionReporter.ReportExecutionStartAsync(
@@ -67,26 +62,51 @@ internal class MeshAdapterTriggerContext(
                 executePipelineOptions.InputData);
         }
 
-        // AB#5159: the dry-run flag arrives on the options (set by FromExecutePipelineCommand@1
-        // from the ExecutePipelineRequest) and only reaches the nodes as an execution mode on
-        // the orchestrator call. Mirrors the SDK host (AdapterTriggerContext); without it every
-        // Load node saw a null mode and ran for real.
-        IPipelineExecutionMode? executionMode = executePipelineOptions.IsDryRun
-            ? new DefaultPipelineExecutionMode { IsDryRun = true }
-            : null;
-
-        if (executePipelineOptions.IsDryRun && debugger == null)
+        IMeshEtlContext etlContext;
+        IPipelineDebugger? debugger = null;
+        IPipelineExecutionMode? executionMode;
+        try
         {
-            // Dry-run intents are written to the debug stream; without a debugger
-            // the agent can't inspect them. Force-enable per-execution so the
-            // would-have-written record is captured - together with every node's
-            // input/output snapshot, as in any debug-enabled run. Real-effect runs
-            // are unchanged - debugger stays opt-in via IsDebuggingEnabled.
-            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
-            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
-            _logger.LogInformation(
-                "[{TenantId}] Pipeline {PipelineRtEntityId} dry-run execution {PipelineExecutionId}: forced debugger on so intent payloads are captured",
-                TenantId, PipelineRtEntityId, pipelineExecutionId);
+            etlContext = await _contextCreatorService.CreateEtlContext<IMeshEtlContext>(pipelineRegistration, executePipelineOptions, pipelineExecutionId);
+
+            if (pipelineRegistration.IsDebuggingEnabled)
+            {
+                _logger.LogWarning("[{TenantId}] Debugging enabled for pipeline {PipelineRtEntityId} with execution id {PipelineExecutionId}", TenantId,
+                    PipelineRtEntityId, pipelineExecutionId);
+
+                debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+                debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+            }
+
+            // AB#5159: the dry-run flag arrives on the options (set by FromExecutePipelineCommand@1
+            // from the ExecutePipelineRequest) and only reaches the nodes as an execution mode on
+            // the orchestrator call. Mirrors the SDK host (AdapterTriggerContext); without it every
+            // Load node saw a null mode and ran for real.
+            executionMode = executePipelineOptions.IsDryRun
+                ? new DefaultPipelineExecutionMode { IsDryRun = true }
+                : null;
+
+            if (executePipelineOptions.IsDryRun && debugger == null)
+            {
+                // Dry-run intents are written to the debug stream; without a debugger
+                // the agent can't inspect them. Force-enable per-execution so the
+                // would-have-written record is captured - together with every node's
+                // input/output snapshot, as in any debug-enabled run. Real-effect runs
+                // are unchanged - debugger stays opt-in via IsDebuggingEnabled.
+                debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+                debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+                _logger.LogInformation(
+                    "[{TenantId}] Pipeline {PipelineRtEntityId} dry-run execution {PipelineExecutionId}: forced debugger on so intent payloads are captured",
+                    TenantId, PipelineRtEntityId, pipelineExecutionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The start is already on record, so this execution has to be closed as Failed here:
+            // no task is registered yet, so EndExecutePipelineAsync never runs for this id and the
+            // end report cannot be doubled. Rethrown so the trigger sees the failure as before.
+            await ReportExecutionFailedBeforeRunAsync(pipelineExecutionId, startedDateTime, ex);
+            throw;
         }
 
         Task<object?> task = Task.Run(async () =>
@@ -101,6 +121,34 @@ internal class MeshAdapterTriggerContext(
         execution.Properties["EtlContext"] = etlContext;
 
         return pipelineExecutionId;
+    }
+
+    /// <summary>
+    /// Closes an execution whose start was reported but which never reached the orchestrator
+    /// (AB#5493): logs the failure and reports it as <see cref="PipelineExecutionStatus.Failed" />
+    /// under the same execution id, so the controller's statistics and the failure metric see it.
+    /// Mirrors the SDK host (AdapterTriggerContext).
+    /// </summary>
+    private async Task ReportExecutionFailedBeforeRunAsync(Guid pipelineExecutionId, DateTime startedDateTime,
+        Exception ex)
+    {
+        _logger.LogError(ex,
+            "[{TenantId}] Pipeline {PipelineRtEntityId} execution {PipelineExecutionId} failed before the pipeline ran: the execution context could not be created",
+            TenantId, PipelineRtEntityId, pipelineExecutionId);
+
+        if (_executionReporter == null)
+        {
+            return;
+        }
+
+        var completedAt = DateTime.UtcNow;
+        var durationMs = (int)(completedAt - startedDateTime).TotalMilliseconds;
+        await _executionReporter.ReportExecutionEndAsync(
+            pipelineExecutionId,
+            PipelineExecutionStatus.Failed,
+            completedAt,
+            durationMs,
+            ex.Message);
     }
 
     /// <inheritdoc />

@@ -28,6 +28,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GetQueryByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByIdNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<RevealSecretNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<WriteVerifiedCallerNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationChannelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GetRtEntitiesByWellKnownNameNodeConfiguration>();
@@ -46,6 +47,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<SignalSenderNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveStreamDataInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeStreamDataInArchiveNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<SaveTimeRangeSeriesInArchiveNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<UpdateRtEntityIfNewerNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GrafanaProvisionTenantNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GrafanaDeprovisionTenantNodeConfiguration>();

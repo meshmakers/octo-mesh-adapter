@@ -47,6 +47,11 @@ internal static class SftpServerSettingsResolver
                 nodeContext, serverConfigurationName, e);
         }
 
+        // AB#5538: credentials resolved from configuration are masked in every diagnostic output.
+        nodeContext.RegisterSecret(settings.Password);
+        nodeContext.RegisterSecret(settings.PrivateKey);
+        nodeContext.RegisterSecret(settings.PrivateKeyPassphrase);
+
         if (string.IsNullOrWhiteSpace(settings.PrivateKey) && string.IsNullOrWhiteSpace(settings.Password))
         {
             throw MeshAdapterPipelineExecutionException.SftpAuthNotConfigured(nodeContext);

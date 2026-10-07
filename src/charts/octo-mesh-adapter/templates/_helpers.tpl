@@ -164,5 +164,20 @@ externally via valueFrom.
 {{- else if and $s.rabbitmq (not (kindIs "map" $s.rabbitmq)) -}}true
 {{- else if and $s.streamDataPassword (not (kindIs "map" $s.streamDataPassword)) -}}true
 {{- else if and $s.serviceAccountClientSecret (not (kindIs "map" $s.serviceAccountClientSecret)) -}}true
+{{- else if include "octo-mesh.hasPlaintextSecretEncryption" . -}}true
 {{- end -}}
+{{- end -}}
+
+{{/*
+"true" when any SECRET key ring value (AB#5536) is a plaintext string and therefore
+has to be packed into the chart-owned `<fullname>-backend` Secret.
+*/}}
+{{- define "octo-mesh.hasPlaintextSecretEncryption" -}}
+{{- $se := .Values.secrets.secretEncryption | default dict -}}
+{{- $found := false -}}
+{{- range $kid, $value := ($se.keys | default dict) -}}
+{{- if and $value (not (kindIs "map" $value)) -}}{{- $found = true -}}{{- end -}}
+{{- end -}}
+{{- if and $se.legacyV1Key (not (kindIs "map" $se.legacyV1Key)) -}}{{- $found = true -}}{{- end -}}
+{{- if $found -}}true{{- end -}}
 {{- end -}}

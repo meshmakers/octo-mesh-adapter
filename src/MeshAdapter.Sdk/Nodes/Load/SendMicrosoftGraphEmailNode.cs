@@ -59,6 +59,8 @@ public class SendMicrosoftGraphEmailNode(
                 nodeContext, nameof(c.ServerConfiguration), c.ServerConfiguration);
         }
         var cfg = etlContext.GlobalConfiguration.GetValue<GraphConfiguration>(c.ServerConfiguration);
+        // AB#5538: a credential resolved from configuration is masked in every diagnostic output.
+        nodeContext.RegisterSecret(cfg.ClientSecret);
 
         var mailbox = ResolveStringValue(dataContext, c.MailboxPath, c.Mailbox);
         if (string.IsNullOrWhiteSpace(mailbox))

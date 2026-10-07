@@ -9,6 +9,27 @@ replicaCount: 1
 # default of 30s would SIGKILL mid-drain (AB#4917, on-demand lifecycle).
 terminationGracePeriodSeconds: 180
 
+# Log level, per deployment instead of per commit (AB#5478 section 2.3).
+#
+# nlog.config reads OCTO_LOG_LEVEL for Meshmakers.* and OCTO_LOG_LEVEL_ROOT for
+# everything else, both defaulting to Info when unset -- so leaving these empty is
+# the normal case and omits the variables entirely.
+#
+# Raising the level here costs a pod restart. For a one-off investigation prefer
+# DiagnosticsService.ReconfigureLogLevelAsync, which changes a RUNNING service's
+# level through the API without a redeploy and can target a single logger pattern.
+#
+# Note what a Debug level now implies: once a service emits JSON, the
+# spam-filter-drop-debug-logs rule actually matches it, so the records are dropped
+# at Dash0's ingestion rather than stored. Raising the level alone will not make
+# them visible -- the filter has to be narrowed too.
+#
+# This image used to pin minlevel="Debug" in its own repository, which is the
+# documented origin of the DEBUG flood: ~96 % of all log volume on test-2 came
+# from one adapter running at Debug.
+logLevel: ""
+logLevelRoot: ""
+
 # Tenant id the adapter is executing.
 # 🔴 Leave EMPTY on an adapter pool member (see `adapterPool` below): a member
 # has no tenant of its own, it is handed one per lease. The SDK clears the
@@ -99,6 +120,29 @@ secrets:
   # `ValueOverride` the controller sends. Unlike the four cluster secrets this
   # one is OPTIONAL: unset means the adapter connects anonymously.
   serviceAccountClientSecret: ""
+  # IronOCR licence key, consumed by `PdfOcrExtraction@1` (AB#5449). Supplied at
+  # deploy time like the services' AutoMapper key — it used to be hardcoded in the
+  # node's source, which made every rotation a code change and put a live
+  # commercial key into every clone of the repository. Accepts a plaintext string
+  # or the `{valueFrom: {secretKeyRef: ...}}` map, same as the two secrets above.
+  # OPTIONAL by design: only the OCR node needs it and most tenants never run OCR,
+  # so an adapter without it starts normally and only `PdfOcrExtraction@1` fails,
+  # naming this setting. Requiring it at startup would take the whole adapter
+  # fleet down the day the licence expires.
+  ironOcrLicenseKey: ""
+  # SECRET attribute key ring (AB#5536), rendered as OCTO_SECRETENCRYPTION__*
+  # (SecretEncryption:Keys:<kid> / ActiveKeyId / LegacyV1Key). Normally supplied
+  # by the communication operator for workloads with ReceivesClusterSecrets=true
+  # (keys/legacyV1Key as `{valueFrom: {secretKeyRef: ...}}` maps). Plaintext
+  # strings are accepted for hand-written values files. OPTIONAL: empty renders
+  # nothing; the adapter starts and only SECRET attribute access fails.
+  #   keys:          { k1: <base64 32-byte key> }   # ids: 1-32 lowercase letters/digits
+  #   activeKeyId:   k1                              # empty + one key = that key
+  #   legacyV1Key:   <key for legacy enc:v1 values>  # = the instance secret (k1)
+  secretEncryption:
+    keys: {}
+    activeKeyId: ""
+    legacyV1Key: ""
   # content of the root ca certificate chain
   rootCa: ""
 
@@ -170,16 +214,42 @@ service:
 # pressure (prod-1 meshmakers, 2026-07-24). The limit converts an unpredictable
 # NODE-level OOM into an isolated, fast-restarting CONTAINER-level OOM. The
 # request makes scheduling memory-aware so the operator does not pack too many
-# adapters onto one node. Heavy per-tenant adapters (accounting) should raise
-# these via a per-workload override; light adapters stay well under the ceiling.
+# adapters onto one node.
 # No CPU limit on purpose (CPU throttling hurts latency; memory is the OOM lever).
+#
+# AB#5448: the request was 512Mi while adapters really occupy 240Mi-1.4Gi, and the
+# kube-scheduler only sees requests. It therefore stacked three large adapters plus a
+# MongoDB replica and the identity service onto one node — twice within six hours on
+# prod-1 (qxhzm 93%, siqqj 89%), each time ending in a node-wide kernel OOM that killed
+# identity (exit 137 at 376Mi of its own 1Gi limit) while every pod still reported
+# 1/1 Running. Four such episodes since 2026-08-26.
+#
+# Measured on prod-1 after the AB#5448 fix, per adapter, warmed up:
+#   gastroacker 1427Mi · bierok 1209Mi · meshmakers 868Mi · salzburgdev 823Mi
+#   tecob 652Mi · pureescape 540Mi      (accounting tenants, 43 ExecuteCSharp nodes)
+#   energyiq 402Mi · wwc26 246Mi                               (no ExecuteCSharp nodes)
+# (the finapi adapters ship their own chart, octo-communication-adapter-finapi, and are
+#  not affected by this value.)
+# The spread is a factor of six and it tracks the number of DISTINCT compiled scripts,
+# because each one retains ~20Mi of Roslyn state even after the fix.
+#
+# 1.5Gi covers the heaviest observed adapter with headroom, which is what keeps the
+# scheduler honest. It over-reserves for the light ones (246Mi-402Mi) — accepted
+# deliberately: the alternative is a per-workload `resources` override, which has to be
+# written as the COMPLETE `Values` RecordArray via GraphQL, and one format slip nulls
+# every existing override on that workload (it has happened). A single honest default is
+# worth more than six risky writes. Total reservation: 12Gi of 52Gi allocatable across
+# the seven prod-1 nodes (eight adapters use this chart). Revisit per-workload
+# overrides if node capacity gets tight.
 resources:
   requests:
     cpu: 100m
-    memory: 512Mi
+    memory: 1536Mi
   limits:
     memory: 3Gi
 
+# /healthz/live evaluates NO health check on purpose: liveness is about the process. A
+# communication-controller outage must never restart every adapter in the estate at once.
 livenessProbe:
   httpGet:
     path: /healthz/live
@@ -187,13 +257,23 @@ livenessProbe:
   initialDelaySeconds: 10
   periodSeconds: 15
   failureThreshold: 3
+# /healthz/ready reports the adapter hub REGISTRATION since AB#5409: an adapter the controller has
+# no registration for cannot be configured, deployed to, or reached by the HTTP activator, and used
+# to answer 200 anyway (five prod-1 adapters sat deaf for eleven hours behind green probes).
+# failureThreshold is generous on purpose — 12 x 10s = 2 minutes — so an ordinary reconnect
+# (controller rollout, node drain, network blip) never flips the pod out of the Service endpoints.
+# The adapter itself additionally stays ready for Adapter:HubReadinessGracePeriod (5 min) while it
+# is still working on its FIRST registration, so a fresh pod is never punished for a controller
+# that is not up yet.
+# Note: a failing readiness probe does not restart a pod. The self-heal for a registration that
+# never comes back is Adapter:HubRegistrationRecoveryTimeout (15 min) inside the adapter.
 readinessProbe:
   httpGet:
     path: /healthz/ready
     port: http
   initialDelaySeconds: 15
   periodSeconds: 10
-  failureThreshold: 3
+  failureThreshold: 12
 
 autoscaling:
   enabled: false

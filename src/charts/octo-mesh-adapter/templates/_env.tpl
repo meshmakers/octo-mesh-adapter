@@ -47,6 +47,42 @@
 {{- if not (include "octo-mesh.isPoolMember" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
+{{- include "octo-mesh.secretEncryption-env" . }}
+{{- end }}
+
+{{/*
+  AB#5536 — SECRET attribute key ring (concept AB#5528 §3.5), bound by the engine as
+  SecretEncryption:Keys:<kid> / :ActiveKeyId / :LegacyV1Key. The communication operator
+  supplies it as secrets.secretEncryption.* for workloads with ReceivesClusterSecrets=true
+  (keys + legacy key as valueFrom maps into {release}-octo-secrets, the active key id as a
+  plain string). Rendered only when provided: an adapter without the ring still starts,
+  and only writing or reading a SECRET attribute fails with a configuration error.
+  The key id keeps its case in the variable name — it is the id the engine writes into
+  the enc:v2:<kid>: header.
+*/}}
+{{- define "octo-mesh.secretEncryption-env" -}}
+{{- $se := .Values.secrets.secretEncryption | default dict }}
+{{- $keys := $se.keys | default dict }}
+{{- range $kid, $value := $keys }}
+{{- if not (regexMatch "^[a-z0-9]{1,32}$" $kid) }}
+{{- fail (printf "secrets.secretEncryption.keys: key id '%s' must be 1-32 lowercase letters or digits" $kid) }}
+{{- end }}
+{{ include "octo-mesh.secretEnv" (dict "envName" (printf "OCTO_SECRETENCRYPTION__KEYS__%s" $kid) "value" $value "legacyKey" (printf "secretEncryptionKey-%s" $kid) "context" $) }}
+{{- end }}
+{{- if $keys }}
+{{- $active := $se.activeKeyId | default "" }}
+{{- if and (not $active) (eq (len $keys) 1) }}
+{{- $active = keys $keys | first }}
+{{- end }}
+{{- if not (hasKey $keys $active) }}
+{{- fail (printf "secrets.secretEncryption.activeKeyId '%s' is not a key id of secrets.secretEncryption.keys (%s)" $active (keys $keys | sortAlpha | join ", ")) }}
+{{- end }}
+- name: OCTO_SECRETENCRYPTION__ACTIVEKEYID
+  value: {{ $active | quote }}
+{{- end }}
+{{- if $se.legacyV1Key }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SECRETENCRYPTION__LEGACYV1KEY" "value" $se.legacyV1Key "legacyKey" "secretEncryptionLegacyV1Key" "context" $) }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -103,6 +139,60 @@
 {{- define "octo-mesh.env" -}}
 - name: ASPNETCORE_URLS
   value: "http://+:80"
+{{- /*
+  AB#5478 §2.1 + §2.2 — per-tenant identity for this workload.
+
+  Both halves of the identity were collapsed across tenants before this. The pod
+  label app.kubernetes.io/name is the CHART name, identical for every adapter of
+  every tenant in the cluster, and the in-process SDK fell back to the entry
+  assembly name, equally shared. So every tenant's adapter arrived in Dash0 as a
+  single service — measured on test-2: 127,976 requests at p95 3.19 s with no way
+  to tell whose latency that was.
+
+  OTEL_SERVICE_NAME is the release name, which under the operator already reads
+  {tenantId}-{workloadName} and is already the value of the
+  app.kubernetes.io/service label. Metrics, traces and logs therefore land on the
+  SAME name: metrics and traces because container env beats everything the operator
+  would otherwise derive, logs because the Dash0Monitoring transform reads that
+  label. One value, three signals.
+
+  octo.tenant.id carries the tenant as its own dimension on every span, metric and
+  log record of this pod, with no code change. One spelling fleet-wide — the
+  engine's own `tenant` / `streamdata.tenant` attributes are being unified onto
+  this key, so do not introduce a fourth.
+
+  Guarded on tenantId because the chart defaults it to "" for out-of-band installs;
+  an empty value would publish `octo.tenant.id=` as a real, wrong attribute.
+*/}}
+- name: OTEL_SERVICE_NAME
+  value: {{ include "octo-mesh.service-fullname" . | quote }}
+{{- if .Values.tenantId }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ printf "octo.tenant.id=%s" .Values.tenantId | quote }}
+{{- end }}
+# Our own ActivitySources, declared to the injected .NET auto-instrumentation.
+# The adapter hosts the same StreamData engine as the platform services, so the
+# same two sources are emitted here — and the same rule applies: the SDK inside
+# the process subscribes to them (Meshmakers.Octo.Services.Observability) but
+# deliberately carries no trace exporter in the cluster, because a second one
+# would duplicate every HTTP span the injector already sends. Naming them here
+# is what gets these spans out. Mirrors the identical block in the octo-mesh
+# chart; keep the two lists in step.
+- name: OTEL_DOTNET_AUTO_TRACES_ADDITIONAL_SOURCES
+  value: "Meshmakers.Octo.StreamData,Meshmakers.Octo.StreamData.Crate"
+{{- /*
+  AB#5478 section 2.3: the level comes from the environment now, not from a
+  hard-coded minlevel="Debug" in the adapter repository. Omitted unless set, and
+  nlog.config then falls back to Info.
+*/}}
+{{- if .Values.logLevel }}
+- name: OCTO_LOG_LEVEL
+  value: {{ .Values.logLevel | quote }}
+{{- end }}
+{{- if .Values.logLevelRoot }}
+- name: OCTO_LOG_LEVEL_ROOT
+  value: {{ .Values.logLevelRoot | quote }}
+{{- end }}
 {{- $name := "OCTO_ADAPTER" }}
 {{ include "octo-mesh.system-env" . }}
 {{ include "octo-mesh.broker-env" (dict "global" . "name" $name) }}
@@ -249,5 +339,27 @@
 */}}
 {{- if .Values.secrets.serviceAccountClientSecret }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_ADAPTER__CLIENTSECRET" "value" .Values.secrets.serviceAccountClientSecret "legacyKey" "serviceAccountClientSecret" "context" .) }}
+{{- end }}
+{{/*
+  AB#5449 — IronOCR licence key for `PdfOcrExtraction@1`. Until now it sat in
+  plain text in the node's source, so every rotation was a code change and every
+  clone of the repository carried a live commercial key. It travels the same way
+  the services' AutoMapper key does: configuration at deploy time, never
+  compiled in.
+
+  Secret-flagged, so `octo-mesh.secretEnv` is used rather than a literal env
+  var — it accepts both the plaintext string and the
+  `{valueFrom: {secretKeyRef: ...}}` map the operator materialises, exactly like
+  `secrets.serviceAccountClientSecret` above.
+
+  Guarded by `if` for two reasons: `octo-mesh.secretEnv` FAILS on an empty value,
+  and this key is optional BY DESIGN. Only one node needs it and most tenants
+  never run OCR, so an adapter without it must still start and serve everything
+  else — `PdfOcrExtraction@1` fails on first use with a message naming this
+  setting. A startup requirement here would take every adapter in the estate
+  down the day the licence expires, including the ones that never OCR anything.
+*/}}
+{{- if .Values.secrets.ironOcrLicenseKey }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_ADAPTER__IRONOCRLICENSEKEY" "value" .Values.secrets.ironOcrLicenseKey "legacyKey" "ironOcrLicenseKey" "context" .) }}
 {{- end }}
 {{- end }}

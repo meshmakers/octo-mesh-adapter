@@ -19,10 +19,17 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Leasing;
 ///     <para>
 ///         The lease carries the borrower's own <c>PipelineServiceAccount</c> credential (AB#5027).
 ///         This participant exchanges it for an access token and writes that token into the
-///         process-wide <see cref="IServiceClientAccessToken" /> — the holder the SDK's SignalR client
-///         and every service client read. From that moment the member <b>is</b> the borrower's adapter,
-///         as far as every other OctoMesh service is concerned, which is exactly what Q6 decided and
-///         why no new standing grant exists anywhere.
+///         process-wide <see cref="IServiceClientAccessToken" /> — the holder every service client and
+///         pipeline node of the leased execution reads. From that moment the member <b>is</b> the
+///         borrower's adapter, as far as every other OctoMesh service is concerned, which is exactly
+///         what Q6 decided and why no new standing grant exists anywhere.
+///     </para>
+///     <para>
+///         🔴 <b>Not the pool hub connection (AB#5865).</b> The member's management connection to
+///         <c>/adapterPoolHub</c> reads its own holder (<c>AdapterPoolHubAccessToken</c>, octo-communication-sdk)
+///         and keeps presenting the lending pool's identity. It used to read this one, so a connection
+///         rebuilt during a lease (controller restart) was authenticated as the borrower and the
+///         deferred re-registration went out on it (test-2-dev, 2026-10-07).
 ///     </para>
 ///     <para>
 ///         🔴 <b><c>acr_values=tenant:{borrower}</c> is not optional, and the result is verified.</b>

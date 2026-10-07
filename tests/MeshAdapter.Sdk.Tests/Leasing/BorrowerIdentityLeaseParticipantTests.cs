@@ -7,6 +7,8 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Leasing;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.ServiceClient.AssetRepositoryServices.Tenants;
+using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NLog.Extensions.Logging;
@@ -171,6 +173,49 @@ public class BorrowerIdentityLeaseParticipantTests
     }
 
     /// <summary>
+    ///     🔴 AB#5865 — in the real member composition the borrower identity is the lease identity
+    ///     ONLY: the pool hub connection keeps presenting the member's own (lender pool) identity
+    ///     before, during and after the lease. On test-2-dev the pool hub connection was rebuilt during
+    ///     a lease (controller restart), its token provider read the borrower's token, and the deferred
+    ///     re-registration went out as tenant 'leasetest' for a pool of tenant 'meshdev'.
+    /// </summary>
+    [Fact]
+    public async Task ALease_NeverChangesTheIdentityThePoolHubConnectionPresents()
+    {
+        var handler = new TokenEndpointHandler(Jwt(BorrowerTenantId));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build());
+        services.AddOctoMeshAdapterPoolMember();
+        services.Configure<AdapterOptions>(o => o.IssuerUri = Issuer);
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerHttpClientFactory(handler));
+        await using var provider = services.BuildServiceProvider();
+
+        var hubClient = provider.GetRequiredService<IAdapterPoolHubClient>();
+        var leaseIdentity = provider.GetRequiredService<IServiceClientAccessToken>();
+        // Built with the composition's own dependencies (the other participants need a database).
+        Assert.Contains(services, d => d.ServiceType == typeof(IAdapterLeaseParticipant)
+                                       && d.ImplementationType == typeof(BorrowerIdentityLeaseParticipant));
+        var participant = ActivatorUtilities.CreateInstance<BorrowerIdentityLeaseParticipant>(provider);
+        // What AdapterAccessTokenService writes on a member with its own client credential.
+        provider.GetRequiredService<AdapterPoolHubAccessToken>().AccessToken = "lender-pool-token";
+
+        await participant.EnterLeaseAsync(ALease(), CancellationToken.None);
+
+        // The lease identity is the borrower — and a reconnect now would still present the lender.
+        Assert.True(Meshmakers.Octo.Sdk.MeshAdapter.Services.JwtPayloadReader
+            .TryRead(leaseIdentity.AccessToken, out var claims));
+        Assert.Equal(BorrowerTenantId, claims.TenantId);
+        Assert.Equal("lender-pool-token", ((AdapterPoolHubClient)hubClient).ClientAccessToken.AccessToken);
+
+        await participant.LeaveLeaseAsync(ALease(), CancellationToken.None);
+
+        Assert.True(string.IsNullOrEmpty(leaseIdentity.AccessToken));
+        Assert.Equal("lender-pool-token", ((AdapterPoolHubClient)hubClient).ClientAccessToken.AccessToken);
+    }
+
+    /// <summary>
     ///     A refusal from the identity service names the client, never the secret — the same rule the
     ///     controller's deploy path follows.
     /// </summary>
@@ -236,6 +281,11 @@ public class BorrowerIdentityLeaseParticipantTests
         {
             NLog.LogManager.Configuration = previousConfiguration;
         }
+    }
+
+    private sealed class SingleHandlerHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 
     /// <summary>

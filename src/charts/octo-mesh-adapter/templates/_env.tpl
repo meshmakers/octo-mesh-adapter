@@ -49,6 +49,7 @@
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
 {{- include "octo-mesh.secretEncryption-env" . }}
 {{- end }}
+{{- end }}
 
 {{/*
   AB#5536 — SECRET attribute key ring (concept AB#5528 §3.5), bound by the engine as
@@ -82,7 +83,6 @@
 {{- end }}
 {{- if $se.legacyV1Key }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SECRETENCRYPTION__LEGACYV1KEY" "value" $se.legacyV1Key "legacyKey" "secretEncryptionLegacyV1Key" "context" $) }}
-{{- end }}
 {{- end }}
 {{- end }}
 

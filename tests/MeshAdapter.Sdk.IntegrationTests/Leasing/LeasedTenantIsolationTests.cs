@@ -282,6 +282,32 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
     }
 
     /// <summary>
+    ///     🔴 AB#5826 — with the real member composition, the release names the execution, the
+    ///     borrowing tenant and the member. That is what lets a controller that no longer holds the
+    ///     lease (it restarted while the lease ran) attribute the outcome instead of dropping it — and
+    ///     it still carries no credential back.
+    /// </summary>
+    [Fact]
+    public async Task TheReleaseNamesTheExecutionTheTenantAndTheMember_AndNoCredential()
+    {
+        fixture.EnsureInitialized();
+        await using var member = await PoolMember.CreateAsync(fixture);
+
+        var release = await member.TryLeaseAndRunAsync(TwoTenantLeaseFixture.TenantA,
+            executionId: "b7b9ca9b-5826-4000-8000-000000000001");
+
+        using var _ = new AssertionScope();
+        release.Success.Should().BeTrue(release.StatusMessage);
+        release.ExecutionId.Should().Be("b7b9ca9b-5826-4000-8000-000000000001");
+        release.TenantId.Should().Be(TwoTenantLeaseFixture.TenantA);
+        release.MemberId.Should().Be(member.Services.GetRequiredService<IOptions<AdapterPoolMemberOptions>>()
+            .Value.EffectiveMemberId);
+        release.MemberId.Should().NotBeNullOrWhiteSpace();
+        System.Text.Json.JsonSerializer.Serialize(release).Should().NotContain(BorrowerSecret)
+            .And.NotContain(fixture.InstallationDatabasePassword);
+    }
+
+    /// <summary>
     ///     🔴 <b>The second secret must not reach a log target on the member either.</b> The controller
     ///     half of this guard is <c>GrantLeaseAsync_NeverWritesTheDatabasePasswordToAnyLogTarget</c>;
     ///     this is the half that belongs to the process that actually uses the value. It runs a real
@@ -572,7 +598,7 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
         ///     is that it must <b>not</b>.
         /// </summary>
         public async Task<LeaseResultDto> TryLeaseAndRunAsync(string tenantId, string? databasePassword = null,
-            bool omitDatabaseCredential = false)
+            bool omitDatabaseCredential = false, string executionId = "")
         {
             var client = _services.GetRequiredService<AdapterPoolClient>();
             Identity.NextTenantId = tenantId;
@@ -595,6 +621,7 @@ public class LeasedTenantIsolationTests(TwoTenantLeaseFixture fixture) : IClassF
                 DatabasePassword = omitDatabaseCredential
                     ? string.Empty
                     : databasePassword ?? _fixture.InstallationDatabasePassword,
+                ExecutionId = executionId,
                 GrantedAtUtc = DateTime.UtcNow,
                 ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15)
             });

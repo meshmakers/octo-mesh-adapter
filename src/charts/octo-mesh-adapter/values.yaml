@@ -267,6 +267,9 @@ livenessProbe:
 # that is not up yet.
 # Note: a failing readiness probe does not restart a pod. The self-heal for a registration that
 # never comes back is Adapter:HubRegistrationRecoveryTimeout (15 min) inside the adapter.
+# A pool member (adapterPool.* set) answers the same probe from its registration at the adapter
+# POOL hub instead (AB#4924 AP-I5) — never from a lease, so an idle member is ready — with the
+# same grace period and the same recovery timeout.
 readinessProbe:
   httpGet:
     path: /healthz/ready

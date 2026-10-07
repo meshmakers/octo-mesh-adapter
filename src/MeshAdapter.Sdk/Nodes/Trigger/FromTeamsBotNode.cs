@@ -34,7 +34,17 @@ internal class FromTeamsBotNode(
     IHttpClientFactory httpClientFactory,
     IChannelCallerBinder callerBinder) : ITriggerPipelineNode
 {
+    /// <summary>
+    /// AB#5620: a burst of activities (or of rejected tokens) reports at most once per 30 s; a
+    /// success↔error transition is always reported.
+    /// </summary>
+    internal static readonly TimeSpan StatusInterval = TimeSpan.FromSeconds(30);
+
     private HttpRouteHandle? _routeHandle;
+    private TriggerStatusThrottle _statusThrottle = new(StatusInterval, StatusInterval);
+
+    /// <summary>Clock for the status line and its throttle; replaceable in tests.</summary>
+    internal TimeProvider Clock { get; init; } = TimeProvider.System;
 
     // ReSharper disable once ClassNeverInstantiated.Local
     private record GraphBotConfiguration
@@ -58,6 +68,7 @@ internal class FromTeamsBotNode(
 
         var cfg = context.GlobalConfiguration.GetValue<GraphBotConfiguration>(c.ServerConfiguration);
         var expectedAudience = string.IsNullOrWhiteSpace(c.BotAppId) ? cfg.ClientId : c.BotAppId!;
+        _statusThrottle = new TriggerStatusThrottle(StatusInterval, StatusInterval);
 
         // The caller context is discarded on purpose: the route is anonymous to the platform gate,
         // so it carries no verified principal, and the Bot Framework credential in the Authorization
@@ -74,6 +85,7 @@ internal class FromTeamsBotNode(
                 // Never surface a 500 to Bot Framework (it would retry the same activity). Log and
                 // acknowledge with an empty 200; the reply, if any, is sent via TeamsBotReply.
                 logger.LogError(e, "FromTeamsBot: failed to process inbound activity");
+                await ReportStatusAsync(context, c.Route, isError: true, e.Message);
                 return null;
             }
             // Bot Framework issues its own tokens, so the platform token gate cannot apply here;
@@ -120,6 +132,11 @@ internal class FromTeamsBotNode(
             {
                 logger.LogWarning("FromTeamsBot: rejected inbound activity ({Reason})",
                     outcome.Reason);
+                // AB#5620: a wrong bot app id / audience or an expired signing-key setup shows up
+                // here and nowhere else. The reasons are fixed texts (TeamsBotTokenValidator), never
+                // token contents.
+                await ReportStatusAsync(context, c.Route, isError: true,
+                    $"inbound activity rejected: {outcome.Reason}");
                 return null;
             }
         }
@@ -180,6 +197,9 @@ internal class FromTeamsBotNode(
         if (binding.Rejected)
         {
             logger.LogWarning("FromTeamsBot: {Reason}", binding.RejectReason);
+            // The channel works — the caller-binding policy turned the sender away; not an error.
+            await ReportStatusAsync(context, c.Route, isError: false,
+                "last activity not processed (caller not bound)");
             return null;
         }
 
@@ -191,9 +211,30 @@ internal class FromTeamsBotNode(
         logger.LogInformation(
             "FromTeamsBot: processed activity from {From} with {AttachmentCount} attachment(s)",
             fromName ?? fromId ?? "unknown", attachments.Count);
+        await ReportStatusAsync(context, c.Route, isError: false,
+            $"last activity handled, {attachments.Count} attachment(s)");
 
         // Empty 200 acknowledgement; any reply is delivered out-of-band by TeamsBotReply.
         return null;
+    }
+
+    /// <summary>
+    /// AB#5620: reports the trigger's status line through the throttle. A push trigger only reports
+    /// when traffic arrives, so the line's age is "time since the last activity", NOT a health check.
+    /// Never throws (see <see cref="ITriggerContext.ReportStatusAsync"/>).
+    /// </summary>
+    private async Task ReportStatusAsync(ITriggerContext context, string route, bool isError, string text)
+    {
+        var now = Clock.GetUtcNow().UtcDateTime;
+        if (!_statusThrottle.ShouldReport(now, isError, hasActivity: true))
+        {
+            return;
+        }
+
+        var line = isError
+            ? TriggerStatusLine.Error(now, route, text)
+            : TriggerStatusLine.Success(now, route, text);
+        await context.ReportStatusAsync(line, isError);
     }
 
     /// <summary>

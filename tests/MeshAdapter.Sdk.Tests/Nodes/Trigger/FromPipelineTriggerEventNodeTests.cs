@@ -1,4 +1,5 @@
 using FakeItEasy;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
@@ -120,6 +121,26 @@ public class FromPipelineTriggerEventNodeTests
 
         A.CallTo(() => _triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
             .MustHaveHappenedOnceExactly();
+    }
+
+    /// <summary>
+    ///     AB#5885 (D-Trigger): a cron tick on a dedicated adapter is reported as Scheduled, like a leased
+    ///     cron run (AB#5863) — not as the SDK default Event, which is reserved for real bus events.
+    /// </summary>
+    [Fact]
+    public async Task Tick_ExecutesAsScheduled()
+    {
+        ExecutePipelineOptions? captured = null;
+        A.CallTo(() => _triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes((ExecutePipelineOptions options, object? _) => captured = options);
+        var node = new FromPipelineTriggerEventNode(_eventHubControl);
+        await node.StartAsync(_triggerContext);
+
+        await _handler!(new PipelineTriggerSchedule("test-tenant", Guid.NewGuid(), DateTime.UtcNow),
+            RoutedEventDeliveryContext.None);
+
+        Assert.NotNull(captured);
+        Assert.Equal(PipelineTriggerType.Scheduled, captured!.TriggerType);
     }
 
     [Fact]

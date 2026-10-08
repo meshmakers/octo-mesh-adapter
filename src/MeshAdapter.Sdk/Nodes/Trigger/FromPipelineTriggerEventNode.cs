@@ -1,4 +1,5 @@
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -52,7 +53,13 @@ internal class FromPipelineTriggerEventNode(IEventHubControl eventHubControl)
 
                 try
                 {
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow));
+                    // AB#5885 (D-Trigger): a cron tick is a SCHEDULED execution, on a dedicated adapter
+                    // exactly like a leased cron run (AB#5863). The SDK default (Event) is reserved for
+                    // real bus events; without this the execution history called every cron run "Event".
+                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                    {
+                        TriggerType = PipelineTriggerType.Scheduled
+                    });
                 }
                 catch (Exception ex)
                 {

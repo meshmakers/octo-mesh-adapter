@@ -76,6 +76,8 @@ public class SessionIdentityClassificationTests
             // platform's.
             ["Transform/CreateFileSystemItemUpdateNode.cs"] = (1, 1),
             ["Transform/CreateZipArchiveNode.cs"] = (1, 1),
+            // AB#5639: reads members, periods and anchors exactly like AllocateCommunityEnergy@1.
+            ["Transform/CommunityEnergyBalanceNode.cs"] = (1, 0),
             ["Transform/ExportDataPointMappingsNode.cs"] = (0, 1),
             ["Transform/GenerateDataPointMappingsNode.cs"] = (1, 0),
             ["Transform/ImportDataPointMappingsNode.cs"] = (0, 1),
@@ -128,7 +130,9 @@ public class SessionIdentityClassificationTests
         //
         // 36 now (20 scoped): SimulateEnergyMeasurements@2 (AB#5631) reads the anchors and their
         // metering points like version 1 does.
-        Assert.Equal(20, actual.Sum(v => v.Scoped));
+        //
+        // 37 now (21 scoped): CommunityEnergyBalance@1 (AB#5639) opens one config-selected session.
+        Assert.Equal(21, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
 

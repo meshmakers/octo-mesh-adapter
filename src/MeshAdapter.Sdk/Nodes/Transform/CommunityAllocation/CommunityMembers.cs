@@ -105,6 +105,26 @@ internal sealed record CommunityModelSchema
         ConsumerInputObis = c.ConsumerInputObis,
         ProducerInputObis = c.ProducerInputObis
     };
+
+    public static CommunityModelSchema From(PrepareMeterReadingsNodeConfiguration c) => new()
+    {
+        ConsumerCkTypeId = c.ConsumerCkTypeId,
+        ProducerCkTypeId = c.ProducerCkTypeId,
+        MeteringPointCkTypeId = c.MeteringPointCkTypeId,
+        EnergyMeasurementCkTypeId = c.EnergyMeasurementCkTypeId,
+        ParentAssociationRoleId = c.ParentAssociationRoleId,
+        ParticipationPeriodCkTypeId = c.ParticipationPeriodCkTypeId,
+        ParticipationPeriodAssociationRoleId = c.ParticipationPeriodAssociationRoleId,
+        ParticipationTimeRangeAttribute = c.ParticipationTimeRangeAttribute,
+        PartitionFactorAttribute = c.PartitionFactorAttribute,
+        DefaultPartitionFactor = c.DefaultPartitionFactor,
+        MeteringPointNumberAttribute = c.MeteringPointNumberAttribute,
+        DataSourceAttribute = c.DataSourceAttribute,
+        DefaultDataSource = c.DefaultDataSource,
+        ObisCodeAttribute = c.ObisCodeAttribute,
+        ConsumerInputObis = c.ConsumerInputObis,
+        ProducerInputObis = c.ProducerInputObis
+    };
 }
 
 /// <summary>

@@ -82,6 +82,8 @@ public class SessionIdentityClassificationTests
             ["Transform/GenerateDataPointMappingsNode.cs"] = (1, 0),
             ["Transform/ImportDataPointMappingsNode.cs"] = (0, 1),
             ["Transform/ImportFromExcelNode.cs"] = (0, 1),
+            // AB#5637: reads the reported metering points and their participation periods.
+            ["Transform/PrepareMeterReadingsNode.cs"] = (1, 0),
             ["Transform/SimulateEnergyMeasurementsNode.cs"] = (1, 0),
             ["Transform/SimulateEnergyMeasurementsV2Node.cs"] = (1, 0),
             ["Transform/ValidateDataPointCoverageNode.cs"] = (1, 0),
@@ -131,8 +133,9 @@ public class SessionIdentityClassificationTests
         // 36 now (20 scoped): SimulateEnergyMeasurements@2 (AB#5631) reads the anchors and their
         // metering points like version 1 does.
         //
-        // 37 now (21 scoped): CommunityEnergyBalance@1 (AB#5639) opens one config-selected session.
-        Assert.Equal(21, actual.Sum(v => v.Scoped));
+        // 38 now (22 scoped): CommunityEnergyBalance@1 (AB#5639) and PrepareMeterReadings@1 (AB#5637)
+        // each open one config-selected session.
+        Assert.Equal(22, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
 

@@ -194,6 +194,68 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         PipelineExecutions().Should().Be(0);
     }
 
+    /// <remarks>
+    /// AB#5628: a client-credentials client of another tenant holding a role whose name the route
+    /// requires must not reach it. identity stamps tenant_id on every such token since AB#5032.
+    /// </remarks>
+    [Fact]
+    public async Task RequestWithAServiceTokenOfAnotherTenant_IsRejectedForbiddenAndAudited()
+    {
+        using var client = await CreateClientAsync();
+        var token = CreateServiceToken("otherTenant", roles: "TenantAdmin");
+
+        var response = await Post(client, token);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden, _authenticationFailure ?? "no failure recorded");
+        Challenge(response).Should().Contain("error_code=\"tenant_mismatch\"");
+        PipelineExecutions().Should().Be(0);
+        _eventService.Events.Should().ContainSingle(e => e.Level == RtEventLevelsEnum.Warning &&
+                                                         e.Message.Contains("Denied") &&
+                                                         e.Message.Contains("client machine-client") &&
+                                                         e.Message.Contains("'otherTenant'"));
+    }
+
+    [Fact]
+    public async Task RequestWithAServiceTokenWithoutTenant_IsRejectedForbidden()
+    {
+        using var client = await CreateClientAsync();
+        var token = CreateServiceToken(null, roles: "TenantAdmin");
+
+        var response = await Post(client, token);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden, _authenticationFailure ?? "no failure recorded");
+        Challenge(response).Should().Contain("error_code=\"tenant_mismatch\"");
+        PipelineExecutions().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RequestWithAServiceTokenOfTheOwnTenant_TriggersThePipeline()
+    {
+        using var client = await CreateClientAsync();
+        var token = CreateServiceToken(TenantId, roles: "TenantAdmin");
+
+        var response = await Post(client, token);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, _authenticationFailure ?? "no failure recorded");
+        PipelineExecutions().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RequestWithAServiceTokenOfAnotherTenant_InWarnMode_PassesButIsAudited()
+    {
+        using var client = await CreateClientAsync(ServiceTokenEnforcementMode.Warn);
+        var token = CreateServiceToken("otherTenant", roles: "TenantAdmin");
+
+        var response = await Post(client, token);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, _authenticationFailure ?? "no failure recorded");
+        PipelineExecutions().Should().Be(1);
+        _eventService.Events.Should().Contain(e => e.Level == RtEventLevelsEnum.Warning &&
+                                                   e.Message.Contains("would be denied") &&
+                                                   e.Message.Contains("client machine-client"));
+        _eventService.Events.Should().OnlyContain(e => !e.Message.Contains("Bearer"));
+    }
+
     [Fact]
     public async Task RequestWithTheRequiredRole_TriggersThePipeline()
     {
@@ -264,7 +326,8 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
     /// Everything about token validation comes from production configuration; only the signing
     /// keys are supplied statically, so no OpenID discovery document has to be fetched.
     /// </summary>
-    private async Task<HttpClient> CreateClientAsync()
+    private async Task<HttpClient> CreateClientAsync(
+        ServiceTokenEnforcementMode serviceTokenEnforcement = ServiceTokenEnforcementMode.Enforce)
     {
         var nodeContext = A.Fake<INodeContext>();
         A.CallTo(() => nodeContext.GetNodeConfiguration<FromHttpRequestNodeConfiguration2>())
@@ -280,7 +343,11 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
                 .ConfigureServices(services =>
                 {
                     services.Configure<AdapterOptions>(options => options.DedicatedTenantId = TenantId);
-                    services.Configure<MeshAdapterConfiguration>(options => options.AuthorityUrl = Authority);
+                    services.Configure<MeshAdapterConfiguration>(options =>
+                    {
+                        options.AuthorityUrl = Authority;
+                        options.ServiceTokenEnforcement = serviceTokenEnforcement;
+                    });
                     services.AddCors();
                     services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
                     services.AddSingleton<IConfigureOptions<JwtBearerOptions>, ConfigureJwtBearerOptions>();
@@ -323,6 +390,37 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
     private static string Challenge(HttpResponseMessage response)
     {
         return response.Headers.WwwAuthenticate.ToString();
+    }
+
+    /// <summary>
+    /// A client-credentials token as identity issues it since AB#5032: no subject, a client id and
+    /// - unless <paramref name="tenantId"/> is null - the tenant it was requested for.
+    /// </summary>
+    private string CreateServiceToken(string? tenantId, string? roles = null)
+    {
+        var issuedAt = DateTime.UtcNow.AddMinutes(-5);
+        var descriptor = new SecurityTokenDescriptor
+        {
+            Issuer = $"{Authority}/",
+            Audience = CommonConstants.OctoApi,
+            IssuedAt = issuedAt,
+            NotBefore = issuedAt,
+            Expires = issuedAt.AddHours(1),
+            SigningCredentials = new SigningCredentials(_signingKey, SecurityAlgorithms.RsaSha256),
+            Claims = new Dictionary<string, object> { ["client_id"] = "machine-client" }
+        };
+
+        if (tenantId != null)
+        {
+            descriptor.Claims["tenant_id"] = tenantId;
+        }
+
+        if (roles != null)
+        {
+            descriptor.Claims[JwtClaimTypes.Role] = roles;
+        }
+
+        return new JwtSecurityTokenHandler().CreateEncodedJwt(descriptor);
     }
 
     private string CreateToken(string tenantId, DateTime? expires = null, string? roles = null,

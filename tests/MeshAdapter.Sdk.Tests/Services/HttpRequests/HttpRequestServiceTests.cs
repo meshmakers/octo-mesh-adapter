@@ -30,13 +30,15 @@ public class HttpRequestServiceTests
         _service = CreateService(auditAnonymousInvocations: true);
     }
 
-    private HttpRequestService CreateService(bool auditAnonymousInvocations)
+    private HttpRequestService CreateService(bool auditAnonymousInvocations,
+        ServiceTokenEnforcementMode serviceTokenEnforcement = ServiceTokenEnforcementMode.Enforce)
     {
         return new HttpRequestService(
             Options.Create(new AdapterOptions { DedicatedTenantId = TenantId }),
             Options.Create(new MeshAdapterConfiguration
             {
-                AuditAnonymousInvocations = auditAnonymousInvocations
+                AuditAnonymousInvocations = auditAnonymousInvocations,
+                ServiceTokenEnforcement = serviceTokenEnforcement
             }),
             _eventService, NullLogger<HttpRequestService>.Instance);
     }
@@ -494,11 +496,11 @@ public class HttpRequestServiceTests
     }
 
     /// <remarks>
-    /// A client credentials token carries neither a subject nor a tenant claim (AB#4183 injects
-    /// only roles), so the tenant comparison must not apply to machine callers.
+    /// Since AB#5032 identity stamps tenant_id on client-credentials tokens, so a machine caller of
+    /// the adapter's own tenant holding the required role is served (AB#5628).
     /// </remarks>
     [Fact]
-    public async Task SendRequestAsync_MachineTokenWithoutSubject_IsAuthorizedByRoleAlone()
+    public async Task SendRequestAsync_ServiceTokenOfOwnTenantWithRole_ExecutesFunc()
     {
         var executed = false;
         var options = CreateRouteOptions("/api/machine", HttpMethod.Post, _ =>
@@ -509,14 +511,126 @@ public class HttpRequestServiceTests
         _service.CreateRoute(options);
 
         var context = CreateHttpContext("POST", $"/{TenantId}/api/machine");
-        context.User = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(JwtClaimTypes.Role, "CommunicationAdmin")],
-            JwtBearerDefaults.AuthenticationScheme, JwtClaimTypes.Name, JwtClaimTypes.Role));
+        context.User = CreateServiceToken(TenantId, "CommunicationAdmin");
         var result = await _service.SendRequestAsync(context);
 
         Assert.True(result);
         Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
         Assert.True(executed);
+        var entry = Assert.Single(_eventService.Events);
+        Assert.Equal(RtEventLevelsEnum.Information, entry.Level);
+        Assert.Contains("for subject machine-client", entry.Message);
+    }
+
+    /// <remarks>
+    /// AB#5628: a client of another tenant holding a role whose name the route requires must not
+    /// get through - the tenant check runs before the role check.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_ServiceTokenOfAnotherTenant_ReturnsForbiddenAndRecordsWarning()
+    {
+        var executed = false;
+        var options = CreateRouteOptions("/api/machine", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/machine");
+        context.User = CreateServiceToken("otherTenant", "CommunicationAdmin");
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Contains("error_code=\"tenant_mismatch\"", context.Response.Headers.WWWAuthenticate.ToString());
+        Assert.False(executed);
+        var entry = Assert.Single(_eventService.Events);
+        Assert.Equal(RtEventLevelsEnum.Warning, entry.Level);
+        Assert.Equal(TenantId, entry.TenantId);
+        Assert.Contains("Denied", entry.Message);
+        Assert.Contains("client machine-client", entry.Message);
+        Assert.Contains("'otherTenant'", entry.Message);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_ServiceTokenWithoutTenant_ReturnsForbidden()
+    {
+        var executed = false;
+        var options = CreateRouteOptions("/api/machine", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/machine");
+        context.User = CreateServiceToken(null, "CommunicationAdmin");
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.False(executed);
+        var entry = Assert.Single(_eventService.Events);
+        Assert.Equal(RtEventLevelsEnum.Warning, entry.Level);
+        Assert.Contains("carries no tenant claim", entry.Message);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_ServiceTokenOfAnotherTenantInWarnMode_ExecutesAndRecordsWarning()
+    {
+        var service = CreateService(auditAnonymousInvocations: false, ServiceTokenEnforcementMode.Warn);
+        var executed = false;
+        var options = CreateRouteOptions("/api/machine", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/machine");
+        context.User = CreateServiceToken("otherTenant", "CommunicationAdmin");
+        var result = await service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.True(executed);
+        Assert.Contains(_eventService.Events, e => e.Level == RtEventLevelsEnum.Warning &&
+                                                   e.Message.Contains("would be denied") &&
+                                                   e.Message.Contains("client machine-client"));
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_ServiceTokenOfAnotherTenantInWarnMode_StillNeedsTheRole()
+    {
+        var service = CreateService(auditAnonymousInvocations: false, ServiceTokenEnforcementMode.Warn);
+        service.CreateRoute(CreateRouteOptions("/api/machine", HttpMethod.Post, allowAnonymous: false,
+            requiredRoles: ["CommunicationAdmin"]));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/machine");
+        context.User = CreateServiceToken("otherTenant", "Reader");
+        await service.SendRequestAsync(context);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+    }
+
+    /// <remarks>
+    /// A user token whose subject arrives as a name-identifier claim (a different inbound claim
+    /// mapping) must still be treated as a user token and compared, not as a service token.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_UserTokenWithNameIdentifierOfAnotherTenant_ReturnsForbidden()
+    {
+        var service = CreateService(auditAnonymousInvocations: false, ServiceTokenEnforcementMode.Warn);
+        service.CreateRoute(CreateRouteOptions("/api/tenant", HttpMethod.Post, allowAnonymous: false));
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/tenant");
+        context.User = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "660000000000000000000042"), new Claim(TenantIdClaim, "otherTenant")],
+            JwtBearerDefaults.AuthenticationScheme, JwtClaimTypes.Name, JwtClaimTypes.Role));
+        await service.SendRequestAsync(context);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
     }
 
     [Fact]
@@ -925,6 +1039,21 @@ public class HttpRequestServiceTests
     private static ClaimsPrincipal CreateAuthenticatedUser(params string[] roles)
     {
         return CreateAuthenticatedUserOfTenant(TenantId, roles);
+    }
+
+    /// <summary>A client-credentials principal: no subject, only client id, roles and the tenant identity stamped.</summary>
+    private static ClaimsPrincipal CreateServiceToken(string? tenantId, params string[] roles)
+    {
+        List<Claim> claims = [new("client_id", "machine-client")];
+        if (tenantId != null)
+        {
+            claims.Add(new Claim(TenantIdClaim, tenantId));
+        }
+
+        claims.AddRange(roles.Select(r => new Claim(JwtClaimTypes.Role, r)));
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, JwtBearerDefaults.AuthenticationScheme,
+            JwtClaimTypes.Name, JwtClaimTypes.Role));
     }
 
     private static ClaimsPrincipal CreateAuthenticatedUserOfTenant(string? tenantId, params string[] roles)

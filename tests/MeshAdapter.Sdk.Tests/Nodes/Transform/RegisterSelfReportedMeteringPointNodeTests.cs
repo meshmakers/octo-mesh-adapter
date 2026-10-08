@@ -28,6 +28,9 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
     private const string FacilityType = "Basic.Energy/OperatingFacility";
     private const string EmType = "Basic.Energy/EnergyMeasurement";
     private const string PeriodType = "EnergyCommunity/ParticipationPeriod";
+    private const string CityType = "Basic/City";
+    private const string TreeNodeType = "Basic/TreeNode";
+    private const string SalzburgRtId = "0000000000000000000005a0";
     private const string Number = "AT0099980000000010100000000000001";
 
     private readonly List<RtEntity> _consumers = [];
@@ -35,6 +38,9 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
     private readonly List<RtEntity> _customers = [];
     private readonly List<(RtEntity Entity, string MeteringPoint)> _anchors = [];
     private readonly List<(RtEntity Entity, string MeteringPoint)> _periods = [];
+    private readonly List<RtEntity> _cities = [];
+    private readonly List<(RtEntity Entity, string MeteringPoint)> _facilities = [];
+    private readonly List<(RtEntity Entity, string MeteringPoint)> _facilityParents = []; // origin = facility rtId
     private readonly List<(List<IEntityUpdateInfo<RtEntity>> Entities, List<AssociationUpdateInfo> Associations)> _writes = [];
 
     public RegisterSelfReportedMeteringPointNodeTests()
@@ -47,6 +53,7 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
                     ConsumerType => _consumers,
                     ProducerType => _producers,
                     CustomerType => _customers,
+                    CityType => _cities,
                     _ => []
                 })));
 
@@ -59,8 +66,15 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
                 var origins = call.GetArgument<IEnumerable<OctoObjectId>>(1)!.Select(x => x.ToString()).ToList();
                 var originType = call.GetArgument<RtCkId<CkTypeId>>(2)!;
                 var targetType = call.GetArgument<RtCkId<CkTypeId>>(4)!.ToString();
-                Assert.Equal(GraphDirections.Inbound, call.GetArgument<GraphDirections>(5));
-                var source = targetType == EmType ? _anchors : _periods;
+                var direction = call.GetArgument<GraphDirections>(5);
+                var source = (targetType, direction) switch
+                {
+                    (EmType, GraphDirections.Inbound) => _anchors,
+                    (PeriodType, GraphDirections.Inbound) => _periods,
+                    (FacilityType, GraphDirections.Outbound) => _facilities,
+                    (TreeNodeType, GraphDirections.Outbound) => _facilityParents,
+                    _ => throw new InvalidOperationException($"unexpected association read {targetType} {direction}")
+                };
                 var pairs = origins.Select(o => new KeyValuePair<RtEntityId, IResultSet<RtEntity>>(
                         new RtEntityId(originType, new OctoObjectId(o)),
                         ResultSet(source.Where(s => s.MeteringPoint == o).Select(s => s.Entity).ToList())))
@@ -76,6 +90,30 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
             .Invokes((IOctoSession _, IReadOnlyList<IEntityUpdateInfo<RtEntity>> e,
                 IReadOnlyList<AssociationUpdateInfo> a, OperationResult _) => _writes.Add((e.ToList(), a.ToList())))
             .Returns(Task.CompletedTask);
+
+        AddCity(SalzburgRtId, 5020, "Salzburg");
+    }
+
+    private RtEntity AddCity(string rtId, int zipcode, string name)
+    {
+        var city = new RtEntity(new RtCkId<CkTypeId>(CityType), new OctoObjectId(rtId));
+        city.SetAttributeValue("Zipcode", AttributeValueTypesDto.Int, zipcode);
+        city.SetAttributeValue("Name", AttributeValueTypesDto.String, name);
+        _cities.Add(city);
+        return city;
+    }
+
+    private RtEntity AddFacility(string meteringPoint, string rtId, int zipcode = 0, string cityTown = "-")
+    {
+        var facility = new RtEntity(new RtCkId<CkTypeId>(FacilityType), new OctoObjectId(rtId));
+        var address = new RtRecord { CkRecordId = new RtCkId<CkRecordId>("Basic/Address") };
+        address.SetAttributeValue("Street", AttributeValueTypesDto.String, "-");
+        address.SetAttributeValue("Zipcode", AttributeValueTypesDto.Int, zipcode);
+        address.SetAttributeValue("CityTown", AttributeValueTypesDto.String, cityTown);
+        address.SetAttributeValue("NationalCode", AttributeValueTypesDto.String, "AT");
+        facility.SetAttributeValue("Address", AttributeValueTypesDto.Record, address);
+        _facilities.Add((facility, meteringPoint));
+        return facility;
     }
 
     private static IResultSet<RtEntity> ResultSet(List<RtEntity> entities)
@@ -172,7 +210,11 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
         Assert.Equal(1, Attr(mp, "State"));
         Assert.Equal(0, Attr(mp, "LoadProfile"));
         Assert.Equal(3500.0, Attr(mp, "EnergyConsumption"));
-        Assert.NotNull(Attr(facility, "Address"));
+        var address = (RtRecord)Attr(facility, "Address")!;
+        Assert.Equal(5020, address.GetAttributeValueOrDefault("Zipcode"));
+        Assert.Equal("Salzburg", address.GetAttributeValueOrDefault("CityTown"));
+        Assert.Equal("-", address.GetAttributeValueOrDefault("Street"));
+        Assert.Equal("AT", address.GetAttributeValueOrDefault("NationalCode"));
 
         Assert.Equal($"{mp.RtId}_1-1:1.9.0 G.01", anchor.RtWellKnownName);
         Assert.Equal("1-1:1.9.0 G.01", Attr(anchor, "ObisCode"));
@@ -185,12 +227,15 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
         [
             (CustomerType, FacilityType, "EnergyCommunity/AssociatedFacilities"),
             (ConsumerType, FacilityType, "System/ParentChild"),
+            (FacilityType, CityType, "System/ParentChild"),
             (EmType, ConsumerType, "System/ParentChild"),
             (PeriodType, ConsumerType, "EnergyCommunity/ParticipationPeriod")
         ], chain.Associations.Select(a => (a.Origin.CkTypeId.ToString(), a.Target.CkTypeId.ToString(), a.RoleId.ToString())));
         Assert.Equal(customer.RtId, chain.Associations[0].Origin.RtId);
-        Assert.Equal(anchor.RtId, chain.Associations[2].Origin.RtId);
-        Assert.Equal(mp.RtId, chain.Associations[2].Target.RtId);
+        Assert.Equal(facility.RtId, chain.Associations[2].Origin.RtId);
+        Assert.Equal(SalzburgRtId, chain.Associations[2].Target.RtId.ToString());
+        Assert.Equal(anchor.RtId, chain.Associations[3].Origin.RtId);
+        Assert.Equal(mp.RtId, chain.Associations[3].Target.RtId);
 
         var point = result["meteringPoint"]!;
         Assert.Equal(mp.RtId.ToString(), point["rtId"]!.GetValue<string>());
@@ -360,6 +405,188 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
 
         Assert.Equal(RegisterSelfReportedMeteringPointNode.NotSelfReported, result["code"]!.GetValue<string>());
         Assert.Empty(_writes);
+    }
+
+    // ==================================================================== city parent (AB#6014)
+
+    [Theory]
+    [InlineData(4020)]
+    [InlineData("4020")]
+    [InlineData(" 4020 ")]
+    public async Task RequestZipcode_LinksThatCity(object zipcode)
+    {
+        AddCity("0000000000000000000004b0", 4020, "Linz");
+        var body = Consumption();
+        body["zipcode"] = zipcode is int i ? JsonValue.Create(i) : JsonValue.Create((string)zipcode);
+
+        var result = await RunAsync(body);
+
+        Assert.Equal("ok", result["status"]!.GetValue<string>());
+        var chain = _writes[^1];
+        var facility = Inserted(chain.Entities, FacilityType);
+        var link = Assert.Single(chain.Associations, a => a.Target.CkTypeId.ToString() == CityType);
+        Assert.Equal(facility.RtId, link.Origin.RtId);
+        Assert.Equal("0000000000000000000004b0", link.Target.RtId.ToString());
+        Assert.Equal("System/ParentChild", link.RoleId.ToString());
+        var address = (RtRecord)Attr(facility, "Address")!;
+        Assert.Equal(4020, address.GetAttributeValueOrDefault("Zipcode"));
+        Assert.Equal("Linz", address.GetAttributeValueOrDefault("CityTown"));
+    }
+
+    [Fact]
+    public async Task SeveralCitiesWithTheZipcode_TakeTheLowestRtId()
+    {
+        AddCity("0000000000000000000006c2", 6000, "B-Ort");
+        AddCity("0000000000000000000006c1", 6000, "A-Ort");
+        AddCity("0000000000000000000006c3", 6000, "C-Ort");
+        var body = Consumption();
+        body["zipcode"] = 6000;
+
+        await RunAsync(body);
+
+        var link = Assert.Single(_writes[^1].Associations, a => a.Target.CkTypeId.ToString() == CityType);
+        Assert.Equal("0000000000000000000006c1", link.Target.RtId.ToString());
+    }
+
+    [Fact]
+    public async Task UnknownRequestZipcode_IsCityNotFoundAndWritesNothing()
+    {
+        var body = Consumption();
+        body["zipcode"] = 9999;
+
+        var result = await RunAsync(body);
+
+        Assert.Equal("error", result["status"]!.GetValue<string>());
+        Assert.Equal(RegisterSelfReportedMeteringPointNode.CityNotFound, result["code"]!.GetValue<string>());
+        Assert.Contains("9999", result["message"]!.GetValue<string>());
+        Assert.False(result["created"]!.GetValue<bool>());
+        // Not even the customer: the city is resolved before the first write.
+        Assert.Empty(_writes);
+        A.CallTo(() => Session.AbortTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task MissingDefaultCity_IsCityNotFoundNamingLocationsAustria()
+    {
+        _cities.Clear();
+        var result = await RunAsync(Consumption());
+
+        Assert.Equal(RegisterSelfReportedMeteringPointNode.CityNotFound, result["code"]!.GetValue<string>());
+        var message = result["message"]!.GetValue<string>();
+        Assert.Contains("5020", message);
+        Assert.Contains("Locations.Austria", message);
+        Assert.Empty(_writes);
+    }
+
+    [Fact]
+    public async Task ConfiguredDefaultZipcode_IsUsedWithoutRequestZipcode()
+    {
+        AddCity("0000000000000000000005b0", 5400, "Hallein");
+        var config = new RegisterSelfReportedMeteringPointNodeConfiguration { TargetPath = TargetPath, DefaultZipcode = 5400 };
+
+        await RunAsync(Consumption(), config: config);
+
+        var link = Assert.Single(_writes[^1].Associations, a => a.Target.CkTypeId.ToString() == CityType);
+        Assert.Equal("0000000000000000000005b0", link.Target.RtId.ToString());
+    }
+
+    [Theory]
+    [InlineData("50a0")]
+    [InlineData("")]
+    [InlineData("123456")]
+    [InlineData(0)]
+    [InlineData(-5020)]
+    [InlineData(5020.5)]
+    [InlineData(true)]
+    public async Task InvalidZipcode_IsValidationBeforeAnyRead(object zipcode)
+    {
+        var body = Consumption();
+        body["zipcode"] = zipcode switch
+        {
+            string s => JsonValue.Create(s),
+            int i => JsonValue.Create(i),
+            double d => JsonValue.Create(d),
+            bool b => JsonValue.Create(b),
+            _ => null
+        };
+
+        var result = await RunAsync(body);
+
+        Assert.Equal(RegisterSelfReportedMeteringPointNode.Validation, result["code"]!.GetValue<string>());
+        AssertNoSessionOpened();
+    }
+
+    private RtEntity ExistingSelfReportedConsumer()
+    {
+        var mp = ExistingPoint(ConsumerType, "0000000000000000000000c1", dataSource: 2, pf: 60);
+        var anchor = new RtEntity(new RtCkId<CkTypeId>(EmType), new OctoObjectId("0000000000000000000000d1"));
+        anchor.SetAttributeValue("ObisCode", AttributeValueTypesDto.String, "1-1:1.9.0 G.01");
+        _anchors.Add((anchor, mp.RtId.ToString()));
+        var period = new RtEntity(new RtCkId<CkTypeId>(PeriodType), new OctoObjectId("0000000000000000000000e1"));
+        var range = new RtRecord { CkRecordId = new RtCkId<CkRecordId>("Basic/TimeRange") };
+        range.SetAttributeValue("From", AttributeValueTypesDto.DateTime, new DateTime(2026, 10, 31, 23, 0, 0, DateTimeKind.Utc));
+        period.SetAttributeValue("TimeRange", AttributeValueTypesDto.Record, range);
+        _periods.Add((period, mp.RtId.ToString()));
+        return mp;
+    }
+
+    [Fact]
+    public async Task ReRegister_FacilityWithoutParent_IsRepaired()
+    {
+        var mp = ExistingSelfReportedConsumer();
+        var facility = AddFacility(mp.RtId.ToString(), "0000000000000000000000f1");
+
+        var result = await RunAsync(new JsonObject { ["meteringPointNumber"] = Number, ["direction"] = "consumption" });
+
+        Assert.Equal("ok", result["status"]!.GetValue<string>());
+        Assert.False(result["created"]!.GetValue<bool>());
+        var write = Assert.Single(_writes);
+        var link = Assert.Single(write.Associations);
+        Assert.Equal((FacilityType, facility.RtId.ToString(), CityType, SalzburgRtId, "System/ParentChild"),
+            (link.Origin.CkTypeId.ToString(), link.Origin.RtId.ToString(), link.Target.CkTypeId.ToString(),
+                link.Target.RtId.ToString(), link.RoleId.ToString()));
+        var update = Assert.Single(write.Entities);
+        Assert.Equal(EntityModOptions.Update, update.ModOption);
+        Assert.Equal(facility.RtId, update.RtId);
+        var address = (RtRecord)Attr(update.RtEntity!, "Address")!;
+        Assert.Equal(5020, address.GetAttributeValueOrDefault("Zipcode"));
+        Assert.Equal("Salzburg", address.GetAttributeValueOrDefault("CityTown"));
+        Assert.Equal("AT", address.GetAttributeValueOrDefault("NationalCode"));
+    }
+
+    [Fact]
+    public async Task ReRegister_FacilityWithParent_KeepsItAndIgnoresTheZipcode()
+    {
+        var mp = ExistingSelfReportedConsumer();
+        var facility = AddFacility(mp.RtId.ToString(), "0000000000000000000000f1", 4020, "Linz");
+        var linz = new RtEntity(new RtCkId<CkTypeId>(CityType), new OctoObjectId("0000000000000000000004b0"));
+        _facilityParents.Add((linz, facility.RtId.ToString()));
+
+        var result = await RunAsync(new JsonObject
+        {
+            ["meteringPointNumber"] = Number, ["direction"] = "consumption", ["zipcode"] = 9999
+        });
+
+        Assert.Equal("ok", result["status"]!.GetValue<string>());
+        Assert.Empty(_writes);
+    }
+
+    [Fact]
+    public async Task ReRegister_FacilityWithoutParentAndUnknownCity_IsCityNotFound()
+    {
+        var mp = ExistingSelfReportedConsumer();
+        AddFacility(mp.RtId.ToString(), "0000000000000000000000f1");
+        _cities.Clear();
+
+        var result = await RunAsync(new JsonObject
+        {
+            ["meteringPointNumber"] = Number, ["direction"] = "consumption", ["displayName"] = "renamed"
+        });
+
+        Assert.Equal(RegisterSelfReportedMeteringPointNode.CityNotFound, result["code"]!.GetValue<string>());
+        Assert.Empty(_writes);
+        A.CallTo(() => Session.AbortTransactionAsync()).MustHaveHappenedOnceExactly();
     }
 
     // ==================================================================== validation (no I/O)

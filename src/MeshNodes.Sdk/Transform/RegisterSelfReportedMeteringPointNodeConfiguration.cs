@@ -16,10 +16,22 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// <c>participationFactor</c> (1 to 100, default 100), <c>participationFrom</c> (a date in
 /// <see cref="TimeZone"/>, default today), <c>loadProfile</c> and <c>annualConsumptionKwh</c>
 /// (consumption only), <c>productionType</c> and <c>capacityKwp</c> (production only) and
-/// <c>customer</c> (<c>name</c>, <c>legalEntityType</c>). Everything is validated before anything is
-/// written; a validation failure is a result with <c>status: error</c> and a <c>code</c>
-/// (<c>VALIDATION</c>, <c>NUMBER_RESERVED</c>, <c>DIRECTION_CONFLICT</c>, <c>NOT_SELF_REPORTED</c>),
-/// never an exception.
+/// <c>customer</c> (<c>name</c>, <c>legalEntityType</c>) and <c>zipcode</c> (the facility's postal
+/// code, a whole number or a string of digits, default <see cref="DefaultZipcode"/>). Everything is
+/// validated before anything is written; a validation failure is a result with
+/// <c>status: error</c> and a <c>code</c> (<c>VALIDATION</c>, <c>NUMBER_RESERVED</c>,
+/// <c>DIRECTION_CONFLICT</c>, <c>NOT_SELF_REPORTED</c>, <c>CITY_NOT_FOUND</c>), never an exception.
+/// </para>
+/// <para>
+/// Every operating facility gets exactly one <see cref="CityCkTypeId"/> parent
+/// (<see cref="ParentAssociationRoleId"/>), the city whose <see cref="CityZipcodeAttribute"/> equals
+/// the zip code: the Energy Community app reads a facility's city from that association and fails
+/// with "City data not found" without it (AB#6014). Several cities with the same zip code: the one
+/// with the lowest runtime id. No city for the zip code: <c>CITY_NOT_FOUND</c> and nothing written;
+/// for the default zip code that means the tenant lacks the Locations.Austria city directory. The
+/// facility address takes zip code and city name from that city. A re-registration links a city to a
+/// facility that has no parent yet (facilities created before this rule) and never changes an
+/// existing parent.
 /// </para>
 /// <para>
 /// A second request for the same number and direction returns <c>created: false</c> with the same
@@ -200,15 +212,36 @@ public record RegisterSelfReportedMeteringPointNodeConfiguration : NodeConfigura
     [PropertyGroup("Facility", 1)]
     public string FacilityStreet { get; init; } = "-";
 
-    /// <summary>Zip code of the mandatory facility address. Default 0.</summary>
-    [PropertyGroup("Facility", 2)]
-    public int FacilityZipcode { get; init; } = 0;
-
-    /// <summary>City of the mandatory facility address. Default <c>-</c>.</summary>
-    [PropertyGroup("Facility", 3)]
-    public string FacilityCityTown { get; init; } = "-";
-
     /// <summary>National code of the mandatory facility address. Default <c>AT</c>.</summary>
-    [PropertyGroup("Facility", 4)]
+    [PropertyGroup("Facility", 2)]
     public string FacilityNationalCode { get; init; } = "AT";
+
+    // ------------------------------------------------------------------ City (AB#6014)
+
+    /// <summary>
+    /// Zip code of the facility's city when the request names none. Default 5020 (Salzburg, in the
+    /// Locations.Austria city directory).
+    /// </summary>
+    [PropertyGroup("City", 0)]
+    public int DefaultZipcode { get; init; } = 5020;
+
+    /// <summary>CkTypeId of the cities a facility is parented to. Default <c>Basic/City</c>.</summary>
+    [PropertyGroup("City", 1, "ckTypeSelector")]
+    public string CityCkTypeId { get; init; } = "Basic/City";
+
+    /// <summary>Integer attribute of the city carrying its zip code. Default <c>Zipcode</c>.</summary>
+    [PropertyGroup("City", 2)]
+    public string CityZipcodeAttribute { get; init; } = "Zipcode";
+
+    /// <summary>String attribute of the city written to the facility address as its city. Default <c>Name</c>.</summary>
+    [PropertyGroup("City", 3)]
+    public string CityNameAttribute { get; init; } = "Name";
+
+    /// <summary>
+    /// CkTypeId under which an existing parent of a facility is looked for on a re-registration; a
+    /// facility with any such parent keeps it. Default <c>Basic/TreeNode</c> (the base of
+    /// <c>Basic/City</c>).
+    /// </summary>
+    [PropertyGroup("City", 4, "ckTypeSelector")]
+    public string FacilityParentCkTypeId { get; init; } = "Basic/TreeNode";
 }

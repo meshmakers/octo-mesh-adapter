@@ -46,6 +46,7 @@ internal class RegisterSelfReportedMeteringPointNode(
     internal const string NumberReserved = "NUMBER_RESERVED";
     internal const string DirectionConflict = "DIRECTION_CONFLICT";
     internal const string NotSelfReported = "NOT_SELF_REPORTED";
+    internal const string CityNotFound = "CITY_NOT_FOUND";
 
     // CK attribute names of the entity chain (EnergyCommunity 4.9, Basic.Energy, Basic); they are the
     // model, not configuration, and are the ones create-demo-community.yaml writes.
@@ -94,7 +95,11 @@ internal class RegisterSelfReportedMeteringPointNode(
         int? ProductionType,
         double? CapacityKWp,
         string? CustomerName,
-        int? CustomerLegalEntityType);
+        int? CustomerLegalEntityType,
+        int? Zipcode);
+
+    /// <summary>The city a facility is parented to and whose zip code and name its address carries.</summary>
+    private sealed record City(OctoObjectId RtId, int Zipcode, string? Name);
 
     private sealed class Rejection(string code, string message) : Exception(message)
     {
@@ -196,6 +201,10 @@ internal class RegisterSelfReportedMeteringPointNode(
         var facilityType = new RtCkId<CkTypeId>(c.FacilityCkTypeId);
         var parentRole = new RtCkId<CkAssociationRoleId>(c.ParentAssociationRoleId);
 
+        // ---- city of the facility (AB#6014): resolved before the first write, so CITY_NOT_FOUND
+        // aborts a transaction that has not written anything yet.
+        var city = await ResolveCityAsync(session, c, r, nodeContext);
+
         // ---- customer: reuse by its natural key, otherwise insert it on its own (auto-increment)
         var customerWkn = r.CustomerName is null
             ? c.DefaultCustomerWellKnownName
@@ -230,7 +239,7 @@ internal class RegisterSelfReportedMeteringPointNode(
         facility.SetAttributeValue(NameAttribute, AttributeValueTypesDto.String, name);
         facility.SetAttributeValue(StateAttribute, AttributeValueTypesDto.Enum, StateActive);
         facility.SetAttributeValue("FacilityType", AttributeValueTypesDto.Enum, c.FacilityType);
-        facility.SetAttributeValue("Address", AttributeValueTypesDto.Record, Address(c));
+        facility.SetAttributeValue("Address", AttributeValueTypesDto.Record, Address(c, null, city));
 
         var mp = NewEntity(mpType, null);
         mp.SetAttributeValue(NameAttribute, AttributeValueTypesDto.String, name);
@@ -254,6 +263,7 @@ internal class RegisterSelfReportedMeteringPointNode(
         var anchorId = new RtEntityId(new RtCkId<CkTypeId>(c.EnergyMeasurementCkTypeId), anchor.RtId);
         var periodId = new RtEntityId(new RtCkId<CkTypeId>(c.ParticipationPeriodCkTypeId), period.RtId);
         var facilityId = new RtEntityId(facilityType, facility.RtId);
+        var cityId = new RtEntityId(new RtCkId<CkTypeId>(c.CityCkTypeId), city.RtId);
         await ApplyAsync(session,
             [
                 EntityUpdateInfo<RtEntity>.CreateInsert(facility),
@@ -265,6 +275,7 @@ internal class RegisterSelfReportedMeteringPointNode(
                 AssociationUpdateInfo.CreateInsert(new RtEntityId(customerType, customerId.Value), facilityId,
                     new RtCkId<CkAssociationRoleId>(c.CustomerFacilityAssociationRoleId)),
                 AssociationUpdateInfo.CreateInsert(mpId, facilityId, parentRole),
+                AssociationUpdateInfo.CreateInsert(facilityId, cityId, parentRole),
                 AssociationUpdateInfo.CreateInsert(anchorId, mpId, parentRole),
                 AssociationUpdateInfo.CreateInsert(periodId, mpId,
                     new RtCkId<CkAssociationRoleId>(c.ParticipationPeriodAssociationRoleId))
@@ -350,6 +361,8 @@ internal class RegisterSelfReportedMeteringPointNode(
             anchorRtId = anchor.RtId.ToString();
         }
 
+        await RepairCityParentAsync(session, c, r, mpType, existing, entities, associations, nodeContext);
+
         if (entities.Count > 0 || associations.Count > 0)
         {
             await ApplyAsync(session, entities, associations, "the metering point update");
@@ -361,6 +374,93 @@ internal class RegisterSelfReportedMeteringPointNode(
         nodeContext.Debug($"{NodeName}: metering point {existing.RtId} already registered; updated.");
         return Ok(false, "Metering point already registered; updated.", r, existing.RtId.ToString(),
             [(obis, anchorRtId)], LocalDate(start, timeZone), factor);
+    }
+
+    // ==================================================================== city parent (AB#6014)
+
+    /// <summary>
+    /// The city of the facility: the one whose zip code equals the request's <c>zipcode</c>, else the
+    /// configured <c>DefaultZipcode</c>. Several cities share a zip code in the Locations.Austria
+    /// directory (and a tenant may hold a second tree); the lowest runtime id wins, so the choice is
+    /// the same on every call. No match is <c>CITY_NOT_FOUND</c>: an explicit zip code is never
+    /// silently replaced by the default, and a missing default city means the directory is missing.
+    /// </summary>
+    private async Task<City> ResolveCityAsync(IOctoSession session,
+        RegisterSelfReportedMeteringPointNodeConfiguration c, Request r, INodeContext nodeContext)
+    {
+        var zipcode = r.Zipcode ?? c.DefaultZipcode;
+        if (zipcode <= 0)
+        {
+            throw new PipelineNodeExecutionException(
+                $"{NodeName}: DefaultZipcode '{c.DefaultZipcode}' must be a positive postal code, e.g. 5020.");
+        }
+
+        var matches = (await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
+                new RtCkId<CkTypeId>(c.CityCkTypeId),
+                RtEntityQueryOptions.Create().FieldEquals(c.CityZipcodeAttribute, zipcode), 0, int.MaxValue)).Items
+            .Where(e => CommunityValues.AsInt(e.GetAttributeValueOrDefault(c.CityZipcodeAttribute)) == zipcode)
+            .OrderBy(e => e.RtId.ToString(), StringComparer.Ordinal)
+            .ToList();
+        if (matches.Count == 0)
+        {
+            throw r.Zipcode is not null
+                ? new Rejection(CityNotFound, $"No city with zip code {zipcode} is known in this tenant.")
+                : new Rejection(CityNotFound,
+                    $"No city with the default zip code {zipcode} is known in this tenant, so the operating facility "
+                    + "cannot get its city. The tenant needs the Locations.Austria city directory; or pass the "
+                    + "zipcode of a city it has.");
+        }
+
+        if (matches.Count > 1)
+        {
+            nodeContext.Debug($"{NodeName}: {matches.Count} cities share zip code {zipcode}; linked the one with the lowest rtId.");
+        }
+
+        var city = matches[0];
+        return new City(city.RtId, zipcode, city.GetAttributeStringValueOrDefault(c.CityNameAttribute));
+    }
+
+    /// <summary>
+    /// Re-registration of a metering point whose facility has no parent (registered before the city
+    /// rule): links the city and fills the address placeholders. A facility with any parent is left
+    /// alone, so an operator's choice of city is never overwritten.
+    /// </summary>
+    private async Task RepairCityParentAsync(IOctoSession session,
+        RegisterSelfReportedMeteringPointNodeConfiguration c, Request r, RtCkId<CkTypeId> mpType, RtEntity existing,
+        List<IEntityUpdateInfo<RtEntity>> entities, List<AssociationUpdateInfo> associations, INodeContext nodeContext)
+    {
+        var repository = etlContext.TenantRepository;
+        var facilityType = new RtCkId<CkTypeId>(c.FacilityCkTypeId);
+        var parentRole = new RtCkId<CkAssociationRoleId>(c.ParentAssociationRoleId);
+
+        var facility = Targets(await repository.GetRtAssociationTargetsAsync(session, [existing.RtId], mpType,
+                parentRole, facilityType, GraphDirections.Outbound, null, RtEntityQueryOptions.Create()))
+            .OrderBy(f => f.RtId.ToString(), StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (facility is null)
+        {
+            nodeContext.Debug($"{NodeName}: metering point {existing.RtId} has no operating facility; no city to repair.");
+            return;
+        }
+
+        var parents = Targets(await repository.GetRtAssociationTargetsAsync(session, [facility.RtId], facilityType,
+            parentRole, new RtCkId<CkTypeId>(c.FacilityParentCkTypeId), GraphDirections.Outbound, null,
+            RtEntityQueryOptions.Create()));
+        if (parents.Any())
+        {
+            return;
+        }
+
+        var city = await ResolveCityAsync(session, c, r, nodeContext);
+        var facilityId = new RtEntityId(facilityType, facility.RtId);
+        associations.Add(AssociationUpdateInfo.CreateInsert(facilityId,
+            new RtEntityId(new RtCkId<CkTypeId>(c.CityCkTypeId), city.RtId), parentRole));
+
+        var update = new RtEntity(facilityType, facility.RtId);
+        update.SetAttributeValue("Address", AttributeValueTypesDto.Record,
+            Address(c, facility.GetAttributeValueOrDefault("Address") as RtRecord, city));
+        entities.Add(EntityUpdateInfo<RtEntity>.CreateUpdate(facilityId, update));
+        nodeContext.Debug($"{NodeName}: facility {facility.RtId} had no parent; linked city {city.RtId}.");
     }
 
     private async Task ApplyAsync(IOctoSession session, List<IEntityUpdateInfo<RtEntity>> entities,
@@ -430,15 +530,26 @@ internal class RegisterSelfReportedMeteringPointNode(
         return contact;
     }
 
-    private static RtRecord Address(RegisterSelfReportedMeteringPointNodeConfiguration c)
+    /// <summary>
+    /// The facility address: zip code and city name from the linked city; street and national code
+    /// kept from an existing address, else the configured placeholders (the request carries none).
+    /// </summary>
+    private static RtRecord Address(RegisterSelfReportedMeteringPointNodeConfiguration c, RtRecord? existing,
+        City city)
     {
         var address = new RtRecord { CkRecordId = new RtCkId<CkRecordId>("Basic/Address") };
-        address.SetAttributeValue("Street", AttributeValueTypesDto.String, c.FacilityStreet);
-        address.SetAttributeValue("Zipcode", AttributeValueTypesDto.Int, c.FacilityZipcode);
-        address.SetAttributeValue("CityTown", AttributeValueTypesDto.String, c.FacilityCityTown);
-        address.SetAttributeValue("NationalCode", AttributeValueTypesDto.String, c.FacilityNationalCode);
+        address.SetAttributeValue("Street", AttributeValueTypesDto.String,
+            KeptString(existing, "Street") ?? c.FacilityStreet);
+        address.SetAttributeValue("Zipcode", AttributeValueTypesDto.Int, city.Zipcode);
+        address.SetAttributeValue("CityTown", AttributeValueTypesDto.String,
+            city.Name is { Length: > 0 } name ? name : KeptString(existing, "CityTown") ?? "-");
+        address.SetAttributeValue("NationalCode", AttributeValueTypesDto.String,
+            KeptString(existing, "NationalCode") ?? c.FacilityNationalCode);
         return address;
     }
+
+    private static string? KeptString(RtRecord? record, string attribute)
+        => record?.GetAttributeValueOrDefault(attribute) is string { Length: > 0 } s && s != "-" ? s : null;
 
     private static void ApplySizes(RtEntity entity, Request r)
     {
@@ -585,6 +696,16 @@ internal class RegisterSelfReportedMeteringPointNode(
             }
         }
 
+        int? zipcode = null;
+        if (Present(body, "zipcode"))
+        {
+            zipcode = body["zipcode"] is JsonValue z ? ParseZipcode(z) : null;
+            if (zipcode is null)
+            {
+                throw new Rejection(Validation, "zipcode must be a postal code: a whole number from 1 to 99999 or a string of digits.");
+            }
+        }
+
         if (!LegalEntityTypes.ContainsKey(c.DefaultLegalEntityType))
         {
             throw new PipelineNodeExecutionException(
@@ -592,7 +713,30 @@ internal class RegisterSelfReportedMeteringPointNode(
         }
 
         return new Request(number, kind, direction!, displayName, factor, from, loadProfile, consumption,
-            productionType, capacity, customerName, legalEntity);
+            productionType, capacity, customerName, legalEntity, zipcode);
+    }
+
+    private static int? ParseZipcode(JsonValue value)
+    {
+        int parsed;
+        switch (value.GetValueKind())
+        {
+            case JsonValueKind.Number:
+                if (CommunityValues.ParseJsonNumber(value) is not { } d || d % 1 != 0 || d is < 1 or > 99999)
+                {
+                    return null;
+                }
+
+                return (int)d;
+            case JsonValueKind.String:
+                var s = value.GetValue<string>().Trim();
+                return s.Length is > 0 and <= 5 && s.All(char.IsAsciiDigit)
+                       && int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out parsed) && parsed > 0
+                    ? parsed
+                    : null;
+            default:
+                return null;
+        }
     }
 
     private static bool Present(JsonObject body, string name)

@@ -84,6 +84,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<AllocateCommunityEnergyNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<CommunityEnergyBalanceNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PrepareMeterReadingsNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<RegisterSelfReportedMeteringPointNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<SimulateEnergyMeasurementsV2NodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ValidateDataPointCoverageNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationPlaceholdersNodeConfiguration>();

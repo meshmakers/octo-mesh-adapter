@@ -75,6 +75,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<AllocateCommunityEnergyNode>()
             .RegisterNode<CommunityEnergyBalanceNode>()
             .RegisterNode<PrepareMeterReadingsNode>()
+            .RegisterNode<RegisterSelfReportedMeteringPointNode>()
             .RegisterNode<SimulateEnergyMeasurementsV2Node>()
             .RegisterNode<GetOrCreateRtEntitiesByTypeNode>()
             .RegisterNode<GetAssociationTargetsNode>()

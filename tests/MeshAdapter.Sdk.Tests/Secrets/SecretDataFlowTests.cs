@@ -15,6 +15,7 @@ using Meshmakers.Octo.Runtime.Contracts.Secrets;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Extracts;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
@@ -183,6 +184,39 @@ public class SecretDataFlowTests : SessionNodeTestBase
         Assert.IsNotType<string>(value);
         // The engine's AttributeValueConverter reads an object as Pending("") = unchanged.
         Assert.True(value is IReadOnlyDictionary<string, object?> or IDictionary<string, object?> or RtSecretValue);
+    }
+
+    [Fact]
+    public async Task WriteBack_JsonNullFromAValuePath_ClearsTheSecret()
+    {
+        // AB#5528 one-time-ticket burn: "" means "unchanged" for a Secret, and CreateUpdateInfo@1 skips a static
+        // `value: null`, so a pipeline clears a Secret with a JSON null read from a valuePath. The null must
+        // reach the repository as an explicit null (the engine's write step treats it as "clear").
+        var updates = await RunCreateUpdateThenApply("""{"burn":null}""", "$.burn");
+
+        var entity = Assert.Single(updates).RtEntity!;
+        Assert.True(entity.Attributes.ContainsKey("Password"));
+        Assert.Null(entity.Attributes["Password"]);
+    }
+
+    [Fact]
+    public async Task WriteBack_EmptySetPrimitiveValueThenValuePath_ClearsTheSecret()
+    {
+        // The exact one-time-ticket pattern: SetPrimitiveValue@1 without a value (valueType String) writes a
+        // JSON null that CreateUpdateInfo@1 picks up from its valuePath.
+        var (dc, root, _) = Root();
+        var setContext = root.RegisterChildNode("SetPrimitiveValue@1", 0,
+            new SetPrimitiveValueNodeConfiguration
+                { TargetPath = "$.burnSecret", ValueType = AttributeValueTypesDto.String }, dc);
+        await new SetPrimitiveValueNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, setContext);
+        setContext.Unregister(dc);
+
+        Assert.Equal(DataKind.Null, dc.GetKind("$.burnSecret"));
+        var updates = await RunCreateUpdateThenApply(dc.Get<JsonNode>("$")!.ToJsonString(), "$.burnSecret");
+
+        var entity = Assert.Single(updates).RtEntity!;
+        Assert.True(entity.Attributes.ContainsKey("Password"));
+        Assert.Null(entity.Attributes["Password"]);
     }
 
     [Theory]

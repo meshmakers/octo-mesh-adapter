@@ -66,6 +66,9 @@ public class SessionIdentityClassificationTests
             ["Load/UpdateRtEntityIfNewerNode.cs"] = (1, 0),
 
             // --- Transform ---------------------------------------------------------------------
+            // AB#5634: one config-selected (default Caller) session for the reads of metering points,
+            // participation periods and input anchors, like SimulateEnergyMeasurementsNode.
+            ["Transform/AllocateCommunityEnergyNode.cs"] = (1, 0),
             ["Transform/ApplyDataPointMappingsNode.cs"] = (1, 0),
             ["Transform/BuildMappingTargetsNode.cs"] = (1, 0),
             ["Transform/CheckDuplicateNode.cs"] = (0, 1),
@@ -78,6 +81,7 @@ public class SessionIdentityClassificationTests
             ["Transform/ImportDataPointMappingsNode.cs"] = (0, 1),
             ["Transform/ImportFromExcelNode.cs"] = (0, 1),
             ["Transform/SimulateEnergyMeasurementsNode.cs"] = (1, 0),
+            ["Transform/SimulateEnergyMeasurementsV2Node.cs"] = (1, 0),
             ["Transform/ValidateDataPointCoverageNode.cs"] = (1, 0),
             ["Transform/ExcelImport/WellKnownNameLoader.cs"] = (0, 1)
         };
@@ -119,7 +123,12 @@ public class SessionIdentityClassificationTests
         // 34 now: SaveTimeRangeSeriesInArchive@1 added two scoped sites (the anchor lookup and the
         // anchor write). The totals are asserted rather than derived so that adding a session to a
         // node is a deliberate act — a new site has to be classified above AND counted here.
-        Assert.Equal(18, actual.Sum(v => v.Scoped));
+        //
+        // 35 now: AllocateCommunityEnergy@1 (AB#5634) added one scoped (config-selected) site.
+        //
+        // 36 now (20 scoped): SimulateEnergyMeasurements@2 (AB#5631) reads the anchors and their
+        // metering points like version 1 does.
+        Assert.Equal(20, actual.Sum(v => v.Scoped));
         Assert.Equal(17, actual.Sum(v => v.System));
     }
 

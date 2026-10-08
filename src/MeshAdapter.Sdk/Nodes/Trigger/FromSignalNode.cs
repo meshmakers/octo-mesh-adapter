@@ -27,8 +27,14 @@ internal class FromSignalNode(
     IHttpClientFactory httpClientFactory,
     IChannelCallerBinder callerBinder) : ITriggerPipelineNode
 {
+    /// <summary>Default heartbeat of the status line (AB#5619), see <see cref="FromSignalNodeConfiguration.StatusHeartbeatSeconds"/>.</summary>
+    internal const int DefaultStatusHeartbeatSeconds = 300;
+
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
+
+    /// <summary>Clock for the status line and its throttle; replaceable in tests.</summary>
+    internal TimeProvider Clock { get; init; } = TimeProvider.System;
 
     public Task StartAsync(ITriggerContext context)
     {
@@ -68,6 +74,13 @@ internal class FromSignalNode(
         var receiveUrl = $"{apiBase}/v1/receive/{c.Number}";
         var client = httpClientFactory.CreateClient("Signal");
 
+        // AB#5619: the poll runs every few seconds, the status line ends as a database write on the
+        // pipeline entity — so it is reported on a transition, after a poll that received something,
+        // and otherwise only as a heartbeat (default 5 min). Never once per poll.
+        var statusThrottle = new TriggerStatusThrottle(
+            TriggerStatusThrottle.ResolveInterval(c.StatusHeartbeatSeconds, DefaultStatusHeartbeatSeconds),
+            activityInterval: TimeSpan.Zero);
+
         while (!_cancellationTokenSource!.Token.IsCancellationRequested)
         {
             try
@@ -75,6 +88,7 @@ internal class FromSignalNode(
                 // /v1/receive consumes messages on read, so no processed-id tracking needed.
                 var raw = await client.GetStringAsync(receiveUrl, _cancellationTokenSource.Token);
 
+                var counts = new SignalPollCounts();
                 var messages = new List<SignalMessageData>();
                 using (var doc = JsonDocument.Parse(raw))
                 {
@@ -82,7 +96,7 @@ internal class FromSignalNode(
                     {
                         foreach (var item in doc.RootElement.EnumerateArray())
                         {
-                            var msg = await ParseEnvelopeAsync(client, apiBase, item, c);
+                            var msg = await ParseEnvelopeAsync(client, apiBase, item, c, counts);
                             if (msg != null)
                             {
                                 messages.Add(msg);
@@ -119,6 +133,7 @@ internal class FromSignalNode(
                     {
                         logger.LogWarning("FromSignal: {Reason} Skipping batch of {Count} message(s).",
                             binding.RejectReason, messages.Count);
+                        counts.Rejected += messages.Count;
                     }
                     else
                     {
@@ -128,20 +143,42 @@ internal class FromSignalNode(
                             CallerTrust = binding.Trust
                         }, batch);
                         logger.LogInformation("Processed {Count} new Signal messages", messages.Count);
+                        counts.Processed += messages.Count;
                     }
+                }
+
+                var now = Clock.GetUtcNow().UtcDateTime;
+                if (statusThrottle.ShouldReport(now, isError: false, hasActivity: counts.Received > 0))
+                {
+                    await context.ReportStatusAsync(
+                        TriggerStatusLine.Success(now, c.Number,
+                            TriggerStatusLine.SignalCounts(counts.Received, counts.Processed, counts.Rejected)),
+                        cancellationToken: _cancellationTokenSource.Token);
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(c.PollingIntervalSeconds), _cancellationTokenSource.Token);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (_cancellationTokenSource.Token.IsCancellationRequested)
             {
                 break;
             }
             catch (Exception ex)
             {
+                // An HttpClient timeout is a TaskCanceledException too — before AB#5619 it hit the
+                // unconditional OperationCanceledException branch above and ended polling for good,
+                // silently. Only a stop request ends the loop now; a timeout is a failed poll.
                 logger.LogError(ex, "Error while polling the Signal bridge");
                 try
                 {
+                    // AB#5619: the first failed poll is reported at once (transition), a bridge that
+                    // stays down at most once per heartbeat.
+                    var now = Clock.GetUtcNow().UtcDateTime;
+                    if (statusThrottle.ShouldReport(now, isError: true, hasActivity: false))
+                    {
+                        await context.ReportStatusAsync(TriggerStatusLine.Error(now, c.Number, ex.Message),
+                            isError: true, cancellationToken: _cancellationTokenSource.Token);
+                    }
+
                     await Task.Delay(TimeSpan.FromSeconds(30), _cancellationTokenSource.Token);
                 }
                 catch (OperationCanceledException)
@@ -158,20 +195,14 @@ internal class FromSignalNode(
     /// Maps one signal-cli receive envelope to a <see cref="SignalMessageData"/>, downloading
     /// attachment bytes. Returns null for non-message events (receipts, typing) and for
     /// senders filtered out by <see cref="FromSignalNodeConfiguration.SenderFilter"/>.
+    /// <paramref name="counts"/> (AB#5619): every DATA message counts as received; one the sender
+    /// filter drops also counts as rejected. Receipts/typing/sync events count as nothing.
     /// </summary>
     private async Task<SignalMessageData?> ParseEnvelopeAsync(
-        HttpClient client, string apiBase, JsonElement item, FromSignalNodeConfiguration c)
+        HttpClient client, string apiBase, JsonElement item, FromSignalNodeConfiguration c,
+        SignalPollCounts counts)
     {
         if (!item.TryGetProperty("envelope", out var envelope))
-        {
-            return null;
-        }
-
-        // Prefer the phone number (human-readable + replyable) over the ACI/PNI UUID
-        // that modern Signal puts in "source"; fall back to it when no number is shared.
-        var source = GetString(envelope, "sourceNumber") ?? GetString(envelope, "source");
-        if (!string.IsNullOrWhiteSpace(c.SenderFilter)
-            && (source == null || !source.Contains(c.SenderFilter)))
         {
             return null;
         }
@@ -180,6 +211,18 @@ internal class FromSignalNode(
             || dataMessage.ValueKind != JsonValueKind.Object)
         {
             // Receipt / typing / sync event — nothing to process.
+            return null;
+        }
+
+        counts.Received++;
+
+        // Prefer the phone number (human-readable + replyable) over the ACI/PNI UUID
+        // that modern Signal puts in "source"; fall back to it when no number is shared.
+        var source = GetString(envelope, "sourceNumber") ?? GetString(envelope, "source");
+        if (!string.IsNullOrWhiteSpace(c.SenderFilter)
+            && (source == null || !source.Contains(c.SenderFilter)))
+        {
+            counts.Rejected++;
             return null;
         }
 
@@ -265,6 +308,22 @@ internal class FromSignalNode(
 
         _cancellationTokenSource?.Dispose();
     }
+}
+
+/// <summary>
+/// What one poll of <c>FromSignal@1</c> counted, for its status line (AB#5619). A data message the
+/// node skips as empty (e.g. a reaction) is received but neither processed nor rejected.
+/// </summary>
+internal sealed class SignalPollCounts
+{
+    /// <summary>Data messages the bridge returned (receipts/typing/sync events excluded).</summary>
+    public int Received;
+
+    /// <summary>Messages handed to the pipeline (in one batch execution).</summary>
+    public int Processed;
+
+    /// <summary>Messages dropped by the sender filter or a rejected caller binding.</summary>
+    public int Rejected;
 }
 
 /// <summary>

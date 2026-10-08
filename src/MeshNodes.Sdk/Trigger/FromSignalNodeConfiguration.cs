@@ -42,6 +42,18 @@ public record FromSignalNodeConfiguration : TriggerNodeConfiguration
     public int PollingIntervalSeconds { get; set; } = 5;
 
     /// <summary>
+    /// Heartbeat of the trigger's status line in seconds (AB#5619). The trigger reports a line like
+    /// <c>2026-10-07T04:20:00Z · +4366012345678 · received 2, processed 2, rejected 0</c> (or
+    /// <c>ERROR …</c> when a poll fails) to the pipeline's status — but NOT on every poll: only on a
+    /// success↔error transition, after a poll that received messages, and otherwise at most once per
+    /// this interval, so an idle, healthy trigger still shows a fresh status without one database
+    /// write per poll. A failing bridge is likewise repeated at most once per interval. Default 300;
+    /// <c>0</c> or less means the default.
+    /// </summary>
+    [PropertyGroup("Timing", 1)]
+    public int StatusHeartbeatSeconds { get; set; } = 300;
+
+    /// <summary>
     /// Optional filter for the sender number (contains match). When set, only messages
     /// from matching senders fire the pipeline — a lightweight allow-list.
     /// </summary>

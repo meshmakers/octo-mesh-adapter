@@ -1274,7 +1274,35 @@ Triggers via command bus (MassTransit/EventHub).
 
 #### FromPipelineTriggerEventNode
 
-Triggers on specific system events for event-driven architectures.
+Cron / scheduled trigger. The communication controller (`TriggerManagementService.UpdateScheduleAsync`)
+registers one Hangfire recurring send per (trigger, pipeline); each tick lands in the durable queue
+`{instancePrefix}octo::bot::pipeline-trigger-{tenant}-{pipelineRtId}`, which this node consumes.
+
+**Backlog coalescing and no overlap (AB#5709).** The queue keeps buffering while the adapter is down or
+hibernated (OnDemand), and the consumer used to take the whole backlog at MassTransit's default prefetch
+(processor count × 2) — on test-2 an hourly "Recompute Category Actuals" ran 20× in parallel after a
+~20 h outage. The node now registers its consumer with `RoutedEventConsumerOptions.LatestOnly`
+(DistributionEventHub): prefetch 1, concurrency 1, and a delivery is only acknowledged while newer ticks
+are waiting (passive queue declare → `message-count`). Result: a backlog of N ticks → one run with the
+newest tick (the log line names the number of coalesced ticks), ticks during a run → one follow-up run,
+never two runs of the same pipeline through this trigger at once.
+
+- Opt-out: node property `allowConcurrentExecution: true` restores the old behaviour (every tick, possibly
+  in parallel).
+- Scope: per adapter process. Two replicas consuming the same trigger queue can still overlap.
+- Interplay with `octo.pipeline.cron.missed_executions` (AB#5492, controller): the gauge counts fire times
+  after the last recorded execution start, so a coalesced backlog clears it with the one run, exactly as
+  the previous burst did. A skipped tick is always older than the run that replaced it.
+- Unknown backlog (broker error) fails open: the tick is executed.
+
+**Operations: no queue migration.** Nothing about the queue declaration changes — prefetch is channel
+QoS, the rest is decided in-process — so existing trigger queues (declared durable, classic, without
+arguments by both the Hangfire producer and the adapter) are reused as they are; there is no
+`PRECONDITION_FAILED`, no `-v2` queue and no RabbitMQ policy required. Rollout = DistributionEventHub
+package → this adapter release. Backlogs that exist at upgrade time are coalesced on the first start of
+the new adapter. An optional broker policy (`max-length: 1`, `overflow: drop-head` for
+`^.*octo::bot::pipeline-trigger-`) would additionally cap the stored backlog, but is not needed for
+correctness, would also drop ticks of pipelines that opted out, and must be combined with any other policy on those queues (one policy per queue applies).
 
 #### FromSendNotificationNode
 

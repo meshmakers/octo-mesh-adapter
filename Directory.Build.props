@@ -58,6 +58,38 @@
         <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-6c8g-7p36-r338" />
         <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-pggp-6c3x-2xmx" />
     </ItemGroup>
+
+    <!-- TIME-BOXED exception, expires 2026-11-08 (UTC). After that date the condition turns false,
+         restore reports NU1902/NU1903 again and the build fails locally until this is re-evaluated.
+
+         What: SixLabors.ImageSharp 3.1.12 is pulled in transitively
+               IronOcr 2026.10.2 -> IronSoftware.System.Drawing 2026.8.2 -> SixLabors.ImageSharp 3.1.12.
+               Advisories published 2026-10-07 for every version <= 4.1.1:
+                 GHSA-j3p4-wp97-rph4 / CVE-2026-106113 (high)     HistogramEqualization unchecked index
+                 GHSA-j9gm-c75j-xc9q / CVE-2026-106110 (high)     TIFF CCITT T4 encoder buffer overrun
+                 GHSA-jjfr-hcj7-qf5w / CVE-2026-106115 (high)     TIFF CCITT T6 encoder buffer overrun
+                 GHSA-gwg2-r3hj-4w44 / CVE-2026-106114 (moderate) ICC CLUT unbounded allocation
+                 GHSA-wmxv-xphr-5c9g / CVE-2026-106116 (moderate) BigTIFF IFD non-progressing loop
+         Why no bump: the only patched version is 4.1.2; there is no 3.1.x fix, and IronOcr 2026.10.2 /
+               IronSoftware.System.Drawing 2026.8.2 are the latest releases and still target 3.1.x.
+               Pinning 4.1.2 directly is not a drop-in: (a) ImageSharp 4 ships a build-time license check
+               that fails every non-Debug build without a Six Labors license key (verified: Release build
+               of MeshAdapter.Sdk errors with "No Six Labors license found"), (b) a direct reference moves
+               ImageSharp from "transitive dependency" (Apache-2.0) to "direct dependency" under the Six
+               Labors Split License, and (c) IronSoftware.System.Drawing is compiled against the 3.x API.
+         Exposure: only PdfOcrExtraction@1 reaches ImageSharp (OCR of images/PDFs without a text layer,
+               after a configured IronOCR licence key). Decode-side issues (ICC, BigTIFF) are DoS on one
+               adapter pod; encoder issues need IronOCR to write CCITT TIFF internally.
+         Exit: remove this block as soon as IronOcr/IronSoftware.System.Drawing ship a patched
+               ImageSharp, or ImageSharp 3.1.13 is released (then pin it), or a Six Labors license is
+               bought and 4.1.2 is pinned. Do not extend the date without re-checking those three. -->
+    <ItemGroup Condition="$([System.DateTime]::UtcNow.ToString('yyyyMMdd')) &lt; 20261108">
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j3p4-wp97-rph4" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j9gm-c75j-xc9q" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-jjfr-hcj7-qf5w" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-gwg2-r3hj-4w44" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-wmxv-xphr-5c9g" />
+    </ItemGroup>
     <PropertyGroup Condition=" '$(Configuration)' == 'DebugL' ">
         <DebugSymbols>true</DebugSymbols>
         <DebugType>full</DebugType>

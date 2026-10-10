@@ -24,7 +24,7 @@
         <TargetFramework>net10.0</TargetFramework>
         <OctoVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</OctoVersion>
         <OctoVersion Condition="'$(OctoNugetPrivateServer)'!='' And '$(OctoVersion)'==''">0.1.*</OctoVersion>
-        <OctoVersion Condition="'$(OctoNugetPrivateServer)'=='' And '$(OctoVersion)'==''">3.4.*</OctoVersion>
+        <OctoVersion Condition="'$(OctoNugetPrivateServer)'=='' And '$(OctoVersion)'==''">3.5.*</OctoVersion>
         <OctoCoreLibVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</OctoCoreLibVersion>
         <!-- Upstream OctoMesh core libs (Sdk, distributedEventHub, common-services,
              construction-kit*). Version comes from the PIPELINE, never hardcoded here:

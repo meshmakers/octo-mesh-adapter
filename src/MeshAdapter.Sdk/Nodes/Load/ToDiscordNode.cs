@@ -29,8 +29,6 @@ public class ToDiscordNode(
 {
     private const string DiscordApiBase = "https://discord.com/api/v10";
 
-    private static readonly RtCkId<CkTypeId> FileSystemItemCkTypeId =
-        new("System.Reporting/FileSystemItem");
 
     /// <summary>
     /// Discord server configuration resolved from global configuration by name.
@@ -301,16 +299,20 @@ public class ToDiscordNode(
         using (var session = await etlContext.GetSystemSessionAsync().ConfigureAwait(false))
         {
             session.StartTransaction();
-            var result = await tenantRepository.GetRtEntitiesByIdAsync(
-                session,
-                FileSystemItemCkTypeId,
-                new List<OctoObjectId> { OctoObjectId.Parse(fileSystemItemRtId) },
-                RtEntityQueryOptions.Create(),
-                skip: 0,
-                take: 1);
+            // AB#6177: System.Files first, System.Reporting as transition fallback (not yet migrated tenant).
+            var fsItem = await FileSystemCkTypes.FindItemAsync(async ckTypeId =>
+            {
+                var result = await tenantRepository.GetRtEntitiesByIdAsync(
+                    session,
+                    ckTypeId,
+                    new List<OctoObjectId> { OctoObjectId.Parse(fileSystemItemRtId) },
+                    RtEntityQueryOptions.Create(),
+                    skip: 0,
+                    take: 1);
+                return result.Items.FirstOrDefault();
+            });
             await session.CommitTransactionAsync().ConfigureAwait(false);
 
-            var fsItem = result.Items.FirstOrDefault();
             if (fsItem == null)
             {
                 throw MeshAdapterPipelineExecutionException.FileSystemItemNotFound(

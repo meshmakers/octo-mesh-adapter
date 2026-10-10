@@ -9,7 +9,8 @@ using Meshmakers.Octo.Sdk.Common.Services;
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 /// <summary>
-/// Reads the binary content of a System.Reporting/FileSystemItem back into the
+/// Reads the binary content of a System.Files/FileSystemItem (System.Reporting/FileSystemItem on a tenant
+/// that is not migrated yet) back into the
 /// pipeline as base64. Read counterpart of <c>CreateFileSystemUpdate@1</c> —
 /// used by pipelines that process previously uploaded files asynchronously
 /// (e.g. a polling analysis pipeline picking up staged uploads).
@@ -19,9 +20,6 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 public class GetFileSystemContentNode(NodeDelegate next, IMeshEtlContext etlContext)
     : IPipelineNode
 {
-    private static readonly RtCkId<CkTypeId> RtCkTypeIdFileSystemItem =
-        new("System.Reporting", "FileSystemItem");
-
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -41,8 +39,9 @@ public class GetFileSystemContentNode(NodeDelegate next, IMeshEtlContext etlCont
         var session = await etlContext.GetSystemSessionAsync();
         session.StartTransaction();
 
-        var entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session,
-            new RtEntityId(RtCkTypeIdFileSystemItem, rtId));
+        // AB#6177: System.Files first, System.Reporting as transition fallback (not yet migrated tenant).
+        var entity = await FileSystemCkTypes.FindItemAsync(ckTypeId =>
+            etlContext.TenantRepository.GetRtEntityByRtIdAsync(session, new RtEntityId(ckTypeId, rtId)));
         if (entity == null)
         {
             throw MeshAdapterPipelineExecutionException.EntityNotFound(nodeContext, rtId);

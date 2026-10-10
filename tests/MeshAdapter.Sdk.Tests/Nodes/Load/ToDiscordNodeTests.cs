@@ -336,12 +336,14 @@ public class ToDiscordNodeTests : SessionNodeTestBase
         string? name,
         string? contentFilename,
         string contentType,
-        byte[] bytes)
+        byte[] bytes,
+        RtCkId<CkTypeId>? itemCkTypeId = null)
     {
+        itemCkTypeId ??= FileSystemItemCkTypeId;
         var session = A.Fake<IOctoSession>();
         GivenSystemSessionIsExpected(session);
 
-        var fsItem = new RtEntity(FileSystemItemCkTypeId, new OctoObjectId(fsItemRtId));
+        var fsItem = new RtEntity(itemCkTypeId, new OctoObjectId(fsItemRtId));
         fsItem.SetAttributeValue("Content", AttributeValueTypesDto.BinaryLinked, new EntityBinaryInfo
         {
             BinaryId = new OctoObjectId(binaryRtId),
@@ -360,7 +362,7 @@ public class ToDiscordNodeTests : SessionNodeTestBase
 
         A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._,
-                FileSystemItemCkTypeId,
+                itemCkTypeId,
                 A<IReadOnlyList<OctoObjectId>>.That.Matches(ids =>
                     ids.Count == 1 && ids[0].ToString() == fsItemRtId),
                 A<RtEntityQueryOptions>._,
@@ -407,6 +409,56 @@ public class ToDiscordNodeTests : SessionNodeTestBase
         Assert.Contains("\"content\":\"see attached\"", _handler.LastBody);
         Assert.Contains("filename=\"Invoice March.pdf\"", _handler.LastBody);
         Assert.DoesNotContain("aaaa-bbbb-cccc.pdf", _handler.LastBody);
+    }
+
+    private static readonly RtCkId<CkTypeId> SystemFilesItemCkTypeId =
+        new("System.Files/FileSystemItem");
+
+    // AB#6177: System.Files first.
+    [Fact]
+    public async Task ProcessObjectAsync_ItemInSystemFiles_PostsAttachment()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        const string binaryRtId = "000000000000000000000099";
+        SetupFileSystemItem(fsItemRtId, binaryRtId, name: "New.pdf", contentFilename: "x.pdf",
+            contentType: "application/pdf", bytes: "hello pdf"u8.ToArray(), itemCkTypeId: SystemFilesItemCkTypeId);
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig, ChannelId = ChannelId, Content = "see attached",
+            AttachmentFileSystemItemRtId = fsItemRtId
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("filename=New.pdf", _handler.LastBody);
+    }
+
+    // AB#6177: an unmigrated tenant (System.Reporting only) keeps working — here System.Files is not even
+    // known to the tenant, so the lookup of the new type fails and the node falls back.
+    [Fact]
+    public async Task ProcessObjectAsync_UnmigratedTenantWithoutSystemFilesModel_FallsBackToSystemReporting()
+    {
+        const string fsItemRtId = "000000000000000000000042";
+        const string binaryRtId = "000000000000000000000099";
+        SetupFileSystemItem(fsItemRtId, binaryRtId, name: "Old.pdf", contentFilename: "x.pdf",
+            contentType: "application/pdf", bytes: "hello pdf"u8.ToArray());
+        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
+                A<IOctoSession>._, SystemFilesItemCkTypeId, A<IReadOnlyList<OctoObjectId>>._,
+                A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .Throws(() => new CkCacheException("Unknown CK type"));
+
+        var config = new ToDiscordNodeConfiguration
+        {
+            ServerConfiguration = ServerConfig, ChannelId = ChannelId, Content = "see attached",
+            AttachmentFileSystemItemRtId = fsItemRtId
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<ToDiscordNodeConfiguration>(config);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Contains("filename=Old.pdf", _handler.LastBody);
     }
 
     [Fact]

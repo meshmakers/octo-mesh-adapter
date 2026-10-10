@@ -21,9 +21,6 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext etlContext)
     : IPipelineNode
 {
-    private static readonly RtCkId<CkTypeId> RtCkTypeIdFileSystemItem =
-        new("System.Reporting", "FileSystemItem");
-
     internal record FileSystemItemResult
     {
         public required OctoObjectId RtId { get; init; }
@@ -65,10 +62,12 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             throw MeshAdapterPipelineExecutionException.RootFolderWellKnownNameNotSet(nodeContext);
         }
 
-        var folder = await GetFolderRootAsync(etlContext, c.RootFolderWellKnownName);
+        var resolved = await GetFolderRootAsync(etlContext, c.RootFolderWellKnownName);
+        var folder = resolved.Root;
+        var itemCkTypeId = resolved.ItemCkTypeId;
 
         var rtFileSystemItem =
-            await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(RtCkTypeIdFileSystemItem);
+            await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(itemCkTypeId);
         if (rtId != null)
         {
             rtFileSystemItem.RtId = rtId.Value;
@@ -97,7 +96,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             AttributeValueTypesDto.BinaryLinked, entityBinaryInfo);
         rtFileSystemItem.SetAttributeValue("Name", AttributeValueTypesDto.String, fileName);
 
-        var updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(RtCkTypeIdFileSystemItem, rtFileSystemItem);
+        var updateItem = EntityUpdateInfo<RtEntity>.CreateInsert(itemCkTypeId, rtFileSystemItem);
         entityUpdateInfoList.Add(updateItem);
         assocUpdateInfoList.Add(
             AssociationUpdateInfo.CreateInsert(rtFileSystemItem.ToRtEntityId(), folder.ToRtEntityId(),
@@ -121,7 +120,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
 
         dataContext.Set(c.TargetPath,
             new FileSystemItemResult
-                { CkTypeId = RtCkTypeIdFileSystemItem, RtId = rtFileSystemItem.RtId, FileName = fileName },
+                { CkTypeId = itemCkTypeId, RtId = rtFileSystemItem.RtId, FileName = fileName },
             c.DocumentMode, c.TargetValueKind,
             c.TargetValueWriteMode);
 
@@ -226,7 +225,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
     }
 
     /// <summary>
-    ///     Resolves the <c>System.Reporting/FolderRoot</c> the new item is filed under.
+    ///     Resolves the <c>FolderRoot</c> (<c>System.Files</c> first, <c>System.Reporting</c> as transition fallback, AB#6177) the new item is filed under.
     /// </summary>
     /// <remarks>
     ///     AB#5028 — SYSTEM by decision, deliberately different from the write above: a FolderRoot is
@@ -234,7 +233,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
     ///     identity may not read is indistinguishable from a missing one and the node fails with
     ///     RootFolderNotFound — the item would never be written at all.
     /// </remarks>
-    private static async Task<RtEntity> GetFolderRootAsync(IMeshEtlContext etlContext,
+    private static async Task<FileSystemCkTypes.ResolvedRoot> GetFolderRootAsync(IMeshEtlContext etlContext,
         string rootFolderWellKnownName)
     {
         try
@@ -242,16 +241,13 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
             var session = await etlContext.GetSystemSessionAsync();
             session.StartTransaction();
 
-            var queryOptions = RtEntityQueryOptions.Create()
-                .FieldEquals(nameof(RtEntity.RtWellKnownName), rootFolderWellKnownName);
-
-            var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
-                "System.Reporting/FolderRoot", queryOptions);
+            var resolved = await FileSystemCkTypes.FindFolderRootAsync(etlContext.TenantRepository, session,
+                rootFolderWellKnownName);
 
             await session.CommitTransactionAsync();
-            if (r.Items.Count() == 1)
+            if (resolved != null)
             {
-                return r.Items.First();
+                return resolved;
             }
 
             throw MeshAdapterPipelineExecutionException.RootFolderNotFound(rootFolderWellKnownName);

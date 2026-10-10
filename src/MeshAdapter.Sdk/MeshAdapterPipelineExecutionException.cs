@@ -487,7 +487,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: FileSystemItem with RtId '{rtId}' not found. " +
-            "Ensure the RtId points to a System.Reporting/FileSystemItem entity on this tenant.");
+            "Ensure the RtId points to a System.Files/FileSystemItem (or, before the migration, System.Reporting/FileSystemItem) entity on this tenant.");
     }
 
     public static Exception FileSystemItemMissingBinary(INodeContext nodeContext, string rtId)

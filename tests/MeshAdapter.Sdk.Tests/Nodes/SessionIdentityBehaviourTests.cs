@@ -298,7 +298,7 @@ public class SessionIdentityBehaviourTests : SessionNodeTestBase
     ///     Minimal in-memory <see cref="IPipelineScratchSpace" />: CreateZipArchive@1 streams the
     ///     archive through one before it ever reaches the repository.
     /// </summary>
-    private sealed class InMemoryScratchSpace : IPipelineScratchSpace
+    internal sealed class InMemoryScratchSpace : IPipelineScratchSpace
     {
         private readonly Dictionary<string, MemoryStream> _files = new(StringComparer.Ordinal);
 

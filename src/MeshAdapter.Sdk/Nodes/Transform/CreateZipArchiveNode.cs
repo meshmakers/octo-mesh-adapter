@@ -45,9 +45,6 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 // ReSharper disable once ClassNeverInstantiated.Global
 public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
 {
-    private static readonly RtCkId<CkTypeId> RtCkTypeIdFileSystemItem =
-        new("System.Reporting", "FileSystemItem");
-
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -199,10 +196,12 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
     private async Task<OctoObjectId> PersistFileSystemItemAsync(Stream content, long length, string fileName,
         CreateZipArchiveNodeConfiguration config)
     {
-        var folder = await GetFolderRootAsync(etlContext, config.RootFolderWellKnownName!);
+        var resolved = await GetFolderRootAsync(etlContext, config.RootFolderWellKnownName!);
+        var folder = resolved.Root;
+        var itemCkTypeId = resolved.ItemCkTypeId;
 
         var rtFileSystemItem =
-            await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(RtCkTypeIdFileSystemItem);
+            await etlContext.TenantRepository.CreateTransientRtEntityByRtCkIdAsync(itemCkTypeId);
         if (config.GenerateRtId)
         {
             rtFileSystemItem.RtId = OctoObjectId.GenerateNewId();
@@ -220,7 +219,7 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
 
         var entityUpdateInfoList = new List<IEntityUpdateInfo<RtEntity>>
         {
-            EntityUpdateInfo<RtEntity>.CreateInsert(RtCkTypeIdFileSystemItem, rtFileSystemItem)
+            EntityUpdateInfo<RtEntity>.CreateInsert(itemCkTypeId, rtFileSystemItem)
         };
         var assocUpdateInfoList = new List<AssociationUpdateInfo>
         {
@@ -247,7 +246,7 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
     }
 
     /// <summary>
-    ///     Resolves the <c>System.Reporting/FolderRoot</c> the archive is filed under.
+    ///     Resolves the <c>FolderRoot</c> (<c>System.Files</c> first, <c>System.Reporting</c> as transition fallback, AB#6177) the archive is filed under.
     /// </summary>
     /// <remarks>
     ///     AB#5028 — SYSTEM by decision, deliberately different from the write above: a FolderRoot is
@@ -255,7 +254,7 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
     ///     identity may not read is indistinguishable from a missing one and the node fails with
     ///     RootFolderNotFound — the archive would never be written at all.
     /// </remarks>
-    private static async Task<RtEntity> GetFolderRootAsync(IMeshEtlContext etlContext,
+    private static async Task<FileSystemCkTypes.ResolvedRoot> GetFolderRootAsync(IMeshEtlContext etlContext,
         string rootFolderWellKnownName)
     {
         try
@@ -263,16 +262,13 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
             var session = await etlContext.GetSystemSessionAsync();
             session.StartTransaction();
 
-            var queryOptions = RtEntityQueryOptions.Create()
-                .FieldEquals(nameof(RtEntity.RtWellKnownName), rootFolderWellKnownName);
-
-            var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session,
-                "System.Reporting/FolderRoot", queryOptions);
+            var resolved = await FileSystemCkTypes.FindFolderRootAsync(etlContext.TenantRepository, session,
+                rootFolderWellKnownName);
 
             await session.CommitTransactionAsync();
-            if (r.Items.Count() == 1)
+            if (resolved != null)
             {
-                return r.Items.First();
+                return resolved;
             }
 
             throw MeshAdapterPipelineExecutionException.RootFolderNotFound(rootFolderWellKnownName);

@@ -121,17 +121,21 @@ publicUri: ""
 instancePrefix: ""
 
 secrets:
-  databaseUser: ""
-  databaseAdmin: ""
-  streamDataPassword: ""  
-  rabbitmq: ""
+  # AB#6424: databaseUser, databaseAdmin, streamDataPassword, rabbitmq and serviceAccountClientSecret
+  # deliberately have NO default. A default of "" is a scalar;
+  # the operator passes them as {valueFrom: ...} maps and Helm then prints
+  # "destination for <chart>.secrets.<key> is a table. Ignoring non-table value ()" on every install.
+  # databaseUser:
+  # databaseAdmin:
+  # streamDataPassword:
+  # rabbitmq:
   # Client secret of `serviceAccountClientId` (AB#5072). Accepts a plaintext
   # string (packed into the chart-owned `<fullname>-backend` Secret) or a
   # `{valueFrom: {secretKeyRef: ...}}` map — the latter is what the communication
   # operator supplies from `{release}-octo-secrets` for the secret-flagged
   # `ValueOverride` the controller sends. Unlike the four cluster secrets this
   # one is OPTIONAL: unset means the adapter connects anonymously.
-  serviceAccountClientSecret: ""
+  # serviceAccountClientSecret:
   # IronOCR licence key, consumed by `PdfOcrExtraction@1` (AB#5449). Supplied at
   # deploy time like the services' AutoMapper key — it used to be hardcoded in the
   # node's source, which made every rotation a code change and put a live

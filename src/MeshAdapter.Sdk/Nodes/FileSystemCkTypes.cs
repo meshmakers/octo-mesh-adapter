@@ -44,7 +44,8 @@ internal static class FileSystemCkTypes
 
     /// <summary>
     ///     Finds the folder root with the given well-known name: <c>System.Files</c> first, then
-    ///     <c>System.Reporting</c>. Returns <c>null</c> when neither has exactly one match.
+    ///     <c>System.Reporting</c>. Returns <c>null</c> when neither has exactly one match, or as soon as a
+    ///     type has more than one (ambiguous root; no fallback to the other type family).
     /// </summary>
     internal static async Task<ResolvedRoot?> FindFolderRootAsync(ITenantRepository repository,
         IOctoSession session, string rootFolderWellKnownName)
@@ -69,6 +70,13 @@ internal static class FileSystemCkTypes
                 if (items.Count == 1)
                 {
                     return new ResolvedRoot(items[0], itemType);
+                }
+
+                if (items.Count > 1)
+                {
+                    // Ambiguous root (duplicate well-known name): fail like before instead of silently
+                    // writing to the other type family.
+                    return null;
                 }
             }
             catch (CkCacheException ex)

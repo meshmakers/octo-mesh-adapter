@@ -47,7 +47,10 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         Unknown,
 
         /// <summary>The lookup fails for another reason (timeout, database error).</summary>
-        Fails
+        Fails,
+
+        /// <summary>Type known, more than one root with the well-known name (misconfiguration).</summary>
+        Ambiguous
     }
 
     public FileSystemTransitionTests()
@@ -77,9 +80,16 @@ public class FileSystemTransitionTests : SessionNodeTestBase
                 break;
             default:
                 var set = A.Fake<IResultSet<RtEntity>>();
-                var items = state == TypeState.Hit
-                    ? new List<RtEntity> { new(new RtCkId<CkTypeId>(ckTypeId), RootRtId) }
-                    : new List<RtEntity>();
+                var items = state switch
+                {
+                    TypeState.Hit => new List<RtEntity> { new(new RtCkId<CkTypeId>(ckTypeId), RootRtId) },
+                    TypeState.Ambiguous => new List<RtEntity>
+                    {
+                        new(new RtCkId<CkTypeId>(ckTypeId), RootRtId),
+                        new(new RtCkId<CkTypeId>(ckTypeId), OctoObjectId.GenerateNewId())
+                    },
+                    _ => new List<RtEntity>()
+                };
                 A.CallTo(() => set.Items).Returns(items);
                 call.Returns(Task.FromResult(set));
                 break;
@@ -229,6 +239,26 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         await Assert.ThrowsAnyAsync<Exception>(() =>
             new CreateFileSystemItemUpdateNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext));
         VerifyNextNotCalled(next, dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task CreateFileSystemUpdate_AmbiguousSystemFilesRoot_FailsWithoutFallingBack()
+    {
+        // Review finding (CodeRabbit, PR #68): a duplicate System.Files root must fail like before instead of
+        // silently writing a System.Reporting item under the legacy root.
+        GivenRoots(TypeState.Ambiguous, TypeState.Hit);
+        var (types, _) = CaptureApplyChanges();
+        var config = new CreateFileSystemUpdateNodeConfiguration
+        {
+            Path = "$.content", TargetPath = "$.item", RootFolderWellKnownName = "Documents",
+            FileName = "a.txt", ContentType = "text/plain", ContentLength = 3
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        SetupGetSimpleValueByPath(dataContext, "$.content", Convert.ToBase64String("abc"u8.ToArray()));
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            new CreateFileSystemItemUpdateNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Empty(types);
     }
 
     // ---------------------------------------------------------------- CreateZipArchive@1 (persist)

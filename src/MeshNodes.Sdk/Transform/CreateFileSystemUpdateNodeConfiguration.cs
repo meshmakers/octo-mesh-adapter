@@ -85,7 +85,10 @@ public record CreateFileSystemUpdateNodeConfiguration : SourceTargetPathNodeConf
     public string? RtWellKnownNamePath { get; set; }
 
     /// <summary>
-    /// Gets or sets the RtWellKnownName of the file system root folder
+    /// Gets or sets the RtWellKnownName of the file system root folder. The root is looked up as
+    /// <c>System.Files/FolderRoot</c> first; while a tenant is not migrated yet it falls back to
+    /// <c>System.Reporting/FolderRoot</c>. The new file is created with the type family of the root
+    /// that was found (<c>System.Files/FileSystemItem</c> or <c>System.Reporting/FileSystemItem</c>).
     /// </summary>
     [PropertyGroup("Entity", 4)]
     public required string RootFolderWellKnownName { get; set; }

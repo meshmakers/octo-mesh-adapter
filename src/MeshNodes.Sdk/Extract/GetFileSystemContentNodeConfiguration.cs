@@ -4,7 +4,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 
 /// <summary>
 /// Configuration for the node that reads the binary content of a
-/// System.Reporting/FileSystemItem back into the pipeline (base64).
+/// System.Files/FileSystemItem back into the pipeline (base64);
+/// <c>System.Reporting/FileSystemItem</c> is read as fallback while a tenant is not migrated yet.
 /// Read counterpart of <c>CreateFileSystemUpdate@1</c>.
 /// </summary>
 [NodeName("GetFileSystemContent", 1)]

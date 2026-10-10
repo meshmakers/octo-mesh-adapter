@@ -80,7 +80,8 @@ public record ToDiscordNodeConfiguration : TargetPathNodeConfiguration
     public string? EmbedColorPath { get; set; }
 
     /// <summary>
-    /// RtId of a <c>System.Reporting/FileSystemItem</c> whose bound binary is posted as the message's
+    /// RtId of a <c>System.Files/FileSystemItem</c> (or, on a tenant that is not migrated yet, a
+    /// <c>System.Reporting/FileSystemItem</c>) whose bound binary is posted as the message's
     /// single attachment. The node resolves the binary via <c>Content.BinaryId</c>. The filename sent
     /// to Discord is picked by precedence:
     /// <list type="number">
@@ -88,7 +89,7 @@ public record ToDiscordNodeConfiguration : TargetPathNodeConfiguration
     /// <item>The FileSystemItem's <c>Name</c> attribute — the intentional, renameable display label.</item>
     /// <item>The FileSystemItem's <c>Content.Filename</c> — the ingest-time blob metadata (fallback).</item>
     /// </list>
-    /// Requires the <c>System.Reporting</c> CK package to be loaded on the tenant.
+    /// Requires the <c>System.Files</c> (or, until migrated, the <c>System.Reporting</c>) CK package on the tenant.
     /// </summary>
     public string? AttachmentFileSystemItemRtId { get; set; }
 

@@ -45,7 +45,8 @@ public record CreateZipArchiveNodeConfiguration : SourceTargetPathNodeConfigurat
 
     /// <summary>
     /// When <c>true</c>, the archive is streamed to the per-execution scratch space and
-    /// persisted directly as a <c>System.Reporting/FileSystemItem</c> — the node writes
+    /// persisted directly as a <c>System.Files/FileSystemItem</c> (<c>System.Reporting/FileSystemItem</c> while the
+    /// tenant is not migrated yet, see <see cref="RootFolderWellKnownName"/>) — the node writes
     /// the resulting item's RtId (as a string) to
     /// <see cref="TargetPathNodeConfiguration.TargetPath"/> instead of a base64 archive.
     /// This avoids the three large-object-heap copies of the whole ZIP (MemoryStream +
@@ -57,7 +58,8 @@ public record CreateZipArchiveNodeConfiguration : SourceTargetPathNodeConfigurat
     [PropertyGroup("FileSystemItem", 0)]
     public bool PersistAsFileSystemItem { get; set; } = false;
 
-    /// <summary>RtWellKnownName of the file-system root folder to place the item under (persist mode).</summary>
+    /// <summary>RtWellKnownName of the file-system root folder to place the item under (persist mode).
+    /// Looked up as <c>System.Files/FolderRoot</c> first, <c>System.Reporting/FolderRoot</c> as transition fallback.</summary>
     [PropertyGroup("FileSystemItem", 1)]
     public string? RootFolderWellKnownName { get; set; }
 

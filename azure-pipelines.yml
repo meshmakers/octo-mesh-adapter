@@ -18,7 +18,7 @@
 #     runs on arm64 nodes (Apple-Silicon dev clusters, edge devices).
 #   - SSHKey + submodules:recursive — pulls private submodules at checkout.
 #   - download-ca — internal CA for dotnet restore.
-#   - Build passes /p:OctoNugetPrivateServer + /p:OctoPublishCatalog —
+#   - Build passes /p:OctoNugetPrivateServer (no /p:OctoPublishCatalog since tpl-v1.0.0) —
 #     no /p:OctoPrivateGitHubApiKey for now (legacy didn't have it; if a
 #     CK model is added later, mirror the bot-services pattern).
 #   - SystemTests excluded.
@@ -68,7 +68,7 @@ resources:
       type: github
       name: meshmakers/octo-pipeline-templates
       endpoint: meshmakers-access-token
-      ref: refs/tags/tpl-v0.6.7
+      ref: refs/tags/tpl-v1.3.1
     - repository: helmChartBuild
       type: github
       name: meshmakers/helm-chart-build
@@ -134,6 +134,14 @@ stages:
           - checkout: self
             clean: true
             submodules: recursive
+          # Redundant-run guard (AB#6344): tags the run with its input fingerprint and, per the pipeline
+          # variable CiGuardMode (default report = tags only, off = disabled, rollback), logs or ends a
+          # main run whose inputs an equal run already built or a newer run supersedes. Steps after it
+          # need ne(variables['CiGuardEnded'], 'true') before skip is switched on (report/off need nothing).
+          - template: templates/steps/guard-redundant-run.yml@pipelineTemplates
+            parameters:
+              parentPipelineId: $(resources.pipeline.octo-communication-sdk.pipelineID)
+              parentRunId: $(resources.pipeline.octo-communication-sdk.runID)
           - task: InstallSSHKey@0
             displayName: 'Install SSH key for submodules'
             inputs:
@@ -159,7 +167,7 @@ stages:
             inputs:
               command: 'build'
               projects: '$(solutionFile)'
-              arguments: '--configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer) /p:OctoPublishCatalog="$(effectivePublishCatalog)"'
+              arguments: '--configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer)'
               publishWebProjects: false
               zipAfterPublish: false
               modifyOutputPath: false

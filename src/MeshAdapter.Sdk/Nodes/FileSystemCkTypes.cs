@@ -23,7 +23,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 ///     </para>
 ///     <para>
 ///         A lookup against a type the tenant does not know (model not imported, or already dropped)
-///         counts as "not found there" and never fails the node on its own; the tenant CK cache
+///         counts as "not found there" (only a <see cref="CkCacheException" />; every other failure propagates) and never fails the node on its own; the tenant CK cache
 ///         reloads itself on such a miss (AB#4444 / AB#5415), which is what lets a stale adapter
 ///         find the new type.
 ///     </para>
@@ -55,7 +55,7 @@ internal static class FileSystemCkTypes
             (RootType: LegacyFolderRoot, ItemType: LegacyFileSystemItem)
         };
 
-        Exception? firstFailure = null;
+        CkCacheException? firstFailure = null;
         var answered = 0;
         foreach (var (rootType, itemType) in candidates)
         {
@@ -71,9 +71,10 @@ internal static class FileSystemCkTypes
                     return new ResolvedRoot(items[0], itemType);
                 }
             }
-            catch (Exception ex)
+            catch (CkCacheException ex)
             {
                 // Type unknown to this tenant (model not imported / already dropped): not found here.
+                // Any other failure (timeout, cancellation, database) propagates instead of falling back.
                 firstFailure ??= ex;
             }
         }
@@ -93,8 +94,8 @@ internal static class FileSystemCkTypes
     /// </summary>
     internal static async Task<RtEntity?> FindItemAsync(Func<RtCkId<CkTypeId>, Task<RtEntity?>> lookup)
     {
-        Exception? newTypeFailure = null;
-        Exception? legacyFailure = null;
+        CkCacheException? newTypeFailure = null;
+        CkCacheException? legacyFailure = null;
         bool newAnswered = false, legacyAnswered = false;
 
         try
@@ -106,7 +107,7 @@ internal static class FileSystemCkTypes
                 return entity;
             }
         }
-        catch (Exception ex)
+        catch (CkCacheException ex)
         {
             newTypeFailure = ex;
         }
@@ -120,7 +121,7 @@ internal static class FileSystemCkTypes
                 return entity;
             }
         }
-        catch (Exception ex)
+        catch (CkCacheException ex)
         {
             legacyFailure = ex;
         }

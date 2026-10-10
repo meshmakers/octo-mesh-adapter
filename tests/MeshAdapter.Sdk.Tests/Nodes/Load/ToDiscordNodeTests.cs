@@ -447,7 +447,7 @@ public class ToDiscordNodeTests : SessionNodeTestBase
         A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(
                 A<IOctoSession>._, SystemFilesItemCkTypeId, A<IReadOnlyList<OctoObjectId>>._,
                 A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
-            .Throws(() => new InvalidOperationException("Unknown CK type"));
+            .Throws(() => new CkCacheException("Unknown CK type"));
 
         var config = new ToDiscordNodeConfiguration
         {

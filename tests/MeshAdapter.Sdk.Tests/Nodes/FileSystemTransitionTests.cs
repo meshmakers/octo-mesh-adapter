@@ -44,7 +44,10 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         Empty,
 
         /// <summary>Type unknown to the tenant (model not imported or already dropped).</summary>
-        Unknown
+        Unknown,
+
+        /// <summary>The lookup fails for another reason (timeout, database error).</summary>
+        Fails
     }
 
     public FileSystemTransitionTests()
@@ -70,7 +73,7 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         switch (state)
         {
             case TypeState.Unknown:
-                call.Throws(() => new InvalidOperationException($"Unknown CK type '{ckTypeId}'"));
+                call.Throws(() => new CkCacheException($"Unknown CK type '{ckTypeId}'"));
                 break;
             default:
                 var set = A.Fake<IResultSet<RtEntity>>();
@@ -107,7 +110,13 @@ public class FileSystemTransitionTests : SessionNodeTestBase
             A<RtEntityId>.That.Matches(e => e.CkTypeId == id)));
         if (state == TypeState.Unknown)
         {
-            byRtId.Throws(() => new InvalidOperationException($"Unknown CK type '{ckTypeId}'"));
+            byRtId.Throws(() => new CkCacheException($"Unknown CK type '{ckTypeId}'"));
+            return;
+        }
+
+        if (state == TypeState.Fails)
+        {
+            byRtId.Throws(() => new TimeoutException($"Lookup of '{ckTypeId}' timed out"));
             return;
         }
 
@@ -321,12 +330,23 @@ public class FileSystemTransitionTests : SessionNodeTestBase
     }
 
     [Fact]
+    public async Task GetFileSystemContent_SystemFilesLookupFails_PropagatesInsteadOfFallingBack()
+    {
+        // Review finding (AB#6177): only an unknown type means "not found there"; a real failure must
+        // surface instead of being reported as a missing item or silently falling back.
+        GivenItem(NewItem, TypeState.Fails);
+        GivenItem(OldItem, TypeState.Hit);
+
+        await Assert.ThrowsAsync<TimeoutException>(RunGetContentAsync);
+    }
+
+    [Fact]
     public async Task GetFileSystemContent_NeitherTypeKnown_SurfacesTheRepositoryError()
     {
         GivenItem(NewItem, TypeState.Unknown);
         GivenItem(OldItem, TypeState.Unknown);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(RunGetContentAsync);
+        var ex = await Assert.ThrowsAsync<CkCacheException>(RunGetContentAsync);
         Assert.Contains(NewItem, ex.Message);
     }
 }

@@ -353,7 +353,7 @@ The solution uses:
 - **Directory.Build.props**: Central MSBuild configuration
 - Three build configurations: Debug, Release, DebugL (for local development)
 - Target framework: .NET 10.0
-- OctoVersion: Managed via Directory.Build.props (3.2.* for public, 0.1.* for private server)
+- OctoVersion: comes only from the pipeline (AB#6297): `update-build-number.yml` sets `0.1.*` on main and the exact tag version on r-tags; the release trains pass `octoCoreLibVersion` / `octoCommVersion`. DebugL pins `999.0.0`, a private-feed build defaults to `0.1.*`. There is no release-line fallback in Directory.Build.props: `dotnet build -c Release` without `-p:OctoVersion=X.Y.Z` fails fast with `OCTO0001`.
 
 ### Key Dependencies
 

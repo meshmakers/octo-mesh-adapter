@@ -15,7 +15,7 @@
         <!-- Direct reference: the released SDK still ships the legacy IdentityModel until the next libs train. -->
         <PackageReference Include="Duende.IdentityModel" Version="8.1.0" />
         <PackageReference Include="FakeItEasy" Version="9.0.1" />
-        <PackageReference Include="FluentAssertions" Version="8.10.0" />
+        <PackageReference Include="FluentAssertions" Version="8.11.0" />
         <PackageReference Include="MartinCostello.Logging.XUnit.v3" Version="0.7.1" />
         <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
         <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.11" />

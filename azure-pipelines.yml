@@ -68,7 +68,7 @@ resources:
       type: github
       name: meshmakers/octo-pipeline-templates
       endpoint: meshmakers-access-token
-      ref: refs/tags/tpl-v1.3.2
+      ref: refs/tags/tpl-v1.4.0
     - repository: helmChartBuild
       type: github
       name: meshmakers/helm-chart-build
@@ -134,15 +134,16 @@ stages:
           - checkout: self
             clean: true
             submodules: recursive
-          # Redundant-run guard (AB#6344): tags the run with its input fingerprint and, per the pipeline
-          # variable CiGuardMode (default report = tags only, off = disabled, rollback), logs or ends a
-          # main run whose inputs an equal run already built or a newer run supersedes. Steps after it
-          # need ne(variables['CiGuardEnded'], 'true') before skip is switched on (report/off need nothing).
+          # Redundant-run guard (AB#6344, AB#6440): tags the run with its input fingerprint and, per the pipeline
+          # variable CiGuardMode (report = tags only, skip = end cleanly, cancel = cancel the run, off = disabled), logs or
+          # ends a main run whose inputs an equal run already built or a newer run supersedes. In mode skip every step
+          # after it carries ne(variables['CiGuardEnded'], 'true'), the step templates through their condition parameter.
           - template: templates/steps/guard-redundant-run.yml@pipelineTemplates
             parameters:
               parentPipelineId: $(resources.pipeline.octo-communication-sdk.pipelineID)
               parentRunId: $(resources.pipeline.octo-communication-sdk.runID)
           - task: InstallSSHKey@0
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             displayName: 'Install SSH key for submodules'
             inputs:
               knownHostsEntry: '$(SSHKnownHosts)'
@@ -150,11 +151,18 @@ stages:
               sshPassphrase: '$(SSHPassphrase)'
               sshKeySecureFile: '$(SSHPrivateKeyFile)'
           - template: templates/steps/set-version.yml@pipelineTemplates
+            parameters:
+              condition: ne(variables['CiGuardEnded'], 'true')
           - template: templates/steps/download-ca.yml@pipelineTemplates
+            parameters:
+              condition: ne(variables['CiGuardEnded'], 'true')
           # Fresh package list for the private feed only; nuget.org stays cached.
           # Replaces restore --force and noCache (AB#5720).
           - template: templates/steps/purge-private-nuget-http-cache.yml@pipelineTemplates
+            parameters:
+              condition: ne(variables['CiGuardEnded'], 'true')
           - task: DotNetCoreCLI@2
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             retryCountOnTaskFailure: 2
             displayName: 'Restore NuGet packages'
             inputs:
@@ -162,6 +170,7 @@ stages:
               projects: '$(solutionFile)'
               restoreArguments: '/p:OctoNugetPrivateServer=$(nugetPrivateServer)'
           - task: DotNetCoreCLI@2
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             retryCountOnTaskFailure: 2
             displayName: 'Build'
             inputs:
@@ -172,6 +181,7 @@ stages:
               zipAfterPublish: false
               modifyOutputPath: false
           - task: DotNetCoreCLI@2
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             retryCountOnTaskFailure: 2
             displayName: 'Test'
             inputs:
@@ -182,6 +192,7 @@ stages:
                 !**/*SystemTests.csproj
               testRunTitle: 'CI'
           - task: PowerShell@2
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             displayName: 'Create API documentation'
             inputs:
               filePath: '$(System.DefaultWorkingDirectory)/scripts/createDocumentation.ps1'
@@ -196,6 +207,7 @@ stages:
           # (the same binary HelmDeploy@0 uses below); missing helm fails loudly
           # instead of letting the script's assertions run against an empty render.
           - task: Bash@3
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             displayName: 'Chart tests (E3 pool member secrets)'
             inputs:
               targetType: 'inline'
@@ -219,8 +231,10 @@ stages:
               dockerfile: src/MeshAdapter/Dockerfile
               platforms: 'linux/arm64,linux/amd64'
               enableMainLatestTag: true
+              condition: ne(variables['CiGuardEnded'], 'true')
 
           - task: HelmDeploy@0
+            condition: and(succeeded(), ne(variables['CiGuardEnded'], 'true'))
             displayName: 'helm package octo-mesh-adapter'
             inputs:
               command: package
@@ -238,7 +252,7 @@ stages:
               chartVersion: $(ChartVersion)
               chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
               githubTokenVariable: HelmChartBuildGhToken
-              condition: and(succeeded(), eq(variables.isMain, true))
+              condition: and(succeeded(), eq(variables.isMain, true), ne(variables['CiGuardEnded'], 'true'))
 
           # Test-line publish (AB#4948) — a long-lived branch line (test/0.2-dev)
           # needs its charts reachable by the communication operator, which
@@ -255,7 +269,7 @@ stages:
               chartVersion: $(ChartVersion)
               chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
               githubTokenVariable: HelmChartBuildGhToken
-              condition: and(succeeded(), eq(variables.isTest, true))
+              condition: and(succeeded(), eq(variables.isTest, true), ne(variables['CiGuardEnded'], 'true'))
 
           # Release publish — only on r* tag, lands in
           # meshmakers.github.io/charts/ under the adapter category.
@@ -267,10 +281,13 @@ stages:
               chartVersion: $(ChartVersion)
               chartTgzPath: $(Build.artifactstagingdirectory)/octo-mesh-adapter-$(ChartVersion).tgz
               githubTokenVariable: HelmChartBuildGhToken
-              condition: and(succeeded(), eq(variables.isRelease, true))
+              condition: and(succeeded(), eq(variables.isRelease, true), ne(variables['CiGuardEnded'], 'true'))
 
           - template: templates/steps/handle-artifacts.yml@pipelineTemplates
             parameters:
               apiDocumentationPaths:
                 - '$(Build.SourcesDirectory)/bin/$(buildConfiguration)/$(artifactsFrameworkVersion)/documentation'
+              condition: ne(variables['CiGuardEnded'], 'true')
           - template: templates/steps/push-nuget-package.yml@pipelineTemplates
+            parameters:
+              condition: ne(variables['CiGuardEnded'], 'true')

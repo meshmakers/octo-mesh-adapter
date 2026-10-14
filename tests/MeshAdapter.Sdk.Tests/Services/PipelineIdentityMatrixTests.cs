@@ -385,6 +385,7 @@ public class PipelineIdentityMatrixTests
             "FromHttpRequestNode2.cs",       // HttpWithVerifiedCaller / HttpAnonymous
             "FromMicrosoftGraphEmailNode.cs",// Channel
             "FromMicrosoftGraphNode.cs",     // Channel
+            "FromNotificationScheduleNode.cs", // CronPipelineTrigger (one tick per notification preference)
             "FromPipelineTriggerEventNode.cs", // CronPipelineTrigger
             "FromSendNotificationNode.cs",   // Channel
             "FromSignalNode.cs",             // Channel

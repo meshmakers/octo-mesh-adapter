@@ -17,6 +17,7 @@ using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
@@ -183,7 +184,37 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         Assert.Contains(DryRunHonouredLoadNodes.SftpDelete, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.SftpUpload, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.ToDiscord, DryRunHonouredLoadNodes.All);
-        Assert.Equal(12, DryRunHonouredLoadNodes.All.Count);
+        Assert.Contains(DryRunHonouredLoadNodes.CommitNotificationState, DryRunHonouredLoadNodes.All);
+        Assert.Equal(13, DryRunHonouredLoadNodes.All.Count);
+    }
+
+    [Fact]
+    public async Task CommitNotificationStateNode_DryRun_RecordsIntentAndSkipsStateWrite()
+    {
+        const string dataPath = "$.notification";
+        var recorder = new RecordingDebugger();
+        var config = new CommitNotificationStateNodeConfiguration { Path = dataPath };
+        var (dataContext, nodeContext, next) = BuildContext(config, recorder);
+
+        var prepared = new PreparedNotification("670000000000000000009999", "000000000000000000000077", "user-1",
+            "Subject", "Body", "Html", 2, ["000000000000000000000001", "000000000000000000000002"], [], "000000000000000000000003");
+        PreparedNotification? ignored;
+        A.CallTo(() => dataContext.TryGet(dataPath, out ignored))
+            .Returns(true)
+            .AssignsOutAndRefParameters(prepared);
+
+        var node = new CommitNotificationStateNode(next, EtlContext);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        AssertNoSessionOpened();
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataContext.Set(dataPath, A<PreparedNotification?>._)).MustNotHaveHappened();
+
+        var intent = Assert.Single(recorder.Intents,
+            i => i.NodeTypeName == DryRunHonouredLoadNodes.CommitNotificationState);
+        Assert.Equal("670000000000000000009999", intent.IntentData!["preferenceRtId"]!.GetValue<string>());
+        Assert.Equal(2, intent.IntentData["newCount"]!.GetValue<int>());
+        Assert.Equal(2, intent.IntentData["seenCount"]!.GetValue<int>());
     }
 
     /// <summary>

@@ -84,12 +84,16 @@ public class SessionIdentityClassificationTests
             ["Transform/ImportFromExcelNode.cs"] = (0, 1),
             // AB#5637: reads the reported metering points and their participation periods.
             ["Transform/PrepareMeterReadingsNode.cs"] = (1, 0),
+            ["Transform/PrepareNotificationNode.cs"] = (2, 1),
             // AB#5636: lookup and write of the self-reported chain in one transaction.
             ["Transform/RegisterSelfReportedMeteringPointNode.cs"] = (1, 0),
             ["Transform/SimulateEnergyMeasurementsNode.cs"] = (1, 0),
             ["Transform/SimulateEnergyMeasurementsV2Node.cs"] = (1, 0),
             ["Transform/ValidateDataPointCoverageNode.cs"] = (1, 0),
-            ["Transform/ExcelImport/WellKnownNameLoader.cs"] = (0, 1)
+            ["Transform/ExcelImport/WellKnownNameLoader.cs"] = (0, 1),
+
+            // --- Shared ------------------------------------------------------------------------
+            ["NotificationDeliveryStateStore.cs"] = (0, 1)
         };
 
     [Fact]
@@ -137,8 +141,11 @@ public class SessionIdentityClassificationTests
         //
         // 39 now (23 scoped): CommunityEnergyBalance@1 (AB#5639), PrepareMeterReadings@1 (AB#5637)
         // and RegisterSelfReportedMeteringPoint@1 (AB#5636) each open one config-selected session.
-        Assert.Equal(23, actual.Sum(v => v.Scoped));
-        Assert.Equal(17, actual.Sum(v => v.System));
+        //
+        // 44 now (25 scoped): AB#2585 added four - the notification engine's two query reads (matching rtIds,
+        // then the new rows in full) run scoped, its configuration reads and delivery-state writes are system.
+        Assert.Equal(25, actual.Sum(v => v.Scoped));
+        Assert.Equal(19, actual.Sum(v => v.System));
     }
 
     [Fact]

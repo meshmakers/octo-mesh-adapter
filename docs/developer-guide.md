@@ -1248,6 +1248,29 @@ Triggers pipeline via HTTP requests.
 }
 ```
 
+**Response contract** (AB#5674): the HTTP response is the final pipeline data root minus the
+request envelope. `HttpResponseGuard` (`src/MeshAdapter.Sdk/Services/HttpRequests/HttpResponseGuard.cs`)
+runs in `HttpRequestService.SendRequestAsync` just before the response is written, so
+`FromHttpRequest@1`, `FromHttpRequest@2` and `FromTeamsBot@1` are covered alike and nodes stay unchanged:
+
+- The reserved request keys are removed from the top level of an object response: `path`, `method`,
+  `principal`, `headers`, `body`, `bodyEncoding`, `query`, `files`, `formData`, `contentType`,
+  `contentLength`.
+- A value that is a whole copy of this request's `headers` or `principal` object is removed wherever it
+  sits, also inside arrays produced by a ForEach.
+- A single field the author maps on purpose (e.g. `$.principal.email` into `$.createdBy`) stays: it is
+  the author's explicit output. The guard stops the accidental echo; it does not defend against an
+  author who may write pipelines.
+- Non-object responses, `null` (empty `200`) and the error bodies are unchanged; a shaped response without
+  reserved keys is byte-identical.
+- There is no switch that re-enables the echo. Use the pipeline debugger (data per node) to inspect a run.
+- A removal is logged once per route and key set (key names and locations, never values).
+
+Security change with a compatibility note: a pipeline that answered with its unshaped data root now loses
+the request envelope; a caller that read echoed request data from the response must take it from its own
+request. `Project@1` with `clear: true` stays advisable so intermediate results are not returned either.
+No CK model or blueprint is affected.
+
 #### FromWatchRtEntityNode
 
 Triggers when entities are created, updated, or deleted.

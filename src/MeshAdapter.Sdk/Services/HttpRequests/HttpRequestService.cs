@@ -26,6 +26,7 @@ internal class HttpRequestService(
     ILogger<HttpRequestService> logger) : IHttpRequestService
 {
     private readonly Dictionary<Tuple<string, string>, HttpRequestOptions> _routes = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _reportedRemovals = new();
 
     /// <summary>
     /// Withheld from the pipeline data unless the trigger opted in via
@@ -266,6 +267,10 @@ internal class HttpRequestService(
             input["query"] = query;
         }
 
+        // AB#5674: remember what the request looked like, so a whole copy of it can be recognised
+        // in the response even after the pipeline moved it somewhere else.
+        var envelope = HttpResponseGuard.RequestEnvelope.Capture(input);
+
         JsonNode? r;
         try
         {
@@ -289,10 +294,34 @@ internal class HttpRequestService(
 
         if (r != null)
         {
+            LogRemovedOnce(route, HttpResponseGuard.Apply(r, envelope));
             context.Response.ContentType = MimeTypes.MimeTypeJson;
             await context.Response.WriteAsync(r.ToJsonString());
         }
         return true;
+    }
+
+    /// <summary>
+    /// Reports once per route and removed key set that the response guard had to strip request data
+    /// (AB#5674) - the pipeline author should shape the result. Names and locations only, never values.
+    /// </summary>
+    private void LogRemovedOnce(HttpRequestOptions route, List<string> removed)
+    {
+        if (removed.Count == 0)
+        {
+            return;
+        }
+
+        var keys = string.Join(", ", removed);
+        if (!_reportedRemovals.TryAdd($"{route.Method} {route.Route}|{keys}", 0))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "Route {Method} {Route} answered with request data that is never returned to the caller; " +
+            "removed from the response: {RemovedKeys}. Shape the result, e.g. with Project@1 clear: true",
+            route.Method, route.Route, keys);
     }
 
     /// <summary>

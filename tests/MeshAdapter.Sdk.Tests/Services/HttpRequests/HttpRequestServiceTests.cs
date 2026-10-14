@@ -11,6 +11,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
@@ -1032,6 +1033,345 @@ public class HttpRequestServiceTests
         Assert.True(await _service.SendRequestAsync(context));
 
         Assert.Null(capturedToken);
+    }
+
+
+    #endregion
+
+    #region Response guard (AB#5674)
+
+    private const string SecretHeader = "x-secret-header-value-9d1";
+    private const string BearerValue = "ey.raw.bearer.token.5674";
+    private const string CookieValue = "session=cookie-value-5674";
+    private const string BodyMarker = "body-marker-5674";
+    private const string QueryMarker = "query-marker-5674";
+    private const string SubjectId = "660000000000000000000042";
+    private static readonly string[] ReservedKeys =
+        ["path", "method", "principal", "headers", "body", "bodyEncoding", "query", "files", "formData",
+            "contentType", "contentLength"];
+
+    private sealed class ListLogger : ILogger<HttpRequestService>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+    }
+
+    /// <summary>The unshaped route: the pipeline answers with its whole data root plus one result field.</summary>
+    private static Task<JsonNode?> EchoDataRoot(JsonNode input)
+    {
+        var root = input.DeepClone().AsObject();
+        root["result"] = "done";
+        return Task.FromResult<JsonNode?>(root);
+    }
+
+    private static async Task<string> ReadBodyAsync(HttpContext context)
+    {
+        context.Response.Body.Position = 0;
+        using var reader = new StreamReader(context.Response.Body);
+        return await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static void AddRequestData(HttpContext context)
+    {
+        context.Request.Headers["X-Custom"] = SecretHeader;
+        context.Request.Headers.Authorization = $"Bearer {BearerValue}";
+        context.Request.Headers.Cookie = CookieValue;
+        context.Request.QueryString = new QueryString($"?q={QueryMarker}");
+    }
+
+    private static void AssertEnvelopeAbsent(string responseText, params string[] forbiddenValues)
+    {
+        var parsed = JsonNode.Parse(responseText)!.AsObject();
+        foreach (var key in ReservedKeys)
+        {
+            Assert.False(parsed.ContainsKey(key), $"reserved key '{key}' is in the response");
+        }
+
+        Assert.Equal("done", parsed["result"]?.ToString());
+        foreach (var value in new[] { SecretHeader, BearerValue, CookieValue, BodyMarker, QueryMarker, SubjectId }
+                     .Concat(forbiddenValues))
+        {
+            Assert.DoesNotContain(value, responseText, StringComparison.Ordinal);
+        }
+    }
+
+    private async Task<string> CallAsync(HttpRequestService service, HttpContext context)
+    {
+        context.Response.Body = new MemoryStream();
+        Assert.True(await service.SendRequestAsync(context));
+        return await ReadBodyAsync(context);
+    }
+
+    [Fact]
+    public async Task Guard_UnshapedRoute_AuthenticatedCaller_ResponseCarriesNoRequestEnvelope()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/echo", HttpMethod.Post, EchoDataRoot, allowAnonymous: false));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/echo", $"{{\"b\":\"{BodyMarker}\"}}",
+            "application/json");
+        AddRequestData(context);
+        context.User = CreateAuthenticatedUser("AccountingEmployee");
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context), "AccountingEmployee");
+    }
+
+    [Fact]
+    public async Task Guard_FromHttpRequest1_AnonymousCaller_ResponseCarriesNoRequestEnvelope()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/anon", HttpMethod.Post, EchoDataRoot));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/anon", BodyMarker, "text/plain");
+        AddRequestData(context);
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context));
+    }
+
+    [Fact]
+    public async Task Guard_RouteWithRequiredRoles_ResponseCarriesNoRolesOrEnvelope()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/roles-echo", HttpMethod.Post, EchoDataRoot,
+            allowAnonymous: false, requiredRoles: ["BillingAdmin"]));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/roles-echo", $"{{\"b\":\"{BodyMarker}\"}}",
+            "application/json");
+        AddRequestData(context);
+        context.User = CreateAuthenticatedUser("BillingAdmin", "OtherRole");
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context), "BillingAdmin", "OtherRole");
+    }
+
+    [Fact]
+    public async Task Guard_ServiceToken_ResponseCarriesNoClientIdOrEnvelope()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/machine-echo", HttpMethod.Post, EchoDataRoot,
+            allowAnonymous: false));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/machine-echo", $"{{\"b\":\"{BodyMarker}\"}}",
+            "application/json");
+        AddRequestData(context);
+        context.User = CreateServiceToken(TenantId, "MachineRole");
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context), "machine-client", "MachineRole");
+    }
+
+    [Fact]
+    public async Task Guard_CredentialHeaderRoute_TeamsBotAuthorizationIsNeverInTheResponse()
+    {
+        // FromTeamsBot@1 opts into credential headers, so its Authorization value IS in $.headers.
+        const string botCredential = "Bearer bot-framework-jwt-5674";
+        _service.CreateRoute(CreateRouteOptions("/api/bot-echo", HttpMethod.Post, input =>
+        {
+            Assert.Equal(botCredential, input["headers"]!["Authorization"]!.GetValue<string>());
+            return EchoDataRoot(input);
+        }, receivesCredentialHeaders: true));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/bot-echo", $"{{\"b\":\"{BodyMarker}\"}}",
+            "application/json");
+        AddRequestData(context);
+        context.Request.Headers.Authorization = botCredential;
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context), botCredential, "bot-framework-jwt-5674");
+    }
+
+    [Fact]
+    public async Task Guard_MultipartUpload_FilesAndFormDataAreNotEchoed()
+    {
+        const string fileContent = "file-content-5674";
+        _service.CreateRoute(CreateRouteOptions("/api/upload-echo", HttpMethod.Post, input =>
+        {
+            Assert.NotNull(input["files"]);
+            Assert.NotNull(input["formData"]);
+            return EchoDataRoot(input);
+        }));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/upload-echo", "x", "multipart/form-data; boundary=b");
+        var bytes = Encoding.UTF8.GetBytes(fileContent);
+        var file = new FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", "upload5674.txt")
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = "text/plain"
+        };
+        context.Request.Form = new FormCollection(
+            new Dictionary<string, Microsoft.Extensions.Primitives.StringValues> { ["note"] = BodyMarker },
+            new FormFileCollection { file });
+        AddRequestData(context);
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context), fileContent, "upload5674.txt",
+            Convert.ToBase64String(bytes), "multipart/form-data");
+    }
+
+    [Fact]
+    public async Task Guard_BinaryBody_BodyAndBase64AreNotEchoed()
+    {
+        var bytes = Encoding.UTF8.GetBytes(BodyMarker);
+        _service.CreateRoute(CreateRouteOptions("/api/binary-echo", HttpMethod.Post, input =>
+        {
+            Assert.Equal("base64", input["bodyEncoding"]!.GetValue<string>());
+            return EchoDataRoot(input);
+        }));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/binary-echo");
+        context.Request.Body = new MemoryStream(bytes);
+        context.Request.ContentLength = bytes.Length;
+        context.Request.ContentType = "application/octet-stream";
+        AddRequestData(context);
+
+        AssertEnvelopeAbsent(await CallAsync(_service, context), Convert.ToBase64String(bytes),
+            "application/octet-stream");
+    }
+
+    [Fact]
+    public async Task Guard_OperationFailedErrorShape_PassesThroughUnchanged()
+    {
+        // What FromHttpRequest@1/@2 answer when a repository operation fails: no request keys, so
+        // the guard has nothing to remove and the body stays byte-identical.
+        var error = new JsonObject
+        {
+            ["message"] = "Operation failed",
+            ["details"] = new JsonArray(new JsonObject { ["code"] = null, ["description"] = "x" })
+        };
+        _service.CreateRoute(CreateRouteOptions("/api/failed", HttpMethod.Post,
+            _ => Task.FromResult<JsonNode?>(error.DeepClone())));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/failed");
+
+        Assert.Equal(error.ToJsonString(), await CallAsync(_service, context));
+    }
+
+    [Fact]
+    public async Task Guard_NodeThrows_ErrorBodyStaysTheMessageOnly()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/throws-echo", HttpMethod.Post,
+            _ => throw new InvalidOperationException("node failed")));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/throws-echo", BodyMarker, "text/plain");
+        AddRequestData(context);
+
+        var text = await CallAsync(_service, context);
+
+        Assert.Equal(500, context.Response.StatusCode);
+        Assert.Equal("{\"errorMessage\":\"node failed\"}", text);
+    }
+
+    [Fact]
+    public async Task Guard_WholeCopiesOfHeadersAndPrincipal_AreRemovedEverywhere()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/copies", HttpMethod.Post, input =>
+        {
+            var root = new JsonObject
+            {
+                ["status"] = "ok",
+                ["debug"] = new JsonObject
+                {
+                    ["h"] = input["headers"]!.DeepClone(),
+                    ["keep"] = "kept"
+                },
+                ["items"] = new JsonArray(
+                    new JsonObject { ["id"] = 1, ["principal"] = input["principal"]!.DeepClone() },
+                    new JsonObject { ["id"] = 2, ["headers"] = input["headers"]!.DeepClone() },
+                    input["principal"]!.DeepClone()),
+                ["createdBy"] = input["principal"]!["email"]!.DeepClone()
+            };
+            return Task.FromResult<JsonNode?>(root);
+        }, allowAnonymous: false));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/copies");
+        AddRequestData(context);
+        context.User = CreateAuthenticatedUser("AccountingEmployee");
+        context.User.Identities.First().AddClaim(new Claim(JwtClaimTypes.Email, "caller5674@example.org"));
+
+        var text = await CallAsync(_service, context);
+
+        var parsed = JsonNode.Parse(text)!.AsObject();
+        Assert.Equal("ok", parsed["status"]!.ToString());
+        Assert.Equal("kept", parsed["debug"]!["keep"]!.ToString());
+        Assert.Null(parsed["debug"]!["h"]);
+        var items = parsed["items"]!.AsArray();
+        Assert.Equal(2, items.Count);
+        Assert.Null(items[0]!["principal"]);
+        Assert.Null(items[1]!["headers"]);
+        Assert.Equal(1, items[0]!["id"]!.GetValue<int>());
+        // A single field the author maps on purpose stays: it is their explicit output.
+        Assert.Equal("caller5674@example.org", parsed["createdBy"]!.ToString());
+        Assert.DoesNotContain(SecretHeader, text, StringComparison.Ordinal);
+        Assert.DoesNotContain("AccountingEmployee", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Guard_ShapedResponse_IsByteIdentical()
+    {
+        const string shaped =
+            "{\"status\":\"ok\",\"message\":\"created\",\"result\":{\"items\":[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"b\"}]}}";
+        _service.CreateRoute(CreateRouteOptions("/api/shaped", HttpMethod.Post,
+            _ => Task.FromResult<JsonNode?>(JsonNode.Parse(shaped))));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/shaped", $"{{\"b\":\"{BodyMarker}\"}}",
+            "application/json");
+        AddRequestData(context);
+
+        Assert.Equal(shaped, await CallAsync(_service, context));
+    }
+
+    [Theory]
+    [InlineData("\"plain text\"")]
+    [InlineData("42")]
+    [InlineData("[1,2,3]")]
+    public async Task Guard_NonObjectResponse_IsUnchanged(string json)
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/scalar", HttpMethod.Get,
+            _ => Task.FromResult<JsonNode?>(JsonNode.Parse(json))));
+        var context = CreateHttpContext("GET", $"/{TenantId}/api/scalar");
+
+        Assert.Equal(JsonNode.Parse(json)!.ToJsonString(), await CallAsync(_service, context));
+    }
+
+    [Fact]
+    public async Task Guard_NullResponse_StillGivesTheEmptyBody()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/nothing", HttpMethod.Get, _ => Task.FromResult<JsonNode?>(null)));
+        var context = CreateHttpContext("GET", $"/{TenantId}/api/nothing");
+
+        Assert.Equal(string.Empty, await CallAsync(_service, context));
+        Assert.Equal(200, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Guard_RemovalIsLoggedOncePerRouteAndKeySet_WithKeyNamesOnly()
+    {
+        var logger = new ListLogger();
+        var service = new HttpRequestService(
+            Options.Create(new AdapterOptions { DedicatedTenantId = TenantId }),
+            Options.Create(new MeshAdapterConfiguration()), _eventService, logger);
+        service.CreateRoute(CreateRouteOptions("/api/logged", HttpMethod.Post, EchoDataRoot, allowAnonymous: false));
+
+        for (var i = 0; i < 3; i++)
+        {
+            var context = CreateHttpContext("POST", $"/{TenantId}/api/logged", $"{{\"b\":\"{BodyMarker}\"}}",
+                "application/json");
+            AddRequestData(context);
+            context.User = CreateAuthenticatedUser("AccountingEmployee");
+            await CallAsync(service, context);
+        }
+
+        var removals = logger.Messages.Where(m => m.Contains("removed from the response")).ToList();
+        var single = Assert.Single(removals);
+        Assert.Contains("principal", single);
+        Assert.Contains("headers", single);
+        foreach (var value in new[] { SecretHeader, BearerValue, CookieValue, BodyMarker, QueryMarker, SubjectId,
+                     "AccountingEmployee" })
+        {
+            Assert.DoesNotContain(value, single, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Guard_ShapedResponse_LogsNothing()
+    {
+        var logger = new ListLogger();
+        var service = new HttpRequestService(
+            Options.Create(new AdapterOptions { DedicatedTenantId = TenantId }),
+            Options.Create(new MeshAdapterConfiguration()), _eventService, logger);
+        service.CreateRoute(CreateRouteOptions("/api/quiet", HttpMethod.Get,
+            _ => Task.FromResult<JsonNode?>(new JsonObject { ["status"] = "ok" })));
+
+        await CallAsync(service, CreateHttpContext("GET", $"/{TenantId}/api/quiet"));
+
+        Assert.DoesNotContain(logger.Messages, m => m.Contains("removed from the response"));
     }
 
     #endregion

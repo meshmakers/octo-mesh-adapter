@@ -5,6 +5,17 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 /// <summary>
 /// Configuration for node FromHttpRequest
 /// </summary>
+/// <remarks>
+/// The response of the route is the final data root of the pipeline minus the request envelope
+/// (AB#5674): the keys <c>path</c>, <c>method</c>, <c>principal</c>, <c>headers</c>, <c>body</c>,
+/// <c>bodyEncoding</c>, <c>query</c>, <c>files</c>, <c>formData</c>, <c>contentType</c> and
+/// <c>contentLength</c> are removed from the top level, and a whole copy of the request headers or of
+/// the principal anywhere in the response is removed as well. A single field mapped on purpose, such as
+/// <c>$.principal.email</c> into <c>$.createdBy</c>, stays. Responses of other shapes and an empty
+/// response are returned unchanged. The behaviour cannot be switched off; use the pipeline debugger to
+/// inspect the data of a run. Shaping the result with <c>Project@1</c> and <c>clear: true</c> stays
+/// advisable, because intermediate results are part of the data root too.
+/// </remarks>
 [NodeDeprecated("Use FromHttpRequest@2 instead.")]
 // AB#4924: Interactive. An HTTP caller is blocked on the response — this is the clearest
 // case of work somebody is waiting for, and the scenario §5 of the leasing concept names:

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -43,7 +44,10 @@ internal class FromNotificationScheduleNode(IEventHubControl eventHubControl) : 
 
                 try
                 {
-                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), new JsonObject
+                    await context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow)
+                    {
+                        TriggerType = PipelineTriggerType.Scheduled
+                    }, new JsonObject
                     {
                         ["tenantId"] = message.TenantId,
                         ["preferenceRtId"] = message.PreferenceRtId

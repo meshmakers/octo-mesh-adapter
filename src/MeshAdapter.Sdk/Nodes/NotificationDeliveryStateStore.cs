@@ -42,8 +42,85 @@ internal static class NotificationDeliveryStateStore
         FirstTargetAsync<RtNotificationPreference, RtNotificationDeliveryState>(repository, session, preferenceRtId,
             SystemNotificationCkIds.RtCkDeliveryStatePreferenceRoleId, GraphDirections.Inbound);
 
+    public static OctoObjectId StateRtIdFor(OctoObjectId preferenceRtId)
+    {
+        var bytes = preferenceRtId.ToByteArray();
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            bytes[i] ^= 0x5A;
+        }
+
+        return new OctoObjectId(bytes);
+    }
+
+    public static async Task<OctoObjectId?> TryAcquireLeaseAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
+        OctoObjectId preferenceRtId, DateTime now, TimeSpan leaseExpiry)
+    {
+        var lease = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
+        try
+        {
+            if (stateRtId == null)
+            {
+                stateRtId = await WriteAsync(etlContext, null, preferenceRtId,
+                    new NotificationDeliveryStateChange(RunningSince: lease), null);
+            }
+            else
+            {
+                await WriteAsync(etlContext, stateRtId, preferenceRtId,
+                    new NotificationDeliveryStateChange(RunningSince: lease),
+                    new AttributeNewerThanGuard("attributes.runningSince", lease - leaseExpiry));
+            }
+        }
+        catch (Exception)
+        {
+            if ((await ReadStateAsync(etlContext, preferenceRtId))?.RunningSince is { } held && held != lease)
+            {
+                return null;
+            }
+
+            throw;
+        }
+
+        return (await ReadStateAsync(etlContext, preferenceRtId))?.RunningSince == lease ? stateRtId : null;
+    }
+
     public static async Task<OctoObjectId> SaveAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
         OctoObjectId preferenceRtId, NotificationDeliveryStateChange change)
+    {
+        if (stateRtId != null)
+        {
+            return await WriteAsync(etlContext, stateRtId, preferenceRtId, change, null);
+        }
+
+        try
+        {
+            return await WriteAsync(etlContext, null, preferenceRtId, change, null);
+        }
+        catch (Exception)
+        {
+            if ((await ReadStateAsync(etlContext, preferenceRtId))?.RtId is not { } created)
+            {
+                throw;
+            }
+
+            return await WriteAsync(etlContext, created, preferenceRtId, change, null);
+        }
+    }
+
+    private static async Task<RtNotificationDeliveryState?> ReadStateAsync(IMeshEtlContext etlContext,
+        OctoObjectId preferenceRtId)
+    {
+        // AB#5028 — SYSTEM, as the write below: this re-read decides who holds the lease. Under a read
+        // filter another run's state would read as missing and both runs would send.
+        using var session = await etlContext.GetSystemSessionAsync();
+        session.StartTransaction();
+        var state = await LoadAsync(etlContext.TenantRepository, session, preferenceRtId);
+        await session.CommitTransactionAsync();
+        return state;
+    }
+
+    private static async Task<OctoObjectId> WriteAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
+        OctoObjectId preferenceRtId, NotificationDeliveryStateChange change, AttributeNewerThanGuard? guard)
     {
         var state = new RtNotificationDeliveryState { RunningSince = change.RunningSince };
         if (change.SeenRtIds != null)
@@ -84,7 +161,7 @@ internal static class NotificationDeliveryStateStore
         session.StartTransaction();
         if (stateRtId == null)
         {
-            state.RtId = OctoObjectId.GenerateNewId();
+            state.RtId = StateRtIdFor(preferenceRtId);
             await etlContext.TenantRepository.ApplyChangesAsync(session,
                 [EntityUpdateInfo<RtEntity>.CreateInsert(SystemNotificationCkIds.RtCkNotificationDeliveryStateTypeId, state)],
                 [
@@ -96,10 +173,12 @@ internal static class NotificationDeliveryStateStore
         }
         else
         {
+            var stateId = new RtEntityId(SystemNotificationCkIds.RtCkNotificationDeliveryStateTypeId, stateRtId.Value);
             await etlContext.TenantRepository.ApplyChangesAsync(session,
                 [
-                    EntityUpdateInfo<RtEntity>.CreateUpdate(
-                        new RtEntityId(SystemNotificationCkIds.RtCkNotificationDeliveryStateTypeId, stateRtId.Value), state)
+                    guard == null
+                        ? EntityUpdateInfo<RtEntity>.CreateUpdate(stateId, state)
+                        : EntityUpdateInfo<RtEntity>.CreateConditionalUpdate(stateId, state, guard)
                 ], [], operationResult);
         }
 

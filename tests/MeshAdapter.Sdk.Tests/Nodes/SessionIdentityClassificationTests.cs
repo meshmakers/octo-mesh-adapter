@@ -93,7 +93,7 @@ public class SessionIdentityClassificationTests
             ["Transform/ExcelImport/WellKnownNameLoader.cs"] = (0, 1),
 
             // --- Shared ------------------------------------------------------------------------
-            ["NotificationDeliveryStateStore.cs"] = (0, 1)
+            ["NotificationDeliveryStateStore.cs"] = (0, 2)
         };
 
     [Fact]
@@ -144,8 +144,10 @@ public class SessionIdentityClassificationTests
         //
         // 44 now (25 scoped): AB#2585 added four - the notification engine's two query reads (matching rtIds,
         // then the new rows in full) run scoped, its configuration reads and delivery-state writes are system.
+        //
+        // 45 now (25 scoped): AB#2585's atomic lease re-reads the delivery state to learn who won, as system.
         Assert.Equal(25, actual.Sum(v => v.Scoped));
-        Assert.Equal(19, actual.Sum(v => v.System));
+        Assert.Equal(20, actual.Sum(v => v.System));
     }
 
     [Fact]

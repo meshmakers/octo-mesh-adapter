@@ -215,8 +215,15 @@ internal class PrepareNotificationNode(
 
             if (!dryRun)
             {
-                stateRtId = await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
-                    new NotificationDeliveryStateChange(RunningSince: now));
+                var leased = await NotificationDeliveryStateStore.TryAcquireLeaseAsync(etlContext, stateRtId,
+                    preferenceRtId, now, NotificationDigest.LeaseExpiry);
+                if (leased == null)
+                {
+                    nodeContext.Debug("Preference '{0}' was taken by another run; this tick is skipped", preferenceRtId);
+                    return;
+                }
+
+                stateRtId = leased;
             }
 
             QueryResult result;

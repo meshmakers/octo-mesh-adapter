@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -59,6 +60,21 @@ public class FromNotificationScheduleNodeTests
         var json = Assert.IsType<JsonObject>(input);
         Assert.Equal("670000000000000000009999", json["preferenceRtId"]!.GetValue<string>());
         Assert.Equal("EcFinal", json["tenantId"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Tick_IsRecordedAsAScheduledExecution()
+    {
+        ExecutePipelineOptions? options = null;
+        A.CallTo(() => _triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes((ExecutePipelineOptions value, object? _) => options = value)
+            .Returns(Task.FromResult<object?>(null));
+
+        await new FromNotificationScheduleNode(_eventHubControl).StartAsync(_triggerContext);
+        await _consumer!(new NotificationScheduleTick("EcFinal", "670000000000000000009999", Guid.NewGuid(),
+            DateTime.UtcNow));
+
+        Assert.Equal(PipelineTriggerType.Scheduled, options!.TriggerType);
     }
 
     [Fact]

@@ -1360,6 +1360,64 @@ public class HttpRequestServiceTests
     }
 
     [Fact]
+    public async Task Guard_ForEachResponseWithVaryingLength_IsLoggedOnce()
+    {
+        var logger = new ListLogger();
+        var service = new HttpRequestService(
+            Options.Create(new AdapterOptions { DedicatedTenantId = TenantId }),
+            Options.Create(new MeshAdapterConfiguration()), _eventService, logger);
+        var count = 1;
+        service.CreateRoute(CreateRouteOptions("/api/each", HttpMethod.Post, input =>
+        {
+            var items = new JsonArray();
+            for (var i = 0; i < count; i++)
+            {
+                items.Add(new JsonObject { ["id"] = i, ["principal"] = input["principal"]!.DeepClone() });
+            }
+
+            return Task.FromResult<JsonNode?>(new JsonObject { ["items"] = items });
+        }, allowAnonymous: false));
+
+        for (count = 1; count <= 4; count++)
+        {
+            var context = CreateHttpContext("POST", $"/{TenantId}/api/each");
+            context.User = CreateAuthenticatedUser("AccountingEmployee");
+            await CallAsync(service, context);
+        }
+
+        Assert.Single(logger.Messages, m => m.Contains("removed from the response"));
+    }
+
+    [Fact]
+    public async Task Guard_ArrayRoot_WholeCopiesOfHeadersAndPrincipalAreRemoved()
+    {
+        _service.CreateRoute(CreateRouteOptions("/api/array-root", HttpMethod.Post, input =>
+            Task.FromResult<JsonNode?>(new JsonArray(
+                new JsonObject { ["id"] = 1 },
+                input["headers"]!.DeepClone(),
+                input["principal"]!.DeepClone())), allowAnonymous: false));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/array-root");
+        AddRequestData(context);
+        context.User = CreateAuthenticatedUser("AccountingEmployee");
+
+        var text = await CallAsync(_service, context);
+
+        Assert.Equal("[{\"id\":1}]", text);
+    }
+
+    [Fact]
+    public async Task Guard_EmptyHeaders_DoNotMakeUnrelatedEmptyObjectsACopy()
+    {
+        // Every credential header filtered away leaves $.headers empty; "metadata": {} is then no copy.
+        _service.CreateRoute(CreateRouteOptions("/api/empty", HttpMethod.Post,
+            _ => Task.FromResult<JsonNode?>(new JsonObject { ["status"] = "ok", ["metadata"] = new JsonObject() })));
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/empty");
+        context.Request.Headers.Authorization = $"Bearer {BearerValue}";
+
+        Assert.Equal("{\"status\":\"ok\",\"metadata\":{}}", await CallAsync(_service, context));
+    }
+
+    [Fact]
     public async Task Guard_ShapedResponse_LogsNothing()
     {
         var logger = new ListLogger();

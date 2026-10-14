@@ -41,17 +41,29 @@ internal static class HttpResponseGuard
     internal readonly record struct RequestEnvelope(JsonNode? Headers, JsonNode? Principal)
     {
         public static RequestEnvelope Capture(JsonObject input) =>
-            new(input["headers"]?.DeepClone(), input["principal"]?.DeepClone());
+            new(Distinctive(input["headers"]), Distinctive(input["principal"]));
+
+        // An empty object equals every unrelated empty object (e.g. "metadata": {}) in a response,
+        // so it is no recognisable copy of anything.
+        private static JsonNode? Distinctive(JsonNode? node) =>
+            node is JsonObject { Count: > 0 } ? node.DeepClone() : null;
     }
 
     /// <summary>
     /// Removes the request envelope from <paramref name="response" /> in place and returns what was
-    /// removed - key names and locations only, never values. Non-object responses and
-    /// <c>null</c> are left alone.
+    /// removed - key names and locations only, never values. Scalar responses and
+    /// <c>null</c> are left alone; an array response is only scanned for whole copies.
     /// </summary>
     internal static List<string> Apply(JsonNode? response, RequestEnvelope envelope)
     {
         var removed = new List<string>();
+        if (response is JsonArray rootArray)
+        {
+            // A ForEach result can be the response itself: its elements may hold whole copies.
+            RemoveWholeCopies(rootArray, "$", envelope, removed);
+            return removed;
+        }
+
         if (response is not JsonObject root)
         {
             return removed;

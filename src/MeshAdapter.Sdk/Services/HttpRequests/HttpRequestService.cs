@@ -19,7 +19,7 @@ using HttpMethod = Meshmakers.Octo.MeshAdapter.Nodes.Trigger.HttpMethod;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.HttpRequests;
 
-internal class HttpRequestService(
+internal partial class HttpRequestService(
     IOptions<AdapterOptions> adapterOptions,
     IOptions<MeshAdapterConfiguration> meshAdapterConfiguration,
     IAdapterEventService eventService,
@@ -305,6 +305,9 @@ internal class HttpRequestService(
     /// Reports once per route and removed key set that the response guard had to strip request data
     /// (AB#5674) - the pipeline author should shape the result. Names and locations only, never values.
     /// </summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"\[\d+\]")]
+    private static partial System.Text.RegularExpressions.Regex ArrayIndex();
+
     private void LogRemovedOnce(HttpRequestOptions route, List<string> removed)
     {
         if (removed.Count == 0)
@@ -312,7 +315,9 @@ internal class HttpRequestService(
             return;
         }
 
-        var keys = string.Join(", ", removed);
+        // Array positions are left out of the key: a route returning a varying number of ForEach
+        // items must neither log again nor grow the set of remembered keys per request.
+        var keys = string.Join(", ", removed.Select(r => ArrayIndex().Replace(r, "[]")).Distinct().Order());
         if (!_reportedRemovals.TryAdd($"{route.Method} {route.Route}|{keys}", 0))
         {
             return;

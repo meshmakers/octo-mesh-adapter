@@ -221,7 +221,7 @@ this closes. The only remaining parameterless system session in the SDK is
 `ServiceAccountTokenService.ReadConfigurationAsync`, which is circular by nature: it is the read that
 *answers* the identity question.
 
-### Classification (44 call sites: 25 scoped, 19 system)
+### Classification (45 call sites: 25 scoped, 20 system)
 
 **System by decision** — each carries a code comment saying what breaks if it were scoped:
 
@@ -237,7 +237,7 @@ this closes. The only remaining parameterless system session in the SDK is
 | `GetFileSystemContent@1`, `SendEMail@1`, `SftpUpload@1`, `ToDiscord@1` (×2) | Binary download for outgoing channels: attachments regularly belong to somebody else, and a filter does not fail the node — the message goes out without its attachment. |
 | `ApplyChanges@1` | Frozen: the deprecated twin of `@2`. A pipeline still on `@1` must not start stamping or filtering because the adapter was upgraded. Migrate to `@2` to get an identity. |
 | `CreateZipArchive@1` / `CreateFileSystemUpdate@1` — their `GetFolderRootAsync` helpers | The `FolderRoot` (`System.Files` first, `System.Reporting` fallback) is platform configuration; a filtered root reads as missing and the artefact is never written at all. |
-| `PrepareNotification@1` (configuration read) and `NotificationDeliveryStateStore.SaveAsync`, which `CommitNotificationState@1` writes through (AB#2585) | Preference, subscription, template, query definition and delivery state are notification configuration and engine bookkeeping, not the recipient's data. A hidden subscription would read as removed and stop the mails without a trace; a hidden state reads as missing and the next run mails everything again. |
+| `PrepareNotification@1` (configuration read) and `NotificationDeliveryStateStore` — the writes `CommitNotificationState@1` goes through and the re-read that decides who holds the lease (AB#2585) | Preference, subscription, template, query definition and delivery state are notification configuration and engine bookkeeping, not the recipient's data. A hidden subscription would read as removed and stop the mails without a trace; a hidden state reads as missing and the next run mails everything again. |
 
 **File nodes: `System.Files` first, `System.Reporting` fallback (AB#6177, concept §8.6).** `CreateFileSystemUpdate@1`, `CreateZipArchive@1` (persist mode), `GetFileSystemContent@1` and `ToDiscord@1` resolve through `Nodes/FileSystemCkTypes`. A folder root is looked up by well-known name as `System.Files/FolderRoot` first, then `System.Reporting/FolderRoot`; the new item gets the type family of the root that was found — so an unmigrated tenant (even with `System.Files` imported and an empty `Files` root) keeps writing `System.Reporting` items exactly as before. Items read by RtId are searched as `System.Files/FileSystemItem`, then `System.Reporting/FileSystemItem`. A lookup against a type the tenant does not know counts as "not found there" (only when no type answers at all is the repository error surfaced). The helpers receive the caller's session and open none themselves, so the AB#5028 session classification is unchanged. Remove the fallback when System.Reporting 3.0.0 (file types dropped) is installed everywhere. Tests: `tests/MeshAdapter.Sdk.Tests/Nodes/FileSystemTransitionTests.cs`, `Nodes/Load/ToDiscordNodeTests.cs`.
 

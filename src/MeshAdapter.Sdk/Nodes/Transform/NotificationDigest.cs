@@ -68,6 +68,12 @@ internal static class NotificationDigest
         action == NotificationDigestAction.RecordSilently || !sameRows || !string.IsNullOrEmpty(lastError) ||
         lastRunAt is not { } ranAt || now - ranAt >= IdleRecordInterval;
 
+    public static bool RecipientChanged(string? recordedSubjectId, string? currentSubjectId) =>
+        recordedSubjectId != null && recordedSubjectId != currentSubjectId;
+
+    public static bool StartOptionChanged(bool? recordedSkipExistingRows, bool currentSkipExistingRows) =>
+        recordedSkipExistingRows != null && recordedSkipExistingRows != currentSkipExistingRows;
+
     public static DateTime? LastRunOfQuery(DateTime? lastRunAt, string? recordedQueryRtId, string currentQueryRtId) =>
         recordedQueryRtId == null || recordedQueryRtId == currentQueryRtId ? lastRunAt : null;
 

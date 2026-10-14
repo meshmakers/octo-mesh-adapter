@@ -11,12 +11,12 @@ public class PreparedNotificationContractTests
     public void Serialized_UsesTheCamelCaseNamesThePipelineReads()
     {
         var json = JsonSerializer.SerializeToNode(
-            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, ["a"], ["b"], "q"), SystemTextJsonOptions.Default)!
+            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, ["a"], ["b"], "q", true), SystemTextJsonOptions.Default)!
             .AsObject();
 
         Assert.Equal([
                 "preferenceRtId", "stateRtId", "subjectId", "subject", "body", "renderingType", "newCount",
-                "seenRtIds", "skippedRtIds", "queryRtId", "sent"
+                "seenRtIds", "skippedRtIds", "queryRtId", "skipExistingRows", "sent"
             ],
             json.Select(property => property.Key));
     }
@@ -24,7 +24,7 @@ public class PreparedNotificationContractTests
     [Fact]
     public void RoundTrip_KeepsTheValuesCommitNeeds()
     {
-        var text = JsonSerializer.Serialize(new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, ["a"], ["b"], "q"),
+        var text = JsonSerializer.Serialize(new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, ["a"], ["b"], "q", true),
             SystemTextJsonOptions.Default);
 
         var back = JsonSerializer.Deserialize<PreparedNotification>(text, SystemTextJsonOptions.Default)!;
@@ -34,13 +34,15 @@ public class PreparedNotificationContractTests
         Assert.Equal(["a"], back.SeenRtIds);
         Assert.Equal(["b"], back.SkippedRtIds);
         Assert.Equal("q", back.QueryRtId);
+        Assert.Equal("s", back.SubjectId);
+        Assert.True(back.SkipExistingRows);
     }
 
     [Fact]
     public void RoundTrip_KeepsTheSentMarker()
     {
         var text = JsonSerializer.Serialize(
-            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, ["a"], ["b"], "q") with { Sent = true },
+            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, ["a"], ["b"], "q", true) with { Sent = true },
             SystemTextJsonOptions.Default);
 
         Assert.True(JsonSerializer.Deserialize<PreparedNotification>(text, SystemTextJsonOptions.Default)!.Sent);

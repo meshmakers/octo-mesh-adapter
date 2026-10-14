@@ -4,6 +4,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 
@@ -161,6 +162,99 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         tick.Prepared.Body.Should().NotContain(h.SerialOf(4));
         existing.Should().HaveCount(3);
     }
+
+    [Fact]
+    public async Task ChangingTheUserWithoutTheStudio_StartsTheNewUserFromScratch()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(2);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+        await h.TickAndCommitAsync(preference);
+
+        h.KnowSubject("user-b");
+        await UpdatePreferenceAsync(h, preference, "user-b", skipExistingRows: false);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeTrue();
+        tick.Prepared!.SubjectId.Should().Be("user-b");
+        tick.Prepared.NewCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ANewUserWhoGotNoMailYet_DoesNotShowTheLastMailOfThePreviousUser()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(2);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+        await h.TickAndCommitAsync(preference);
+
+        h.KnowSubject("user-b");
+        await UpdatePreferenceAsync(h, preference, "user-b", skipExistingRows: true);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAsync(preference);
+
+        tick.Sent.Should().BeFalse();
+        var state = (await h.StateOfAsync(preference))!;
+        state.SubjectId.Should().Be("user-b");
+        state.LastSentAt.Should().BeNull();
+        state.SeenRtIds.Should().BeEmpty();
+        state.SkippedRtIds.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task SwitchingFromCatchUpToOnwardsWithoutTheStudio_IsANewStartThatHoldsBackWhatWasNotSent()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(2);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+        await h.TickAndCommitAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var unsent = await h.AddReadingsAsync(1);
+
+        await UpdatePreferenceAsync(h, preference, "user-a", skipExistingRows: true);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeFalse();
+        var state = (await h.StateOfAsync(preference))!;
+        state.SkippedRtIds.Should().Equal(unsent.Single().ToString());
+        state.SeenRtIds.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task AStateWrittenBeforeItRecordedTheRecipient_KeepsItsRows()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var rows = await h.AddReadingsAsync(2);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), null, preference,
+            new NotificationDeliveryStateChange(SeenRtIds: rows.Select(rtId => rtId.ToString()).ToList(),
+                QueryRtId: h.QueryRtId.ToString(), LastRunAt: h.Clock.UtcNow));
+
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeFalse();
+    }
+
+    private static Task UpdatePreferenceAsync(NotificationEngineHarness h, OctoObjectId preference, string subjectId,
+        bool skipExistingRows) =>
+        h.UpdateAsync<RtNotificationPreference>(SystemNotificationCkIds.RtCkNotificationPreferenceTypeId, preference,
+            p =>
+            {
+                p.SubjectId = subjectId;
+                p.CronExpression = "0 7 * * *";
+                p.TimeZone = "Europe/Vienna";
+                p.SkipExistingRows = skipExistingRows;
+            });
 
     [Fact]
     public async Task NothingNew_WritesNoStateUntilAnHourHasPassed()

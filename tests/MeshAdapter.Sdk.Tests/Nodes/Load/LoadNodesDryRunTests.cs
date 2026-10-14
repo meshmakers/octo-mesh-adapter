@@ -197,7 +197,7 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         var (dataContext, nodeContext, next) = BuildContext(config, recorder);
 
         var prepared = new PreparedNotification("670000000000000000009999", "000000000000000000000077", "user-1",
-            "Subject", "Body", "Html", 2, ["000000000000000000000001", "000000000000000000000002"], [], "000000000000000000000003");
+            "Subject", "Body", "Html", 2, ["000000000000000000000001", "000000000000000000000002"], [], "000000000000000000000003", true);
         PreparedNotification? ignored;
         A.CallTo(() => dataContext.TryGet(dataPath, out ignored))
             .Returns(true)

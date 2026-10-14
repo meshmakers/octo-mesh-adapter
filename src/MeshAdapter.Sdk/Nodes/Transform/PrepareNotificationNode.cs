@@ -29,6 +29,7 @@ internal sealed record PreparedNotification(
     [property: JsonPropertyName("seenRtIds")] IReadOnlyList<string> SeenRtIds,
     [property: JsonPropertyName("skippedRtIds")] IReadOnlyList<string> SkippedRtIds,
     [property: JsonPropertyName("queryRtId")] string QueryRtId,
+    [property: JsonPropertyName("skipExistingRows")] bool SkipExistingRows,
     [property: JsonPropertyName("sent")] bool Sent = false);
 
 [NodeConfiguration(typeof(PrepareNotificationNodeConfiguration))]
@@ -170,23 +171,30 @@ internal class PrepareNotificationNode(
                 simpleQuery.Sorting?.Any() == true);
 
             var queryRtId = query.RtId.ToString();
-            var seen = state?.SeenRtIds?.ToList();
-            var skipped = state?.SkippedRtIds?.ToList();
-            var decision = NotificationDigest.Decide(currentRtIds, seen, skipped,
-                preference.SkipExistingRows != false,
-                NotificationDigest.LastRunOfQuery(state?.LastRunAt, state?.QueryRtId, queryRtId),
+            var skipExistingRows = preference.SkipExistingRows != false;
+            var otherRecipient = NotificationDigest.RecipientChanged(state?.SubjectId, preference.SubjectId);
+            var seen = otherRecipient ? null : state?.SeenRtIds?.ToList();
+            var skipped = otherRecipient ? null : state?.SkippedRtIds?.ToList();
+            var lastRunAt = otherRecipient ||
+                            NotificationDigest.StartOptionChanged(state?.SkipExistingRows, skipExistingRows)
+                ? null
+                : NotificationDigest.LastRunOfQuery(state?.LastRunAt, state?.QueryRtId, queryRtId);
+            var decision = NotificationDigest.Decide(currentRtIds, seen, skipped, skipExistingRows, lastRunAt,
                 NotificationDigest.StartOf(preference.RtCreationDateTime, subscription.DeployedAt));
 
             if (decision.Action != NotificationDigestAction.Send)
             {
-                var unchanged = NotificationDigest.StateUnchanged(decision, seen, skipped) && state?.QueryRtId == queryRtId;
+                var unchanged = NotificationDigest.StateUnchanged(decision, seen, skipped) &&
+                                state?.QueryRtId == queryRtId && state.SubjectId == preference.SubjectId &&
+                                state.SkipExistingRows == skipExistingRows;
                 if (!dryRun && NotificationDigest.NeedsIdleWrite(decision.Action, unchanged, state?.LastError,
                         state?.LastRunAt, now))
                 {
                     await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
                         new NotificationDeliveryStateChange(SeenRtIds: unchanged ? null : decision.SeenRtIds,
                             SkippedRtIds: unchanged ? null : decision.SkippedRtIds, QueryRtId: queryRtId,
-                            LastRunAt: now, ClearLastError: true));
+                            SubjectId: preference.SubjectId, SkipExistingRows: skipExistingRows, LastRunAt: now,
+                            ClearLastError: true, ClearLastSentAt: otherRecipient));
                 }
 
                 if (decision.Action == NotificationDigestAction.RecordSilently)
@@ -259,7 +267,7 @@ internal class PrepareNotificationNode(
 
             dataContext.Set(c.TargetPath, new PreparedNotification(preferenceRtId.ToString(), stateRtId?.ToString(),
                     preference.SubjectId, rendered.Subject, rendered.Body, renderingType, decision.NewRtIds.Count,
-                    decision.SeenRtIds, decision.SkippedRtIds, queryRtId),
+                    decision.SeenRtIds, decision.SkippedRtIds, queryRtId, skipExistingRows),
                 c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
             await next(dataContext, nodeContext);
         }
@@ -272,6 +280,7 @@ internal class PrepareNotificationNode(
                 await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId, sent
                     ? new NotificationDeliveryStateChange(SeenRtIds: sentNotification!.SeenRtIds,
                         SkippedRtIds: sentNotification.SkippedRtIds, QueryRtId: sentNotification.QueryRtId,
+                        SubjectId: sentNotification.SubjectId, SkipExistingRows: sentNotification.SkipExistingRows,
                         LastRunAt: now, LastSentAt: now,
                         LastError: ex.Message)
                     : new NotificationDeliveryStateChange(LastError: ex.Message));

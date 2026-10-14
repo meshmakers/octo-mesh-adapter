@@ -13,11 +13,14 @@ internal sealed record NotificationDeliveryStateChange(
     IReadOnlyCollection<string>? SeenRtIds = null,
     IReadOnlyCollection<string>? SkippedRtIds = null,
     string? QueryRtId = null,
+    string? SubjectId = null,
+    bool? SkipExistingRows = null,
     DateTime? LastRunAt = null,
     DateTime? LastSentAt = null,
     string? LastError = null,
     DateTime? RunningSince = null,
-    bool ClearLastError = false);
+    bool ClearLastError = false,
+    bool ClearLastSentAt = false);
 
 internal static class NotificationDeliveryStateStore
 {
@@ -138,12 +141,22 @@ internal static class NotificationDeliveryStateStore
             state.QueryRtId = change.QueryRtId;
         }
 
+        if (change.SubjectId != null)
+        {
+            state.SubjectId = change.SubjectId;
+        }
+
+        if (change.SkipExistingRows != null)
+        {
+            state.SkipExistingRows = change.SkipExistingRows;
+        }
+
         if (change.LastRunAt != null)
         {
             state.LastRunAt = change.LastRunAt;
         }
 
-        if (change.LastSentAt != null)
+        if (change.LastSentAt != null || change.ClearLastSentAt)
         {
             state.LastSentAt = change.LastSentAt;
         }

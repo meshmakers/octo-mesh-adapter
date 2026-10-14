@@ -53,7 +53,8 @@ public class CommitNotificationStateNode(
 
         await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
             new NotificationDeliveryStateChange(SeenRtIds: prepared.SeenRtIds, SkippedRtIds: prepared.SkippedRtIds,
-                QueryRtId: prepared.QueryRtId, LastRunAt: now, LastSentAt: now, ClearLastError: true));
+                QueryRtId: prepared.QueryRtId, SubjectId: prepared.SubjectId,
+                SkipExistingRows: prepared.SkipExistingRows, LastRunAt: now, LastSentAt: now, ClearLastError: true));
 
         nodeContext.Info("Notification for preference '{0}' sent with {1} new row(s)", preferenceRtId,
             prepared.NewCount);

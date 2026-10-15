@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json.Serialization;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -11,11 +12,27 @@ internal enum NotificationDigestAction
     Send
 }
 
+internal sealed record SentRow(
+    [property: JsonPropertyName("rtId")] string RtId,
+    [property: JsonPropertyName("sentAt")] DateTime SentAt,
+    [property: JsonPropertyName("changedAt")] DateTime ChangedAt);
+
+internal sealed record DeliveryMemory(
+    DateTime? ProcessedUntil,
+    IReadOnlyList<SentRow> SentRows,
+    string? QueryRtId,
+    string? SubjectId,
+    bool? SkipExistingRows,
+    DateTime? LastRunAt);
+
+internal sealed record NotificationPlan(bool RecordOnly, DateTime? ReadFrom, DateTime? ProcessedUntil,
+    IReadOnlyList<SentRow> SentRows);
+
 internal sealed record NotificationDigestDecision(
     NotificationDigestAction Action,
     IReadOnlyList<string> NewRtIds,
-    IReadOnlyList<string> SeenRtIds,
-    IReadOnlyList<string> SkippedRtIds);
+    DateTime? ProcessedUntil,
+    IReadOnlyList<SentRow> SentRows);
 
 internal sealed record NotificationRecipient(string RtId, string? SubjectId, DateTime? CreatedAt);
 
@@ -38,7 +55,13 @@ internal static class NotificationDigest
 {
     public const int MaxRowsPerMail = 100;
 
-    public const int MaxTrackedRows = 50_000;
+    public const int RowsPerRun = 10_000;
+
+    public const int MaxSentRows = 10_000;
+
+    public static readonly TimeSpan Overlap = TimeSpan.FromMinutes(5);
+
+    public static readonly TimeSpan SentRowRetention = TimeSpan.FromDays(30);
 
     public static readonly TimeSpan LeaseExpiry = TimeSpan.FromMinutes(10);
 
@@ -68,49 +91,76 @@ internal static class NotificationDigest
         action == NotificationDigestAction.RecordSilently || !sameRows || !string.IsNullOrEmpty(lastError) ||
         lastRunAt is not { } ranAt || now - ranAt >= IdleRecordInterval;
 
-    public static bool RecipientChanged(string? recordedSubjectId, string? currentSubjectId) =>
-        recordedSubjectId != null && recordedSubjectId != currentSubjectId;
-
-    public static bool StartOptionChanged(bool? recordedSkipExistingRows, bool currentSkipExistingRows) =>
-        recordedSkipExistingRows != null && recordedSkipExistingRows != currentSkipExistingRows;
-
-    public static DateTime? LastRunOfQuery(DateTime? lastRunAt, string? recordedQueryRtId, string currentQueryRtId) =>
-        recordedQueryRtId == null || recordedQueryRtId == currentQueryRtId ? lastRunAt : null;
-
-    public static NotificationDigestDecision Decide(IReadOnlyCollection<string> currentRtIds,
-        IReadOnlyCollection<string>? seenRtIds, IReadOnlyCollection<string>? skippedRtIds, bool skipExistingRows,
-        DateTime? lastRunAt, DateTime start)
+    public static NotificationPlan Plan(DeliveryMemory? memory, string? subjectId, bool skipExistingRows,
+        string queryRtId, DateTime start, DateTime now)
     {
-        var seen = new HashSet<string>(seenRtIds ?? [], StringComparer.Ordinal);
-        var firstRunAfterStart = lastRunAt == null || lastRunAt < start;
+        var otherRecipient = memory?.SubjectId != null && memory.SubjectId != subjectId;
+        var switchedToCatchUp = memory?.SkipExistingRows == true && !skipExistingRows;
+        var sentRows = otherRecipient || switchedToCatchUp
+            ? []
+            : Prune(memory?.SentRows ?? [], ReadFrom(memory?.ProcessedUntil), now);
+        var restart = memory?.LastRunAt is not { } lastRunAt || lastRunAt < start || otherRecipient ||
+                      memory.QueryRtId != null && memory.QueryRtId != queryRtId ||
+                      memory.SkipExistingRows != null && memory.SkipExistingRows != skipExistingRows ||
+                      skipExistingRows && memory.ProcessedUntil == null;
 
-        IReadOnlyList<string> skippedAfter;
-        if (!skipExistingRows)
+        return restart
+            ? new NotificationPlan(skipExistingRows, null, null, sentRows)
+            : new NotificationPlan(false, ReadFrom(memory!.ProcessedUntil), memory.ProcessedUntil, sentRows);
+    }
+
+    public static DateTime? ReadFrom(DateTime? processedUntil) =>
+        processedUntil is { } until && until > DateTime.MinValue + Overlap ? until - Overlap : null;
+
+    public static NotificationDigestDecision RecordStart(NotificationPlan plan, DateTime? latestChange, DateTime now)
+    {
+        var processedUntil = latestChange is { } latest ? latest + Overlap : DateTime.MinValue;
+        return new NotificationDigestDecision(NotificationDigestAction.RecordSilently, [], processedUntil,
+            Prune(plan.SentRows, ReadFrom(processedUntil), now));
+    }
+
+    public static NotificationDigestDecision Decide(NotificationPlan plan, IReadOnlyList<NotificationCandidate> page,
+        DateTime now)
+    {
+        var sent = new HashSet<string>(plan.SentRows.Select(row => row.RtId), StringComparer.Ordinal);
+        var newRows = page.Where(row => !sent.Contains(row.RtId.ToString())).DistinctBy(row => row.RtId).ToList();
+        var processedUntil = page.Count > 0 ? page.Max(row => row.ChangedAt) : plan.ProcessedUntil;
+        if (plan.ProcessedUntil is { } before && processedUntil < before)
         {
-            skippedAfter = [];
-        }
-        else if (firstRunAfterStart)
-        {
-            skippedAfter = currentRtIds.Where(rtId => !seen.Contains(rtId)).ToList();
-        }
-        else
-        {
-            var skipped = new HashSet<string>(skippedRtIds ?? [], StringComparer.Ordinal);
-            skippedAfter = currentRtIds.Where(skipped.Contains).ToList();
+            processedUntil = before;
         }
 
-        var skippedAfterSet = new HashSet<string>(skippedAfter, StringComparer.Ordinal);
-        var seenAfter = currentRtIds.Where(rtId => !skippedAfterSet.Contains(rtId)).ToList();
-
-        if (firstRunAfterStart && skipExistingRows)
-        {
-            return new NotificationDigestDecision(NotificationDigestAction.RecordSilently, [], seenAfter, skippedAfter);
-        }
-
-        var newRtIds = seenAfter.Where(rtId => !seen.Contains(rtId)).ToList();
         return new NotificationDigestDecision(
-            newRtIds.Count == 0 ? NotificationDigestAction.NothingNew : NotificationDigestAction.Send,
-            newRtIds, seenAfter, skippedAfter);
+            newRows.Count == 0 ? NotificationDigestAction.NothingNew : NotificationDigestAction.Send,
+            newRows.Select(row => row.RtId.ToString()).ToList(), processedUntil,
+            Remember(plan.SentRows, newRows, processedUntil, now));
+    }
+
+    public static IReadOnlyList<SentRow> Prune(IEnumerable<SentRow> sentRows, DateTime? readFrom, DateTime now) =>
+        sentRows.Where(row => CanBeReadAgain(row, readFrom) || now - row.SentAt < SentRowRetention).ToList();
+
+    private static bool CanBeReadAgain(SentRow row, DateTime? readFrom) => readFrom is not { } from || row.ChangedAt > from;
+
+    public static bool MemoryUnchanged(DeliveryMemory? memory, NotificationDigestDecision decision, string queryRtId,
+        string? subjectId, bool skipExistingRows) =>
+        memory != null && memory.ProcessedUntil == decision.ProcessedUntil && memory.QueryRtId == queryRtId &&
+        memory.SubjectId == subjectId && memory.SkipExistingRows == skipExistingRows &&
+        memory.SentRows.Count == decision.SentRows.Count &&
+        memory.SentRows.Select(row => row.RtId).ToHashSet(StringComparer.Ordinal)
+            .SetEquals(decision.SentRows.Select(row => row.RtId));
+
+    private static IReadOnlyList<SentRow> Remember(IReadOnlyList<SentRow> sentRows,
+        IEnumerable<NotificationCandidate> rows, DateTime? processedUntil, DateTime now)
+    {
+        var added = rows.Select(row => new SentRow(row.RtId.ToString(), now, row.ChangedAt)).ToList();
+        var addedIds = added.Select(row => row.RtId).ToHashSet(StringComparer.Ordinal);
+        var all = added.Concat(sentRows.Where(row => !addedIds.Contains(row.RtId))).ToList();
+        var readFrom = ReadFrom(processedUntil);
+        var readAgain = all.Where(row => CanBeReadAgain(row, readFrom)).ToList();
+        var rest = all.Where(row => !CanBeReadAgain(row, readFrom) && now - row.SentAt < SentRowRetention)
+            .OrderByDescending(row => row.SentAt)
+            .Take(Math.Max(0, MaxSentRows - readAgain.Count));
+        return readAgain.Concat(rest).ToList();
     }
 
     public static bool HasOlderTwin(NotificationRecipient recipient, IEnumerable<NotificationRecipient> recipients) =>
@@ -123,17 +173,6 @@ internal static class NotificationDigest
     {
         var byCreation = Nullable.Compare(candidate.CreatedAt, than.CreatedAt);
         return byCreation != 0 ? byCreation < 0 : string.CompareOrdinal(candidate.RtId, than.RtId) < 0;
-    }
-
-    public static bool StateUnchanged(NotificationDigestDecision decision, IReadOnlyCollection<string>? seenRtIds,
-        IReadOnlyCollection<string>? skippedRtIds) =>
-        seenRtIds != null &&
-        new HashSet<string>(seenRtIds, StringComparer.Ordinal).SetEquals(decision.SeenRtIds) &&
-        new HashSet<string>(skippedRtIds ?? [], StringComparer.Ordinal).SetEquals(decision.SkippedRtIds);
-
-    public static IReadOnlyList<string> MailOrder(IReadOnlyList<string> currentRtIds, bool querySorts)
-    {
-        return querySorts ? currentRtIds : currentRtIds.Order(StringComparer.Ordinal).ToList();
     }
 
     public static RenderedNotification Render(string? subjectTemplate, string? bodyTemplate,

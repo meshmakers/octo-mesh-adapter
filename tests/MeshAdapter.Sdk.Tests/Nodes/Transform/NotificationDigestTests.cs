@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
@@ -16,126 +17,265 @@ public class NotificationDigestTests
         Assert.Equal(Start, NotificationDigest.StartOf(null, Start));
     }
 
-    [Fact]
-    public void Decide_OnwardsFirstRun_RecordsTheCurrentResultWithoutMailing()
-    {
-        var decision = NotificationDigest.Decide(["a", "b"], null, null, skipExistingRows: true, lastRunAt: null, Start);
+    private static DeliveryMemory Memory(DateTime? processedUntil, IReadOnlyList<SentRow>? sentRows = null,
+        string? queryRtId = "q", string? subjectId = "user-a", bool? skipExistingRows = true,
+        DateTime? lastRunAt = null) =>
+        new(processedUntil, sentRows ?? [], queryRtId, subjectId, skipExistingRows, lastRunAt ?? AfterStart);
 
-        Assert.Equal(NotificationDigestAction.RecordSilently, decision.Action);
-        Assert.Empty(decision.NewRtIds);
+    private static NotificationCandidate Row(string rtId, DateTime changedAt) =>
+        new(new Meshmakers.Octo.ConstructionKit.Contracts.OctoObjectId(rtId), changedAt);
+
+    private const string A = "670000000000000000000001";
+    private const string B = "670000000000000000000002";
+    private const string C = "670000000000000000000003";
+
+    [Fact]
+    public void Plan_OnwardsFirstRun_RecordsTheStartWithoutReading()
+    {
+        var plan = NotificationDigest.Plan(null, "user-a", skipExistingRows: true, "q", Start, Now);
+
+        Assert.True(plan.RecordOnly);
     }
 
     [Fact]
-    public void Decide_CatchUpFirstRun_MailsEverythingOnce()
+    public void Plan_CatchUpFirstRun_ReadsFromTheBeginning()
     {
-        var decision = NotificationDigest.Decide(["a", "b"], null, null, skipExistingRows: false, lastRunAt: null, Start);
+        var plan = NotificationDigest.Plan(null, "user-a", skipExistingRows: false, "q", Start, Now);
+
+        Assert.False(plan.RecordOnly);
+        Assert.Null(plan.ReadFrom);
+    }
+
+    [Fact]
+    public void Plan_LaterRun_ReadsFromTheWatermarkMinusTheOverlap()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+
+        Assert.False(plan.RecordOnly);
+        Assert.Equal(Now.AddHours(-1) - NotificationDigest.Overlap, plan.ReadFrom);
+    }
+
+    [Fact]
+    public void Plan_OnwardsStartWithNoMatchingRows_ReadsEverythingLater()
+    {
+        var plan = NotificationDigest.Plan(Memory(DateTime.MinValue), "user-a", true, "q", Start, Now);
+
+        Assert.False(plan.RecordOnly);
+        Assert.Null(plan.ReadFrom);
+    }
+
+    [Theory]
+    [InlineData("other-query", "user-a", true)]
+    [InlineData("q", "user-b", true)]
+    [InlineData("q", "user-a", false)]
+    public void Plan_AnotherQueryUserOrStartOption_IsANewStart(string queryRtId, string subjectId, bool onwards)
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), subjectId, onwards, queryRtId, Start, Now);
+
+        if (onwards)
+        {
+            Assert.True(plan.RecordOnly);
+        }
+        else
+        {
+            Assert.Null(plan.ReadFrom);
+        }
+    }
+
+    [Fact]
+    public void Plan_ARedeployAfterTheLastRun_IsANewStart()
+    {
+        var plan = NotificationDigest.Plan(Memory(BeforeStart, lastRunAt: BeforeStart), "user-a", true, "q", Start, Now);
+
+        Assert.True(plan.RecordOnly);
+    }
+
+    [Fact]
+    public void Plan_AnotherUser_ForgetsWhatThePreviousUserGot()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]), "user-b",
+            false, "q", Start, Now);
+
+        Assert.Empty(plan.SentRows);
+    }
+
+    [Fact]
+    public void Plan_SwitchToCatchUp_SendsTheFullSummaryAgain()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]), "user-a",
+            false, "q", Start, Now);
+
+        Assert.Null(plan.ReadFrom);
+        Assert.Empty(plan.SentRows);
+    }
+
+    [Fact]
+    public void Plan_CatchUpRedeployed_KeepsWhatWasSent()
+    {
+        var plan = NotificationDigest.Plan(
+            Memory(BeforeStart, [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))], skipExistingRows: false, lastRunAt: BeforeStart),
+            "user-a", false, "q", Start, Now);
+
+        Assert.Null(plan.ReadFrom);
+        Assert.Equal([A], plan.SentRows.Select(row => row.RtId));
+    }
+
+    [Fact]
+    public void Plan_SentRowsOlderThanThirtyDays_AreForgotten()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1),
+                [new SentRow(A, Now.AddDays(-31), Now.AddDays(-31)), new SentRow(B, Now.AddDays(-29), Now.AddDays(-29))]),
+            "user-a", true, "q", Start, Now);
+
+        Assert.Equal([B], plan.SentRows.Select(row => row.RtId));
+    }
+
+    [Fact]
+    public void Decide_NewRows_AreSentAndRemembered()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+
+        var decision = NotificationDigest.Decide(plan, [Row(A, Now.AddMinutes(-30)), Row(B, Now.AddMinutes(-10))], Now);
 
         Assert.Equal(NotificationDigestAction.Send, decision.Action);
-        Assert.Equal(["a", "b"], decision.NewRtIds);
+        Assert.Equal([A, B], decision.NewRtIds);
+        Assert.Equal(Now.AddMinutes(-10), decision.ProcessedUntil);
+        Assert.Equal([A, B], decision.SentRows.Select(row => row.RtId).Order());
     }
 
     [Fact]
-    public void Decide_LaterRun_MailsOnlyRowsNotSeenBefore()
+    public void Decide_ARowAlreadySent_IsNotSentAgain()
     {
-        var decision = NotificationDigest.Decide(["a", "b", "c"], ["a", "b"], null, skipExistingRows: true, AfterStart, Start);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]), "user-a",
+            true, "q", Start, Now);
 
-        Assert.Equal(NotificationDigestAction.Send, decision.Action);
-        Assert.Equal(["c"], decision.NewRtIds);
-    }
-
-    [Fact]
-    public void Decide_RowThatFailsDaysAfterCreation_IsStillNew()
-    {
-        var decision = NotificationDigest.Decide(["old", "late"], ["old", "newer"], null, skipExistingRows: true, AfterStart, Start);
-
-        Assert.Equal(["late"], decision.NewRtIds);
-    }
-
-    [Fact]
-    public void Decide_NothingNew_SendsNothing()
-    {
-        var decision = NotificationDigest.Decide(["a"], ["a", "b"], null, skipExistingRows: false, AfterStart, Start);
+        var decision = NotificationDigest.Decide(plan, [Row(A, Now.AddMinutes(-30))], Now);
 
         Assert.Equal(NotificationDigestAction.NothingNew, decision.Action);
     }
 
     [Fact]
-    public void Decide_OnwardsAfterRedeploy_RecordsRowsFromThePauseSilently()
+    public void Decide_NothingChanged_KeepsTheWatermark()
     {
-        var decision = NotificationDigest.Decide(["a", "paused"], ["a"], null, skipExistingRows: true, BeforeStart, Start);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+
+        var decision = NotificationDigest.Decide(plan, [], Now);
+
+        Assert.Equal(NotificationDigestAction.NothingNew, decision.Action);
+        Assert.Equal(Now.AddHours(-1), decision.ProcessedUntil);
+    }
+
+    [Fact]
+    public void Decide_RowsInsideTheOverlap_NeverMoveTheWatermarkBack()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+
+        var decision = NotificationDigest.Decide(plan, [Row(A, Now.AddHours(-1).AddMinutes(-2))], Now);
+
+        Assert.Equal(Now.AddHours(-1), decision.ProcessedUntil);
+    }
+
+    [Fact]
+    public void Decide_RememberedRows_AreCappedToTheMostRecent()
+    {
+        var old = Enumerable.Range(0, NotificationDigest.MaxSentRows)
+            .Select(i => new SentRow($"6700000000000000{i:D8}", Now.AddDays(-1), Now.AddDays(-1))).ToList();
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), old), "user-a", true, "q", Start, Now);
+
+        var decision = NotificationDigest.Decide(plan, [Row(C, Now.AddMinutes(-1))], Now);
+
+        Assert.Equal(NotificationDigest.MaxSentRows, decision.SentRows.Count);
+        Assert.Contains(decision.SentRows, row => row.RtId == C);
+    }
+
+    [Fact]
+    public void Plan_ARowTheNextRunReadsAgain_IsRememberedBeyondThirtyDays()
+    {
+        var quietSince = Now.AddDays(-40);
+        var plan = NotificationDigest.Plan(Memory(quietSince, [new SentRow(A, quietSince, quietSince)]), "user-a",
+            true, "q", Start, Now);
+
+        Assert.Equal([A], plan.SentRows.Select(row => row.RtId));
+    }
+
+    [Fact]
+    public void Decide_AFloodInsideTheOverlap_IsRememberedBeyondTheCap()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, Now);
+        var flood = Enumerable.Range(0, NotificationDigest.MaxSentRows + 5)
+            .Select(i => Row($"6700000000000000{i:D8}", Now.AddMinutes(-1))).ToList();
+
+        var decision = NotificationDigest.Decide(plan, flood, Now);
+
+        Assert.Equal(NotificationDigest.MaxSentRows + 5, decision.SentRows.Count);
+    }
+
+    [Theory]
+    [InlineData("SerialNumber", false)]
+    [InlineData("Address.City", false)]
+    [InlineData("Parent.Process->Success", true)]
+    [InlineData("Children::count", true)]
+    public void FiltersThroughAssociations_OnlyForAPathIntoAnotherEntity(string attributePath, bool expected)
+    {
+        var query = new Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2.RtSimpleRtQuery
+        {
+            FieldFilter = new Meshmakers.Octo.Runtime.Contracts.RepositoryEntities.AttributeRecordValueList<
+                Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2.RtFieldFilterRecord>
+            {
+                new() { AttributePath = attributePath, ComparisonValue = "x" }
+            }
+        };
+
+        Assert.Equal(expected, SimpleRtQueryExecution.FiltersThroughAssociations(query));
+    }
+
+    [Fact]
+    public void RecordStart_ReadsOnFromTheLatestChange_WithoutRecordingAnyRow()
+    {
+        var latest = Now.AddMinutes(-1);
+        var plan = NotificationDigest.Plan(null, "user-a", true, "q", Start, Now);
+
+        var decision = NotificationDigest.RecordStart(plan, latest, Now);
 
         Assert.Equal(NotificationDigestAction.RecordSilently, decision.Action);
+        Assert.Equal(latest, NotificationDigest.ReadFrom(decision.ProcessedUntil));
+        Assert.Empty(decision.SentRows);
     }
 
     [Fact]
-    public void Decide_CatchUpAfterRedeploy_MailsRowsFromThePause()
+    public void RecordStart_KeepsTheRowsAlreadySent()
     {
-        var decision = NotificationDigest.Decide(["a", "paused"], ["a"], null, skipExistingRows: false, BeforeStart, Start);
+        var memory = Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))],
+            skipExistingRows: false);
+        var plan = NotificationDigest.Plan(memory, "user-a", true, "q", Start, Now);
 
-        Assert.Equal(NotificationDigestAction.Send, decision.Action);
-        Assert.Equal(["paused"], decision.NewRtIds);
+        var decision = NotificationDigest.RecordStart(plan, Now.AddMinutes(-1), Now);
+
+        Assert.Equal([A], decision.SentRows.Select(row => row.RtId));
     }
 
     [Fact]
-    public void Decide_OnwardsFirstRun_KeepsTheExistingRowsApartFromTheSentOnes()
+    public void RecordStart_WithoutMatchingRows_StartsAtTheBeginning()
     {
-        var decision = NotificationDigest.Decide(["a", "b", "c"], ["a"], null, skipExistingRows: true, lastRunAt: null, Start);
+        var plan = NotificationDigest.Plan(null, "user-a", true, "q", Start, Now);
 
-        Assert.Equal(["a"], decision.SeenRtIds);
-        Assert.Equal(["b", "c"], decision.SkippedRtIds);
+        var decision = NotificationDigest.RecordStart(plan, null, Now);
+
+        Assert.Equal(DateTime.MinValue, decision.ProcessedUntil);
     }
 
     [Fact]
-    public void Decide_LaterOnwardsRun_MailsNeitherSentNorSkippedRows()
+    public void MemoryUnchanged_OnlyWhenWatermarkRowsAndRecipientAreTheSame()
     {
-        var decision = NotificationDigest.Decide(["a", "b", "c", "d"], ["a"], ["b", "c"], skipExistingRows: true,
-            AfterStart, Start);
+        var memory = Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]);
+        var same = new NotificationDigestDecision(NotificationDigestAction.NothingNew, [], Now.AddHours(-1),
+            [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]);
+        var moved = same with { ProcessedUntil = Now };
 
-        Assert.Equal(["d"], decision.NewRtIds);
-        Assert.Equal(["a", "d"], decision.SeenRtIds);
-        Assert.Equal(["b", "c"], decision.SkippedRtIds);
-    }
-
-    [Fact]
-    public void Decide_SwitchToCatchUp_MailsTheSkippedRowsButNotTheSentOnes()
-    {
-        var decision = NotificationDigest.Decide(["a", "b", "c"], ["a"], ["b", "c"], skipExistingRows: false,
-            lastRunAt: null, Start);
-
-        Assert.Equal(NotificationDigestAction.Send, decision.Action);
-        Assert.Equal(["b", "c"], decision.NewRtIds);
-        Assert.Equal(["a", "b", "c"], decision.SeenRtIds);
-        Assert.Empty(decision.SkippedRtIds);
-    }
-
-    [Fact]
-    public void Decide_CatchUpWithoutARestart_StillMailsTheSkippedRows()
-    {
-        var decision = NotificationDigest.Decide(["a", "b"], ["a"], ["b"], skipExistingRows: false, AfterStart, Start);
-
-        Assert.Equal(["b"], decision.NewRtIds);
-        Assert.Empty(decision.SkippedRtIds);
-    }
-
-    [Fact]
-    public void Decide_SwitchBackToOnwards_SkipsOnlyWhatWasNotSent()
-    {
-        var decision = NotificationDigest.Decide(["a", "b", "new"], ["a", "b"], null, skipExistingRows: true,
-            lastRunAt: null, Start);
-
-        Assert.Equal(NotificationDigestAction.RecordSilently, decision.Action);
-        Assert.Equal(["a", "b"], decision.SeenRtIds);
-        Assert.Equal(["new"], decision.SkippedRtIds);
-    }
-
-    [Fact]
-    public void Decide_RowsThatLeftTheQuery_AreForgottenInBothSets()
-    {
-        var decision = NotificationDigest.Decide(["a", "b"], ["a", "gone"], ["b", "left"], skipExistingRows: true,
-            AfterStart, Start);
-
-        Assert.Equal(["a"], decision.SeenRtIds);
-        Assert.Equal(["b"], decision.SkippedRtIds);
+        Assert.True(NotificationDigest.MemoryUnchanged(memory, same, "q", "user-a", true));
+        Assert.False(NotificationDigest.MemoryUnchanged(memory, moved, "q", "user-a", true));
+        Assert.False(NotificationDigest.MemoryUnchanged(memory, same, "q", "user-b", true));
+        Assert.False(NotificationDigest.MemoryUnchanged(null, same, "q", "user-a", true));
     }
 
     [Fact]
@@ -172,19 +312,6 @@ public class NotificationDigestTests
         var blank = new NotificationRecipient("p2", null, AfterStart);
 
         Assert.False(NotificationDigest.HasOlderTwin(blank, [new NotificationRecipient("p1", null, Start), blank]));
-    }
-
-    [Fact]
-    public void LastRunOfQuery_AnotherQueryIsANewStart()
-    {
-        Assert.Null(NotificationDigest.LastRunOfQuery(AfterStart, "old-query", "new-query"));
-    }
-
-    [Fact]
-    public void LastRunOfQuery_SameQueryOrNoneRecordedKeepsTheLastRun()
-    {
-        Assert.Equal(AfterStart, NotificationDigest.LastRunOfQuery(AfterStart, "query", "query"));
-        Assert.Equal(AfterStart, NotificationDigest.LastRunOfQuery(AfterStart, null, "query"));
     }
 
     [Fact]
@@ -285,55 +412,6 @@ public class NotificationDigestTests
             TimeZoneInfo.Utc, 101, "Failed <EDA> processes");
 
         Assert.EndsWith("...and 1 more. Run the query 'Failed &lt;EDA&gt; processes' in the Studio to see all.", rendered.Body);
-    }
-
-    [Fact]
-    public void MailOrder_UnsortedQuery_ListsOldestFirstByRtId()
-    {
-        var order = NotificationDigest.MailOrder(["6accc8dfe40af9ce1161e1fd", "6accc8c5e40af9ce1161e1e3", "6accca3ae40af9ce1161e268"], querySorts: false);
-
-        Assert.Equal(["6accc8c5e40af9ce1161e1e3", "6accc8dfe40af9ce1161e1fd", "6accca3ae40af9ce1161e268"], order);
-    }
-
-    [Fact]
-    public void MailOrder_SortedQuery_KeepsTheQueryOrder()
-    {
-        var order = NotificationDigest.MailOrder(["c", "a", "b"], querySorts: true);
-
-        Assert.Equal(["c", "a", "b"], order);
-    }
-
-    [Fact]
-    public void StateUnchanged_SameSetsInAnotherOrder_IsUnchanged()
-    {
-        var decision = NotificationDigest.Decide(["b", "a", "c"], ["a", "b"], ["c"], skipExistingRows: true,
-            AfterStart, Start);
-
-        Assert.True(NotificationDigest.StateUnchanged(decision, ["b", "a"], ["c"]));
-    }
-
-    [Fact]
-    public void StateUnchanged_ARowThatLeftTheQuery_IsAChange()
-    {
-        var decision = NotificationDigest.Decide(["a"], ["a", "b"], null, skipExistingRows: false, AfterStart, Start);
-
-        Assert.False(NotificationDigest.StateUnchanged(decision, ["a", "b"], null));
-    }
-
-    [Fact]
-    public void StateUnchanged_ASkippedRowThatLeftTheQuery_IsAChange()
-    {
-        var decision = NotificationDigest.Decide(["a"], ["a"], ["gone"], skipExistingRows: true, AfterStart, Start);
-
-        Assert.False(NotificationDigest.StateUnchanged(decision, ["a"], ["gone"]));
-    }
-
-    [Fact]
-    public void StateUnchanged_NothingRecordedYet_IsAChange()
-    {
-        var decision = NotificationDigest.Decide([], null, null, skipExistingRows: false, AfterStart, Start);
-
-        Assert.False(NotificationDigest.StateUnchanged(decision, null, null));
     }
 
     [Fact]

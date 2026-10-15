@@ -5,13 +5,14 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 internal sealed record NotificationDeliveryStateChange(
-    IReadOnlyCollection<string>? SeenRtIds = null,
-    IReadOnlyCollection<string>? SkippedRtIds = null,
+    DateTime? ProcessedUntil = null,
+    IReadOnlyList<SentRow>? SentRows = null,
     string? QueryRtId = null,
     string? SubjectId = null,
     bool? SkipExistingRows = null,
@@ -44,6 +45,14 @@ internal static class NotificationDeliveryStateStore
         OctoObjectId preferenceRtId) =>
         FirstTargetAsync<RtNotificationPreference, RtNotificationDeliveryState>(repository, session, preferenceRtId,
             SystemNotificationCkIds.RtCkDeliveryStatePreferenceRoleId, GraphDirections.Inbound);
+
+    public static DeliveryMemory? MemoryOf(RtNotificationDeliveryState? state) =>
+        state == null
+            ? null
+            : new DeliveryMemory(state.ProcessedUntil,
+                state.SentRows?.Where(row => !string.IsNullOrEmpty(row.RowRtId))
+                    .Select(row => new SentRow(row.RowRtId!, row.SentAt, row.ChangedAt)).ToList() ?? [],
+                state.QueryRtId, state.SubjectId, state.SkipExistingRows, state.LastRunAt);
 
     public static OctoObjectId StateRtIdFor(OctoObjectId preferenceRtId)
     {
@@ -126,14 +135,20 @@ internal static class NotificationDeliveryStateStore
         OctoObjectId preferenceRtId, NotificationDeliveryStateChange change, AttributeNewerThanGuard? guard)
     {
         var state = new RtNotificationDeliveryState { RunningSince = change.RunningSince };
-        if (change.SeenRtIds != null)
+        if (change.ProcessedUntil != null)
         {
-            state.SeenRtIds = new AttributeStringValueList(change.SeenRtIds.ToList());
+            state.ProcessedUntil = change.ProcessedUntil;
         }
 
-        if (change.SkippedRtIds != null)
+        if (change.SentRows != null)
         {
-            state.SkippedRtIds = new AttributeStringValueList(change.SkippedRtIds.ToList());
+            var sentRows = new AttributeRecordValueList<RtSentRowRecord>();
+            foreach (var row in change.SentRows)
+            {
+                sentRows.Add(new RtSentRowRecord { RowRtId = row.RtId, SentAt = row.SentAt, ChangedAt = row.ChangedAt });
+            }
+
+            state.SentRows = sentRows;
         }
 
         if (change.QueryRtId != null)

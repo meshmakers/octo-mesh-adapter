@@ -26,8 +26,8 @@ internal sealed record PreparedNotification(
     [property: JsonPropertyName("body")] string Body,
     [property: JsonPropertyName("renderingType")] string RenderingType,
     [property: JsonPropertyName("newCount")] int NewCount,
-    [property: JsonPropertyName("seenRtIds")] IReadOnlyList<string> SeenRtIds,
-    [property: JsonPropertyName("skippedRtIds")] IReadOnlyList<string> SkippedRtIds,
+    [property: JsonPropertyName("processedUntil")] DateTime? ProcessedUntil,
+    [property: JsonPropertyName("sentRows")] IReadOnlyList<SentRow> SentRows,
     [property: JsonPropertyName("queryRtId")] string QueryRtId,
     [property: JsonPropertyName("skipExistingRows")] bool SkipExistingRows,
     [property: JsonPropertyName("sent")] bool Sent = false);
@@ -147,65 +147,63 @@ internal class PrepareNotificationNode(
                     query.GetType().Name);
             }
 
-            var matching = await NotificationQueryCache.GetOrRunAsync(
-                $"{etlContext.TenantId}|{subscription.RtId}|{simpleQuery.RtId}|{simpleQuery.RtChangedDateTime:O}", now,
-                async () =>
-                {
-                    // AB#5028 — scoped: the query reads tenant business data under the pipeline's identity,
-                    // which is the same for every preference, so the preferences of one firing share it.
-                    using var scopedSession = await etlContext.GetScopedSessionAsync();
-                    scopedSession.StartTransaction();
-                    var rtIds = await SimpleRtQueryExecution.FindRtIdsAsync(etlContext, ckCacheService,
-                        scopedSession, simpleQuery, NotificationDigest.MaxTrackedRows + 1);
-                    await scopedSession.CommitTransactionAsync();
-                    return rtIds;
-                });
-
-            if (matching.Count > NotificationDigest.MaxTrackedRows)
+            if (SimpleRtQueryExecution.FiltersThroughAssociations(simpleQuery))
             {
-                throw MeshAdapterPipelineExecutionException.NotificationQueryTooLarge(nodeContext, subscriptionName,
-                    NotificationDigest.MaxTrackedRows);
+                throw MeshAdapterPipelineExecutionException.NotificationQueryFiltersThroughAssociations(nodeContext,
+                    subscriptionName);
             }
-
-            var currentRtIds = NotificationDigest.MailOrder(matching.Select(rtId => rtId.ToString()).ToList(),
-                simpleQuery.Sorting?.Any() == true);
 
             var queryRtId = query.RtId.ToString();
             var skipExistingRows = preference.SkipExistingRows != false;
-            var otherRecipient = NotificationDigest.RecipientChanged(state?.SubjectId, preference.SubjectId);
-            var seen = otherRecipient ? null : state?.SeenRtIds?.ToList();
-            var skipped = otherRecipient ? null : state?.SkippedRtIds?.ToList();
-            var lastRunAt = otherRecipient ||
-                            NotificationDigest.StartOptionChanged(state?.SkipExistingRows, skipExistingRows)
-                ? null
-                : NotificationDigest.LastRunOfQuery(state?.LastRunAt, state?.QueryRtId, queryRtId);
-            var decision = NotificationDigest.Decide(currentRtIds, seen, skipped, skipExistingRows, lastRunAt,
-                NotificationDigest.StartOf(preference.RtCreationDateTime, subscription.DeployedAt));
+            var memory = NotificationDeliveryStateStore.MemoryOf(state);
+            var otherRecipient = memory?.SubjectId != null && memory.SubjectId != preference.SubjectId;
+            var plan = NotificationDigest.Plan(memory, preference.SubjectId, skipExistingRows, queryRtId,
+                NotificationDigest.StartOf(preference.RtCreationDateTime, subscription.DeployedAt), now);
+            var sentRtIds = plan.SentRows.Select(row => new OctoObjectId(row.RtId)).ToList();
+
+            NotificationDigestDecision decision;
+            // AB#5028 — scoped: the query reads tenant business data under the pipeline's identity.
+            using (var scopedSession = await etlContext.GetScopedSessionAsync())
+            {
+                scopedSession.StartTransaction();
+                if (plan.RecordOnly)
+                {
+                    var latestChange = await SimpleRtQueryExecution.FindLatestChangeAsync(repository, ckCacheService,
+                        scopedSession, simpleQuery);
+                    decision = NotificationDigest.RecordStart(plan, latestChange, now);
+                }
+                else
+                {
+                    var page = await SimpleRtQueryExecution.FindChangedAsync(repository, ckCacheService,
+                        scopedSession, simpleQuery, plan.ReadFrom, sentRtIds, NotificationDigest.RowsPerRun);
+                    decision = NotificationDigest.Decide(plan, page, now);
+                }
+
+                await scopedSession.CommitTransactionAsync();
+            }
 
             if (decision.Action != NotificationDigestAction.Send)
             {
-                var unchanged = NotificationDigest.StateUnchanged(decision, seen, skipped) &&
-                                state?.QueryRtId == queryRtId && state.SubjectId == preference.SubjectId &&
-                                state.SkipExistingRows == skipExistingRows;
+                var unchanged = NotificationDigest.MemoryUnchanged(memory, decision, queryRtId, preference.SubjectId,
+                    skipExistingRows);
                 if (!dryRun && NotificationDigest.NeedsIdleWrite(decision.Action, unchanged, state?.LastError,
                         state?.LastRunAt, now))
                 {
                     await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
-                        new NotificationDeliveryStateChange(SeenRtIds: unchanged ? null : decision.SeenRtIds,
-                            SkippedRtIds: unchanged ? null : decision.SkippedRtIds, QueryRtId: queryRtId,
+                        new NotificationDeliveryStateChange(ProcessedUntil: decision.ProcessedUntil,
+                            SentRows: unchanged ? null : decision.SentRows, QueryRtId: queryRtId,
                             SubjectId: preference.SubjectId, SkipExistingRows: skipExistingRows, LastRunAt: now,
                             ClearLastError: true, ClearLastSentAt: otherRecipient));
                 }
 
                 if (decision.Action == NotificationDigestAction.RecordSilently)
                 {
-                    nodeContext.Info("First run of preference '{0}': {1} existing row(s) recorded, nothing sent",
-                        preferenceRtId, currentRtIds.Count);
+                    nodeContext.Info("Start of preference '{0}': rows changed until {1:O} count as existing, nothing sent",
+                        preferenceRtId, decision.ProcessedUntil ?? DateTime.MinValue);
                 }
                 else
                 {
-                    nodeContext.Debug("Nothing new for preference '{0}' ({1} row(s))", preferenceRtId,
-                        currentRtIds.Count);
+                    nodeContext.Debug("Nothing new for preference '{0}'", preferenceRtId);
                 }
                 return;
             }
@@ -267,7 +265,7 @@ internal class PrepareNotificationNode(
 
             dataContext.Set(c.TargetPath, new PreparedNotification(preferenceRtId.ToString(), stateRtId?.ToString(),
                     preference.SubjectId, rendered.Subject, rendered.Body, renderingType, decision.NewRtIds.Count,
-                    decision.SeenRtIds, decision.SkippedRtIds, queryRtId, skipExistingRows),
+                    decision.ProcessedUntil, decision.SentRows, queryRtId, skipExistingRows),
                 c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
             await next(dataContext, nodeContext);
         }
@@ -278,8 +276,8 @@ internal class PrepareNotificationNode(
                 var sent = dataContext.TryGet<PreparedNotification>(c.TargetPath, out var sentNotification) &&
                            sentNotification is { Sent: true };
                 await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId, sent
-                    ? new NotificationDeliveryStateChange(SeenRtIds: sentNotification!.SeenRtIds,
-                        SkippedRtIds: sentNotification.SkippedRtIds, QueryRtId: sentNotification.QueryRtId,
+                    ? new NotificationDeliveryStateChange(ProcessedUntil: sentNotification!.ProcessedUntil,
+                        SentRows: sentNotification.SentRows, QueryRtId: sentNotification.QueryRtId,
                         SubjectId: sentNotification.SubjectId, SkipExistingRows: sentNotification.SkipExistingRows,
                         LastRunAt: now, LastSentAt: now,
                         LastError: ex.Message)

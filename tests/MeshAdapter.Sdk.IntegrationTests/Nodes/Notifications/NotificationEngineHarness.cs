@@ -74,7 +74,6 @@ internal sealed class NotificationEngineHarness
     public void Advance(TimeSpan by)
     {
         Clock.Advance(by);
-        NotificationQueryCache.Clear();
     }
 
     public async Task<IReadOnlyList<OctoObjectId>> AddReadingsAsync(int count, DateTime? sourceDate = null)
@@ -95,6 +94,35 @@ internal sealed class NotificationEngineHarness
     }
 
     public string SerialOf(int index) => $"{_prefix}-{index:D4}";
+
+    public async Task<OctoObjectId> AddForeignReadingAsync()
+    {
+        var reading = new RtEntity(NotificationEngineFixture.SensorReadingCkTypeId, OctoObjectId.GenerateNewId());
+        reading.SetAttributeRawValue("SerialNumber", $"X{_prefix}");
+        reading.SetAttributeRawValue("SourceDate", new DateTime(2026, 7, 1, 10, 0, 0, DateTimeKind.Utc));
+        await ApplyAsync([EntityUpdateInfo<RtEntity>.CreateInsert(reading)], []);
+        return reading.RtId;
+    }
+
+    public async Task SortQueryAsync(string attributePath, RtSortOrdersEnum sortOrder) =>
+        await UpdateAsync<RtSimpleRtQuery>(await SimpleQueryTypeIdAsync(), QueryRtId, query =>
+            query.Sorting = new AttributeRecordValueList<RtSortOrderItemRecord>
+            {
+                new() { AttributePath = attributePath, SortOrder = sortOrder }
+            });
+
+    public async Task FilterQueryAsync(string attributePath) =>
+        await UpdateAsync<RtSimpleRtQuery>(await SimpleQueryTypeIdAsync(), QueryRtId, query =>
+            query.FieldFilter = new AttributeRecordValueList<RtFieldFilterRecord>
+            {
+                new()
+                {
+                    AttributePath = "SerialNumber",
+                    Operator = RtFieldFilterOperatorEnum.MatchRegEx,
+                    ComparisonValue = $"^{_prefix}-"
+                },
+                new() { AttributePath = attributePath, Operator = RtFieldFilterOperatorEnum.Equals, ComparisonValue = "false" }
+            });
 
     public async Task<OctoObjectId> CreateSubscriptionAsync(bool deployed = true, string bodyTemplate = BodyTemplate)
     {

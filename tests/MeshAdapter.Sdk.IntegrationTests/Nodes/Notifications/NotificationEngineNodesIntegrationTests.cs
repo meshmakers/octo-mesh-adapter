@@ -1,6 +1,8 @@
 using System.Text.Json;
 using MeshAdapter.Sdk.IntegrationTests.Fixtures;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -31,7 +33,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     {
         var h = NewScenario();
         await h.CreateSubscriptionAsync();
-        var existing = await h.AddReadingsAsync(3);
+        await h.AddReadingsAsync(3);
         var preference = await h.CreatePreferenceAsync("user-a");
 
         var tick = await h.TickAsync(preference);
@@ -40,8 +42,9 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         tick.Sent.Should().BeFalse();
         var state = await h.StateOfAsync(preference);
         state.Should().NotBeNull();
-        state!.SkippedRtIds.Should().BeEquivalentTo(existing.Select(rtId => rtId.ToString()));
-        state.SeenRtIds.Should().BeNullOrEmpty();
+        state!.ProcessedUntil.Should().NotBeNull();
+        state.SentRows.Should().BeNullOrEmpty();
+        state.LastSentAt.Should().BeNull();
         state.QueryRtId.Should().Be(h.QueryRtId.ToString());
         state.LastRunAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
         state.RunningSince.Should().BeNull();
@@ -53,7 +56,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     {
         var h = NewScenario();
         await h.CreateSubscriptionAsync();
-        var existing = await h.AddReadingsAsync(3);
+        await h.AddReadingsAsync(3);
         var preference = await h.CreatePreferenceAsync("user-a");
         await h.TickAsync(preference);
         var stateRtId = (await h.StateOfAsync(preference))!.RtId;
@@ -70,8 +73,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         prepared.NewCount.Should().Be(1);
         prepared.Subject.Should().Be("1 new readings");
         prepared.Body.Should().Be($"{h.SerialOf(4)} at 2026-07-01 12:00");
-        prepared.SeenRtIds.Should().Equal(added.Single().ToString());
-        prepared.SkippedRtIds.Should().BeEquivalentTo(existing.Select(rtId => rtId.ToString()));
+        prepared.SentRows.Select(row => row.RtId).Should().Equal(added.Select(rtId => rtId.ToString()));
         prepared.StateRtId.Should().Be(stateRtId.ToString());
         prepared.SubjectId.Should().Be("user-a");
         prepared.QueryRtId.Should().Be(h.QueryRtId.ToString());
@@ -80,11 +82,11 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     }
 
     [Fact]
-    public async Task Commit_RecordsTheSentRows_KeepsTheHeldBackOnes_AndReleasesTheLease()
+    public async Task Commit_RecordsTheSentRows_AndReleasesTheLease()
     {
         var h = NewScenario();
         await h.CreateSubscriptionAsync();
-        var existing = await h.AddReadingsAsync(3);
+        await h.AddReadingsAsync(3);
         var preference = await h.CreatePreferenceAsync("user-a");
         await h.TickAsync(preference);
         h.Advance(TimeSpan.FromMinutes(1));
@@ -94,8 +96,8 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
 
         tick.Failure.Should().BeNull();
         var state = (await h.StateOfAsync(preference))!;
-        state.SeenRtIds.Should().Equal(added.Single().ToString());
-        state.SkippedRtIds.Should().BeEquivalentTo(existing.Select(rtId => rtId.ToString()));
+        state.SentRows!.Select(row => row.RowRtId).Should().Equal(added.Select(rtId => rtId.ToString()));
+        state.ProcessedUntil.Should().NotBeNull();
         state.LastSentAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
         state.LastRunAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
         state.RunningSince.Should().BeNull();
@@ -121,13 +123,13 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
 
         first.Sent.Should().BeTrue();
         first.Prepared!.NewCount.Should().Be(2);
-        first.Prepared.SkippedRtIds.Should().BeEmpty();
+        first.Prepared.SentRows.Should().HaveCount(2);
         second.Failure.Should().BeNull();
         second.Sent.Should().BeFalse();
     }
 
     [Fact]
-    public async Task SwitchingFromOnwardsToCatchUp_MailsExactlyTheHeldBackRows_NeverTheSentOne()
+    public async Task SwitchingFromOnwardsToCatchUp_SendsTheFullSummaryOnce()
     {
         var h = NewScenario();
         await h.CreateSubscriptionAsync();
@@ -151,15 +153,12 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
 
         tick.Failure.Should().BeNull();
         tick.Sent.Should().BeTrue();
-        tick.Prepared!.NewCount.Should().Be(3);
-        tick.Prepared.SkippedRtIds.Should().BeEmpty();
-        tick.Prepared.SeenRtIds.Should().HaveCount(4);
-        foreach (var index in new[] { 1, 2, 3 })
+        tick.Prepared!.NewCount.Should().Be(4);
+        foreach (var index in new[] { 1, 2, 3, 4 })
         {
             tick.Prepared.Body.Should().Contain(h.SerialOf(index));
         }
 
-        tick.Prepared.Body.Should().NotContain(h.SerialOf(4));
         existing.Should().HaveCount(3);
     }
 
@@ -201,12 +200,11 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var state = (await h.StateOfAsync(preference))!;
         state.SubjectId.Should().Be("user-b");
         state.LastSentAt.Should().BeNull();
-        state.SeenRtIds.Should().BeEmpty();
-        state.SkippedRtIds.Should().HaveCount(2);
+        state.SentRows.Should().BeNullOrEmpty("what user-a got is forgotten, and an Onwards start records no rows");
     }
 
     [Fact]
-    public async Task SwitchingFromCatchUpToOnwardsWithoutTheStudio_IsANewStartThatHoldsBackWhatWasNotSent()
+    public async Task SwitchingFromCatchUpToOnwardsWithoutTheStudio_IsANewStartThatSkipsWhatWasNotSent()
     {
         var h = NewScenario();
         await h.CreateSubscriptionAsync();
@@ -223,8 +221,11 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         tick.Failure.Should().BeNull();
         tick.Sent.Should().BeFalse();
         var state = (await h.StateOfAsync(preference))!;
-        state.SkippedRtIds.Should().Equal(unsent.Single().ToString());
-        state.SeenRtIds.Should().HaveCount(2);
+        state.SentRows!.Select(row => row.RowRtId).Should().NotContain(unsent.Single().ToString());
+        state.SentRows.Should().HaveCount(2);
+
+        h.Advance(TimeSpan.FromMinutes(1));
+        (await h.TickAsync(preference)).Sent.Should().BeFalse();
     }
 
     [Fact]
@@ -235,7 +236,8 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var rows = await h.AddReadingsAsync(2);
         var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
         await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), null, preference,
-            new NotificationDeliveryStateChange(SeenRtIds: rows.Select(rtId => rtId.ToString()).ToList(),
+            new NotificationDeliveryStateChange(ProcessedUntil: h.Clock.UtcNow,
+                SentRows: rows.Select(rtId => new SentRow(rtId.ToString(), h.Clock.UtcNow, h.Clock.UtcNow)).ToList(),
                 QueryRtId: h.QueryRtId.ToString(), LastRunAt: h.Clock.UtcNow));
 
         h.Advance(TimeSpan.FromMinutes(1));
@@ -277,7 +279,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         idle.RtVersion.Should().Be(recorded.RtVersion);
         idle.LastRunAt.Should().Be(recorded.LastRunAt);
         refreshed.LastRunAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
-        refreshed.SkippedRtIds.Should().BeEquivalentTo(recorded.SkippedRtIds);
+        refreshed.SentRows!.Select(row => row.RowRtId).Should().BeEquivalentTo(recorded.SentRows!.Select(row => row.RowRtId));
     }
 
     [Fact]
@@ -285,7 +287,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     {
         var h = NewScenario();
         await h.CreateSubscriptionAsync();
-        var existing = await h.AddReadingsAsync(3);
+        await h.AddReadingsAsync(3);
         var preference = await h.CreatePreferenceAsync("user-a");
         await h.TickAsync(preference);
         h.Advance(TimeSpan.FromMinutes(1));
@@ -297,8 +299,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Be("smtp is down");
         state.RunningSince.Should().BeNull();
-        state.SeenRtIds.Should().BeNullOrEmpty();
-        state.SkippedRtIds.Should().BeEquivalentTo(existing.Select(rtId => rtId.ToString()));
+        state.SentRows.Should().BeNullOrEmpty("the row that failed is not recorded as sent");
         state.LastSentAt.Should().BeNull();
     }
 
@@ -442,7 +443,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Contain("no longer exists");
         state.RunningSince.Should().BeNull();
-        state.SeenRtIds.Should().BeNullOrEmpty();
+        state.SentRows.Should().BeNullOrEmpty();
     }
 
     [Fact]
@@ -483,7 +484,8 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         tick.Sent.Should().BeFalse();
         var state = (await h.StateOfAsync(preference))!;
         state.QueryRtId.Should().Be(otherQuery.ToString());
-        state.SkippedRtIds.Should().HaveCount(5);
+        h.Advance(TimeSpan.FromMinutes(1));
+        (await h.TickAsync(preference)).Sent.Should().BeFalse();
     }
 
     [Fact]
@@ -534,7 +536,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var prepared = tick.Prepared!;
         prepared.NewCount.Should().Be(105);
         prepared.Subject.Should().Be("105 new readings");
-        prepared.SeenRtIds.Should().HaveCount(105);
+        prepared.SentRows.Should().HaveCount(105);
         prepared.Body.Should().Contain("...and 5 more.");
         Enumerable.Range(1, 105).Count(index => prepared.Body.Contains(h.SerialOf(index))).Should().Be(100);
     }
@@ -556,7 +558,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
 
         tick.Failure!.Message.Should().Be("commit failed");
         var state = (await h.StateOfAsync(preference))!;
-        state.SeenRtIds.Should().HaveCount(2);
+        state.SentRows.Should().HaveCount(2);
         state.LastSentAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
         state.LastError.Should().Be("commit failed");
         state.RunningSince.Should().BeNull();
@@ -565,6 +567,121 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var next = await h.TickAsync(preference);
         next.Failure.Should().BeNull();
         next.Sent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task MoreNewRowsThanOneRunReads_AreSentOverConsecutiveRuns_AndNeverTwice()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(NotificationDigest.RowsPerRun + 5);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var first = await h.TickAndCommitAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var second = await h.TickAndCommitAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var third = await h.TickAsync(preference);
+
+        first.Failure.Should().BeNull();
+        first.Prepared!.NewCount.Should().Be(NotificationDigest.RowsPerRun);
+        second.Failure.Should().BeNull();
+        second.Prepared!.NewCount.Should().Be(5);
+        third.Failure.Should().BeNull();
+        third.Sent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARowChangedAfterItWasSent_IsNotSentAgainWithinThirtyDays()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var rows = await h.AddReadingsAsync(1);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+        await h.TickAndCommitAsync(preference);
+
+        await h.UpdateAsync<RtEntity>(NotificationEngineFixture.SensorReadingCkTypeId, rows[0],
+            entity => entity.SetAttributeRawValue("SourceDate", new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc)));
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARowThatExistedBeforeAnOnwardsStart_IsSentWhenItChangesAfterIt()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var existing = await h.AddReadingsAsync(2);
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+
+        await h.UpdateAsync<RtEntity>(NotificationEngineFixture.SensorReadingCkTypeId, existing[0],
+            entity => entity.SetAttributeRawValue("SourceDate", new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc)));
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAndCommitAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeTrue();
+        tick.Prepared!.SentRows.Select(row => row.RtId).Should().Equal(existing[0].ToString());
+        h.Advance(TimeSpan.FromMinutes(1));
+        (await h.TickAsync(preference)).Sent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARowThatStartsToMatchLater_IsNew()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+        var outsider = await h.AddForeignReadingAsync();
+
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.TickAsync(preference);
+        await h.UpdateAsync<RtEntity>(NotificationEngineFixture.SensorReadingCkTypeId, outsider,
+            entity => entity.SetAttributeRawValue("SerialNumber", $"{h.SerialOf(1)[..^5]}-9999"));
+        h.Advance(TimeSpan.FromMinutes(1));
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeTrue();
+        tick.Prepared!.NewCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ASortedQuery_ListsTheNewRowsInItsOrder()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.SortQueryAsync("SerialNumber", RtSortOrdersEnum.Descending);
+        await h.AddReadingsAsync(3);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        var body = tick.Prepared!.Body;
+        body.IndexOf(h.SerialOf(3), StringComparison.Ordinal).Should()
+            .BeLessThan(body.IndexOf(h.SerialOf(1), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AQueryFilteringOnAnAssociatedEntity_IsRefusedWithAReason()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.FilterQueryAsync("Parent.Process->Success");
+        await h.AddReadingsAsync(1);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Sent.Should().BeFalse();
+        tick.Failure!.Message.Should().Contain("filters on an associated entity");
+        (await h.StateOfAsync(preference))!.LastError.Should().Contain("filters on an associated entity");
     }
 
     [Fact]

@@ -141,7 +141,7 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
     {
         var (h, preference) = await ScenarioAsync();
         await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), null, preference,
-            new NotificationDeliveryStateChange(SkippedRtIds: ["a"], LastRunAt: h.Clock.UtcNow));
+            new NotificationDeliveryStateChange(SentRows: [new SentRow("a", h.Clock.UtcNow, h.Clock.UtcNow)], LastRunAt: h.Clock.UtcNow));
 
         var saved = await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), null, preference,
             new NotificationDeliveryStateChange(LastError: "boom"));
@@ -150,7 +150,7 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         (await h.StateCountAsync(preference)).Should().Be(1);
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Be("boom");
-        state.SkippedRtIds.Should().Equal("a");
+        state.SentRows!.Select(row => row.RowRtId).Should().Equal("a");
     }
 
     private static Task<OctoObjectId> SaveAsync(NotificationEngineHarness h, OctoObjectId preference,

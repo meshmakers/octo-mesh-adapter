@@ -645,10 +645,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: No prepared notification found at path '{path}'. Place PrepareNotification@1 before this node.");
     }
 
-    public static Exception NotificationQueryTooLarge(INodeContext nodeContext, string subscriptionName, int maxRows)
+    public static Exception NotificationQueryFiltersThroughAssociations(INodeContext nodeContext,
+        string subscriptionName)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': the query returns more than the {maxRows} rows a notification can track. Narrow the query with a filter.");
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': the query filters on an associated entity. A notification sees a row as new when the row itself changes, so a change of the associated entity would never be noticed. Filter on attributes of the queried type only; columns may still show associated values.");
     }
 
 

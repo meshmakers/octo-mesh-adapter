@@ -36,7 +36,7 @@ public class CommitNotificationStateNode(
             {
                 preferenceRtId = prepared.PreferenceRtId,
                 newCount = prepared.NewCount,
-                seenCount = prepared.SeenRtIds.Count
+                sentRowCount = prepared.SentRows.Count
             });
             await next(dataContext, nodeContext);
             return;
@@ -52,7 +52,7 @@ public class CommitNotificationStateNode(
         var now = _timeProvider.GetUtcNow().UtcDateTime;
 
         await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
-            new NotificationDeliveryStateChange(SeenRtIds: prepared.SeenRtIds, SkippedRtIds: prepared.SkippedRtIds,
+            new NotificationDeliveryStateChange(ProcessedUntil: prepared.ProcessedUntil, SentRows: prepared.SentRows,
                 QueryRtId: prepared.QueryRtId, SubjectId: prepared.SubjectId,
                 SkipExistingRows: prepared.SkipExistingRows, LastRunAt: now, LastSentAt: now, ClearLastError: true));
 

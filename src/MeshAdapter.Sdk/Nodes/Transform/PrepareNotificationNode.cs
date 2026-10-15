@@ -30,6 +30,7 @@ internal sealed record PreparedNotification(
     [property: JsonPropertyName("sentRows")] IReadOnlyList<SentRow> SentRows,
     [property: JsonPropertyName("queryRtId")] string QueryRtId,
     [property: JsonPropertyName("skipExistingRows")] bool SkipExistingRows,
+    [property: JsonPropertyName("lease")] DateTime? Lease,
     [property: JsonPropertyName("sent")] bool Sent = false);
 
 [NodeConfiguration(typeof(PrepareNotificationNodeConfiguration))]
@@ -125,6 +126,7 @@ internal class PrepareNotificationNode(
         }
 
         var stateRtId = state?.RtId;
+        DateTime? lease = null;
 
         try
         {
@@ -193,7 +195,8 @@ internal class PrepareNotificationNode(
                         new NotificationDeliveryStateChange(ProcessedUntil: decision.ProcessedUntil,
                             SentRows: unchanged ? null : decision.SentRows, QueryRtId: queryRtId,
                             SubjectId: preference.SubjectId, SkipExistingRows: skipExistingRows, LastRunAt: now,
-                            ClearLastError: true, ClearLastSentAt: otherRecipient));
+                            ClearLastError: true, ClearLastSentAt: otherRecipient),
+                        NotificationDeliveryStateStore.Unleased(now, NotificationDigest.LeaseExpiry));
                 }
 
                 if (decision.Action == NotificationDigestAction.RecordSilently)
@@ -230,6 +233,7 @@ internal class PrepareNotificationNode(
                 }
 
                 stateRtId = leased;
+                lease = NotificationDeliveryStateStore.LeaseAt(now);
             }
 
             QueryResult result;
@@ -265,7 +269,7 @@ internal class PrepareNotificationNode(
 
             dataContext.Set(c.TargetPath, new PreparedNotification(preferenceRtId.ToString(), stateRtId?.ToString(),
                     preference.SubjectId, rendered.Subject, rendered.Body, renderingType, decision.NewRtIds.Count,
-                    decision.ProcessedUntil, decision.SentRows, queryRtId, skipExistingRows),
+                    decision.ProcessedUntil, decision.SentRows, queryRtId, skipExistingRows, lease),
                 c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
             await next(dataContext, nodeContext);
         }
@@ -280,8 +284,11 @@ internal class PrepareNotificationNode(
                         SentRows: sentNotification.SentRows, QueryRtId: sentNotification.QueryRtId,
                         SubjectId: sentNotification.SubjectId, SkipExistingRows: sentNotification.SkipExistingRows,
                         LastRunAt: now, LastSentAt: now,
-                        LastError: ex.Message)
-                    : new NotificationDeliveryStateChange(LastError: ex.Message));
+                        LastError: ex.Message, ReleaseLease: lease != null)
+                    : new NotificationDeliveryStateChange(LastError: ex.Message, ReleaseLease: lease != null),
+                    lease is { } held
+                        ? NotificationDeliveryStateStore.HeldBy(held)
+                        : NotificationDeliveryStateStore.Unleased(now, NotificationDigest.LeaseExpiry));
             }
             catch (Exception bookkeepingException)
             {

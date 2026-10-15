@@ -153,6 +153,71 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         state.SentRows!.Select(row => row.RowRtId).Should().Equal("a");
     }
 
+    [Fact]
+    public async Task AWriteWithoutTheLease_LeavesARunningLeaseAndItsStateAlone()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var othersLease = Ms(h.Clock.UtcNow.AddMinutes(-2));
+        var state = await SaveAsync(h, preference, othersLease);
+
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastError: "stale"),
+            NotificationDeliveryStateStore.Unleased(h.Clock.UtcNow, Expiry));
+
+        var after = (await h.StateOfAsync(preference))!;
+        after.RunningSince.Should().Be(othersLease);
+        after.LastError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AWriteWithoutTheLease_IsAppliedWhileNoRunHoldsIt_AndKeepsTheLeaseField()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var expired = Ms(h.Clock.UtcNow.AddMinutes(-11));
+        var state = await SaveAsync(h, preference, expired);
+
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastError: "boom"),
+            NotificationDeliveryStateStore.Unleased(h.Clock.UtcNow, Expiry));
+
+        var after = (await h.StateOfAsync(preference))!;
+        after.LastError.Should().Be("boom");
+        after.RunningSince.Should().Be(expired);
+    }
+
+    [Fact]
+    public async Task AWriteOfARunWhoseLeaseWasTakenOver_LeavesTheNewerRunsLeaseAndStateAlone()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var oldLease = Ms(h.Clock.UtcNow.AddMinutes(-12));
+        var newLease = Ms(h.Clock.UtcNow.AddMinutes(-1));
+        var state = await SaveAsync(h, preference, newLease);
+
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastSentAt: h.Clock.UtcNow, ReleaseLease: true),
+            NotificationDeliveryStateStore.HeldBy(oldLease));
+
+        var after = (await h.StateOfAsync(preference))!;
+        after.RunningSince.Should().Be(newLease);
+        after.LastSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AWriteOfTheLeaseHolder_IsAppliedAndReleasesTheLease()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var lease = Ms(h.Clock.UtcNow.AddMinutes(-1));
+        var state = await SaveAsync(h, preference, lease);
+
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastSentAt: h.Clock.UtcNow, ReleaseLease: true),
+            NotificationDeliveryStateStore.HeldBy(lease));
+
+        var after = (await h.StateOfAsync(preference))!;
+        after.RunningSince.Should().BeNull();
+        after.LastSentAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
+    }
+
     private static Task<OctoObjectId> SaveAsync(NotificationEngineHarness h, OctoObjectId preference,
         DateTime? runningSince) =>
         NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), null, preference,

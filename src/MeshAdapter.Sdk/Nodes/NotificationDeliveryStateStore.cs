@@ -21,10 +21,21 @@ internal sealed record NotificationDeliveryStateChange(
     string? LastError = null,
     DateTime? RunningSince = null,
     bool ClearLastError = false,
-    bool ClearLastSentAt = false);
+    bool ClearLastSentAt = false,
+    bool ReleaseLease = false);
 
 internal static class NotificationDeliveryStateStore
 {
+    private const string RunningSincePath = "attributes.runningSince";
+
+    public static DateTime LeaseAt(DateTime now) =>
+        new(now.Ticks - now.Ticks % TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
+
+    public static AttributeNewerThanGuard Unleased(DateTime now, TimeSpan leaseExpiry) =>
+        new(RunningSincePath, LeaseAt(now) - leaseExpiry);
+
+    public static AttributeNewerThanGuard HeldBy(DateTime lease) => new(RunningSincePath, lease);
+
     public static async Task<TTarget?> FirstTargetAsync<TOrigin, TTarget>(ITenantRepository repository,
         IOctoSession session, OctoObjectId originRtId, RtCkId<CkAssociationRoleId> roleId, GraphDirections direction)
         where TOrigin : RtEntity, new()
@@ -68,7 +79,7 @@ internal static class NotificationDeliveryStateStore
     public static async Task<OctoObjectId?> TryAcquireLeaseAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
         OctoObjectId preferenceRtId, DateTime now, TimeSpan leaseExpiry)
     {
-        var lease = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
+        var lease = LeaseAt(now);
         try
         {
             if (stateRtId == null)
@@ -80,7 +91,7 @@ internal static class NotificationDeliveryStateStore
             {
                 await WriteAsync(etlContext, stateRtId, preferenceRtId,
                     new NotificationDeliveryStateChange(RunningSince: lease),
-                    new AttributeNewerThanGuard("attributes.runningSince", lease - leaseExpiry));
+                    Unleased(now, leaseExpiry));
             }
         }
         catch (Exception)
@@ -97,11 +108,11 @@ internal static class NotificationDeliveryStateStore
     }
 
     public static async Task<OctoObjectId> SaveAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
-        OctoObjectId preferenceRtId, NotificationDeliveryStateChange change)
+        OctoObjectId preferenceRtId, NotificationDeliveryStateChange change, AttributeNewerThanGuard? guard = null)
     {
         if (stateRtId != null)
         {
-            return await WriteAsync(etlContext, stateRtId, preferenceRtId, change, null);
+            return await WriteAsync(etlContext, stateRtId, preferenceRtId, change, guard);
         }
 
         try
@@ -115,7 +126,7 @@ internal static class NotificationDeliveryStateStore
                 throw;
             }
 
-            return await WriteAsync(etlContext, created, preferenceRtId, change, null);
+            return await WriteAsync(etlContext, created, preferenceRtId, change, guard);
         }
     }
 
@@ -134,7 +145,12 @@ internal static class NotificationDeliveryStateStore
     private static async Task<OctoObjectId> WriteAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
         OctoObjectId preferenceRtId, NotificationDeliveryStateChange change, AttributeNewerThanGuard? guard)
     {
-        var state = new RtNotificationDeliveryState { RunningSince = change.RunningSince };
+        var state = new RtNotificationDeliveryState();
+        if (change.RunningSince != null || change.ReleaseLease)
+        {
+            state.RunningSince = change.RunningSince;
+        }
+
         if (change.ProcessedUntil != null)
         {
             state.ProcessedUntil = change.ProcessedUntil;

@@ -199,7 +199,7 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         var prepared = new PreparedNotification("670000000000000000009999", "000000000000000000000077", "user-1",
             "Subject", "Body", "Html", 2, DateTime.UtcNow,
             [new SentRow("000000000000000000000001", DateTime.UtcNow, DateTime.UtcNow), new SentRow("000000000000000000000002", DateTime.UtcNow, DateTime.UtcNow)],
-            "000000000000000000000003", true);
+            "000000000000000000000003", true, null);
         PreparedNotification? ignored;
         A.CallTo(() => dataContext.TryGet(dataPath, out ignored))
             .Returns(true)

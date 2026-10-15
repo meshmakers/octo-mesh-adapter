@@ -13,12 +13,12 @@ public class PreparedNotificationContractTests
     public void Serialized_UsesTheCamelCaseNamesThePipelineReads()
     {
         var json = JsonSerializer.SerializeToNode(
-            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, Until, [new SentRow("a", Until, Until)], "q", true), SystemTextJsonOptions.Default)!
+            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, Until, [new SentRow("a", Until, Until)], "q", true, Until), SystemTextJsonOptions.Default)!
             .AsObject();
 
         Assert.Equal([
                 "preferenceRtId", "stateRtId", "subjectId", "subject", "body", "renderingType", "newCount",
-                "processedUntil", "sentRows", "queryRtId", "skipExistingRows", "sent"
+                "processedUntil", "sentRows", "queryRtId", "skipExistingRows", "lease", "sent"
             ],
             json.Select(property => property.Key));
     }
@@ -26,7 +26,7 @@ public class PreparedNotificationContractTests
     [Fact]
     public void RoundTrip_KeepsTheValuesCommitNeeds()
     {
-        var text = JsonSerializer.Serialize(new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, Until, [new SentRow("a", Until, Until)], "q", true),
+        var text = JsonSerializer.Serialize(new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, Until, [new SentRow("a", Until, Until)], "q", true, Until),
             SystemTextJsonOptions.Default);
 
         var back = JsonSerializer.Deserialize<PreparedNotification>(text, SystemTextJsonOptions.Default)!;
@@ -38,13 +38,14 @@ public class PreparedNotificationContractTests
         Assert.Equal("q", back.QueryRtId);
         Assert.Equal("s", back.SubjectId);
         Assert.True(back.SkipExistingRows);
+        Assert.Equal(Until, back.Lease);
     }
 
     [Fact]
     public void RoundTrip_KeepsTheSentMarker()
     {
         var text = JsonSerializer.Serialize(
-            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, Until, [new SentRow("a", Until, Until)], "q", true) with { Sent = true },
+            new PreparedNotification("p", "st", "s", "subject", "body", "Html", 1, Until, [new SentRow("a", Until, Until)], "q", true, Until) with { Sent = true },
             SystemTextJsonOptions.Default);
 
         Assert.True(JsonSerializer.Deserialize<PreparedNotification>(text, SystemTextJsonOptions.Default)!.Sent);

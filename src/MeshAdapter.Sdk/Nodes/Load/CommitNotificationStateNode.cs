@@ -42,7 +42,8 @@ public class CommitNotificationStateNode(
             return;
         }
 
-        if (prepared.StateRtId == null || !OctoObjectId.TryParse(prepared.StateRtId, out var stateRtId))
+        if (prepared.StateRtId == null || !OctoObjectId.TryParse(prepared.StateRtId, out var stateRtId) ||
+            prepared.Lease is not { } lease)
         {
             throw MeshAdapterPipelineExecutionException.NotificationStateMissing(nodeContext, c.Path);
         }
@@ -54,7 +55,9 @@ public class CommitNotificationStateNode(
         await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
             new NotificationDeliveryStateChange(ProcessedUntil: prepared.ProcessedUntil, SentRows: prepared.SentRows,
                 QueryRtId: prepared.QueryRtId, SubjectId: prepared.SubjectId,
-                SkipExistingRows: prepared.SkipExistingRows, LastRunAt: now, LastSentAt: now, ClearLastError: true));
+                SkipExistingRows: prepared.SkipExistingRows, LastRunAt: now, LastSentAt: now, ClearLastError: true,
+                ReleaseLease: true),
+            NotificationDeliveryStateStore.HeldBy(lease));
 
         nodeContext.Info("Notification for preference '{0}' sent with {1} new row(s)", preferenceRtId,
             prepared.NewCount);

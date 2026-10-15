@@ -36,6 +36,10 @@ internal static class NotificationDeliveryStateStore
 
     public static AttributeNewerThanGuard HeldBy(DateTime lease) => new(RunningSincePath, lease);
 
+    public static async Task<bool> RecordedSendAtAsync(IMeshEtlContext etlContext, OctoObjectId preferenceRtId,
+        DateTime sentAt) =>
+        (await ReadStateAsync(etlContext, preferenceRtId))?.LastSentAt is { } stored && LeaseAt(stored) == LeaseAt(sentAt);
+
     public static async Task<TTarget?> FirstTargetAsync<TOrigin, TTarget>(ITenantRepository repository,
         IOctoSession session, OctoObjectId originRtId, RtCkId<CkAssociationRoleId> roleId, GraphDirections direction)
         where TOrigin : RtEntity, new()

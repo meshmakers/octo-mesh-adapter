@@ -59,8 +59,17 @@ public class CommitNotificationStateNode(
                 ReleaseLease: true),
             NotificationDeliveryStateStore.HeldBy(lease));
 
-        nodeContext.Info("Notification for preference '{0}' sent with {1} new row(s)", preferenceRtId,
-            prepared.NewCount);
+        if (await NotificationDeliveryStateStore.RecordedSendAtAsync(etlContext, preferenceRtId, now))
+        {
+            nodeContext.Info("Notification for preference '{0}' sent with {1} new row(s)", preferenceRtId,
+                prepared.NewCount);
+        }
+        else
+        {
+            nodeContext.Warning(
+                "Notification for preference '{0}' sent with {1} new row(s), but another run took over its lease; that run keeps the delivery state and may send these rows again",
+                preferenceRtId, prepared.NewCount);
+        }
 
         await next(dataContext, nodeContext);
     }

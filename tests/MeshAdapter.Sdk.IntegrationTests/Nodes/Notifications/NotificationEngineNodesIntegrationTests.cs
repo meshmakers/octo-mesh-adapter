@@ -110,6 +110,32 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     }
 
     [Fact]
+    public async Task ACommitAfterAnotherRunTookOverTheLease_LeavesThatRunsStateAndDoesNotFail()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        var takeover = NotificationDeliveryStateStore.LeaseAt(h.Clock.UtcNow.AddMinutes(11));
+
+        var tick = await h.TickAsync(preference, async (dc, _) =>
+        {
+            var stateRtId = (await h.StateOfAsync(preference))!.RtId;
+            await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), stateRtId, preference,
+                new NotificationDeliveryStateChange(RunningSince: takeover));
+            await h.CommitAsync(dc);
+        });
+
+        tick.Failure.Should().BeNull();
+        var state = (await h.StateOfAsync(preference))!;
+        state.RunningSince.Should().Be(takeover);
+        state.LastSentAt.Should().BeNull();
+        state.SentRows.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
     public async Task CatchUpFirstRun_SendsEveryExistingRowOnce()
     {
         var h = NewScenario();

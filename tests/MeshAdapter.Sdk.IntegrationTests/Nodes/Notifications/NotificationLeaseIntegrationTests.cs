@@ -218,6 +218,29 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         after.LastSentAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
     }
 
+    [Fact]
+    public async Task ASendIsReportedAsRecorded_OnlyWhenTheCommitWasApplied()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var oldLease = Ms(h.Clock.UtcNow.AddMinutes(-12));
+        var newLease = Ms(h.Clock.UtcNow.AddMinutes(-1));
+        var state = await SaveAsync(h, preference, newLease);
+        var sentAt = h.Clock.UtcNow;
+
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastSentAt: sentAt, ReleaseLease: true),
+            NotificationDeliveryStateStore.HeldBy(oldLease));
+        var lost = await NotificationDeliveryStateStore.RecordedSendAtAsync(h.CreateEtlContext(), preference, sentAt);
+
+        await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastSentAt: sentAt, ReleaseLease: true),
+            NotificationDeliveryStateStore.HeldBy(newLease));
+        var kept = await NotificationDeliveryStateStore.RecordedSendAtAsync(h.CreateEtlContext(), preference, sentAt);
+
+        lost.Should().BeFalse();
+        kept.Should().BeTrue();
+    }
+
     private static Task<OctoObjectId> SaveAsync(NotificationEngineHarness h, OctoObjectId preference,
         DateTime? runningSince) =>
         NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), null, preference,

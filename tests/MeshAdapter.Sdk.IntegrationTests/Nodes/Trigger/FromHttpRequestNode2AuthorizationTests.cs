@@ -304,6 +304,51 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
         receivedInput!["headers"]?["Authorization"].Should().BeNull();
     }
 
+    /// <remarks>
+    /// AB#5674: a pipeline that does not shape its result (no <c>Project@1 clear</c>) ends with the
+    /// request still in its data root. Over a real HTTP round trip with a valid token the caller must
+    /// get the pipeline's own result and none of the request it sent.
+    /// </remarks>
+    [Fact]
+    public async Task UnshapedPipeline_ResponseCarriesNoRequestHeadersPrincipalOrBody()
+    {
+        A.CallTo(() => _triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .ReturnsLazily((ExecutePipelineOptions _, object? input) =>
+            {
+                var root = ((JsonNode)input!).DeepClone().AsObject();
+                root["result"] = "done";
+                return Task.FromResult<object?>(root);
+            });
+
+        using var client = await CreateClientAsync();
+        var token = CreateToken(TenantId, roles: "TenantAdmin");
+        var request = new HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"/{TenantId}{Route}?q=query-marker-5674")
+        {
+            Content = JsonContent.Create(new { probe = "body-marker-5674" })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Add("X-Custom", "header-marker-5674");
+
+        var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        var text = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, _authenticationFailure ?? "no failure recorded");
+        var body = JsonNode.Parse(text)!.AsObject();
+        body["result"]!.GetValue<string>().Should().Be("done");
+        foreach (var key in new[]
+                 {
+                     "path", "method", "principal", "headers", "body", "bodyEncoding", "query", "files", "formData",
+                     "contentType", "contentLength"
+                 })
+        {
+            body.ContainsKey(key).Should().BeFalse($"'{key}' belongs to the request, not the response");
+        }
+
+        text.Should().NotContain("header-marker-5674").And.NotContain("body-marker-5674")
+            .And.NotContain("query-marker-5674").And.NotContain("660000000000000000000042")
+            .And.NotContain("TenantAdmin").And.NotContain(token);
+    }
+
     private Task<HttpResponseMessage> Post(HttpClient client, string token)
     {
         var request = new HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"/{TenantId}{Route}")

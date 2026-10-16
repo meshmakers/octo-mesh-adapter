@@ -57,7 +57,7 @@ public record DelimitedColumn
 [NodeName("RenderDelimitedText", 1)]
 public record RenderDelimitedTextNodeConfiguration : SourceTargetPathNodeConfiguration
 {
-    /// <summary>Text written between columns. Must be non-empty and must not contain CR or LF.</summary>
+    /// <summary>Text written between columns. Must be exactly one character and not CR or LF.</summary>
     [PropertyGroup("Options", 0)]
     public string? Delimiter { get; set; } = "|";
 

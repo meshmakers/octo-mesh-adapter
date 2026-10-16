@@ -177,8 +177,9 @@ public record ConvertToCsvNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// Whether the document is written as base64 of its UTF-8 bytes (the byte-order mark included
-    /// when set) instead of as text, which is what a node that stores or attaches a file takes;
-    /// false when unset.
+    /// when set) instead of as text; false when unset. That is the content
+    /// <c>CreateFileSystemUpdate@1</c> stores as a file-system item; <c>SendEMail@2</c> then attaches
+    /// the stored item by its binary id (it cannot attach base64 directly).
     /// </summary>
     [PropertyGroup("Output", 1)]
     public bool? OutputAsBase64 { get; set; }

@@ -260,6 +260,26 @@ explicit `null` for `delimiter`, `columns`, a column `value`, `trailingNewLine`,
 and `onDelimiterInValue`, plus undefined enum values for the latter two. It also pins that a failed
 preflight writes nothing and does not continue the chain.
 
+#### ConvertToCsvNode
+
+`ConvertToCsvNodeTests` runs the node over a real `DataContextImpl` (reads go through the genuine
+path resolution; writes are observed and still reach the real context). Groups:
+
+| Group | What is pinned |
+|-------|----------------|
+| Shape | Columns unset (scalar properties in order of appearance, nested left out), header default from the path, constant and empty columns, `IncludeHeader`, `Lf`/`CrLf`, trailing newline, tab delimiter, trailing delimiter, empty array with and without columns, chain continues |
+| Quoting | `Minimal` (delimiter, quote, CR, LF; quotes doubled), `Text` (strings, dates, header; not numbers or booleans; a number in a String column), `All` |
+| Numbers | Raw token without format, half away from zero (incl. negative), invariant culture and no thousands separator, `0.###` vs `0.000`, `Factor` before rounding, numeric strings, non-numbers fail |
+| Dates | Offset and offset-less input, CET/CEST, the spring gap (`02:00` does not exist) and the repeated autumn hour, invariant day/month names, non-dates fail |
+| Culture | Decimal comma on node level, column override (incl. `""` = invariant), thousands separator only when the format asks, numbers bare under `Text` quoting, comma delimiter with decimal comma quotes the number, string sources read invariant, German date names, default stays invariant, unknown culture on node or column fails (writes nothing), culture on a constant refused |
+| Output | BOM as text, base64 of the UTF-8 bytes incl. BOM, byte length written, no BOM when unset |
+| Layout | The grid-operator layout of AB#6403 byte for byte (BOM, LF, quoted text, trailing `;`, `0.546`/`0.92`/`0`, kW = 4 x kWh) |
+| Errors | Delimiter, blank paths, source not an array, record not an object, ambiguous or null column, set-selecting and unparsable value paths, unknown time zone writes nothing, `Decimals` range, undefined enums, formats on a constant |
+
+`ConvertToCsvConfigurationDeserializationTests` covers what a pipeline definition produces and a C#
+initializer cannot: options left unset when omitted, explicit `null` equal to omitted, and every
+property binding from YAML - which is how the `dataType` / `type` collision was found.
+
 #### MakeHttpRequestNode
 
 | Test Case | Description |

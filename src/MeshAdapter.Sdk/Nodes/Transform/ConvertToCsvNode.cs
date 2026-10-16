@@ -27,6 +27,10 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
 {
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
+    // The BOM as a character, written as a number on purpose: a literal U+FEFF in the source is invisible
+    // and gets stripped by editors and formatters.
+    private const char ByteOrderMarkChar = (char)0xFEFF;
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -108,7 +112,7 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         }
         else
         {
-            dataContext.Set(targetPath, withMark ? "﻿" + body : body,
+            dataContext.Set(targetPath, withMark ? ByteOrderMarkChar + body : body,
                 c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         }
 
@@ -432,6 +436,14 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         List<ResolvedColumn>? columns = null;
         if (c.Columns is not null)
         {
+            // An explicit empty list is not "unset": without columns there would be no header and one
+            // empty line per record, and the run would report success.
+            if (c.Columns.Count == 0)
+            {
+                throw MeshAdapterPipelineExecutionException.CsvConfigurationInvalid(nodeContext,
+                    "'columns' is empty; list at least one column or leave it unset to take the record properties.");
+            }
+
             columns = [];
             var index = 0;
             foreach (var column in c.Columns)
@@ -518,6 +530,12 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         {
             throw MeshAdapterPipelineExecutionException.CsvConfigurationInvalid(nodeContext,
                 $"column {index}: 'decimals' and 'factor' apply to numbers only.");
+        }
+
+        if (column.Format is not null && type is CsvValueType.String or CsvValueType.Boolean)
+        {
+            throw MeshAdapterPipelineExecutionException.CsvConfigurationInvalid(nodeContext,
+                $"column {index}: 'format' applies to Number, DateTime and Auto columns only.");
         }
 
         TimeZoneInfo? zone = null;

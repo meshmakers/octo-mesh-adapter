@@ -488,7 +488,7 @@ public class ConvertToCsvNodeTests
 
         var csv = await RenderAsync(config, """{"rows":[{"id":1}]}""");
 
-        Assert.StartsWith("﻿id", csv);
+        Assert.StartsWith((char)0xFEFF + "id", csv);
     }
 
     [Fact]
@@ -557,7 +557,7 @@ public class ConvertToCsvNodeTests
             ]}
             """);
 
-        var expected = "﻿\"Datum\";\"kWh\";\"kW\";\"Status\";\n" +
+        var expected = (char)0xFEFF + "\"Datum\";\"kWh\";\"kW\";\"Status\";\n" +
                        "\"01.09.2026 00:00\";0.546;2.184;\"VALID\";\n" +
                        "\"01.09.2026 00:15\";0.92;3.68;\"VALID\";\n" +
                        "\"01.09.2026 00:30\";0;0;\"VALID\";\n" +
@@ -694,6 +694,38 @@ public class ConvertToCsvNodeTests
         config = Config(new CsvColumn { ValuePath = "$.id", DataType = (CsvValueType)42 });
         await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
             () => RenderAsync(config, """{"rows":[{"id":1}]}"""));
+    }
+
+    [Fact]
+    public async Task EmptyColumnsList_Throws_InsteadOfWritingBlankLines()
+    {
+        // An explicit empty list is not "unset": there would be no header and one empty line per record.
+        var config = Config();
+        config.Columns = new List<CsvColumn>();
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => RenderAsync(config, """{"rows":[{"id":1},{"id":2}]}"""));
+    }
+
+    [Theory]
+    [InlineData(CsvValueType.String)]
+    [InlineData(CsvValueType.Boolean)]
+    public async Task FormatOnAStringOrBooleanColumn_Throws_InsteadOfBeingIgnored(CsvValueType type)
+    {
+        var column = new CsvColumn { ValuePath = "$.v", DataType = type, Format = "0.00" };
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => RenderAsync(Config(column), """{"rows":[{"v":"1"}]}"""));
+    }
+
+    [Theory]
+    [InlineData(CsvValueType.Auto)]
+    [InlineData(CsvValueType.Number)]
+    public async Task FormatOnAutoOrNumberColumn_StaysLegal(CsvValueType type)
+    {
+        var column = new CsvColumn { Header = "v", ValuePath = "$.v", DataType = type, Format = "0.00" };
+
+        Assert.Equal("v\r\n1.50\r\n", await RenderAsync(Config(column), """{"rows":[{"v":1.5}]}"""));
     }
 
     [Fact]

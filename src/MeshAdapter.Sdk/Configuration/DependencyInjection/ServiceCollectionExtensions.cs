@@ -102,6 +102,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()
             .RegisterNode<RenderDelimitedTextNode>()
+            .RegisterNode<ConvertToCsvNode>()
             .RegisterNode<GenerateAndStoreReportNode>()
             .RegisterNode<PdfOcrExtractionNode>()
             .RegisterNode<AnthropicAiQueryNode>()

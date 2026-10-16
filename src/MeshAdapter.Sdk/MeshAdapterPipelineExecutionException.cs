@@ -171,6 +171,39 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
         return escaped.Length <= 200 ? escaped : escaped[..200] + "...";
     }
 
+    // ---- ConvertToCsv@1 ----
+
+    public static Exception CsvConfigurationInvalid(INodeContext nodeContext, string message)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {message}");
+    }
+
+    public static Exception CsvConfigurationInvalid(INodeContext nodeContext, string message,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {message}", inner);
+    }
+
+    public static Exception CsvSourceNotAnArray(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{path}' must resolve to an array of records.");
+    }
+
+    public static Exception CsvRecordNotAnObject(INodeContext nodeContext, int recordIndex)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex} is not an object, so no cell value " +
+            "can be read from it.");
+    }
+
+    public static Exception CsvValueInvalid(INodeContext nodeContext, int recordIndex, int columnIndex,
+        string message)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: record {recordIndex}, column {columnIndex}: {message}");
+    }
+
     public static Exception DelimitedColumnsNotSet(INodeContext nodeContext)
     {
         return new MeshAdapterPipelineExecutionException(

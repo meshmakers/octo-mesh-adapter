@@ -901,6 +901,80 @@ as indented multi-line JSON and silently destroy the record structure.
 it, a column setting both `Value` and `ValuePath`, an unusable `Delimiter` or `Replacement`, and
 a blank `Path`/`TargetPath`, a `Delimiter` that is not exactly one character, an undefined `LineEnding`/`OnDelimiterInValue`, and any `Path`/`ValuePath` that does not parse or that selects a set. Nothing is written and the chain does not continue in those cases.
 
+#### ConvertToCsvNode
+
+Turns an array of records into ONE CSV document (`ConvertToCsv@1`, AB#6733). Generic: it knows
+nothing about a particular customer format. Not a replacement of `RenderDelimitedText@1` - that
+node writes a fixed layout **without** quoting on purpose; this one writes real CSV.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Path` | string | JSONPath of the source **array**; each element must be an object |
+| `TargetPath` | string | Receives the document (text, or base64 with `OutputAsBase64`) |
+| `Delimiter` | string? | Exactly one character, `;` when unset; never a line break or a double quote |
+| `LineEnding` | enum? | `CrLf` (RFC 4180) when unset, or `Lf` - never from the operating system |
+| `IncludeHeader` | bool? | Header row first; true when unset |
+| `Quoting` | enum? | `Minimal` when unset (only values that need it), `Text` (strings, dates and header cells; not numbers or booleans), `All` (every non-empty cell) |
+| `TrailingDelimiter` | bool? | Every row, the header included, ends with the delimiter; false when unset |
+| `TrailingNewLine` | bool? | A line end after the last row; true when unset |
+| `ByteOrderMark` | bool? | UTF-8 BOM in front of the document (Excel needs it); false when unset |
+| `OutputAsBase64` | bool? | Write base64 of the UTF-8 bytes (BOM included) instead of text, for nodes that store or attach a file; false when unset |
+| `ContentLengthTargetPath` | string? | Optional path for the byte length of the UTF-8 document (a long), for nodes that need it explicitly |
+| `Columns` | ICollection? | Output columns in order, see below; unset takes every scalar property of the records |
+
+A column has `Header` (defaults to the last name of `ValuePath`), `ValuePath` (relative,
+single-valued JSONPath) **or** `Value` (constant), `DataType`, `Format`, `Decimals`, `Factor`,
+`TimeZone` and `Required`. Neither `ValuePath` nor `Value` gives an empty column.
+
+**`DataType`** (`Auto` when unset): `Auto` follows the value; `String`; `Number`; `Boolean`;
+`DateTime`. (The property is called `dataType`, not `type`: `type` inside a pipeline definition is
+taken by the serializer and would never reach the column.)
+
+- **Numbers** keep their raw JSON token when no `Format`, `Decimals` or `Factor` is set (`0.50` stays
+  `0.50`). Otherwise the value is multiplied by `Factor`, rounded to `Decimals` **half away from
+  zero**, then formatted with the .NET format string `Format` and the **invariant culture** (decimal
+  point, no thousands separator). `0.###` writes `14` and `0.546`, `0.000` writes `14.000`. Note the
+  order: a column with `Factor: 4` computes from the unrounded source value, which differs from
+  4 × the *written* neighbouring column once the source has more decimals than `Decimals`.
+- **DateTime** reads an ISO 8601 string; **a value without an offset is read as UTC**, like the
+  stream-data nodes read one. It is converted into `TimeZone` (IANA id, UTC when unset) and written
+  with `Format` (`yyyy-MM-ddTHH:mm:ss` when unset), invariant culture. `TimeZone` is allowed on a
+  DateTime column only.
+- **Booleans** are written `true` / `false`; absent and null values are empty cells; an object or
+  array at a `ValuePath` is refused.
+- With `Columns` unset the node takes every scalar property of the records in the order of first
+  appearance (nested objects and arrays are left out); the property name is the header.
+
+**An empty array**: with explicit `Columns` a header-only document is written, without `Columns`
+an empty string. The write is never skipped (a guard comparing against `""` needs the value), and a
+byte-order mark is never put in front of an empty document. A `Path` that is not an array, or a
+record that is not an object, fails.
+
+**Configuration errors fail before any work**: blank `Path`/`TargetPath`, a delimiter that is not
+exactly one character (or is a line break or `"`), undefined enum values, a null column, a column
+with both `Value` and `ValuePath`, `Format`/`Decimals`/`Factor`/`TimeZone` on a constant or on a
+type they do not apply to, `Decimals` outside 0-28, an unknown time zone, and value paths that do
+not parse or select a set.
+
+The grid-operator layout of the interim CSV delivery (AB#6403) is plain configuration:
+
+```yaml
+- type: ConvertToCsv@1
+  path: $.rows
+  targetPath: $.csv
+  lineEnding: Lf
+  quoting: Text
+  trailingDelimiter: true
+  byteOrderMark: true
+  outputAsBase64: true
+  contentLengthTargetPath: $.csvLength
+  columns:
+    - { header: Datum, valuePath: $.from, dataType: DateTime, format: "dd.MM.yyyy HH:mm", timeZone: Europe/Vienna }
+    - { header: kWh, valuePath: $.kwh, decimals: 3, format: "0.###" }
+    - { header: kW, valuePath: $.kwh, factor: 4, decimals: 3, format: "0.###" }
+    - { header: Status, value: VALID }
+```
+
 #### QueryResultToMarkdownTableNode
 
 Formats query results as Markdown tables for report generation.

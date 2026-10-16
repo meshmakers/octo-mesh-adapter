@@ -73,6 +73,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<RenderDelimitedTextNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<ConvertToCsvNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MinMaxNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();

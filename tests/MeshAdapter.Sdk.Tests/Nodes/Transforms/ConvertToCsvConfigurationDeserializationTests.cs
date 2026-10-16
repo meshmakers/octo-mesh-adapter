@@ -38,6 +38,7 @@ public class ConvertToCsvConfigurationDeserializationTests
         Assert.Equal("$.csv", config.TargetPath);
         Assert.Null(config.Columns);
         Assert.Null(config.Delimiter);
+        Assert.Null(config.Culture);
         Assert.Null(config.LineEnding);
         Assert.Null(config.Quoting);
         Assert.Null(config.IncludeHeader);
@@ -53,6 +54,7 @@ public class ConvertToCsvConfigurationDeserializationTests
                 path: $.rows
                 targetPath: $.csv
                 delimiter: ";"
+                culture: de-AT
                 lineEnding: Lf
                 includeHeader: true
                 quoting: Text
@@ -70,6 +72,7 @@ public class ConvertToCsvConfigurationDeserializationTests
                   - header: kW
                     valuePath: $.kwh
                     factor: 4
+                    culture: ""
                     decimals: 3
                     format: "0.###"
                     required: true
@@ -77,6 +80,7 @@ public class ConvertToCsvConfigurationDeserializationTests
                     value: VALID
             """);
 
+        Assert.Equal("de-AT", config.Culture);
         Assert.Equal(CsvLineEnding.Lf, config.LineEnding);
         Assert.Equal(CsvQuoting.Text, config.Quoting);
         Assert.True(config.TrailingDelimiter);
@@ -89,6 +93,8 @@ public class ConvertToCsvConfigurationDeserializationTests
         Assert.Equal(CsvValueType.DateTime, columns[0].DataType);
         Assert.Equal("Europe/Vienna", columns[0].TimeZone);
         Assert.Equal(4m, columns[1].Factor);
+        Assert.Equal("", columns[1].Culture);
+        Assert.Null(columns[0].Culture);
         Assert.Equal(3, columns[1].Decimals);
         Assert.True(columns[1].Required);
         Assert.Equal("VALID", columns[2].Value);
@@ -102,6 +108,7 @@ public class ConvertToCsvConfigurationDeserializationTests
                 path: $.rows
                 targetPath: $.csv
                 delimiter:
+                culture:
                 lineEnding:
                 includeHeader:
                 quoting:
@@ -112,6 +119,7 @@ public class ConvertToCsvConfigurationDeserializationTests
             """);
 
         Assert.Null(config.Delimiter);
+        Assert.Null(config.Culture);
         Assert.Null(config.LineEnding);
         Assert.Null(config.IncludeHeader);
         Assert.Null(config.Quoting);

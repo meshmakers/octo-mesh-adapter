@@ -55,7 +55,7 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
             }
         }
 
-        var columns = plan.Columns ?? DiscoverColumns(records);
+        var columns = plan.Columns ?? DiscoverColumns(records, plan.Culture);
         var delimiter = plan.Delimiter;
         var separator = plan.LineEnding == CsvLineEnding.CrLf ? "\r\n" : "\n";
 
@@ -183,13 +183,14 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         int? Decimals,
         decimal Factor,
         TimeZoneInfo? TimeZone,
+        CultureInfo Culture,
         bool Required);
 
     /// <summary>
     /// Takes every scalar property of the records, in the order they first appear. A nested object
     /// or array is left out: it has no single text.
     /// </summary>
-    private static List<ResolvedColumn> DiscoverColumns(JsonArray records)
+    private static List<ResolvedColumn> DiscoverColumns(JsonArray records, CultureInfo culture)
     {
         var keys = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -207,7 +208,7 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         }
 
         return keys
-            .Select(k => new ResolvedColumn(k, k, null, null, CsvValueType.Auto, null, null, 1m, null, false))
+            .Select(k => new ResolvedColumn(k, k, null, null, CsvValueType.Auto, null, null, 1m, null, culture, false))
             .ToList();
     }
 
@@ -315,7 +316,8 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
     private static string ReadNumber(JsonValue value, JsonValueKind kind, ResolvedColumn column,
         INodeContext nodeContext, int recordIndex, int columnIndex)
     {
-        var plain = column.Format is null && column.Decimals is null && column.Factor == 1m;
+        var plain = column.Format is null && column.Decimals is null && column.Factor == 1m &&
+                    column.Culture.Name.Length == 0;
         var token = kind == JsonValueKind.String ? value.GetValue<string>() : value.ToJsonString();
 
         // Without a format a number keeps its token, so 0.50 stays 0.50 and no culture reshapes it.
@@ -352,8 +354,8 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         }
 
         return column.Format is null
-            ? number.ToString(CultureInfo.InvariantCulture)
-            : number.ToString(column.Format, CultureInfo.InvariantCulture);
+            ? number.ToString(column.Culture)
+            : number.ToString(column.Format, column.Culture);
     }
 
     private static string ReadDateTime(JsonValue value, JsonValueKind kind, ResolvedColumn column,
@@ -370,7 +372,7 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         }
 
         var local = TimeZoneInfo.ConvertTime(parsed, column.TimeZone ?? TimeZoneInfo.Utc);
-        return local.ToString(column.Format ?? "s", CultureInfo.InvariantCulture);
+        return local.ToString(column.Format ?? "s", column.Culture);
     }
 
     // ---------- Validation ----------
@@ -384,7 +386,8 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         bool TrailingNewLine,
         bool ByteOrderMark,
         bool OutputAsBase64,
-        List<ResolvedColumn>? Columns);
+        List<ResolvedColumn>? Columns,
+        CultureInfo Culture);
 
     private static Plan Validate(ConvertToCsvNodeConfiguration c, INodeContext nodeContext)
     {
@@ -424,6 +427,8 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
                 $"delimiter '{Escape(delimiter)}' must be exactly one character and neither a line break nor a double quote.");
         }
 
+        var culture = ResolveCulture(c.Culture, "culture", nodeContext, CultureInfo.InvariantCulture);
+
         List<ResolvedColumn>? columns = null;
         if (c.Columns is not null)
         {
@@ -431,7 +436,7 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
             var index = 0;
             foreach (var column in c.Columns)
             {
-                columns.Add(ResolveColumn(column, index, nodeContext));
+                columns.Add(ResolveColumn(column, index, nodeContext, culture));
                 index++;
             }
         }
@@ -445,10 +450,40 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
             c.TrailingNewLine ?? ConvertToCsvNodeConfiguration.DefaultTrailingNewLine,
             c.ByteOrderMark ?? ConvertToCsvNodeConfiguration.DefaultByteOrderMark,
             c.OutputAsBase64 ?? ConvertToCsvNodeConfiguration.DefaultOutputAsBase64,
-            columns);
+            columns,
+            culture);
     }
 
-    private static ResolvedColumn ResolveColumn(CsvColumn? column, int index, INodeContext nodeContext)
+    /// <summary>
+    /// Unset takes <paramref name="fallback" />; an empty name is the invariant culture. An unknown
+    /// name fails: it would otherwise be written in a culture nobody asked for.
+    /// </summary>
+    private static CultureInfo ResolveCulture(string? name, string location, INodeContext nodeContext,
+        CultureInfo fallback)
+    {
+        if (name is null)
+        {
+            return fallback;
+        }
+
+        if (name.Length == 0)
+        {
+            return CultureInfo.InvariantCulture;
+        }
+
+        try
+        {
+            return CultureInfo.GetCultureInfo(name, predefinedOnly: true);
+        }
+        catch (CultureNotFoundException)
+        {
+            throw MeshAdapterPipelineExecutionException.CsvConfigurationInvalid(nodeContext,
+                $"{location}: '{name}' is not a known culture.");
+        }
+    }
+
+    private static ResolvedColumn ResolveColumn(CsvColumn? column, int index, INodeContext nodeContext,
+        CultureInfo nodeCulture)
     {
         if (column is null)
         {
@@ -513,8 +548,16 @@ public class ConvertToCsvNode(NodeDelegate next) : IPipelineNode
         }
 
         var header = column.Header ?? (path is null ? string.Empty : LastName(path));
+        if (column.Value is not null && column.Culture is not null)
+        {
+            throw MeshAdapterPipelineExecutionException.CsvConfigurationInvalid(nodeContext,
+                $"column {index} is a constant, so 'culture' has no effect.");
+        }
+
+        var culture = ResolveCulture(column.Culture, $"column {index} culture", nodeContext, nodeCulture);
+
         return new ResolvedColumn(header, null, path, column.Value, type, column.Format, column.Decimals,
-            column.Factor ?? 1m, zone, column.Required);
+            column.Factor ?? 1m, zone, culture, column.Required);
     }
 
     /// <summary>The last property name of a path (<c>$.customer.name</c> gives <c>name</c>).</summary>

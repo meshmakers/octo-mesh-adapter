@@ -335,6 +335,123 @@ public class ConvertToCsvNodeTests
             () => RenderAsync(Config(column), """{"rows":[{"d":"yesterday"}]}"""));
     }
 
+    // ---------- Culture ----------
+
+    [Fact]
+    public async Task Culture_OnTheNode_GivesDecimalCommaToEveryNumberColumn()
+    {
+        var config = Config(
+            new CsvColumn { Header = "a", ValuePath = "$.a", Decimals = 3, Format = "0.###" },
+            new CsvColumn { Header = "b", ValuePath = "$.b" });          // no format: token, localized
+        config.Culture = "de-AT";
+
+        var csv = await RenderAsync(config, """{"rows":[{"a":0.546,"b":0.50},{"a":14,"b":-3.25}]}""");
+
+        Assert.Equal("a;b\r\n0,546;0,50\r\n14;-3,25\r\n", csv);
+    }
+
+    [Fact]
+    public async Task Culture_OnAColumn_OverridesTheNodeCulture()
+    {
+        var config = Config(
+            new CsvColumn { Header = "de", ValuePath = "$.v", Format = "0.00" },
+            new CsvColumn { Header = "inv", ValuePath = "$.v", Format = "0.00", Culture = "" },
+            new CsvColumn { Header = "us", ValuePath = "$.v", Format = "0.00", Culture = "en-US" });
+        config.Culture = "de-AT";
+
+        Assert.Equal("de;inv;us\r\n1,50;1.50;1.50\r\n", await RenderAsync(config, """{"rows":[{"v":1.5}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_ThousandsSeparatorOnlyWhenTheFormatAsksForOne()
+    {
+        var config = Config(
+            new CsvColumn { Header = "plain", ValuePath = "$.v", Format = "0.00" },
+            new CsvColumn { Header = "grouped", ValuePath = "$.v", Format = "#,##0.00" });
+        config.Culture = "de-DE";
+
+        Assert.Equal("plain;grouped\r\n1234567,89;1.234.567,89\r\n",
+            await RenderAsync(config, """{"rows":[{"v":1234567.89}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_NumbersStayBareUnderTextQuoting_AndTheCommaIsNotTheDelimiter()
+    {
+        var config = Config(new CsvColumn { Header = "n", ValuePath = "$.n", Format = "0.0" });
+        config.Culture = "de-AT";
+        config.Quoting = CsvQuoting.Text;
+
+        Assert.Equal("\"n\"\r\n1,5\r\n", await RenderAsync(config, """{"rows":[{"n":1.5}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_CommaDelimiterWithDecimalComma_QuotesTheNumberSoTheColumnsHold()
+    {
+        var config = Config(new CsvColumn { Header = "a", ValuePath = "$.a" }, new CsvColumn { Header = "b", ValuePath = "$.b" });
+        config.Culture = "de-AT";
+        config.Delimiter = ",";
+
+        Assert.Equal("a,b\r\n\"1,5\",2\r\n", await RenderAsync(config, """{"rows":[{"a":1.5,"b":2}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_ReadsAStringNumberInvariant_NotInTheOutputCulture()
+    {
+        // The source text is data, not a user's input: "1234.5" is 1234.5 whatever the target culture is.
+        var config = Config(new CsvColumn { Header = "n", ValuePath = "$.n", DataType = CsvValueType.Number, Format = "0.0" });
+        config.Culture = "de-AT";
+
+        Assert.Equal("n\r\n1234,5\r\n", await RenderAsync(config, """{"rows":[{"n":"1234.5"}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_AlsoShapesDateNames()
+    {
+        var column = new CsvColumn { Header = "d", ValuePath = "$.d", DataType = CsvValueType.DateTime, Format = "dddd, d. MMMM yyyy" };
+        var config = Config(column);
+        config.Culture = "de-AT";
+
+        Assert.Equal("d\r\nDienstag, 1. September 2026\r\n",
+            await RenderAsync(config, """{"rows":[{"d":"2026-09-01T12:00:00Z"}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_NotSet_StaysInvariant()
+    {
+        var csv = await RenderAsync(Config(new CsvColumn { Header = "n", ValuePath = "$.n", Format = "0.00" }),
+            """{"rows":[{"n":1.5}]}""");
+
+        Assert.Equal("n\r\n1.50\r\n", csv);
+    }
+
+    [Theory]
+    [InlineData("xx-NOWHERE")]
+    [InlineData("not a culture")]
+    public async Task Culture_Unknown_FailsBeforeAnythingIsWritten(string culture)
+    {
+        var config = Config(new CsvColumn { ValuePath = "$.n" });
+        config.Culture = culture;
+        var run = Prepare(config, """{"rows":[{"n":1}]}""");
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => new ConvertToCsvNode(run.Next).ProcessObjectAsync(run.DataContext, run.NodeContext));
+        Assert.Null(run.WrittenText);
+    }
+
+    [Fact]
+    public async Task Culture_UnknownOnAColumn_Fails()
+    {
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => RenderAsync(Config(new CsvColumn { ValuePath = "$.n", Culture = "xx-NOWHERE" }), """{"rows":[{"n":1}]}"""));
+    }
+
+    [Fact]
+    public async Task Culture_OnAConstant_IsRefused()
+    {
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => RenderAsync(Config(new CsvColumn { Value = "x", Culture = "de-AT" }), """{"rows":[]}"""));
+    }
+
     // ---------- Other value types ----------
 
     [Fact]

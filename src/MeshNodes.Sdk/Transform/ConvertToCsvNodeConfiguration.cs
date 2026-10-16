@@ -85,9 +85,18 @@ public record CsvColumn
     /// <summary>
     /// .NET format string. For a number a custom or standard numeric format (<c>0.###</c>,
     /// <c>0.000</c>, <c>F2</c>), for a date a custom or standard date format (<c>dd.MM.yyyy HH:mm</c>).
-    /// Always applied with the invariant culture, so the decimal separator is a point.
+    /// Applied with the culture of the column or node (invariant when none is set, so the decimal
+    /// separator is a point).
     /// </summary>
     public string? Format { get; set; }
+
+    /// <summary>
+    /// Culture the cell is written in (for example <c>de-AT</c> for a decimal comma and German day
+    /// and month names). Unset takes the culture of the node; an empty string forces the invariant
+    /// culture (decimal point) for this column. A value read from a string is always read
+    /// invariant, whatever the output culture is.
+    /// </summary>
+    public string? Culture { get; set; }
 
     /// <summary>
     /// Number of decimals a number is rounded to, half away from zero, before it is formatted.
@@ -122,6 +131,16 @@ public record ConvertToCsvNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>Exactly one character between cells. Defaults to <c>;</c>.</summary>
     [PropertyGroup("Options", 0)]
     public string? Delimiter { get; set; }
+
+    /// <summary>
+    /// Culture all numbers and dates are written in unless a column names its own, for example
+    /// <c>de-AT</c> (decimal comma) when the receiving side expects it. Unset or empty is the
+    /// invariant culture (decimal point, never a comma). With a decimal comma pick a delimiter
+    /// other than <c>,</c>: a number that contains the delimiter is quoted, but most readers do
+    /// not cope with that.
+    /// </summary>
+    [PropertyGroup("Options", 6)]
+    public string? Culture { get; set; }
 
     /// <summary>Record separator, <see cref="CsvLineEnding.CrLf" /> when unset.</summary>
     [PropertyGroup("Options", 1)]

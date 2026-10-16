@@ -271,6 +271,7 @@ path resolution; writes are observed and still reach the real context). Groups:
 | Quoting | `Minimal` (delimiter, quote, CR, LF; quotes doubled), `Text` (strings, dates, header; not numbers or booleans; a number in a String column), `All` |
 | Numbers | Raw token without format, half away from zero (incl. negative), invariant culture and no thousands separator, `0.###` vs `0.000`, `Factor` before rounding, numeric strings, non-numbers fail |
 | Dates | Offset and offset-less input, CET/CEST, the spring gap (`02:00` does not exist) and the repeated autumn hour, invariant day/month names, non-dates fail |
+| Culture | Decimal comma on node level, column override (incl. `""` = invariant), thousands separator only when the format asks, numbers bare under `Text` quoting, comma delimiter with decimal comma quotes the number, string sources read invariant, German date names, default stays invariant, unknown culture on node or column fails (writes nothing), culture on a constant refused |
 | Output | BOM as text, base64 of the UTF-8 bytes incl. BOM, byte length written, no BOM when unset |
 | Layout | The grid-operator layout of AB#6403 byte for byte (BOM, LF, quoted text, trailing `;`, `0.546`/`0.92`/`0`, kW = 4 x kWh) |
 | Errors | Delimiter, blank paths, source not an array, record not an object, ambiguous or null column, set-selecting and unparsable value paths, unknown time zone writes nothing, `Decimals` range, undefined enums, formats on a constant |

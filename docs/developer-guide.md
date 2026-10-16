@@ -920,6 +920,7 @@ node writes a fixed layout **without** quoting on purpose; this one writes real 
 | `ByteOrderMark` | bool? | UTF-8 BOM in front of the document (Excel needs it); false when unset |
 | `OutputAsBase64` | bool? | Write base64 of the UTF-8 bytes (BOM included) instead of text, for nodes that store or attach a file; false when unset |
 | `ContentLengthTargetPath` | string? | Optional path for the byte length of the UTF-8 document (a long), for nodes that need it explicitly |
+| `Culture` | string? | Culture of all numbers and dates unless a column names its own, e.g. `de-AT` (decimal comma); unset or empty is invariant (decimal point) |
 | `Columns` | ICollection? | Output columns in order, see below; unset takes every scalar property of the records |
 
 A column has `Header` (defaults to the last name of `ValuePath`), `ValuePath` (relative,
@@ -932,14 +933,24 @@ taken by the serializer and would never reach the column.)
 
 - **Numbers** keep their raw JSON token when no `Format`, `Decimals` or `Factor` is set (`0.50` stays
   `0.50`). Otherwise the value is multiplied by `Factor`, rounded to `Decimals` **half away from
-  zero**, then formatted with the .NET format string `Format` and the **invariant culture** (decimal
-  point, no thousands separator). `0.###` writes `14` and `0.546`, `0.000` writes `14.000`. Note the
+  zero**, then formatted with the .NET format string `Format` and the column's culture (see
+  below; invariant by default: decimal point, no thousands separator). `0.###` writes `14` and
+  `0.546`, `0.000` writes `14.000`; with `Culture: de-AT` they write `14` and `0,546` / `14,000`. With a
+  culture set but no `Format`/`Decimals`/`Factor` the number is still localized (`0.50` becomes
+  `0,50`). A thousands separator appears only when the format asks for one (`#,##0.00`). Note the
   order: a column with `Factor: 4` computes from the unrounded source value, which differs from
   4 × the *written* neighbouring column once the source has more decimals than `Decimals`.
 - **DateTime** reads an ISO 8601 string; **a value without an offset is read as UTC**, like the
   stream-data nodes read one. It is converted into `TimeZone` (IANA id, UTC when unset) and written
-  with `Format` (`yyyy-MM-ddTHH:mm:ss` when unset), invariant culture. `TimeZone` is allowed on a
-  DateTime column only.
+  with `Format` (`yyyy-MM-ddTHH:mm:ss` when unset) in the column's culture (it only matters for
+  names such as `dddd` / `MMMM`). `TimeZone` is allowed on a DateTime column only.
+- **Culture** (`culture` on the node, overridable per column; a constant cannot carry one): unset
+  or `""` is the invariant culture (decimal point). A culture such as `de-AT` writes a decimal comma
+  and German day and month names. **Text read from a string is always read invariant** (`"1234.5"`
+  is 1234.5 whatever the output culture): the source is data, not a user's input. An unknown culture
+  fails the node, which also covers a host running in invariant-globalization mode. With a decimal
+  comma use a delimiter other than `,`: `Minimal` quoting does quote a number that contains the
+  delimiter, but most readers cope badly with it.
 - **Booleans** are written `true` / `false`; absent and null values are empty cells; an object or
   array at a `ValuePath` is refused.
 - With `Columns` unset the node takes every scalar property of the records in the order of first

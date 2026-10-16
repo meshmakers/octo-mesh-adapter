@@ -143,7 +143,7 @@ internal sealed class NotificationEngineHarness
             RtId = OctoObjectId.GenerateNewId(),
             Name = $"{_prefix} subscription",
             Enabled = deployed,
-            DeployedAt = deployed ? Clock.UtcNow.AddMinutes(-1) : null
+            DeployedAt = deployed ? DateTime.UtcNow : null
         };
         SubscriptionRtId = subscription.RtId;
 

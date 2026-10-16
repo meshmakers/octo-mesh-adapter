@@ -54,22 +54,6 @@ internal static class SimpleRtQueryExecution
             .ToList();
     }
 
-    public static async Task<DateTime?> FindLatestChangeAsync(ITenantRepository repository,
-        ICkCacheService ckCacheService, IOctoSession session, RtSimpleRtQuery simpleQuery)
-    {
-        var queryOptions = RtEntityQueryOptions.Create().WithCachingDisabled();
-        ConfigureFilters(simpleQuery, queryOptions);
-        queryOptions.SortOrder(ChangedAtPath, SortOrders.Descending);
-
-        var filterNavigation = RtPathEvaluator.TokenizeAndGetNavigationPairsByRtCkId(ckCacheService,
-            repository.TenantId, simpleQuery.QueryCkTypeId, [], queryOptions.FieldFilters ?? new List<FieldFilter>());
-
-        var resultSet = await repository.GetRtEntitiesGraphByTypeAsync(session, simpleQuery.QueryCkTypeId,
-            queryOptions, filterNavigation, null, 1);
-
-        return resultSet.Items.FirstOrDefault()?.RtChangedDateTime;
-    }
-
     public static async Task<QueryResult> RunForRtIdsAsync(IMeshEtlContext context, ICkCacheService ckCacheService,
         IOctoSession session, RtSimpleRtQuery simpleQuery, IReadOnlyList<OctoObjectId> rtIds)
     {

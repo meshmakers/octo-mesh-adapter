@@ -6,8 +6,6 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 internal enum NotificationDigestAction
 {
-    RecordSilently,
-
     NothingNew,
 
     Send
@@ -26,7 +24,7 @@ internal sealed record DeliveryMemory(
     bool? SkipExistingRows,
     DateTime? LastRunAt);
 
-internal sealed record NotificationPlan(bool RecordOnly, DateTime? ReadFrom, DateTime? ProcessedUntil,
+internal sealed record NotificationPlan(bool Restarted, DateTime? ReadFrom, DateTime? ProcessedUntil,
     IReadOnlyList<SentRow> SentRows);
 
 internal sealed record NotificationDigestDecision(
@@ -92,36 +90,54 @@ internal static class NotificationDigest
 
     public static bool NeedsIdleWrite(NotificationDigestAction action, bool sameRows, string? lastError,
         DateTime? lastRunAt, DateTime now) =>
-        action == NotificationDigestAction.RecordSilently || !sameRows || !string.IsNullOrEmpty(lastError) ||
+        !sameRows || !string.IsNullOrEmpty(lastError) ||
         lastRunAt is not { } ranAt || now - ranAt >= IdleRecordInterval;
 
     public static NotificationPlan Plan(DeliveryMemory? memory, string? subjectId, bool skipExistingRows,
-        string queryRtId, DateTime start, DateTime now)
+        string queryRtId, DateTime start, DateTime? preferenceChangedAt, DateTime? subscriptionChangedAt, DateTime now)
     {
         var otherRecipient = memory?.SubjectId != null && memory.SubjectId != subjectId;
         var switchedToCatchUp = memory?.SkipExistingRows == true && !skipExistingRows;
         var sentRows = otherRecipient || switchedToCatchUp
             ? []
             : Prune(memory?.SentRows ?? [], ReadFrom(memory?.ProcessedUntil), now);
+        var optionChanged = memory?.SkipExistingRows != null && memory.SkipExistingRows != skipExistingRows;
+        var queryChanged = memory?.QueryRtId != null && memory.QueryRtId != queryRtId;
         var restart = memory?.LastRunAt is not { } lastRunAt || skipExistingRows && lastRunAt < start || otherRecipient ||
-                      memory.QueryRtId != null && memory.QueryRtId != queryRtId ||
-                      memory.SkipExistingRows != null && memory.SkipExistingRows != skipExistingRows ||
-                      skipExistingRows && memory.ProcessedUntil == null;
+                      queryChanged || optionChanged || skipExistingRows && memory.ProcessedUntil == null;
 
-        return restart
-            ? new NotificationPlan(skipExistingRows, null, null, sentRows)
-            : new NotificationPlan(false, ReadFrom(memory!.ProcessedUntil), memory.ProcessedUntil, sentRows);
+        if (!restart)
+        {
+            return new NotificationPlan(false, ReadFrom(memory!.ProcessedUntil), memory.ProcessedUntil, sentRows);
+        }
+
+        if (!skipExistingRows)
+        {
+            return new NotificationPlan(true, null, null, sentRows);
+        }
+
+        var startedAt = start;
+        if ((otherRecipient || optionChanged) && preferenceChangedAt > startedAt)
+        {
+            startedAt = preferenceChangedAt.Value;
+        }
+
+        if (queryChanged)
+        {
+            foreach (var changedAt in new[] { memory!.LastRunAt, subscriptionChangedAt })
+            {
+                if (changedAt > startedAt)
+                {
+                    startedAt = changedAt.Value;
+                }
+            }
+        }
+
+        return new NotificationPlan(true, startedAt, startedAt + Overlap, sentRows);
     }
 
     public static DateTime? ReadFrom(DateTime? processedUntil) =>
         processedUntil is { } until && until > DateTime.MinValue + Overlap ? until - Overlap : null;
-
-    public static NotificationDigestDecision RecordStart(NotificationPlan plan, DateTime? latestChange, DateTime now)
-    {
-        var processedUntil = latestChange is { } latest ? latest + Overlap : DateTime.MinValue;
-        return new NotificationDigestDecision(NotificationDigestAction.RecordSilently, [], processedUntil,
-            Prune(plan.SentRows, ReadFrom(processedUntil), now));
-    }
 
     public static NotificationDigestDecision Decide(NotificationPlan plan, IReadOnlyList<NotificationCandidate> page,
         DateTime now)

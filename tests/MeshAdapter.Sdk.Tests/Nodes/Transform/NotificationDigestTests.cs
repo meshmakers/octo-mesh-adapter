@@ -33,37 +33,62 @@ public class NotificationDigestTests
     private const string C = "670000000000000000000003";
 
     [Fact]
-    public void Plan_OnwardsFirstRun_RecordsTheStartWithoutReading()
+    public void Plan_OnwardsFirstRun_ReadsFromTheStart()
     {
-        var plan = NotificationDigest.Plan(null, "user-a", skipExistingRows: true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(null, "user-a", skipExistingRows: true, "q", Start, null, null, Now);
 
-        Assert.True(plan.RecordOnly);
+        Assert.True(plan.Restarted);
+        Assert.Equal(Start, plan.ReadFrom);
+        Assert.Equal(Start, NotificationDigest.ReadFrom(plan.ProcessedUntil));
+    }
+
+    [Fact]
+    public void Decide_OnwardsFirstRun_SendsTheRowsChangedSinceTheStart()
+    {
+        var plan = NotificationDigest.Plan(null, "user-a", true, "q", Start, null, null, Now);
+
+        var decision = NotificationDigest.Decide(plan, [Row(A, Start.AddMinutes(1))], Now);
+
+        Assert.Equal(NotificationDigestAction.Send, decision.Action);
+        Assert.Equal([A], decision.NewRtIds);
+        Assert.Equal(Start + NotificationDigest.Overlap, decision.ProcessedUntil);
+    }
+
+    [Fact]
+    public void Decide_OnwardsFirstRunWithNothingNew_KeepsReadingFromTheStart()
+    {
+        var plan = NotificationDigest.Plan(null, "user-a", true, "q", Start, null, null, Now);
+
+        var decision = NotificationDigest.Decide(plan, [], Now);
+
+        Assert.Equal(NotificationDigestAction.NothingNew, decision.Action);
+        Assert.Equal(Start, NotificationDigest.ReadFrom(decision.ProcessedUntil));
     }
 
     [Fact]
     public void Plan_CatchUpFirstRun_ReadsFromTheBeginning()
     {
-        var plan = NotificationDigest.Plan(null, "user-a", skipExistingRows: false, "q", Start, Now);
+        var plan = NotificationDigest.Plan(null, "user-a", skipExistingRows: false, "q", Start, null, null, Now);
 
-        Assert.False(plan.RecordOnly);
+        Assert.True(plan.Restarted);
         Assert.Null(plan.ReadFrom);
     }
 
     [Fact]
     public void Plan_LaterRun_ReadsFromTheWatermarkMinusTheOverlap()
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, null, null, Now);
 
-        Assert.False(plan.RecordOnly);
+        Assert.False(plan.Restarted);
         Assert.Equal(Now.AddHours(-1) - NotificationDigest.Overlap, plan.ReadFrom);
     }
 
     [Fact]
     public void Plan_OnwardsStartWithNoMatchingRows_ReadsEverythingLater()
     {
-        var plan = NotificationDigest.Plan(Memory(DateTime.MinValue), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(DateTime.MinValue), "user-a", true, "q", Start, null, null, Now);
 
-        Assert.False(plan.RecordOnly);
+        Assert.False(plan.Restarted);
         Assert.Null(plan.ReadFrom);
     }
 
@@ -73,31 +98,70 @@ public class NotificationDigestTests
     [InlineData("q", "user-a", false)]
     public void Plan_AnotherQueryUserOrStartOption_IsANewStart(string queryRtId, string subjectId, bool onwards)
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), subjectId, onwards, queryRtId, Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), subjectId, onwards, queryRtId, Start, null, null, Now);
 
-        if (onwards)
-        {
-            Assert.True(plan.RecordOnly);
-        }
-        else
-        {
-            Assert.Null(plan.ReadFrom);
-        }
+        Assert.True(plan.Restarted);
+        Assert.Equal(onwards, plan.ReadFrom != null);
+    }
+
+    [Fact]
+    public void Plan_AnotherUserOrStartOption_StartsWhenThePreferenceChanged()
+    {
+        var changedAt = Now.AddMinutes(-5);
+
+        var otherUser = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-b", true, "q", Start, changedAt, null, Now);
+        var otherOption = NotificationDigest.Plan(Memory(Now.AddHours(-1), skipExistingRows: false), "user-a", true, "q", Start,
+            changedAt, null, Now);
+
+        Assert.Equal(changedAt, otherUser.ReadFrom);
+        Assert.Equal(changedAt, otherOption.ReadFrom);
+    }
+
+    [Fact]
+    public void Plan_AnotherQuery_StartsWhenTheSubscriptionChanged()
+    {
+        var changedAt = Now.AddMinutes(-5);
+
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), lastRunAt: Now.AddMinutes(-30)), "user-a", true,
+            "other-query", Start, Now.AddMinutes(-10), changedAt, Now);
+
+        Assert.Equal(changedAt, plan.ReadFrom);
+    }
+
+    [Fact]
+    public void Plan_AnotherQueryWithoutASubscriptionChange_StartsAfterTheLastRunOfTheOldOne()
+    {
+        var lastRunAt = Now.AddMinutes(-5);
+
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), lastRunAt: lastRunAt), "user-a", true, "other-query",
+            Start, Now.AddMinutes(-10), BeforeStart, Now);
+
+        Assert.Equal(lastRunAt, plan.ReadFrom);
+    }
+
+    [Fact]
+    public void Plan_AChangeBeforeTheDeployment_StartsAtTheDeployment()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), lastRunAt: BeforeStart), "user-b", true, "other-query",
+            Start, BeforeStart, BeforeStart, Now);
+
+        Assert.Equal(Start, plan.ReadFrom);
     }
 
     [Fact]
     public void Plan_ARedeployAfterTheLastRun_IsANewStartForOnwards()
     {
-        var plan = NotificationDigest.Plan(Memory(BeforeStart, lastRunAt: BeforeStart), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(BeforeStart, lastRunAt: BeforeStart), "user-a", true, "q", Start, null, null, Now);
 
-        Assert.True(plan.RecordOnly);
+        Assert.True(plan.Restarted);
+        Assert.Equal(Start, plan.ReadFrom);
     }
 
     [Fact]
     public void Plan_AnotherUser_ForgetsWhatThePreviousUserGot()
     {
         var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]), "user-b",
-            false, "q", Start, Now);
+            false, "q", Start, null, null, Now);
 
         Assert.Empty(plan.SentRows);
     }
@@ -106,7 +170,7 @@ public class NotificationDigestTests
     public void Plan_SwitchToCatchUp_SendsTheFullSummaryAgain()
     {
         var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]), "user-a",
-            false, "q", Start, Now);
+            false, "q", Start, null, null, Now);
 
         Assert.Null(plan.ReadFrom);
         Assert.Empty(plan.SentRows);
@@ -117,9 +181,9 @@ public class NotificationDigestTests
     {
         var plan = NotificationDigest.Plan(
             Memory(BeforeStart, [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))], skipExistingRows: false, lastRunAt: BeforeStart),
-            "user-a", false, "q", Start, Now);
+            "user-a", false, "q", Start, null, null, Now);
 
-        Assert.False(plan.RecordOnly);
+        Assert.False(plan.Restarted);
         Assert.Equal(NotificationDigest.ReadFrom(BeforeStart), plan.ReadFrom);
         Assert.Equal([A], plan.SentRows.Select(row => row.RtId));
     }
@@ -129,7 +193,7 @@ public class NotificationDigestTests
     {
         var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1),
                 [new SentRow(A, Now.AddDays(-31), Now.AddDays(-31)), new SentRow(B, Now.AddDays(-29), Now.AddDays(-29))]),
-            "user-a", true, "q", Start, Now);
+            "user-a", true, "q", Start, null, null, Now);
 
         Assert.Equal([B], plan.SentRows.Select(row => row.RtId));
     }
@@ -137,7 +201,7 @@ public class NotificationDigestTests
     [Fact]
     public void Decide_NewRows_AreSentAndRemembered()
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, null, null, Now);
 
         var decision = NotificationDigest.Decide(plan, [Row(A, Now.AddMinutes(-30)), Row(B, Now.AddMinutes(-10))], Now);
 
@@ -151,7 +215,7 @@ public class NotificationDigestTests
     public void Decide_ARowAlreadySent_IsNotSentAgain()
     {
         var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))]), "user-a",
-            true, "q", Start, Now);
+            true, "q", Start, null, null, Now);
 
         var decision = NotificationDigest.Decide(plan, [Row(A, Now.AddMinutes(-30))], Now);
 
@@ -161,7 +225,7 @@ public class NotificationDigestTests
     [Fact]
     public void Decide_NothingChanged_KeepsTheWatermark()
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, null, null, Now);
 
         var decision = NotificationDigest.Decide(plan, [], Now);
 
@@ -172,7 +236,7 @@ public class NotificationDigestTests
     [Fact]
     public void Decide_RowsInsideTheOverlap_NeverMoveTheWatermarkBack()
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1)), "user-a", true, "q", Start, null, null, Now);
 
         var decision = NotificationDigest.Decide(plan, [Row(A, Now.AddHours(-1).AddMinutes(-2))], Now);
 
@@ -184,7 +248,7 @@ public class NotificationDigestTests
     {
         var old = Enumerable.Range(0, NotificationDigest.MaxSentRows)
             .Select(i => new SentRow($"6700000000000000{i:D8}", Now.AddDays(-1), Now.AddDays(-1))).ToList();
-        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), old), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddHours(-1), old), "user-a", true, "q", Start, null, null, Now);
 
         var decision = NotificationDigest.Decide(plan, [Row(C, Now.AddMinutes(-1))], Now);
 
@@ -197,7 +261,7 @@ public class NotificationDigestTests
     {
         var quietSince = Now.AddDays(-40);
         var plan = NotificationDigest.Plan(Memory(quietSince, [new SentRow(A, quietSince, quietSince)]), "user-a",
-            true, "q", Start, Now);
+            true, "q", Start, null, null, Now);
 
         Assert.Equal([A], plan.SentRows.Select(row => row.RtId));
     }
@@ -205,7 +269,7 @@ public class NotificationDigestTests
     [Fact]
     public void Decide_AFloodInsideTheOverlap_IsCapped_AndTheWatermarkPassesWhatIsDropped()
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, null, null, Now);
         var flood = Enumerable.Range(0, NotificationDigest.MaxSentRows + 5)
             .Select(i => Row($"6700000000000000{i:D8}", Now.AddMinutes(-1).AddMilliseconds(i))).ToList();
 
@@ -225,7 +289,7 @@ public class NotificationDigestTests
         var earlier = Enumerable.Range(0, NotificationDigest.MaxSentRows)
             .Select(i => new SentRow($"6700000000000000{i:D8}", Now.AddMinutes(-1), Now.AddMinutes(-2).AddMilliseconds(i)))
             .ToList();
-        var plan = NotificationDigest.Plan(Memory(earlier[^1].ChangedAt, earlier), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(earlier[^1].ChangedAt, earlier), "user-a", true, "q", Start, null, null, Now);
         var page = Enumerable.Range(0, 3)
             .Select(i => Row($"6800000000000000{i:D8}", earlier[^1].ChangedAt.AddMilliseconds(1 + i))).ToList();
 
@@ -239,7 +303,7 @@ public class NotificationDigestTests
     [Fact]
     public void Decide_MoreRowsThanTheCapChangedInTheSameMillisecond_AreAllRemembered()
     {
-        var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, Now);
+        var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, null, null, Now);
         var flood = Enumerable.Range(0, NotificationDigest.MaxSentRows + 5)
             .Select(i => Row($"6700000000000000{i:D8}", Now.AddMinutes(-1))).ToList();
 
@@ -269,38 +333,14 @@ public class NotificationDigestTests
     }
 
     [Fact]
-    public void RecordStart_ReadsOnFromTheLatestChange_WithoutRecordingAnyRow()
-    {
-        var latest = Now.AddMinutes(-1);
-        var plan = NotificationDigest.Plan(null, "user-a", true, "q", Start, Now);
-
-        var decision = NotificationDigest.RecordStart(plan, latest, Now);
-
-        Assert.Equal(NotificationDigestAction.RecordSilently, decision.Action);
-        Assert.Equal(latest, NotificationDigest.ReadFrom(decision.ProcessedUntil));
-        Assert.Empty(decision.SentRows);
-    }
-
-    [Fact]
-    public void RecordStart_KeepsTheRowsAlreadySent()
+    public void Plan_SwitchToOnwards_KeepsTheRowsAlreadySent()
     {
         var memory = Memory(Now.AddHours(-1), [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))],
             skipExistingRows: false);
-        var plan = NotificationDigest.Plan(memory, "user-a", true, "q", Start, Now);
 
-        var decision = NotificationDigest.RecordStart(plan, Now.AddMinutes(-1), Now);
+        var plan = NotificationDigest.Plan(memory, "user-a", true, "q", Start, null, null, Now);
 
-        Assert.Equal([A], decision.SentRows.Select(row => row.RtId));
-    }
-
-    [Fact]
-    public void RecordStart_WithoutMatchingRows_StartsAtTheBeginning()
-    {
-        var plan = NotificationDigest.Plan(null, "user-a", true, "q", Start, Now);
-
-        var decision = NotificationDigest.RecordStart(plan, null, Now);
-
-        Assert.Equal(DateTime.MinValue, decision.ProcessedUntil);
+        Assert.Equal([A], plan.SentRows.Select(row => row.RtId));
     }
 
     [Fact]
@@ -524,7 +564,6 @@ public class NotificationDigestTests
     }
 
     [Theory]
-    [InlineData((int)NotificationDigestAction.RecordSilently, true, null, -1)]
     [InlineData((int)NotificationDigestAction.NothingNew, false, null, -1)]
     [InlineData((int)NotificationDigestAction.NothingNew, true, "boom", -1)]
     [InlineData((int)NotificationDigestAction.NothingNew, true, null, -60)]

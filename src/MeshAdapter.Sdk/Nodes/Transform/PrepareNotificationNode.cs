@@ -160,7 +160,8 @@ internal class PrepareNotificationNode(
             var memory = NotificationDeliveryStateStore.MemoryOf(state);
             var otherRecipient = memory?.SubjectId != null && memory.SubjectId != preference.SubjectId;
             var plan = NotificationDigest.Plan(memory, preference.SubjectId, skipExistingRows, queryRtId,
-                NotificationDigest.StartOf(preference.RtCreationDateTime, subscription.DeployedAt), now);
+                NotificationDigest.StartOf(preference.RtCreationDateTime, subscription.DeployedAt),
+                preference.RtChangedDateTime, subscription.RtChangedDateTime, now);
             var sentRtIds = plan.SentRows.Select(row => new OctoObjectId(row.RtId)).ToList();
 
             NotificationDigestDecision decision;
@@ -168,18 +169,9 @@ internal class PrepareNotificationNode(
             using (var scopedSession = await etlContext.GetScopedSessionAsync())
             {
                 scopedSession.StartTransaction();
-                if (plan.RecordOnly)
-                {
-                    var latestChange = await SimpleRtQueryExecution.FindLatestChangeAsync(repository, ckCacheService,
-                        scopedSession, simpleQuery);
-                    decision = NotificationDigest.RecordStart(plan, latestChange, now);
-                }
-                else
-                {
-                    var page = await SimpleRtQueryExecution.FindChangedAsync(repository, ckCacheService,
-                        scopedSession, simpleQuery, plan.ReadFrom, sentRtIds, NotificationDigest.RowsPerRun);
-                    decision = NotificationDigest.Decide(plan, page, now);
-                }
+                var page = await SimpleRtQueryExecution.FindChangedAsync(repository, ckCacheService,
+                    scopedSession, simpleQuery, plan.ReadFrom, sentRtIds, NotificationDigest.RowsPerRun);
+                decision = NotificationDigest.Decide(plan, page, now);
 
                 await scopedSession.CommitTransactionAsync();
             }
@@ -199,10 +191,10 @@ internal class PrepareNotificationNode(
                         NotificationDeliveryStateStore.Unleased(now, NotificationDigest.LeaseExpiry));
                 }
 
-                if (decision.Action == NotificationDigestAction.RecordSilently)
+                if (plan is { Restarted: true, ReadFrom: { } startedAt })
                 {
-                    nodeContext.Info("Start of preference '{0}': rows changed until {1:O} count as existing, nothing sent",
-                        preferenceRtId, decision.ProcessedUntil ?? DateTime.MinValue);
+                    nodeContext.Info("Start of preference '{0}': rows changed after {1:O} are new, none yet",
+                        preferenceRtId, startedAt);
                 }
                 else
                 {

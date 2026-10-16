@@ -1,4 +1,5 @@
 using System.Text.Json;
+using FakeItEasy;
 using MeshAdapter.Sdk.IntegrationTests.Fixtures;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
@@ -8,6 +9,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 
 namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Notifications;
@@ -133,6 +135,67 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         state.RunningSince.Should().Be(takeover);
         state.LastSentAt.Should().BeNull();
         state.SentRows.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task ACommitAfterAnotherRunTookOverAndReleasedTheLease_LeavesThatRunsState()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        var othersSentAt = h.Clock.UtcNow.AddMinutes(11);
+
+        var tick = await h.TickAsync(preference, async (dc, _) =>
+        {
+            var stateRtId = (await h.StateOfAsync(preference))!.RtId;
+            await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), stateRtId, preference,
+                new NotificationDeliveryStateChange(LastSentAt: othersSentAt, ReleaseLease: true));
+            await h.CommitAsync(dc);
+        });
+
+        tick.Failure.Should().BeNull();
+        var state = (await h.StateOfAsync(preference))!;
+        state.RunningSince.Should().BeNull();
+        state.LastSentAt.Should().BeCloseTo(othersSentAt, TimeSpan.FromMilliseconds(1));
+        state.SentRows.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task ARunThatReadTheStateBeforeAnotherRunSentAndCommitted_SkipsTheTick_AndReleasesItsLease()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        var added = await h.AddReadingsAsync(1);
+        var interleaved = false;
+        TickResult? other = null;
+        A.CallTo(() => h.SubjectLookup.FindBySubjectIdAsync(A<string>._, A<string>._, A<CancellationToken>._))
+            .ReturnsLazily(async (string _, string subjectId, CancellationToken _) =>
+            {
+                if (!interleaved)
+                {
+                    interleaved = true;
+                    other = await h.TickAndCommitAsync(preference);
+                }
+
+                return (SubjectChannelRecord?)new SubjectChannelRecord(subjectId, $"{subjectId}@example.com",
+                    subjectId, null, null, []);
+            });
+
+        var tick = await h.TickAsync(preference);
+
+        other!.Failure.Should().BeNull();
+        other.Sent.Should().BeTrue();
+        tick.Failure.Should().BeNull();
+        tick.Sent.Should().BeFalse();
+        var state = (await h.StateOfAsync(preference))!;
+        state.RunningSince.Should().BeNull();
+        state.SentRows!.Select(row => row.RowRtId).Should().Equal(added.Select(rtId => rtId.ToString()));
     }
 
     [Fact]

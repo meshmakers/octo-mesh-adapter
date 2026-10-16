@@ -1,4 +1,7 @@
+using System.Text.RegularExpressions;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
@@ -83,7 +86,7 @@ public class NotificationDigestTests
     }
 
     [Fact]
-    public void Plan_ARedeployAfterTheLastRun_IsANewStart()
+    public void Plan_ARedeployAfterTheLastRun_IsANewStartForOnwards()
     {
         var plan = NotificationDigest.Plan(Memory(BeforeStart, lastRunAt: BeforeStart), "user-a", true, "q", Start, Now);
 
@@ -110,13 +113,14 @@ public class NotificationDigestTests
     }
 
     [Fact]
-    public void Plan_CatchUpRedeployed_KeepsWhatWasSent()
+    public void Plan_CatchUpRedeployed_ReadsOnFromItsWatermark_AndKeepsWhatWasSent()
     {
         var plan = NotificationDigest.Plan(
             Memory(BeforeStart, [new SentRow(A, Now.AddHours(-1), Now.AddHours(-1))], skipExistingRows: false, lastRunAt: BeforeStart),
             "user-a", false, "q", Start, Now);
 
-        Assert.Null(plan.ReadFrom);
+        Assert.False(plan.RecordOnly);
+        Assert.Equal(NotificationDigest.ReadFrom(BeforeStart), plan.ReadFrom);
         Assert.Equal([A], plan.SentRows.Select(row => row.RtId));
     }
 
@@ -199,7 +203,41 @@ public class NotificationDigestTests
     }
 
     [Fact]
-    public void Decide_AFloodInsideTheOverlap_IsRememberedBeyondTheCap()
+    public void Decide_AFloodInsideTheOverlap_IsCapped_AndTheWatermarkPassesWhatIsDropped()
+    {
+        var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, Now);
+        var flood = Enumerable.Range(0, NotificationDigest.MaxSentRows + 5)
+            .Select(i => Row($"6700000000000000{i:D8}", Now.AddMinutes(-1).AddMilliseconds(i))).ToList();
+
+        var decision = NotificationDigest.Decide(plan, flood, Now);
+
+        Assert.Equal(NotificationDigest.MaxSentRows + 5, decision.NewRtIds.Count);
+        Assert.Equal(NotificationDigest.MaxSentRows, decision.SentRows.Count);
+        Assert.Equal(flood[4].ChangedAt + NotificationDigest.Overlap, decision.ProcessedUntil);
+        var readFrom = NotificationDigest.ReadFrom(decision.ProcessedUntil);
+        Assert.All(flood.Take(5), row => Assert.True(row.ChangedAt <= readFrom));
+        Assert.All(decision.SentRows, row => Assert.True(row.ChangedAt > readFrom));
+    }
+
+    [Fact]
+    public void Decide_AFloodSpreadOverSeveralRuns_StaysCapped()
+    {
+        var earlier = Enumerable.Range(0, NotificationDigest.MaxSentRows)
+            .Select(i => new SentRow($"6700000000000000{i:D8}", Now.AddMinutes(-1), Now.AddMinutes(-2).AddMilliseconds(i)))
+            .ToList();
+        var plan = NotificationDigest.Plan(Memory(earlier[^1].ChangedAt, earlier), "user-a", true, "q", Start, Now);
+        var page = Enumerable.Range(0, 3)
+            .Select(i => Row($"6800000000000000{i:D8}", earlier[^1].ChangedAt.AddMilliseconds(1 + i))).ToList();
+
+        var decision = NotificationDigest.Decide(plan, page, Now);
+
+        Assert.Equal(3, decision.NewRtIds.Count);
+        Assert.Equal(NotificationDigest.MaxSentRows, decision.SentRows.Count);
+        Assert.Equal(earlier[2].ChangedAt + NotificationDigest.Overlap, decision.ProcessedUntil);
+    }
+
+    [Fact]
+    public void Decide_MoreRowsThanTheCapChangedInTheSameMillisecond_AreAllRemembered()
     {
         var plan = NotificationDigest.Plan(Memory(Now.AddMinutes(-2)), "user-a", true, "q", Start, Now);
         var flood = Enumerable.Range(0, NotificationDigest.MaxSentRows + 5)
@@ -208,6 +246,7 @@ public class NotificationDigestTests
         var decision = NotificationDigest.Decide(plan, flood, Now);
 
         Assert.Equal(NotificationDigest.MaxSentRows + 5, decision.SentRows.Count);
+        Assert.Equal(Now.AddMinutes(-1), decision.ProcessedUntil);
     }
 
     [Theory]
@@ -367,6 +406,28 @@ public class NotificationDigestTests
             [["<a href=\"x\">Müller & Söhne</a>"]], TimeZoneInfo.Utc, 1, null);
 
         Assert.Equal("<b>&lt;a href=&quot;x&quot;&gt;Müller &amp; Söhne&lt;/a&gt;</b>", rendered.Body);
+    }
+
+    [Theory]
+    [InlineData("[Confirm your account](https://evil.example)")]
+    [InlineData("![](https://tracker.example/px)")]
+    [InlineData("[Confirm][1]\n\n[1]: https://evil.example")]
+    [InlineData("*bold* _it_ `code` # ~~x~~ | a | {b} $c$ \\[d\\] +e ^f^")]
+    public void Render_MarkupBody_ARowValueStaysText_InBothHalvesOfTheMail(string value)
+    {
+        var rendered = NotificationDigest.Render("x", "[Open](https://studio.example) ${name}",
+            NotificationBodyKind.Markup, ["name"], [[value]], TimeZoneInfo.Utc, 1, null);
+
+        var html = EMailSenderNode2.RenderBody(rendered.Body, BodyFormats.Markdown);
+        Assert.Contains("<a href=\"https://studio.example\">Open</a>", html);
+        Assert.All(Regex.Matches(html, "<a href=\"([^\"]*)\">([^<]*)</a>").Skip(1),
+            link => Assert.Equal(link.Groups[1].Value, link.Groups[2].Value));
+        Assert.Equal(html.Split("<a ").Length - 1, Regex.Matches(html, "<a href=\"([^\"]*)\">([^<]*)</a>").Count);
+        Assert.DoesNotContain("<img", html);
+        Assert.DoesNotContain("<em>", html);
+        Assert.DoesNotContain("<code>", html);
+        Assert.Equal($"[Open](https://studio.example) {value}",
+            EMailSenderNode2.PlainTextAlternative(rendered.Body, BodyFormats.Markdown));
     }
 
     [Fact]

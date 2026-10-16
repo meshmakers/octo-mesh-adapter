@@ -52,14 +52,14 @@ public class CommitNotificationStateNode(
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
 
-        await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId,
+        var applied = await NotificationDeliveryStateStore.SaveHeldAsync(etlContext, stateRtId, preferenceRtId,
             new NotificationDeliveryStateChange(ProcessedUntil: prepared.ProcessedUntil, SentRows: prepared.SentRows,
                 QueryRtId: prepared.QueryRtId, SubjectId: prepared.SubjectId,
                 SkipExistingRows: prepared.SkipExistingRows, LastRunAt: now, LastSentAt: now, ClearLastError: true,
                 ReleaseLease: true),
-            NotificationDeliveryStateStore.HeldBy(lease));
+            lease);
 
-        if (await NotificationDeliveryStateStore.RecordedSendAtAsync(etlContext, preferenceRtId, now))
+        if (applied && await NotificationDeliveryStateStore.RecordedSendAtAsync(etlContext, preferenceRtId, now))
         {
             nodeContext.Info("Notification for preference '{0}' sent with {1} new row(s)", preferenceRtId,
                 prepared.NewCount);

@@ -232,8 +232,16 @@ internal class PrepareNotificationNode(
                     return;
                 }
 
-                stateRtId = leased;
+                stateRtId = leased.RtId;
                 lease = NotificationDeliveryStateStore.LeaseAt(now);
+                if (leased.LastRunAt != state?.LastRunAt)
+                {
+                    await NotificationDeliveryStateStore.SaveHeldAsync(etlContext, leased.RtId, preferenceRtId,
+                        new NotificationDeliveryStateChange(ReleaseLease: true), lease.Value);
+                    nodeContext.Debug("Preference '{0}' was handled by another run after this one read it; this tick is skipped",
+                        preferenceRtId);
+                    return;
+                }
             }
 
             QueryResult result;
@@ -279,16 +287,23 @@ internal class PrepareNotificationNode(
             {
                 var sent = dataContext.TryGet<PreparedNotification>(c.TargetPath, out var sentNotification) &&
                            sentNotification is { Sent: true };
-                await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId, sent
+                var change = sent
                     ? new NotificationDeliveryStateChange(ProcessedUntil: sentNotification!.ProcessedUntil,
                         SentRows: sentNotification.SentRows, QueryRtId: sentNotification.QueryRtId,
                         SubjectId: sentNotification.SubjectId, SkipExistingRows: sentNotification.SkipExistingRows,
                         LastRunAt: now, LastSentAt: now,
                         LastError: ex.Message, ReleaseLease: lease != null)
-                    : new NotificationDeliveryStateChange(LastError: ex.Message, ReleaseLease: lease != null),
-                    lease is { } held
-                        ? NotificationDeliveryStateStore.HeldBy(held)
-                        : NotificationDeliveryStateStore.Unleased(now, NotificationDigest.LeaseExpiry));
+                    : new NotificationDeliveryStateChange(LastError: ex.Message, ReleaseLease: lease != null);
+                if (lease is { } held)
+                {
+                    await NotificationDeliveryStateStore.SaveHeldAsync(etlContext, stateRtId!.Value, preferenceRtId,
+                        change, held);
+                }
+                else
+                {
+                    await NotificationDeliveryStateStore.SaveAsync(etlContext, stateRtId, preferenceRtId, change,
+                        NotificationDeliveryStateStore.Unleased(now, NotificationDigest.LeaseExpiry));
+                }
             }
             catch (Exception bookkeepingException)
             {

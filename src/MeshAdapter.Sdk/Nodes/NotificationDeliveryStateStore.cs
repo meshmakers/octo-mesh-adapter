@@ -80,15 +80,15 @@ internal static class NotificationDeliveryStateStore
         return new OctoObjectId(bytes);
     }
 
-    public static async Task<OctoObjectId?> TryAcquireLeaseAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,
-        OctoObjectId preferenceRtId, DateTime now, TimeSpan leaseExpiry)
+    public static async Task<RtNotificationDeliveryState?> TryAcquireLeaseAsync(IMeshEtlContext etlContext,
+        OctoObjectId? stateRtId, OctoObjectId preferenceRtId, DateTime now, TimeSpan leaseExpiry)
     {
         var lease = LeaseAt(now);
         try
         {
             if (stateRtId == null)
             {
-                stateRtId = await WriteAsync(etlContext, null, preferenceRtId,
+                await WriteAsync(etlContext, null, preferenceRtId,
                     new NotificationDeliveryStateChange(RunningSince: lease), null);
             }
             else
@@ -100,7 +100,8 @@ internal static class NotificationDeliveryStateStore
         }
         catch (Exception)
         {
-            if ((await ReadStateAsync(etlContext, preferenceRtId))?.RunningSince is { } held && held != lease)
+            var current = await ReadStateAsync(etlContext, preferenceRtId);
+            if (current?.RunningSince is { } held && held != lease || stateRtId == null && current != null)
             {
                 return null;
             }
@@ -108,7 +109,20 @@ internal static class NotificationDeliveryStateStore
             throw;
         }
 
-        return (await ReadStateAsync(etlContext, preferenceRtId))?.RunningSince == lease ? stateRtId : null;
+        var leased = await ReadStateAsync(etlContext, preferenceRtId);
+        return leased?.RunningSince == lease ? leased : null;
+    }
+
+    public static async Task<bool> SaveHeldAsync(IMeshEtlContext etlContext, OctoObjectId stateRtId,
+        OctoObjectId preferenceRtId, NotificationDeliveryStateChange change, DateTime lease)
+    {
+        if ((await ReadStateAsync(etlContext, preferenceRtId))?.RunningSince != lease)
+        {
+            return false;
+        }
+
+        await WriteAsync(etlContext, stateRtId, preferenceRtId, change, HeldBy(lease));
+        return true;
     }
 
     public static async Task<OctoObjectId> SaveAsync(IMeshEtlContext etlContext, OctoObjectId? stateRtId,

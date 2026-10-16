@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -71,6 +72,9 @@ internal static class NotificationDigest
 
     private const string CountPlaceholder = "count";
 
+    private static readonly Regex MarkdownControlCharacter =
+        new("""&(?:amp|lt|gt|quot|#39);|[\\`*_\[\]()!#|~^${}+]""", RegexOptions.Compiled);
+
     public static DateTime StartOf(DateTime? preferenceCreatedAt, DateTime? deployedAt)
     {
         var created = preferenceCreatedAt ?? DateTime.MinValue;
@@ -99,7 +103,7 @@ internal static class NotificationDigest
         var sentRows = otherRecipient || switchedToCatchUp
             ? []
             : Prune(memory?.SentRows ?? [], ReadFrom(memory?.ProcessedUntil), now);
-        var restart = memory?.LastRunAt is not { } lastRunAt || lastRunAt < start || otherRecipient ||
+        var restart = memory?.LastRunAt is not { } lastRunAt || skipExistingRows && lastRunAt < start || otherRecipient ||
                       memory.QueryRtId != null && memory.QueryRtId != queryRtId ||
                       memory.SkipExistingRows != null && memory.SkipExistingRows != skipExistingRows ||
                       skipExistingRows && memory.ProcessedUntil == null;
@@ -130,10 +134,10 @@ internal static class NotificationDigest
             processedUntil = before;
         }
 
+        var (sentRows, remembered) = Remember(plan.SentRows, newRows, processedUntil, now);
         return new NotificationDigestDecision(
             newRows.Count == 0 ? NotificationDigestAction.NothingNew : NotificationDigestAction.Send,
-            newRows.Select(row => row.RtId.ToString()).ToList(), processedUntil,
-            Remember(plan.SentRows, newRows, processedUntil, now));
+            newRows.Select(row => row.RtId.ToString()).ToList(), remembered, sentRows);
     }
 
     public static IReadOnlyList<SentRow> Prune(IEnumerable<SentRow> sentRows, DateTime? readFrom, DateTime now) =>
@@ -149,18 +153,37 @@ internal static class NotificationDigest
         memory.SentRows.Select(row => row.RtId).ToHashSet(StringComparer.Ordinal)
             .SetEquals(decision.SentRows.Select(row => row.RtId));
 
-    private static IReadOnlyList<SentRow> Remember(IReadOnlyList<SentRow> sentRows,
-        IEnumerable<NotificationCandidate> rows, DateTime? processedUntil, DateTime now)
+    private static (IReadOnlyList<SentRow> SentRows, DateTime? ProcessedUntil) Remember(
+        IReadOnlyList<SentRow> sentRows, IEnumerable<NotificationCandidate> rows, DateTime? processedUntil,
+        DateTime now)
     {
         var added = rows.Select(row => new SentRow(row.RtId.ToString(), now, row.ChangedAt)).ToList();
         var addedIds = added.Select(row => row.RtId).ToHashSet(StringComparer.Ordinal);
         var all = added.Concat(sentRows.Where(row => !addedIds.Contains(row.RtId))).ToList();
+        processedUntil = PastOverflow(all, processedUntil, added.Max(row => (DateTime?)row.ChangedAt));
         var readFrom = ReadFrom(processedUntil);
         var readAgain = all.Where(row => CanBeReadAgain(row, readFrom)).ToList();
         var rest = all.Where(row => !CanBeReadAgain(row, readFrom) && now - row.SentAt < SentRowRetention)
             .OrderByDescending(row => row.SentAt)
             .Take(Math.Max(0, MaxSentRows - readAgain.Count));
-        return readAgain.Concat(rest).ToList();
+        return (readAgain.Concat(rest).ToList(), processedUntil);
+    }
+
+    private static DateTime? PastOverflow(IReadOnlyList<SentRow> rows, DateTime? processedUntil, DateTime? lastRead)
+    {
+        var readFrom = ReadFrom(processedUntil);
+        var kept = 0;
+        foreach (var changedAt in rows.Where(row => CanBeReadAgain(row, readFrom)).GroupBy(row => row.ChangedAt)
+                     .OrderByDescending(group => group.Key))
+        {
+            kept += changedAt.Count();
+            if (kept > MaxSentRows)
+            {
+                return lastRead is { } last && changedAt.Key >= last ? processedUntil : changedAt.Key + Overlap;
+            }
+        }
+
+        return processedUntil;
     }
 
     public static bool HasOlderTwin(NotificationRecipient recipient, IEnumerable<NotificationRecipient> recipients) =>
@@ -199,9 +222,7 @@ internal static class NotificationDigest
             }
 
             var text = Format(index < row.Count ? row[index] : null, timeZone);
-            return PlaceholderValue.Of(bodyKind == NotificationBodyKind.Markup
-                ? NotificationPlaceholderResolver.EncodeForMarkup(text)
-                : text);
+            return PlaceholderValue.Of(bodyKind == NotificationBodyKind.Markup ? EncodeForMarkdown(text) : text);
         }, unknown)).ToList();
 
         if (unknown.Count > 0)
@@ -239,6 +260,10 @@ internal static class NotificationDigest
 
         return result.Text;
     }
+
+    private static string EncodeForMarkdown(string text) =>
+        MarkdownControlCharacter.Replace(NotificationPlaceholderResolver.EncodeForMarkup(text),
+            match => match.Length > 1 ? match.Value : $"&#{(int)match.Value[0]};");
 
     private static bool IsCount(string token) =>
         string.Equals(token.Trim(), CountPlaceholder, StringComparison.OrdinalIgnoreCase);

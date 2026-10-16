@@ -36,7 +36,7 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         var leased = await NotificationDeliveryStateStore.TryAcquireLeaseAsync(h.CreateEtlContext(), null, preference,
             h.Clock.UtcNow, Expiry);
 
-        leased.Should().Be(NotificationDeliveryStateStore.StateRtIdFor(preference));
+        leased!.RtId.Should().Be(NotificationDeliveryStateStore.StateRtIdFor(preference));
         (await h.StateOfAsync(preference))!.RunningSince.Should().Be(Ms(h.Clock.UtcNow));
         (await h.StateCountAsync(preference)).Should().Be(1);
     }
@@ -50,7 +50,7 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         var leased = await NotificationDeliveryStateStore.TryAcquireLeaseAsync(h.CreateEtlContext(), state, preference,
             h.Clock.UtcNow, Expiry);
 
-        leased.Should().Be(state);
+        leased!.RtId.Should().Be(state);
         (await h.StateOfAsync(preference))!.RunningSince.Should().Be(Ms(h.Clock.UtcNow));
     }
 
@@ -77,7 +77,7 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         var leased = await NotificationDeliveryStateStore.TryAcquireLeaseAsync(h.CreateEtlContext(), state, preference,
             h.Clock.UtcNow, Expiry);
 
-        leased.Should().Be(state);
+        leased!.RtId.Should().Be(state);
         (await h.StateOfAsync(preference))!.RunningSince.Should().Be(Ms(h.Clock.UtcNow));
     }
 
@@ -94,7 +94,7 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
         var lost = await NotificationDeliveryStateStore.TryAcquireLeaseAsync(h.CreateEtlContext(), state, preference,
             second, Expiry);
 
-        won.Should().Be(state);
+        won!.RtId.Should().Be(state);
         lost.Should().BeNull();
         (await h.StateOfAsync(preference))!.RunningSince.Should().Be(Ms(first));
     }
@@ -219,6 +219,36 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
     }
 
     [Fact]
+    public async Task AWriteOfARunWhoseLeaseWasTakenOverAndReleased_LeavesTheNewerRunsStateAlone()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var oldLease = Ms(h.Clock.UtcNow.AddMinutes(-12));
+        var state = await SaveAsync(h, preference, null);
+
+        var applied = await NotificationDeliveryStateStore.SaveHeldAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastSentAt: h.Clock.UtcNow, ReleaseLease: true), oldLease);
+
+        applied.Should().BeFalse();
+        (await h.StateOfAsync(preference))!.LastSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AWriteOfTheLeaseHolderThatChecksItsLease_IsAppliedAndReleasesTheLease()
+    {
+        var (h, preference) = await ScenarioAsync();
+        var lease = Ms(h.Clock.UtcNow.AddMinutes(-1));
+        var state = await SaveAsync(h, preference, lease);
+
+        var applied = await NotificationDeliveryStateStore.SaveHeldAsync(h.CreateEtlContext(), state, preference,
+            new NotificationDeliveryStateChange(LastSentAt: h.Clock.UtcNow, ReleaseLease: true), lease);
+
+        applied.Should().BeTrue();
+        var after = (await h.StateOfAsync(preference))!;
+        after.RunningSince.Should().BeNull();
+        after.LastSentAt.Should().BeCloseTo(h.Clock.UtcNow, TimeSpan.FromMilliseconds(1));
+    }
+
+    [Fact]
     public async Task ASendIsReportedAsRecorded_OnlyWhenTheCommitWasApplied()
     {
         var (h, preference) = await ScenarioAsync();
@@ -239,6 +269,20 @@ public class NotificationLeaseIntegrationTests(NotificationEngineFixture fixture
 
         lost.Should().BeFalse();
         kept.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ARunThatSawNoState_LosesQuietly_WhenAnotherRunCreatedAndReleasedItMeanwhile()
+    {
+        var (h, preference) = await ScenarioAsync();
+        await SaveAsync(h, preference, null);
+
+        var leased = await NotificationDeliveryStateStore.TryAcquireLeaseAsync(h.CreateEtlContext(), null, preference,
+            h.Clock.UtcNow, Expiry);
+
+        leased.Should().BeNull();
+        (await h.StateCountAsync(preference)).Should().Be(1);
+        (await h.StateOfAsync(preference))!.RunningSince.Should().BeNull();
     }
 
     private static Task<OctoObjectId> SaveAsync(NotificationEngineHarness h, OctoObjectId preference,

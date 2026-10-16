@@ -918,7 +918,7 @@ node writes a fixed layout **without** quoting on purpose; this one writes real 
 | `TrailingDelimiter` | bool? | Every row, the header included, ends with the delimiter; false when unset |
 | `TrailingNewLine` | bool? | A line end after the last row; true when unset |
 | `ByteOrderMark` | bool? | UTF-8 BOM in front of the document (Excel needs it); false when unset |
-| `OutputAsBase64` | bool? | Write base64 of the UTF-8 bytes (BOM included) instead of text, for nodes that store or attach a file; false when unset |
+| `OutputAsBase64` | bool? | Write base64 of the UTF-8 bytes (BOM included) instead of text; false when unset. This is the content `CreateFileSystemUpdate@1` stores as a file-system item; `SendEMail@2` then attaches the stored item by its binary id (it cannot attach base64 directly) |
 | `ContentLengthTargetPath` | string? | Optional path for the byte length of the UTF-8 document (a long), for nodes that need it explicitly |
 | `Culture` | string? | Culture of all numbers and dates unless a column names its own, e.g. `de-AT` (decimal comma); unset or empty is invariant (decimal point) |
 | `Columns` | ICollection? | Output columns in order, see below; unset takes every scalar property of the records |

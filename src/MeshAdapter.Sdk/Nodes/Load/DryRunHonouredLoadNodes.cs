@@ -49,6 +49,9 @@ public static class DryRunHonouredLoadNodes
     /// <summary>NodeName@Version key for <see cref="ToDiscordNode"/>.</summary>
     public const string ToDiscord = "ToDiscord@1";
 
+    /// <summary>NodeName@Version key for <see cref="CommitNotificationStateNode"/>.</summary>
+    public const string CommitNotificationState = "CommitNotificationState@1";
+
     // UpdateRtEntityIfNewer is intentionally NOT listed: it only reads from MongoDB to
     // diff candidates and writes its filtered output to the in-memory data context for
     // downstream Load nodes (typically ApplyChanges@1/@2) to actually persist. It has no
@@ -70,6 +73,7 @@ public static class DryRunHonouredLoadNodes
         SaveTimeRangeSeriesInArchive,
         SftpDelete,
         SftpUpload,
-        ToDiscord
+        ToDiscord,
+        CommitNotificationState
     };
 }

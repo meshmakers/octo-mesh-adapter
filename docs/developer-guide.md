@@ -663,6 +663,34 @@ Maps values from source to target types with configurable mapping rules.
 | `TargetValueType` | enum | Desired output data type |
 | `Mappings` | ICollection | Source-to-target value mappings |
 
+**Whole arrays (AB#6589).** The shape of `Path` decides. A path that addresses one value (including an
+indexed one such as `$.rows[1].unit`) behaves as it always did: one typed read, one write at
+`TargetPath`. A path that can address several values - a wildcard (`$.sd.Rows[*].Values[5]`), a recursive
+descent (`$..unit`) or a filter (`$.items[?(@.kind=='a')].unit`) - maps **every addressed element in
+place**, without `ForEach@1` and without a script:
+
+- `TargetPath` is the same path or left out; any other value is rejected with a node error naming the node
+  and both paths (the N results have no single target).
+- Null elements are skipped, elements without a matching mapping stay unchanged, everything outside the
+  matches is untouched. A path that matches nothing logs a warning and the chain continues.
+- An element that cannot be read as `SourceValueType` fails the node and names the element by its position
+  among the matches. The run is **not atomic**: elements before the failing one are already mapped when the node
+  fails (the data context writes each element back as it is done). A failing node ends the execution and its data is
+  discarded; an all-or-nothing run needs a second pass over every match and would make the node slower than
+  `ForEach@1` (decided on AB#6589).
+- The mapping entries are converted lazily and once per run by the same `ConvertToConfiguredType` the
+  single-value route uses, so a type-conversion rework (AB#2141 / AB#6074) replaces it in one place. One
+  debug line summarises the run (`Mapped N of M elements`) instead of one per element.
+- `TargetValueKind` / `TargetValueWriteMode` / `DocumentMode` do not apply to the in-place write, so a value
+  other than the default (`Simple` / `Overwrite` / `Extend`) fails the node, naming the setting, instead of being
+  silently ignored.
+
+Measured on 123,000 rows (AB#6589, local stack, warm adapter): ~1.07 s for the wildcard mapping against
+~1.43 s for `ForEach@1` with `DataMapping@1` per row (about 1.3x), peak working set +184 MB against
++274 MB over the generation baseline. The per-element cost is the data context's multi-match write
+(`UpdateMatchesAsync`: one child context and one write-back per match); a larger gain needs a bulk
+operation on the data context (octo-communication-sdk), which is not part of this change.
+
 #### CreateUpdateInfoNode
 
 Constructs update information objects for entity persistence.

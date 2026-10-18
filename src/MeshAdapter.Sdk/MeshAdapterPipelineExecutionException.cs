@@ -28,6 +28,47 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     public string? ResponseBody { get; private init; }
 
     /// <summary>
+    /// <c>DataMapping@1</c> (AB#6589): a multi-match <c>path</c> (wildcard, recursive descent or filter) maps
+    /// in place, so a <c>targetPath</c> that names somewhere else is refused instead of guessing where the N
+    /// results should go.
+    /// </summary>
+    public static Exception DataMappingMultiMatchNeedsInPlaceTarget(INodeContext nodeContext, string path,
+        string targetPath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: DataMapping maps every element of a multi-match path (wildcard, " +
+            "recursive descent or filter) in place, so targetPath must be the same as path or left out, " +
+            $"but path is '{path}' and targetPath is '{targetPath}'. To write to a different location, use a " +
+            "path that addresses a single value.");
+    }
+
+    /// <summary>
+    /// <c>DataMapping@1</c> (AB#6589): the in-place write of a multi-match <c>path</c> does not use
+    /// <c>targetValueWriteMode</c>, <c>targetValueKind</c> or <c>documentMode</c>; a value other than the
+    /// default is refused rather than silently ignored.
+    /// </summary>
+    public static Exception DataMappingMultiMatchIgnoresWriteSetting(INodeContext nodeContext, string path,
+        string setting, string value, string defaultValue)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: DataMapping maps every element of the multi-match path '{path}' in " +
+            $"place, which does not use {setting}, but it is set to '{value}'. Leave {setting} at its default " +
+            $"('{defaultValue}') or remove it, or use a path that addresses a single value.");
+    }
+
+    /// <summary>
+    /// <c>DataMapping@1</c> (AB#6589): one element of a wildcard <c>path</c> cannot be read as the
+    /// configured source value type. Names the element by its position among the matches.
+    /// </summary>
+    public static Exception DataMappingElementNotConvertible(INodeContext nodeContext, string path, int index,
+        string sourceValueType, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: DataMapping: element {index} (zero based, in the order of the matches) " +
+            $"of '{path}' cannot be read as {sourceValueType}: {inner.Message}", inner);
+    }
+
+    /// <summary>
     /// <c>RevealSecret@1</c> (AB#5538) could not reveal a secret. The reason names the entity, the
     /// attribute and what went wrong - never the value, which is the one thing this node must not
     /// leak through its errors.

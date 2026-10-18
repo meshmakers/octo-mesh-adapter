@@ -56,6 +56,14 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
     /// Maps every element a multi-match <c>path</c> addresses, in place. Elements without a matching
     /// mapping stay as they are, null elements are skipped, everything outside the matches is not
     /// touched. A path that matches nothing is a warning, not a failure.
+    /// <para>
+    /// Not atomic, on purpose: <c>UpdateMatchesAsync</c> writes each element back as its callback returns,
+    /// so when a later element cannot be read (or a mapping entry cannot be converted) the node fails with
+    /// the earlier elements already mapped. A failing node ends the execution and its data is discarded;
+    /// making the run all-or-nothing needs a second pass over every match (read and stage, then write),
+    /// which about doubles the per-element cost and would make the node slower than a <c>ForEach@1</c>,
+    /// the very thing it replaces (decided by the developer on AB#6589).
+    /// </para>
     /// </summary>
     private async Task MapAllMatchesAsync(IDataContext dataContext, INodeContext nodeContext,
         DataMappingNodeConfiguration c)

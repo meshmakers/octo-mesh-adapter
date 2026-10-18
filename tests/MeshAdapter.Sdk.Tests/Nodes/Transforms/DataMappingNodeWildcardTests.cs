@@ -330,6 +330,19 @@ public class DataMappingNodeWildcardTests
     }
 
     [Fact]
+    public async Task ElementFailureMidway_FailsTheNode_AndLeavesTheEarlierElementsMapped_ByDesign()
+    {
+        // The run is not atomic: UpdateMatchesAsync writes each element back as it is done (a second pass
+        // to stage first would about double the cost and make the node slower than ForEach@1). This test
+        // pins that contract so a change to it is a decision and not an accident.
+        var run = await Execute(UnitConfig("$.items[*]"), """{"items":[1,2,"abc",1]}""");
+
+        Assert.IsAssignableFrom<PipelineExecutionException>(run.Error);
+        A.CallTo(() => run.Next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        AssertDocument(run.DataContext, """{"items":["kWh","MWh","abc",1]}""");
+    }
+
+    [Fact]
     public async Task ElementThatIsASecretMarker_IsRefused()
     {
         var run = await Execute(UnitConfig("$.items[*]"), """{"items":[1,{"isSet":true}]}""");

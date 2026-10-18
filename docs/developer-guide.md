@@ -674,7 +674,10 @@ place**, without `ForEach@1` and without a script:
 - Null elements are skipped, elements without a matching mapping stay unchanged, everything outside the
   matches is untouched. A path that matches nothing logs a warning and the chain continues.
 - An element that cannot be read as `SourceValueType` fails the node and names the element by its position
-  among the matches.
+  among the matches. The run is **not atomic**: elements before the failing one are already mapped when the node
+  fails (the data context writes each element back as it is done). A failing node ends the execution and its data is
+  discarded; an all-or-nothing run needs a second pass over every match and would make the node slower than
+  `ForEach@1` (decided on AB#6589).
 - The mapping entries are converted lazily and once per run by the same `ConvertToConfiguredType` the
   single-value route uses, so a type-conversion rework (AB#2141 / AB#6074) replaces it in one place. One
   debug line summarises the run (`Mapped N of M elements`) instead of one per element.

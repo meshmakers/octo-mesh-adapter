@@ -450,6 +450,8 @@ The one entry worth knowing about is `CrateDbConnectionAccess`: it caches a Crat
 tenant schema**. Keyed, so isolation-safe by construction — but **unbounded across leases**, exactly
 the shape `ICkCacheService` had before this increment. Sockets and memory, not leakage; the next
 candidate for a lease participant if a member ever leases stream-data tenants at scale.
+`CrateDbStreamDataRepositoryFactory` (AB#7009) is cleared too: its only process state is a table-keyed
+`RecomputeProcessState`, no credential, no tenant field; `DeleteTenantStateAsync` forgets that state.
 
 ## Adapter pool membership (AB#4924, increment 6)
 

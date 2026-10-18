@@ -210,6 +210,12 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithTypeConversion_ConvertsTypes` | Type conversion (Int→String) |
 | `ProcessObjectAsync_WithNullValue_HandlesNull` | Null input handling |
 
+`DataMappingNodeWildcardTests` (AB#6589, real `DataContextImpl`): wildcard / filter / recursive paths map every
+element in place, the `GetStreamData@1` row shape with `Amount.Unit` and `DataQuality` enum keys, null and unmapped
+elements, `targetPath` omitted / same / different (rejected), no match (warning, chain continues), unreadable element
+and Secret marker, lazy conversion of the mapping entries, one debug summary, a 20,000-element array, and a regression
+block proving that a path without wildcard maps exactly as before for every value type used today.
+
 #### CreateUpdateInfoNode
 
 | Test Case | Description |

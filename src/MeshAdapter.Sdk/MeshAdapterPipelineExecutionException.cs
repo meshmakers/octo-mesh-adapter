@@ -28,6 +28,31 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     public string? ResponseBody { get; private init; }
 
     /// <summary>
+    /// <c>DataMapping@1</c> (AB#6589): a wildcard <c>path</c> maps in place, so a <c>targetPath</c> that
+    /// names somewhere else is refused instead of guessing where the N results should go.
+    /// </summary>
+    public static Exception DataMappingWildcardNeedsInPlaceTarget(INodeContext nodeContext, string path,
+        string targetPath)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: DataMapping maps every element of a wildcard path in place, so " +
+            $"targetPath must be the same as path or left out, but path is '{path}' and targetPath is " +
+            $"'{targetPath}'. Map into a different location with a path without a wildcard.");
+    }
+
+    /// <summary>
+    /// <c>DataMapping@1</c> (AB#6589): one element of a wildcard <c>path</c> cannot be read as the
+    /// configured source value type. Names the element by its position among the matches.
+    /// </summary>
+    public static Exception DataMappingElementNotConvertible(INodeContext nodeContext, string path, int index,
+        string sourceValueType, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: DataMapping: element {index} (zero based, in the order of the matches) " +
+            $"of '{path}' cannot be read as {sourceValueType}: {inner.Message}", inner);
+    }
+
+    /// <summary>
     /// <c>RevealSecret@1</c> (AB#5538) could not reveal a secret. The reason names the entity, the
     /// attribute and what went wrong - never the value, which is the one thing this node must not
     /// leak through its errors.

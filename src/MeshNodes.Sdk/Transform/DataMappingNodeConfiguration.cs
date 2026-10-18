@@ -4,7 +4,12 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-/// Configuration node object for apply changes to the object in mongodb
+/// Maps a value to another value by a list of mapping entries. A <c>path</c> that addresses one value
+/// maps that value and writes the result to <c>targetPath</c>. A <c>path</c> that can address several
+/// values (a wildcard such as <c>$.Rows[*].Values[5]</c>, a recursive descent <c>$..unit</c> or a filter)
+/// maps every addressed element in place, without a loop and without a script: <c>targetPath</c> is then
+/// the same path or left out, a different one is rejected, null elements are skipped, elements without a
+/// matching mapping stay as they are, and a path that matches nothing only logs a warning.
 /// </summary>
 [NodeName("DataMapping", 1)]
 public record DataMappingNodeConfiguration : SourceTargetPathNodeConfiguration

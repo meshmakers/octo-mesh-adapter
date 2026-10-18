@@ -8,8 +8,10 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// maps that value and writes the result to <c>targetPath</c>. A <c>path</c> that can address several
 /// values (a wildcard such as <c>$.Rows[*].Values[5]</c>, a recursive descent <c>$..unit</c> or a filter)
 /// maps every addressed element in place, without a loop and without a script: <c>targetPath</c> is then
-/// the same path or left out, a different one is rejected, null elements are skipped, elements without a
-/// matching mapping stay as they are, and a path that matches nothing only logs a warning.
+/// the same path or left out, a different one is rejected, the write settings (<c>targetValueWriteMode</c>,
+/// <c>targetValueKind</c>, <c>documentMode</c>) must stay at their defaults because the in-place write does
+/// not use them, null elements are skipped, elements without a matching mapping stay as they are, and a path
+/// that matches nothing only logs a warning.
 /// </summary>
 [NodeName("DataMapping", 1)]
 public record DataMappingNodeConfiguration : SourceTargetPathNodeConfiguration

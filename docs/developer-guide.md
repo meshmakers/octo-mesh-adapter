@@ -678,7 +678,9 @@ place**, without `ForEach@1` and without a script:
 - The mapping entries are converted lazily and once per run by the same `ConvertToConfiguredType` the
   single-value route uses, so a type-conversion rework (AB#2141 / AB#6074) replaces it in one place. One
   debug line summarises the run (`Mapped N of M elements`) instead of one per element.
-- `TargetValueKind` / `TargetValueWriteMode` / `DocumentMode` do not apply to the in-place write.
+- `TargetValueKind` / `TargetValueWriteMode` / `DocumentMode` do not apply to the in-place write, so a value
+  other than the default (`Simple` / `Overwrite` / `Extend`) fails the node, naming the setting, instead of being
+  silently ignored.
 
 Measured on 123,000 rows (AB#6589, local stack, warm adapter): ~1.07 s for the wildcard mapping against
 ~1.43 s for `ForEach@1` with `DataMapping@1` per row (about 1.3x), peak working set +184 MB against

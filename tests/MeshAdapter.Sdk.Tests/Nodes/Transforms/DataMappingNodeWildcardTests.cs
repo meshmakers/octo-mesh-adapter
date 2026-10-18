@@ -247,6 +247,66 @@ public class DataMappingNodeWildcardTests
         A.CallTo(() => run.Next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
     }
 
+    [Theory]
+    [InlineData("$.items[?(@.kind=='a')].unit", """{"items":[{"kind":"a","unit":1}]}""")]
+    [InlineData("$..unit", """{"x":{"unit":1}}""")]
+    public async Task FilterOrRecursivePath_WithADifferentTargetPath_IsRejected_WithoutTalkingAboutAWildcard(
+        string path, string input)
+    {
+        var run = await Execute(UnitConfig(path, "$.mapped"), input);
+
+        var error = Assert.IsAssignableFrom<PipelineExecutionException>(run.Error);
+        Assert.Contains("multi-match", error.Message);
+        Assert.DoesNotContain("without a wildcard", error.Message);
+        Assert.Contains(path, error.Message);
+    }
+
+    [Theory]
+    [InlineData(nameof(DataMappingNodeConfiguration.TargetValueWriteMode), "Append")]
+    [InlineData(nameof(DataMappingNodeConfiguration.TargetValueWriteMode), "Merge")]
+    [InlineData(nameof(DataMappingNodeConfiguration.TargetValueKind), "Array")]
+    [InlineData(nameof(DataMappingNodeConfiguration.DocumentMode), "Replace")]
+    public async Task MultiMatchPath_WithANonDefaultWriteSetting_IsRejected_InsteadOfSilentlyIgnoringIt(
+        string setting, string value)
+    {
+        var config = UnitConfig("$.items[*]");
+        switch (setting)
+        {
+            case nameof(DataMappingNodeConfiguration.TargetValueWriteMode):
+                config.TargetValueWriteMode = Enum.Parse<TargetValueWriteModes>(value);
+                break;
+            case nameof(DataMappingNodeConfiguration.TargetValueKind):
+                config.TargetValueKind = Enum.Parse<ValueKinds>(value);
+                break;
+            default:
+                config.DocumentMode = Enum.Parse<DocumentModes>(value);
+                break;
+        }
+
+        var run = await Execute(config, """{"items":[1,2]}""");
+
+        var error = Assert.IsAssignableFrom<PipelineExecutionException>(run.Error);
+        Assert.Contains(char.ToLowerInvariant(setting[0]) + setting[1..], error.Message);
+        Assert.Contains($"'{value}'", error.Message);
+        AssertDocument(run.DataContext, """{"items":[1,2]}""");
+        A.CallTo(() => run.Next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task MultiMatchPath_WithTheWriteSettingsSetToTheirDefaults_Works()
+    {
+        // The documented single-value example sets targetValueWriteMode: Overwrite; that must stay valid.
+        var config = UnitConfig("$.items[*]");
+        config.TargetValueWriteMode = TargetValueWriteModes.Overwrite;
+        config.TargetValueKind = ValueKinds.Simple;
+        config.DocumentMode = DocumentModes.Extend;
+
+        var run = await Execute(config, """{"items":[1,2]}""");
+
+        Assert.Null(run.Error);
+        AssertDocument(run.DataContext, """{"items":["kWh","MWh"]}""");
+    }
+
     [Fact]
     public async Task WildcardPath_ThatMatchesNothing_LogsAWarning_AndContinues()
     {

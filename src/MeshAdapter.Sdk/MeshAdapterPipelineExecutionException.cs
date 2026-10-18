@@ -28,16 +28,32 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     public string? ResponseBody { get; private init; }
 
     /// <summary>
-    /// <c>DataMapping@1</c> (AB#6589): a wildcard <c>path</c> maps in place, so a <c>targetPath</c> that
-    /// names somewhere else is refused instead of guessing where the N results should go.
+    /// <c>DataMapping@1</c> (AB#6589): a multi-match <c>path</c> (wildcard, recursive descent or filter) maps
+    /// in place, so a <c>targetPath</c> that names somewhere else is refused instead of guessing where the N
+    /// results should go.
     /// </summary>
-    public static Exception DataMappingWildcardNeedsInPlaceTarget(INodeContext nodeContext, string path,
+    public static Exception DataMappingMultiMatchNeedsInPlaceTarget(INodeContext nodeContext, string path,
         string targetPath)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: DataMapping maps every element of a wildcard path in place, so " +
-            $"targetPath must be the same as path or left out, but path is '{path}' and targetPath is " +
-            $"'{targetPath}'. Map into a different location with a path without a wildcard.");
+            $"[{nodeContext.NodePath}]: DataMapping maps every element of a multi-match path (wildcard, " +
+            "recursive descent or filter) in place, so targetPath must be the same as path or left out, " +
+            $"but path is '{path}' and targetPath is '{targetPath}'. To write to a different location, use a " +
+            "path that addresses a single value.");
+    }
+
+    /// <summary>
+    /// <c>DataMapping@1</c> (AB#6589): the in-place write of a multi-match <c>path</c> does not use
+    /// <c>targetValueWriteMode</c>, <c>targetValueKind</c> or <c>documentMode</c>; a value other than the
+    /// default is refused rather than silently ignored.
+    /// </summary>
+    public static Exception DataMappingMultiMatchIgnoresWriteSetting(INodeContext nodeContext, string path,
+        string setting, string value, string defaultValue)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: DataMapping maps every element of the multi-match path '{path}' in " +
+            $"place, which does not use {setting}, but it is set to '{value}'. Leave {setting} at its default " +
+            $"('{defaultValue}') or remove it, or use a path that addresses a single value.");
     }
 
     /// <summary>

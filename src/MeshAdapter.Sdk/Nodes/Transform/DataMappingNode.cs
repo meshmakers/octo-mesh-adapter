@@ -61,6 +61,7 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
         DataMappingNodeConfiguration c)
     {
         EnsureInPlaceTarget(nodeContext, c);
+        EnsureDefaultWriteSettings(nodeContext, c);
 
         // One lookup for the whole run: the mapping entries are converted once, on first use, by the
         // same conversion method the single-value route uses (AB#2141 / AB#6074 replace it in one place).
@@ -135,10 +136,37 @@ internal class DataMappingNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
-        nodeContext.Error("Wildcard path '{0}' cannot be mapped to a different target path '{1}'", c.Path,
+        nodeContext.Error("Multi-match path '{0}' cannot be mapped to a different target path '{1}'", c.Path,
             targetPath);
-        throw MeshAdapterPipelineExecutionException.DataMappingWildcardNeedsInPlaceTarget(nodeContext, c.Path,
+        throw MeshAdapterPipelineExecutionException.DataMappingMultiMatchNeedsInPlaceTarget(nodeContext, c.Path,
             targetPath);
+    }
+
+    /// <summary>
+    /// The in-place write has no use for the three write settings of the single-value route, and silently
+    /// ignoring a setting an author configured (<c>targetValueWriteMode: IgnoreExisting</c> would mean
+    /// "never map" there) is worse than refusing it: anything but the default is rejected.
+    /// </summary>
+    private static void EnsureDefaultWriteSettings(INodeContext nodeContext, DataMappingNodeConfiguration c)
+    {
+        if (c.TargetValueWriteMode != TargetValueWriteModes.Overwrite)
+        {
+            throw MeshAdapterPipelineExecutionException.DataMappingMultiMatchIgnoresWriteSetting(nodeContext,
+                c.Path, "targetValueWriteMode", c.TargetValueWriteMode.ToString(),
+                TargetValueWriteModes.Overwrite.ToString());
+        }
+
+        if (c.TargetValueKind != ValueKinds.Simple)
+        {
+            throw MeshAdapterPipelineExecutionException.DataMappingMultiMatchIgnoresWriteSetting(nodeContext,
+                c.Path, "targetValueKind", c.TargetValueKind.ToString(), ValueKinds.Simple.ToString());
+        }
+
+        if (c.DocumentMode != DocumentModes.Extend)
+        {
+            throw MeshAdapterPipelineExecutionException.DataMappingMultiMatchIgnoresWriteSetting(nodeContext,
+                c.Path, "documentMode", c.DocumentMode.ToString(), DocumentModes.Extend.ToString());
+        }
     }
 
     /// <summary>

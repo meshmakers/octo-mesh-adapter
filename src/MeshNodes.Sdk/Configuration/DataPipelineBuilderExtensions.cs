@@ -89,6 +89,8 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<SimulateEnergyMeasurementsV2NodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ValidateDataPointCoverageNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ResolveNotificationPlaceholdersNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<PrepareNotificationNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<CommitNotificationStateNodeConfiguration>();
 
         // Register trigger nodes
         pipelineBuilder.RegisterNodeConfiguration<FromEmailNodeConfiguration>();
@@ -97,6 +99,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<FromHttpRequestNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromPipelineTriggerEventNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromSendNotificationNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<FromNotificationScheduleNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromWatchRtEntityNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromSignalNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FromTeamsBotNodeConfiguration>();

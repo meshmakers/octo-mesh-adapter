@@ -674,6 +674,58 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: No notification template name found at path '{path}'. Please ensure the value is set at the specified path.");
     }
 
+    public static Exception NotificationPreferenceRtIdInvalid(INodeContext nodeContext, string path, string? value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: '{value}' at path '{path}' is not a notification preference rtId.");
+    }
+
+    public static Exception NotificationSubscriptionIncomplete(INodeContext nodeContext, string subscriptionName,
+        string missing)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}' has no {missing}. Open the subscription and pick one.");
+    }
+
+    public static Exception NotificationRecipientMissing(INodeContext nodeContext, string subscriptionName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The user of this recipient of subscription '{subscriptionName}' no longer exists. Pick another user or delete the recipient.");
+    }
+
+    public static Exception NotificationRecipientDuplicate(INodeContext nodeContext, string subscriptionName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: This user already gets subscription '{subscriptionName}' as an older recipient, so this one sends nothing. Delete it.");
+    }
+
+    public static Exception NotificationQueryNotSupported(INodeContext nodeContext, string subscriptionName,
+        string queryType)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}' uses a {queryType}; notifications support simple runtime queries only.");
+    }
+
+    public static Exception NotificationRenderFailed(INodeContext nodeContext, string subscriptionName,
+        Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': {inner.Message}", inner);
+    }
+
+    public static Exception NotificationStateMissing(INodeContext nodeContext, string path)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No prepared notification found at path '{path}'. Place PrepareNotification@1 before this node.");
+    }
+
+    public static Exception NotificationQueryFiltersThroughAssociations(INodeContext nodeContext,
+        string subscriptionName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': the query filters on an associated entity. A notification sees a row as new when the row itself changes, so a change of the associated entity would never be noticed. Filter on attributes of the queried type only; columns may still show associated values.");
+    }
+
 
     public static Exception FileNameNull(INodeContext nodeContext, string? fileNamePath)
     {

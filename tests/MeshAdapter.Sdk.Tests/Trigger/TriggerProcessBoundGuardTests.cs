@@ -39,7 +39,12 @@ public class TriggerProcessBoundGuardTests
             // Cron. The per-pipeline trigger queue is Durable=true/AutoDelete=false (plain
             // ConnectReceiveEndpoint, no RabbitMQ overrides), so the trigger message buffers while
             // the workload sleeps, and the controller registers a companion cron co-wake (AB#4918).
-            ["FromPipelineTriggerEvent@1"] = "Durable trigger queue plus controller cron co-wake (AB#4918)."
+            ["FromPipelineTriggerEvent@1"] = "Durable trigger queue plus controller cron co-wake (AB#4918).",
+
+            // Same plain ConnectReceiveEndpoint as the cron trigger, and the controller's notification
+            // schedule registers a co-wake per preference on an OnDemand engine adapter.
+            ["FromNotificationSchedule@1"] =
+                "Durable schedule queue plus per-preference co-wake from NotificationScheduleService (AB#2585)."
         };
 
     public static TheoryData<string> TriggerConfigurationNames()

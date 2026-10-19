@@ -83,7 +83,7 @@ public class GetQueryByIdNode(
                 isAggregationQuery = false;
                 queryCkTypeId = simpleQuery.QueryCkTypeId;
                 columnPaths = simpleQuery.Columns;
-                ConfigureSimpleQueryOptions(simpleQuery, queryOptions);
+                SimpleRtQueryExecution.ConfigureOptions(simpleQuery, queryOptions);
                 break;
 
             case RtAggregationRtQuery aggregationQuery:
@@ -131,7 +131,8 @@ public class GetQueryByIdNode(
         switch (rtQuery)
         {
             case RtSimpleRtQuery simpleQuery:
-                BuildSimpleQueryResult(simpleQuery, resultSet, queryResult);
+                SimpleRtQueryExecution.BuildResult(ckCacheService, context.TenantId, simpleQuery, resultSet,
+                    queryResult);
                 break;
 
             case RtAggregationRtQuery aggregationQuery:
@@ -159,39 +160,6 @@ public class GetQueryByIdNode(
         dataContext.Set(c.TargetPath, queryResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
-    }
-
-    private static void ConfigureSimpleQueryOptions(RtSimpleRtQuery simpleQuery,
-        RtEntityQueryOptions queryOptions)
-    {
-        if (simpleQuery.FieldFilter != null)
-        {
-            foreach (var fieldFilter in simpleQuery.FieldFilter)
-            {
-                queryOptions.AddFieldFilter(fieldFilter.AttributePath,
-                    FieldFilterOperatorDtoExtensions.FromCkModelEnum(fieldFilter.Operator),
-                    fieldFilter.ComparisonValue);
-            }
-        }
-
-        if (simpleQuery.Sorting != null)
-        {
-            foreach (var orderItemRecord in simpleQuery.Sorting)
-            {
-                queryOptions.SortOrder(orderItemRecord.AttributePath, (SortOrders)orderItemRecord.SortOrder);
-            }
-        }
-
-        if (simpleQuery.AttributeSearchFilter != null)
-        {
-            queryOptions.AttributeSearch(simpleQuery.AttributeSearchFilter.AttributePaths,
-                simpleQuery.AttributeSearchFilter.SearchValue);
-        }
-
-        if (simpleQuery.TextSearchFilter != null)
-        {
-            queryOptions.TextSearch(simpleQuery.TextSearchFilter.SearchValue);
-        }
     }
 
     private static void ConfigureAggregationQueryOptions(RtAggregationRtQuery aggregationQuery,
@@ -233,20 +201,6 @@ public class GetQueryByIdNode(
         {
             AddAggregation(aggregateFieldGroupBy, column.AttributePath, column.AggregationType);
         }
-    }
-
-    private void BuildSimpleQueryResult(RtSimpleRtQuery simpleQuery,
-        IResultSet<RtEntityGraphItem> resultSet, QueryResult queryResult)
-    {
-        queryResult.Columns.AddRange(simpleQuery.Columns.Select(column => new QueryResultColumns
-            { Header = column }));
-        queryResult.Rows.AddRange(resultSet.Items.Select(entity => new QueryResultRow
-        {
-            RtId = entity.RtId,
-            CkTypeId = entity.CkTypeId ?? throw new Exception("CkTypeId is null"),
-            Values = simpleQuery.Columns.Select(column =>
-                entity.GetAttributeValueByAccessPath(ckCacheService, context.TenantId, column)).ToList()
-        }));
     }
 
     private static void BuildAggregationQueryResult(RtAggregationRtQuery aggregationQuery,

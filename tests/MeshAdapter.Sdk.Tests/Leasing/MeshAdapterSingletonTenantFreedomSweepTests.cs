@@ -112,6 +112,13 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 + "leased pipeline that writes an archive fails to connect rather than reaching "
                 + "another tenant's schema. The prerequisite is a per-tenant CrateDB user - the "
                 + "stream-data sibling of AB#5255.",
+            ["CrateDbStreamDataRepositoryFactory"] =
+                "Its only process state is RecomputeProcessState, keyed by the qualified live table "
+                + "name (the CrateDB schema is per tenant) and holding staging-table, generation-map "
+                + "and reclaim bookkeeping. It has no credential and no tenant field; the tenantId is "
+                + "always a method argument. DeleteTenantStateAsync (AB#5967) forgets that table-keyed "
+                + "state when the tables are dropped. CrateDB has no per-tenant principal, so there "
+                + "is nothing credential-shaped to lease. Same shape as CrateDbConnectionAccess.",
             ["CrateDatabaseClient"] =
                 "Derives the schema name from the tenantId ARGUMENT on every call (TenantSchema."
                 + "SchemaName(tenantId)); it holds an instance prefix, never a tenant.",

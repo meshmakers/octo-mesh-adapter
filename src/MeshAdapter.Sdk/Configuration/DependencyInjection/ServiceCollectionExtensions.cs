@@ -63,6 +63,8 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetFileSystemContentNode>()
             .RegisterNode<ListMailFoldersNode>()
             .RegisterNode<TestImportConnectionNode>()
+            .RegisterNode<ListFailedImportMailsNode>()
+            .RegisterNode<RequeueFailedImportMailsNode>()
             .RegisterNode<ApplyChangesNode>()
             .RegisterNode<ApplyChangesNode2>()
             .RegisterNode<FilterLatestUpdateInfoNode>()

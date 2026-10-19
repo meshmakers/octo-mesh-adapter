@@ -9,7 +9,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 /// <para>
 /// Output at <see cref="TargetPathNodeConfiguration.TargetPath" />:
 /// <c>{ channel, mailbox, configured, folderFound, failedFolder, sourceFolder, truncated,
-/// mails: [ { id, subject, from, receivedAt, attempts, parked, failureReason } ] }</c>. A channel
+/// mails: [ { id, subject, from, receivedAt, attempts, parked, failureReason, internetMessageId } ] }</c>. A channel
 /// without a configured failed folder answers <c>configured: false</c> instead of an error.
 /// <c>attempts</c> is the count read from the <c>OctoMesh-Import-Attempt-N</c> markers (null when the
 /// channel keeps none — IMAP — or the mail was parked, which drops them); <c>failureReason</c> is null

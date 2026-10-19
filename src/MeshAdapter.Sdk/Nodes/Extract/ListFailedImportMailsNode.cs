@@ -94,7 +94,8 @@ public class ListFailedImportMailsNode(
                 ["receivedAt"] = mail.ReceivedAt?.UtcDateTime.ToString("O"),
                 ["attempts"] = mail.Attempts,
                 ["parked"] = mail.Parked,
-                ["failureReason"] = mail.FailureReason
+                ["failureReason"] = mail.FailureReason,
+                ["internetMessageId"] = mail.InternetMessageId
             });
         }
 

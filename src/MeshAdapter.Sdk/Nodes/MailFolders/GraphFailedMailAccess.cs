@@ -79,7 +79,7 @@ internal static class GraphFailedMailAccess
         var user = Uri.EscapeDataString(mailbox);
         string? next = $"{GraphMailboxAccess.GraphBaseUrl}/users/{user}/mailFolders/{Uri.EscapeDataString(folderId)}/messages" +
                        $"?$top={Math.Min(PageSize, max + 1)}&$orderby=receivedDateTime desc" +
-                       "&$select=id,subject,from,receivedDateTime,categories";
+                       "&$select=id,subject,from,receivedDateTime,categories,internetMessageId";
         var mails = new List<FailedMail>();
         var truncated = false;
         while (next != null && !truncated)
@@ -139,7 +139,8 @@ internal static class GraphFailedMailAccess
             received,
             attempts > 0 ? attempts : null,
             FromMicrosoftGraphEmailNode.HasFailedCategory(categories),
-            null);
+            null,
+            message.TryGetProperty("internetMessageId", out var imid) ? imid.GetString() : null);
     }
 
     /// <summary>
@@ -158,7 +159,7 @@ internal static class GraphFailedMailAccess
         //    the mailbox, so the parent folder is checked — a caller must not be able to move an
         //    arbitrary mail out of the inbox through this route.
         var (getStatus, getBody) = await SendAsync(client, HttpMethod.Get,
-            $"{messageUrl}?$select=id,subject,categories,parentFolderId", null, cancellationToken);
+            $"{messageUrl}?$select=id,subject,categories,parentFolderId,internetMessageId", null, cancellationToken);
         if (getStatus == HttpStatusCode.NotFound)
         {
             return RequeueOutcome.Missing(messageId);
@@ -174,12 +175,14 @@ internal static class GraphFailedMailAccess
         string? subject;
         IReadOnlyList<string> categories;
         string? parentFolderId;
+        string? internetMessageId;
         using (var doc = JsonDocument.Parse(getBody))
         {
             var root = doc.RootElement;
             subject = root.TryGetProperty("subject", out var s) ? s.GetString() : null;
             categories = GetCategories(root);
             parentFolderId = root.TryGetProperty("parentFolderId", out var p) ? p.GetString() : null;
+            internetMessageId = root.TryGetProperty("internetMessageId", out var m) ? m.GetString() : null;
         }
 
         if (!string.Equals(parentFolderId, failedFolderId, StringComparison.Ordinal))
@@ -198,7 +201,7 @@ internal static class GraphFailedMailAccess
             {
                 return RequeueOutcome.Error(messageId, subject,
                     "The import markers could not be cleared, so the mail was NOT moved (it would be parked " +
-                    "again by the next poll). " + GraphMailboxAccess.DescribeGraphFailure((int)patchStatus, patchBody, mailbox));
+                    "again by the next poll). " + GraphMailboxAccess.DescribeGraphFailure((int)patchStatus, patchBody, mailbox), internetMessageId);
             }
         }
 
@@ -209,10 +212,10 @@ internal static class GraphFailedMailAccess
         {
             return RequeueOutcome.Error(messageId, subject,
                 "The import markers were cleared but moving the mail failed; it is still in the failed folder " +
-                "and can be re-queued again. " + GraphMailboxAccess.DescribeGraphFailure((int)moveStatus, moveBody, mailbox));
+                "and can be re-queued again. " + GraphMailboxAccess.DescribeGraphFailure((int)moveStatus, moveBody, mailbox), internetMessageId);
         }
 
-        return RequeueOutcome.Ok(messageId, subject);
+        return RequeueOutcome.Ok(messageId, subject, internetMessageId);
     }
 
     private static IReadOnlyList<string> GetCategories(JsonElement message)

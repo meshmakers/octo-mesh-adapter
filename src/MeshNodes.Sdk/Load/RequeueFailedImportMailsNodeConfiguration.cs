@@ -20,7 +20,7 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 /// up to <c>maxMails</c>. One failing mail never stops the others. Output at
 /// <see cref="TargetPathNodeConfiguration.TargetPath" />:
 /// <c>{ channel, mailbox, failedFolder, sourceFolder, requested, requeued, notFound, failed, truncated,
-/// results: [ { id, subject, status: Requeued | NotFound | Failed, reason } ] }</c>.
+/// results: [ { id, subject, status: Requeued | NotFound | Failed, reason, internetMessageId } ] }</c>.
 /// </para>
 /// </summary>
 [NodeName("RequeueFailedImportMails", 1)]

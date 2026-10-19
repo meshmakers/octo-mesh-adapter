@@ -112,7 +112,8 @@ internal static class ImapFailedMailAccess
                 s.InternalDate ?? s.Envelope?.Date,
                 null,
                 true,
-                null))
+                null,
+                s.Envelope?.MessageId))
             .ToList();
         return new FailedMailListing(mails, truncated);
     }
@@ -140,6 +141,7 @@ internal static class ImapFailedMailAccess
         }
 
         var subject = summary.Envelope?.Subject;
+        var messageIdHeader = summary.Envelope?.MessageId;
         try
         {
             var keywords = (summary.Keywords ?? new HashSet<string>()).ToList();
@@ -155,7 +157,7 @@ internal static class ImapFailedMailAccess
         {
             return RequeueOutcome.Error(id, subject,
                 "The read/deleted flags and import markers could not be cleared, so the mail was NOT moved " +
-                $"(it would not be offered to the import again): {ex.Message}");
+                $"(it would not be offered to the import again): {ex.Message}", messageIdHeader);
         }
 
         try
@@ -166,10 +168,10 @@ internal static class ImapFailedMailAccess
         {
             return RequeueOutcome.Error(id, subject,
                 "The flags were cleared but moving the mail failed; it is still in the failed folder " +
-                $"and can be re-queued again: {ex.Message}");
+                $"and can be re-queued again: {ex.Message}", messageIdHeader);
         }
 
-        return RequeueOutcome.Ok(id, subject);
+        return RequeueOutcome.Ok(id, subject, messageIdHeader);
     }
 
     private static string? FromText(IMessageSummary summary)

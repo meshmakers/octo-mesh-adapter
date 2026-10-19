@@ -82,6 +82,7 @@ public class FailedImportMailsTests : NodeTestBase
             subject,
             parentFolderId = parent,
             receivedDateTime = "2026-10-18T08:30:00Z",
+            internetMessageId = $"<{id}@example.com>",
             from = new { emailAddress = new { name = from.Split(" <")[0], address = from.Split('<')[1].TrimEnd('>') } },
             categories
         });
@@ -111,6 +112,7 @@ public class FailedImportMailsTests : NodeTestBase
         Assert.Equal("Max Muster <max@example.com>", parked.From);
         Assert.Equal(new DateTimeOffset(2026, 10, 18, 8, 30, 0, TimeSpan.Zero), parked.ReceivedAt);
         Assert.Null(parked.FailureReason); // neither trigger records one
+        Assert.Equal("<m1@example.com>", parked.InternetMessageId); // survives the move, unlike the id
         Assert.Equal(2, all.Mails[1].Attempts);
         Assert.False(all.Mails[1].Parked);
 
@@ -135,6 +137,7 @@ public class FailedImportMailsTests : NodeTestBase
 
         Assert.Equal(RequeueOutcome.Requeued, outcome.Status);
         Assert.Equal("Rechnung", outcome.Subject);
+        Assert.Equal("<m1@example.com>", outcome.InternetMessageId);
 
         // Clear BEFORE move.
         Assert.Equal([HttpMethod.Get, HttpMethod.Patch, HttpMethod.Post], graph.Requests.Select(r => r.Method));
@@ -251,6 +254,7 @@ public class FailedImportMailsTests : NodeTestBase
         A.CallTo(() => summary.Envelope).Returns(new Envelope
         {
             Subject = subject,
+            MessageId = $"{uid}@imap.example.com",
             From = { new MailboxAddress("Max Muster", "max@example.com") }
         });
         A.CallTo(() => summary.Flags).Returns(flags);
@@ -287,6 +291,7 @@ public class FailedImportMailsTests : NodeTestBase
 
         Assert.Equal(RequeueOutcome.Requeued, outcome.Status);
         Assert.Equal("Rechnung", outcome.Subject);
+        Assert.Equal("5@imap.example.com", outcome.InternetMessageId);
         // Seen and Deleted off (a read mail is never offered again with onlyUnread), our markers off,
         // "Steuer" stays.
         A.CallTo(() => failed.StoreAsync(new UniqueId(5), A<IStoreFlagsRequest>._, A<CancellationToken>._))

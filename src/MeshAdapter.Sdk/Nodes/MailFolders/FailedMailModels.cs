@@ -14,13 +14,15 @@ internal sealed record FailedMail(
     DateTimeOffset? ReceivedAt,
     int? Attempts,
     bool Parked,
-    string? FailureReason);
+    string? FailureReason,
+    string? InternetMessageId = null);
 
 /// <summary>The mails of a failed folder, newest first, capped.</summary>
 internal sealed record FailedMailListing(IReadOnlyList<FailedMail> Mails, bool Truncated);
 
 /// <summary>What happened to one mail asked to be re-queued.</summary>
-internal sealed record RequeueOutcome(string Id, string? Subject, string Status, string? Reason)
+internal sealed record RequeueOutcome(string Id, string? Subject, string Status, string? Reason,
+    string? InternetMessageId = null)
 {
     /// <summary>Markers cleared, mail moved into the source folder.</summary>
     public const string Requeued = "Requeued";
@@ -31,11 +33,12 @@ internal sealed record RequeueOutcome(string Id, string? Subject, string Status,
     /// <summary>Something went wrong; <see cref="Reason" /> says what and whether the mail moved.</summary>
     public const string Failed = "Failed";
 
-    public static RequeueOutcome Ok(string id, string? subject) => new(id, subject, Requeued, null);
+    public static RequeueOutcome Ok(string id, string? subject, string? internetMessageId = null) =>
+        new(id, subject, Requeued, null, internetMessageId);
 
     public static RequeueOutcome Missing(string id) =>
         new(id, null, NotFound, "The mail is no longer in the failed folder — nothing was changed.");
 
-    public static RequeueOutcome Error(string id, string? subject, string reason) =>
-        new(id, subject, Failed, reason);
+    public static RequeueOutcome Error(string id, string? subject, string reason, string? internetMessageId = null) =>
+        new(id, subject, Failed, reason, internetMessageId);
 }

@@ -143,7 +143,8 @@ public class RequeueFailedImportMailsNode(
                 ["id"] = outcome.Id,
                 ["subject"] = outcome.Subject ?? knownSubjects.GetValueOrDefault(outcome.Id),
                 ["status"] = outcome.Status,
-                ["reason"] = outcome.Reason
+                ["reason"] = outcome.Reason,
+                ["internetMessageId"] = outcome.InternetMessageId
             });
         }
 

@@ -592,6 +592,25 @@ Lists the folders of a mailbox in exactly the syntax the channel's mail trigger 
 
 **Failures** throw with an operator-worded message (no node-path prefix): IMAP authentication rejected, TLS handshake refused, host unreachable, no answer in time; Graph token refused, 401, 403 (`Mail.Read` application permission / admin consent), 404 mailbox not found. The HTTP route answers a throwing execution with **HTTP 500 and `{ "errorMessage": "<message>" }`** (`HttpRequestService.SendRequestAsync`, AB#5370 — before that the body was empty), so the message reaches the caller.
 
+#### ListFailedImportMailsNode / RequeueFailedImportMailsNode
+
+The two halves of "send failed import mails back" (AB#7087) for the e-mail document import. `ListFailedImportMails@1` (read-only) lists what is in the channel's failed folder; `RequeueFailedImportMails@1` sends mails back into the folder the import polls.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Channel` / `ChannelPath` | string | `Imap` or `Graph`; the path wins when it resolves |
+| `ImapServerConfiguration`, `ImapSettingsConfiguration`, `ImapSourceFolderAttribute`, `ImapFailedFolderAttribute` | string | IMAP: the `EMailReceiverConfiguration` and the settings entity/attributes the `FromEmail@1` trigger reads its folders from |
+| `GraphServerConfiguration`, `GraphSettingsConfiguration`, `GraphMailboxAttribute`, `GraphSourceFolderAttribute`, `GraphFailedFolderAttribute` | string | Graph: the `MicrosoftGraphConfiguration` and the settings entity/attributes the `FromMicrosoftGraphEmail@1` trigger reads its mailbox and folders from |
+| `MaxMails` | int | Cap on listed / "all" re-queued mails (default 200); `truncated: true` in the output when it cut something off |
+| `TimeoutSeconds` | int | Budget for the whole call (default 120) |
+| `MessageIdsPath` | string | Requeue: JSONPath to the array of ids from the list node |
+| `AllPath` | string | Requeue: JSONPath to a boolean; `true` re-queues every mail of the failed folder |
+| `TargetPath` | string | Where the result is written (shapes in the node configurations' XML docs) |
+
+**Re-queue contract** — per mail, in this order: clear the markers, then move. Clearing removes every well-formed `OctoMesh-Import-Attempt-N` / `OctoMesh-Import-Failed` marker (the rule of `FromMicrosoftGraphEmailNode.WithoutImportMarkers`; the user's own categories survive) and, for IMAP, the `\Seen` and `\Deleted` flags and any marker keyword. If clearing fails the mail is **not** moved — a mail moved back with its markers on is parked again by the next poll (AB#7068). The target is the configured *source* folder of the channel, never a hard-coded inbox. A mail that is not in the failed folder (any more) is `NotFound` and nothing is changed. One failing mail never stops the others.
+
+**Security** — mailbox, folders and credentials come only from the configuration entities the pipeline `Uses`; the request supplies the channel and the ids, nothing else. The route's authentication, role check and tenant check are `FromHttpRequest@2`'s. Credentials are registered as secrets and never appear in a result or log line.
+
 #### SftpDownloadNode
 
 Downloads exactly one file and writes its decoded content to the target path. Read counterpart of `SftpUploadNode`.

@@ -727,6 +727,13 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     }
 
 
+    public static Exception NotificationQueryNavigatesInFilterMode(INodeContext nodeContext,
+        string subscriptionName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': the query's columns read associated entities in Filter mode, so a row would appear in or vanish from the result when an associated entity changes, which a notification cannot notice. Set the query's navigation mode to Include; rows without the association are then mailed with empty cells.");
+    }
+
     public static Exception FileNameNull(INodeContext nodeContext, string? fileNamePath)
     {
         return new MeshAdapterPipelineExecutionException(

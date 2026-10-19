@@ -23,6 +23,10 @@ internal static class SimpleRtQueryExecution
             filter.AttributePath.Contains("->", StringComparison.Ordinal) ||
             filter.AttributePath.Contains("::", StringComparison.Ordinal)) == true;
 
+    public static bool NavigatesInFilterMode(RtSimpleRtQuery simpleQuery) =>
+        simpleQuery.NavigationFilterMode != RtNavigationFilterModesEnum.Include &&
+        simpleQuery.Columns?.Any(column => column.Contains("->", StringComparison.Ordinal)) == true;
+
     public static async Task<IReadOnlyList<NotificationCandidate>> FindChangedAsync(ITenantRepository repository,
         ICkCacheService ckCacheService, IOctoSession session, RtSimpleRtQuery simpleQuery, DateTime? changedAfter,
         IReadOnlyCollection<OctoObjectId> excludedRtIds, int take)
@@ -58,27 +62,28 @@ internal static class SimpleRtQueryExecution
         IOctoSession session, RtSimpleRtQuery simpleQuery, IReadOnlyList<OctoObjectId> rtIds)
     {
         var queryResult = new QueryResult();
-        if (simpleQuery.Sorting?.Any() == true)
+        var sorted = simpleQuery.Sorting?.Any() == true;
+        var options = RtEntityQueryOptions.Create().WithCachingDisabled()
+            .UseNavigationFilterMode(NavigationFilterMode.Include);
+        if (sorted)
         {
-            var sortedOptions = RtEntityQueryOptions.Create().WithCachingDisabled();
-            ConfigureOptions(simpleQuery, sortedOptions);
-            sortedOptions.AddFieldFilter(RtIdPath, FieldFilterOperator.In, rtIds.ToList());
-            var navigation = RtPathEvaluator.TokenizeAndGetNavigationPairsByRtCkId(ckCacheService,
-                context.TenantRepository.TenantId, simpleQuery.QueryCkTypeId, simpleQuery.Columns,
-                sortedOptions.FieldFilters ?? new List<FieldFilter>());
-            var sorted = await context.TenantRepository.GetRtEntitiesGraphByTypeAsync(session,
-                simpleQuery.QueryCkTypeId, sortedOptions, navigation, null, rtIds.Count);
-            BuildResult(ckCacheService, context.TenantId, simpleQuery, sorted, queryResult);
+            ConfigureOptions(simpleQuery, options);
+        }
+
+        options.AddFieldFilter(RtIdPath, FieldFilterOperator.In, rtIds.ToList());
+        var navigation = RtPathEvaluator.TokenizeAndGetNavigationPairsByRtCkId(ckCacheService,
+            context.TenantRepository.TenantId, simpleQuery.QueryCkTypeId, simpleQuery.Columns,
+            options.FieldFilters ?? new List<FieldFilter>());
+        var resultSet = await context.TenantRepository.GetRtEntitiesGraphByTypeAsync(session,
+            simpleQuery.QueryCkTypeId, options, navigation, null, rtIds.Count);
+
+        BuildResult(ckCacheService, context.TenantId, simpleQuery, resultSet, queryResult,
+            AttributeValueResolveFlags.FirstMatchNavigation);
+        if (sorted)
+        {
             return queryResult;
         }
 
-        var columnNavigation = RtPathEvaluator.TokenizeAndGetNavigationPairsByRtCkId(ckCacheService,
-            context.TenantRepository.TenantId, simpleQuery.QueryCkTypeId, simpleQuery.Columns);
-
-        var resultSet = await context.TenantRepository.GetRtEntitiesGraphByIdAsync(session,
-            simpleQuery.QueryCkTypeId, rtIds, RtEntityQueryOptions.Create().WithCachingDisabled(), columnNavigation);
-
-        BuildResult(ckCacheService, context.TenantId, simpleQuery, resultSet, queryResult);
         var order = rtIds.Select((rtId, index) => (rtId, index)).ToDictionary(x => x.rtId, x => x.index);
         queryResult.Rows.Sort((a, b) => Position(a).CompareTo(Position(b)));
         return queryResult;
@@ -125,7 +130,8 @@ internal static class SimpleRtQueryExecution
     }
 
     public static void BuildResult(ICkCacheService ckCacheService, string tenantId, RtSimpleRtQuery simpleQuery,
-        IResultSet<RtEntityGraphItem> resultSet, QueryResult queryResult)
+        IResultSet<RtEntityGraphItem> resultSet, QueryResult queryResult,
+        AttributeValueResolveFlags resolveFlags = AttributeValueResolveFlags.Default)
     {
         queryResult.Columns.AddRange(simpleQuery.Columns.Select(column => new QueryResultColumns
             { Header = column }));
@@ -134,7 +140,7 @@ internal static class SimpleRtQueryExecution
             RtId = entity.RtId,
             CkTypeId = entity.CkTypeId ?? throw new Exception("CkTypeId is null"),
             Values = simpleQuery.Columns.Select(column =>
-                entity.GetAttributeValueByAccessPath(ckCacheService, tenantId, column)).ToList()
+                entity.GetAttributeValueByAccessPath(ckCacheService, tenantId, column, resolveFlags)).ToList()
         }));
     }
 }

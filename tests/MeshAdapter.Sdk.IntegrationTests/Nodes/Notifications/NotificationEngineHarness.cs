@@ -111,6 +111,19 @@ internal sealed class NotificationEngineHarness
                 new() { AttributePath = attributePath, SortOrder = sortOrder }
             });
 
+    public const string RelatedSerialColumn = "relatesTo.meshAdapterIntegrationTestSensorReading->serialNumber";
+
+    public async Task NavigateQueryAsync(RtNavigationFilterModesEnum? mode) =>
+        await UpdateAsync<RtSimpleRtQuery>(await SimpleQueryTypeIdAsync(), QueryRtId, query =>
+        {
+            query.Columns = new AttributeStringValueList(["SerialNumber", "SourceDate", RelatedSerialColumn]);
+            query.NavigationFilterMode = mode;
+        });
+
+    public async Task RelateAsync(OctoObjectId origin, params OctoObjectId[] targets) =>
+        await ApplyAsync([], targets.Select(target => Link(NotificationEngineFixture.SensorReadingCkTypeId, origin,
+            NotificationEngineFixture.SensorReadingCkTypeId, target, SystemCkIds.RtCkRelatedRoleId)).ToList());
+
     public async Task FilterQueryAsync(string attributePath) =>
         await UpdateAsync<RtSimpleRtQuery>(await SimpleQueryTypeIdAsync(), QueryRtId, query =>
             query.FieldFilter = new AttributeRecordValueList<RtFieldFilterRecord>

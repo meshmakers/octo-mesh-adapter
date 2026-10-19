@@ -720,6 +720,56 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     }
 
     [Fact]
+    public async Task ANavigatingColumnInFilterMode_FailsTheRun_AndSendsNothing()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(2);
+        await h.NavigateQueryAsync(null);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Sent.Should().BeFalse();
+        tick.Failure!.Message.Should().Contain("Set the query's navigation mode to Include");
+    }
+
+    [Fact]
+    public async Task ARowWithoutTheNavigationPath_IsMailedWithAnEmptyCell()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync(bodyTemplate: "${SerialNumber}=[${" + NotificationEngineHarness.RelatedSerialColumn + "}]");
+        var rows = await h.AddReadingsAsync(2);
+        await h.RelateAsync(rows[0], rows[1]);
+        await h.NavigateQueryAsync(RtNavigationFilterModesEnum.Include);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Prepared!.NewCount.Should().Be(2);
+        tick.Prepared.Body.Should().Contain($"{h.SerialOf(1)}=[{h.SerialOf(2)}]").And.Contain($"{h.SerialOf(2)}=[]");
+        tick.Prepared.SentRows.Select(row => row.RtId).Should().BeEquivalentTo(rows.Select(rtId => rtId.ToString()));
+    }
+
+    [Fact]
+    public async Task ARowWithSeveralNavigationEnds_ShowsTheFirst_AndDoesNotFailTheRun()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync(bodyTemplate: "${SerialNumber}=[${" + NotificationEngineHarness.RelatedSerialColumn + "}]");
+        var rows = await h.AddReadingsAsync(3);
+        await h.RelateAsync(rows[0], rows[1], rows[2]);
+        await h.NavigateQueryAsync(RtNavigationFilterModesEnum.Include);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Prepared!.NewCount.Should().Be(3);
+        tick.Prepared.Body.Should().Contain($"{h.SerialOf(1)}=[{h.SerialOf(2)}]");
+    }
+
+    [Fact]
     public async Task ARowThatStartsToMatchLater_IsNew()
     {
         var h = NewScenario();

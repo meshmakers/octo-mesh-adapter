@@ -155,6 +155,12 @@ internal class PrepareNotificationNode(
                     subscriptionName);
             }
 
+            if (SimpleRtQueryExecution.NavigatesInFilterMode(simpleQuery))
+            {
+                throw MeshAdapterPipelineExecutionException.NotificationQueryNavigatesInFilterMode(nodeContext,
+                    subscriptionName);
+            }
+
             var queryRtId = query.RtId.ToString();
             var skipExistingRows = preference.SkipExistingRows != false;
             var memory = NotificationDeliveryStateStore.MemoryOf(state);
@@ -236,15 +242,34 @@ internal class PrepareNotificationNode(
                 }
             }
 
+            var requested = decision.NewRtIds.Take(NotificationDigest.MaxRowsPerMail).ToList();
             QueryResult result;
             // AB#5028 — scoped, as above: only the rows the mail lists are read in full.
             using (var scopedSession = await etlContext.GetScopedSessionAsync())
             {
                 scopedSession.StartTransaction();
                 result = await SimpleRtQueryExecution.RunForRtIdsAsync(etlContext, ckCacheService, scopedSession,
-                    simpleQuery, decision.NewRtIds.Take(NotificationDigest.MaxRowsPerMail)
-                        .Select(rtId => new OctoObjectId(rtId)).ToList());
+                    simpleQuery, requested.Select(rtId => new OctoObjectId(rtId)).ToList());
                 await scopedSession.CommitTransactionAsync();
+            }
+
+            var readRtIds = result.Rows.Select(row => row.RtId.ToString()!).ToHashSet(StringComparer.Ordinal);
+            var listed = NotificationDigest.WithoutUnrendered(decision, requested, readRtIds);
+            if (listed.NewRtIds.Count < decision.NewRtIds.Count)
+            {
+                nodeContext.Warning("Preference '{0}': {1} new row(s) could not be read for the mail and stay unsent",
+                    preferenceRtId, decision.NewRtIds.Count - listed.NewRtIds.Count);
+                decision = listed;
+            }
+
+            if (decision.NewRtIds.Count == 0)
+            {
+                if (lease is { } heldLease)
+                {
+                    await NotificationDeliveryStateStore.SaveHeldAsync(etlContext, stateRtId!.Value, preferenceRtId,
+                        new NotificationDeliveryStateChange(ReleaseLease: true), heldLease);
+                }
+                return;
             }
 
             var newRows = result.Rows.Select(row => (IReadOnlyList<object?>)row.Values).ToList();

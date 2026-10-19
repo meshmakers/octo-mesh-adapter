@@ -136,6 +136,25 @@ internal static class NotificationDigest
         return new NotificationPlan(true, startedAt, startedAt + Overlap, sentRows);
     }
 
+    public static NotificationDigestDecision WithoutUnrendered(NotificationDigestDecision decision,
+        IEnumerable<string> requested, IReadOnlySet<string> rendered)
+    {
+        var missing = requested.Where(rtId => !rendered.Contains(rtId)).ToHashSet(StringComparer.Ordinal);
+        if (missing.Count == 0)
+        {
+            return decision;
+        }
+
+        var earliestMissing = decision.SentRows.Where(row => missing.Contains(row.RtId))
+            .Select(row => (DateTime?)row.ChangedAt).Min();
+        return decision with
+        {
+            NewRtIds = decision.NewRtIds.Where(rtId => !missing.Contains(rtId)).ToList(),
+            ProcessedUntil = earliestMissing < decision.ProcessedUntil ? earliestMissing : decision.ProcessedUntil,
+            SentRows = decision.SentRows.Where(row => !missing.Contains(row.RtId)).ToList()
+        };
+    }
+
     public static DateTime? ReadFrom(DateTime? processedUntil) =>
         processedUntil is { } until && until > DateTime.MinValue + Overlap ? until - Overlap : null;
 

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -330,6 +331,61 @@ public class NotificationDigestTests
         };
 
         Assert.Equal(expected, SimpleRtQueryExecution.FiltersThroughAssociations(query));
+    }
+
+    [Theory]
+    [InlineData("name", null, false)]
+    [InlineData("parent.basicTree->name", null, true)]
+    [InlineData("parent.basicTree->name", (int)RtNavigationFilterModesEnum.Filter, true)]
+    [InlineData("parent.basicTree->name", (int)RtNavigationFilterModesEnum.Include, false)]
+    [InlineData("children::count", null, false)]
+    public void NavigatesInFilterMode_OnlyForANavigatingColumnOutsideInclude(string column, int? mode, bool expected)
+    {
+        var query = new Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2.RtSimpleRtQuery
+        {
+            Columns = new Meshmakers.Octo.Runtime.Contracts.RepositoryEntities.AttributeStringValueList(["name", column]),
+            NavigationFilterMode = (RtNavigationFilterModesEnum?)mode
+        };
+
+        Assert.Equal(expected, SimpleRtQueryExecution.NavigatesInFilterMode(query));
+    }
+
+    [Fact]
+    public void WithoutUnrendered_DropsTheRowsTheMailCouldNotList_FromTheNewAndTheSentRows()
+    {
+        var earlier = new SentRow(C, Now.AddHours(-1), Now.AddHours(-1));
+        var decision = new NotificationDigestDecision(NotificationDigestAction.Send, [A, B], Now,
+            [earlier, new SentRow(A, Now, Now), new SentRow(B, Now, Now)]);
+
+        var listed = NotificationDigest.WithoutUnrendered(decision, [A, B], new HashSet<string> { A });
+
+        Assert.Equal([A], listed.NewRtIds);
+        Assert.Equal([C, A], listed.SentRows.Select(row => row.RtId));
+        Assert.Equal(decision.ProcessedUntil, listed.ProcessedUntil);
+    }
+
+    [Fact]
+    public void WithoutUnrendered_KeepsTheWatermarkBeforeAnUnlistedRow_SoTheNextRunReadsItAgain()
+    {
+        var unlistedChange = Now.AddHours(-2);
+        var decision = new NotificationDigestDecision(NotificationDigestAction.Send, [A, B], Now,
+            [new SentRow(A, Now, Now), new SentRow(B, Now, unlistedChange)]);
+
+        var listed = NotificationDigest.WithoutUnrendered(decision, [A, B], new HashSet<string> { A });
+
+        Assert.Equal(unlistedChange, listed.ProcessedUntil);
+        Assert.True(NotificationDigest.ReadFrom(listed.ProcessedUntil) < unlistedChange);
+    }
+
+    [Fact]
+    public void WithoutUnrendered_KeepsRowsBeyondTheMailLimit()
+    {
+        var decision = new NotificationDigestDecision(NotificationDigestAction.Send, [A, B], Now,
+            [new SentRow(A, Now, Now), new SentRow(B, Now, Now)]);
+
+        var listed = NotificationDigest.WithoutUnrendered(decision, [A], new HashSet<string> { A });
+
+        Assert.Same(decision, listed);
     }
 
     [Fact]

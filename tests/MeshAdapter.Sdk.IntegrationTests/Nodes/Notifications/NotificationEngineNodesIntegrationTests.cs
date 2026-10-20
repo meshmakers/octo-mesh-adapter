@@ -138,6 +138,33 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     }
 
     [Fact]
+    public async Task ACommitAfterATakeover_WarnsInTheEventLog_EvenWhenTheRecipientCannotBeLookedUp()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        var takeover = NotificationDeliveryStateStore.LeaseAt(h.Clock.UtcNow.AddMinutes(11));
+
+        var tick = await h.TickAsync(preference, async (dc, _) =>
+        {
+            var stateRtId = (await h.StateOfAsync(preference))!.RtId;
+            await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), stateRtId, preference,
+                new NotificationDeliveryStateChange(RunningSince: takeover));
+            A.CallTo(() => h.SubjectLookup.FindBySubjectIdAsync(A<string>._, A<string>._, A<CancellationToken>._))
+                .ThrowsAsync(new InvalidOperationException("identity is down"));
+            await h.CommitAsync(dc);
+        });
+
+        tick.Failure.Should().BeNull();
+        var warning = h.Events.All.Should().ContainSingle().Subject;
+        warning.Level.Should().Be(RtEventLevelsEnum.Warning);
+        warning.Message.Should().Contain("user-a").And.Contain("another run took over");
+    }
+
+    [Fact]
     public async Task ACommitAfterAnotherRunTookOverAndReleasedTheLease_LeavesThatRunsState()
     {
         var h = NewScenario();

@@ -71,10 +71,7 @@ internal class CommitNotificationStateNode(
         }
         else
         {
-            var user = string.IsNullOrWhiteSpace(prepared.SubjectId)
-                ? null
-                : await subjectChannelLookup.FindBySubjectIdAsync(etlContext.TenantId, prepared.SubjectId);
-            var recipient = !string.IsNullOrWhiteSpace(user?.Email) ? user.Email : prepared.SubjectId;
+            var recipient = await RecipientLabelAsync(prepared.SubjectId);
             var message =
                 $"Notification for recipient {recipient} was sent with {prepared.NewCount} new row(s), but another run took over; that run keeps the delivery state and may send these rows again";
             nodeContext.Warning("{0}", message);
@@ -83,5 +80,23 @@ internal class CommitNotificationStateNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    private async Task<string?> RecipientLabelAsync(string? subjectId)
+    {
+        if (string.IsNullOrWhiteSpace(subjectId))
+        {
+            return subjectId;
+        }
+
+        try
+        {
+            var user = await subjectChannelLookup.FindBySubjectIdAsync(etlContext.TenantId, subjectId);
+            return !string.IsNullOrWhiteSpace(user?.Email) ? user.Email : subjectId;
+        }
+        catch (Exception)
+        {
+            return subjectId;
+        }
     }
 }

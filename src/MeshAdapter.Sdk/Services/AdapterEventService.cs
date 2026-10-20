@@ -1,3 +1,4 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 using Meshmakers.Octo.Services.Notifications.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,7 +16,7 @@ internal interface IAdapterEventService
 
     Task StoreInformationEventAsync(string? tenantId, string message);
 
-    Task StoreWarningEventAsync(string? tenantId, string message);
+    Task StoreWarningEventAsync(string? tenantId, string message, RtEntityId? associatedRtEntityId = null);
 }
 
 /// <summary>
@@ -37,18 +38,20 @@ internal class AdapterEventService(IServiceProvider serviceProvider, ILogger<Ada
         return StoreEventAsync(tenantId, RtEventLevelsEnum.Information, message);
     }
 
-    public Task StoreWarningEventAsync(string? tenantId, string message)
+    public Task StoreWarningEventAsync(string? tenantId, string message, RtEntityId? associatedRtEntityId = null)
     {
-        return StoreEventAsync(tenantId, RtEventLevelsEnum.Warning, message);
+        return StoreEventAsync(tenantId, RtEventLevelsEnum.Warning, message, associatedRtEntityId);
     }
 
-    private async Task StoreEventAsync(string? tenantId, RtEventLevelsEnum level, string message)
+    private async Task StoreEventAsync(string? tenantId, RtEventLevelsEnum level, string message,
+        RtEntityId? associatedRtEntityId = null)
     {
         try
         {
             using var scope = serviceProvider.CreateScope();
             var eventRepository = scope.ServiceProvider.GetRequiredService<IEventRepository>();
-            await eventRepository.StoreEventAsync(tenantId!, RtEventSourcesEnum.MeshAdapter, level, message);
+            await eventRepository.StoreEventAsync(tenantId!, RtEventSourcesEnum.MeshAdapter, level, message,
+                associatedRtEntityId);
         }
         catch (Exception e)
         {

@@ -1,3 +1,6 @@
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
+using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -12,9 +15,11 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// </summary>
 [NodeConfiguration(typeof(CommitNotificationStateNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class CommitNotificationStateNode(
+internal class CommitNotificationStateNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
+    IAdapterEventService eventService,
+    ISubjectChannelLookup subjectChannelLookup,
     TimeProvider? timeProvider = null) : IPipelineNode
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -66,11 +71,32 @@ public class CommitNotificationStateNode(
         }
         else
         {
-            nodeContext.Warning(
-                "Notification for preference '{0}' sent with {1} new row(s), but another run took over its lease; that run keeps the delivery state and may send these rows again",
-                preferenceRtId, prepared.NewCount);
+            var recipient = await RecipientLabelAsync(prepared.SubjectId);
+            var message =
+                $"Notification for recipient {recipient} was sent with {prepared.NewCount} new row(s), but another run took over; that run keeps the delivery state and may send these rows again";
+            nodeContext.Warning("{0}", message);
+            await eventService.StoreWarningEventAsync(etlContext.TenantId, message,
+                new RtEntityId(SystemNotificationCkIds.RtCkNotificationPreferenceTypeId, preferenceRtId));
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    private async Task<string?> RecipientLabelAsync(string? subjectId)
+    {
+        if (string.IsNullOrWhiteSpace(subjectId))
+        {
+            return subjectId;
+        }
+
+        try
+        {
+            var user = await subjectChannelLookup.FindBySubjectIdAsync(etlContext.TenantId, subjectId);
+            return !string.IsNullOrWhiteSpace(user?.Email) ? user.Email : subjectId;
+        }
+        catch (Exception)
+        {
+            return subjectId;
+        }
     }
 }

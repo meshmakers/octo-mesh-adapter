@@ -138,6 +138,33 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
     }
 
     [Fact]
+    public async Task ACommitAfterATakeover_WarnsInTheEventLog_EvenWhenTheRecipientCannotBeLookedUp()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        var preference = await h.CreatePreferenceAsync("user-a");
+        await h.TickAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        var takeover = NotificationDeliveryStateStore.LeaseAt(h.Clock.UtcNow.AddMinutes(11));
+
+        var tick = await h.TickAsync(preference, async (dc, _) =>
+        {
+            var stateRtId = (await h.StateOfAsync(preference))!.RtId;
+            await NotificationDeliveryStateStore.SaveAsync(h.CreateEtlContext(), stateRtId, preference,
+                new NotificationDeliveryStateChange(RunningSince: takeover));
+            A.CallTo(() => h.SubjectLookup.FindBySubjectIdAsync(A<string>._, A<string>._, A<CancellationToken>._))
+                .ThrowsAsync(new InvalidOperationException("identity is down"));
+            await h.CommitAsync(dc);
+        });
+
+        tick.Failure.Should().BeNull();
+        var warning = h.Events.All.Should().ContainSingle().Subject;
+        warning.Level.Should().Be(RtEventLevelsEnum.Warning);
+        warning.Message.Should().Contain("user-a").And.Contain("another run took over");
+    }
+
+    [Fact]
     public async Task ACommitAfterAnotherRunTookOverAndReleasedTheLease_LeavesThatRunsState()
     {
         var h = NewScenario();
@@ -385,11 +412,37 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var tick = await h.TickAsync(preference, (_, _) => throw new InvalidOperationException("smtp is down"));
 
         tick.Failure.Should().BeOfType<InvalidOperationException>().Which.Message.Should().Be("smtp is down");
+        h.Events.All.Should().BeEmpty("a failed run fails the pipeline, and the controller records that in the event log");
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Be("smtp is down");
         state.RunningSince.Should().BeNull();
         state.SentRows.Should().BeNullOrEmpty("the row that failed is not recorded as sent");
         state.LastSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AnUnknownTimeZone_IsReportedToTheEventLogOnce_AndAgainOnlyWhenItChanges()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(1);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false, timeZone: "Mars/Olympus");
+        await h.TickAndCommitAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        await h.TickAndCommitAsync(preference);
+
+        h.Events.All.Should().ContainSingle().Which.Should().Match<(RtEventLevelsEnum Level, string Message, RtEntityId? Entity)>(
+            e => e.Level == RtEventLevelsEnum.Warning && e.Message.Contains("Mars/Olympus"));
+
+        await h.UpdateAsync<RtNotificationPreference>(SystemNotificationCkIds.RtCkNotificationPreferenceTypeId,
+            preference, p => p.TimeZone = "Venus/Maxwell");
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        await h.TickAndCommitAsync(preference);
+
+        h.Events.All.Should().HaveCount(2);
+        h.Events.All[1].Message.Should().Contain("Venus/Maxwell");
     }
 
     [Fact]
@@ -528,7 +581,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var tick = await h.TickAsync(preference);
 
         tick.Sent.Should().BeFalse();
-        tick.Failure!.Message.Should().Contain("no longer exists. Pick another user or delete the recipient.");
+        tick.Failure!.Message.Should().Contain("The user 'user-gone' of a recipient").And.Contain("no longer exists. Delete the recipient.");
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Contain("no longer exists");
         state.RunningSince.Should().BeNull();
@@ -717,6 +770,56 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         tick.Prepared!.SentRows.Select(row => row.RtId).Should().Equal(existing[0].ToString());
         h.Advance(TimeSpan.FromMinutes(1));
         (await h.TickAsync(preference)).Sent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ANavigatingColumnInFilterMode_FailsTheRun_AndSendsNothing()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(2);
+        await h.NavigateQueryAsync(null);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Sent.Should().BeFalse();
+        tick.Failure!.Message.Should().Contain("Set the query's navigation mode to Include");
+    }
+
+    [Fact]
+    public async Task ARowWithoutTheNavigationPath_IsMailedWithAnEmptyCell()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync(bodyTemplate: "${SerialNumber}=[${" + NotificationEngineHarness.RelatedSerialColumn + "}]");
+        var rows = await h.AddReadingsAsync(2);
+        await h.RelateAsync(rows[0], rows[1]);
+        await h.NavigateQueryAsync(RtNavigationFilterModesEnum.Include);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Prepared!.NewCount.Should().Be(2);
+        tick.Prepared.Body.Should().Contain($"{h.SerialOf(1)}=[{h.SerialOf(2)}]").And.Contain($"{h.SerialOf(2)}=[]");
+        tick.Prepared.SentRows.Select(row => row.RtId).Should().BeEquivalentTo(rows.Select(rtId => rtId.ToString()));
+    }
+
+    [Fact]
+    public async Task ARowWithSeveralNavigationEnds_ShowsTheFirst_AndDoesNotFailTheRun()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync(bodyTemplate: "${SerialNumber}=[${" + NotificationEngineHarness.RelatedSerialColumn + "}]");
+        var rows = await h.AddReadingsAsync(3);
+        await h.RelateAsync(rows[0], rows[1], rows[2]);
+        await h.NavigateQueryAsync(RtNavigationFilterModesEnum.Include);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false);
+
+        var tick = await h.TickAsync(preference);
+
+        tick.Failure.Should().BeNull();
+        tick.Prepared!.NewCount.Should().Be(3);
+        tick.Prepared.Body.Should().Contain($"{h.SerialOf(1)}=[{h.SerialOf(2)}]");
     }
 
     [Fact]

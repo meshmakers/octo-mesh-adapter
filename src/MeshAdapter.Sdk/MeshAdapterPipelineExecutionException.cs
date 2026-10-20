@@ -687,16 +687,18 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}' has no {missing}. Open the subscription and pick one.");
     }
 
-    public static Exception NotificationRecipientMissing(INodeContext nodeContext, string subscriptionName)
+    public static Exception NotificationRecipientMissing(INodeContext nodeContext, string subscriptionName,
+        string? subjectId)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: The user of this recipient of subscription '{subscriptionName}' no longer exists. Pick another user or delete the recipient.");
+            $"[{nodeContext.NodePath}]: The user '{subjectId}' of a recipient of subscription '{subscriptionName}' no longer exists. Delete the recipient.");
     }
 
-    public static Exception NotificationRecipientDuplicate(INodeContext nodeContext, string subscriptionName)
+    public static Exception NotificationRecipientDuplicate(INodeContext nodeContext, string subscriptionName,
+        string recipient)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: This user already gets subscription '{subscriptionName}' as an older recipient, so this one sends nothing. Delete it.");
+            $"[{nodeContext.NodePath}]: {recipient} already gets subscription '{subscriptionName}' as an older recipient, so this one sends nothing. Delete it.");
     }
 
     public static Exception NotificationQueryNotSupported(INodeContext nodeContext, string subscriptionName,
@@ -726,6 +728,13 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': the query filters on an associated entity. A notification sees a row as new when the row itself changes, so a change of the associated entity would never be noticed. Filter on attributes of the queried type only; columns may still show associated values.");
     }
 
+
+    public static Exception NotificationQueryNavigatesInFilterMode(INodeContext nodeContext,
+        string subscriptionName)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}': the query's columns read associated entities in Filter mode, so a row would appear in or vanish from the result when an associated entity changes, which a notification cannot notice. Set the query's navigation mode to Include; rows without the association are then mailed with empty cells.");
+    }
 
     public static Exception FileNameNull(INodeContext nodeContext, string? fileNamePath)
     {

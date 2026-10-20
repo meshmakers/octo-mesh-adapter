@@ -1,3 +1,4 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
@@ -68,11 +69,12 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
             return Task.CompletedTask;
         }
 
-        public Task StoreWarningEventAsync(string? tenantId, string message)
+        public Task StoreWarningEventAsync(string? tenantId, string message, RtEntityId? associatedRtEntityId = null)
         {
             Events.Add((RtEventLevelsEnum.Warning, message));
             return Task.CompletedTask;
         }
+
     }
 
     public void Dispose()

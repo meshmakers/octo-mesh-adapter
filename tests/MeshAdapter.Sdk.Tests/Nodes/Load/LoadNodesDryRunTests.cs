@@ -1,3 +1,5 @@
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
+using MeshAdapter.Sdk.Tests.Services.HttpRequests;
 using System.Text.Json.Nodes;
 using MeshAdapter.Sdk.Tests.Helpers;
 using FakeItEasy;
@@ -205,7 +207,7 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
             .Returns(true)
             .AssignsOutAndRefParameters(prepared);
 
-        var node = new CommitNotificationStateNode(next, EtlContext);
+        var node = new CommitNotificationStateNode(next, EtlContext, new RecordingAdapterEventService(), A.Fake<ISubjectChannelLookup>());
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         AssertNoSessionOpened();

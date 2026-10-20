@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -332,6 +333,96 @@ public class NotificationDigestTests
         Assert.Equal(expected, SimpleRtQueryExecution.FiltersThroughAssociations(query));
     }
 
+    [Theory]
+    [InlineData("name", null, false)]
+    [InlineData("parent.basicTree->name", null, true)]
+    [InlineData("parent.basicTree->name", (int)RtNavigationFilterModesEnum.Filter, true)]
+    [InlineData("parent.basicTree->name", (int)RtNavigationFilterModesEnum.Include, false)]
+    [InlineData("children::count", null, false)]
+    public void NavigatesInFilterMode_OnlyForANavigatingColumnOutsideInclude(string column, int? mode, bool expected)
+    {
+        var query = new Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2.RtSimpleRtQuery
+        {
+            Columns = new Meshmakers.Octo.Runtime.Contracts.RepositoryEntities.AttributeStringValueList(["name", column]),
+            NavigationFilterMode = (RtNavigationFilterModesEnum?)mode
+        };
+
+        Assert.Equal(expected, SimpleRtQueryExecution.NavigatesInFilterMode(query));
+    }
+
+    private static NotificationPlan RunningPlan(DateTime processedUntil, IReadOnlyList<SentRow>? sentRows = null) =>
+        new(false, NotificationDigest.ReadFrom(processedUntil), processedUntil, sentRows ?? []);
+
+    [Fact]
+    public void Reconcile_DropsTheRowsTheMailCouldNotList_FromTheNewAndTheSentRows()
+    {
+        var earlier = new SentRow(C, Now.AddHours(-1), Now.AddHours(-1));
+        var plan = RunningPlan(Now.AddHours(-1), [earlier]);
+        IReadOnlyList<NotificationCandidate> page = [Row(A, Now.AddMinutes(-2)), Row(B, Now.AddMinutes(-1))];
+        var decision = NotificationDigest.Decide(plan, page, Now);
+
+        var listed = NotificationDigest.Reconcile(plan, page, decision, [A, B], new HashSet<string> { A }, Now);
+
+        Assert.NotNull(listed);
+        Assert.Equal([A], listed.NewRtIds);
+        Assert.Equal([A, C], listed.SentRows.Select(row => row.RtId).Order());
+    }
+
+    [Fact]
+    public void Reconcile_KeepsTheWatermarkBeforeAnUnlistedRow_SoTheNextRunReadsItAgain()
+    {
+        var unlistedChange = Now.AddHours(-2);
+        var plan = RunningPlan(Now.AddHours(-3));
+        IReadOnlyList<NotificationCandidate> page = [Row(B, unlistedChange), Row(A, Now.AddMinutes(-1))];
+        var decision = NotificationDigest.Decide(plan, page, Now);
+
+        var listed = NotificationDigest.Reconcile(plan, page, decision, [B, A], new HashSet<string> { A }, Now);
+
+        Assert.NotNull(listed);
+        Assert.Equal(unlistedChange, listed.ProcessedUntil);
+        Assert.True(NotificationDigest.ReadFrom(listed.ProcessedUntil) < unlistedChange);
+    }
+
+    [Fact]
+    public void Reconcile_EveryRowRead_KeepsTheDecision()
+    {
+        var plan = RunningPlan(Now.AddHours(-1));
+        IReadOnlyList<NotificationCandidate> page = [Row(A, Now.AddMinutes(-2)), Row(B, Now.AddMinutes(-1))];
+        var decision = NotificationDigest.Decide(plan, page, Now);
+
+        var listed = NotificationDigest.Reconcile(plan, page, decision, [A], new HashSet<string> { A }, Now);
+
+        Assert.Same(decision, listed);
+    }
+
+    [Fact]
+    public void Reconcile_NoRequestedRowRead_ListsNothing_EvenWithRowsBeyondTheMailLimit()
+    {
+        var plan = RunningPlan(Now.AddHours(-1));
+        IReadOnlyList<NotificationCandidate> page = [Row(A, Now.AddMinutes(-2)), Row(B, Now.AddMinutes(-1))];
+        var decision = NotificationDigest.Decide(plan, page, Now);
+
+        var listed = NotificationDigest.Reconcile(plan, page, decision, [A], new HashSet<string>(), Now);
+
+        Assert.Null(listed);
+    }
+
+    [Fact]
+    public void Reconcile_AnUnlistedRowBeforeAnExpiredSentRow_KeepsThatSentRow_SoItIsNotMailedAgain()
+    {
+        var expired = new SentRow(C, Now.AddDays(-35), Now.AddDays(-39));
+        var plan = RunningPlan(Now.AddDays(-40), [expired]);
+        IReadOnlyList<NotificationCandidate> page = [Row(B, Now.AddDays(-39).AddHours(-12)), Row(A, Now.AddHours(-1))];
+        var decision = NotificationDigest.Decide(plan, page, Now);
+        Assert.DoesNotContain(C, decision.SentRows.Select(row => row.RtId));
+
+        var listed = NotificationDigest.Reconcile(plan, page, decision, [B, A], new HashSet<string> { A }, Now);
+
+        Assert.NotNull(listed);
+        Assert.Equal(Now.AddDays(-39).AddHours(-12), listed.ProcessedUntil);
+        Assert.Contains(C, listed.SentRows.Select(row => row.RtId));
+    }
+
     [Fact]
     public void Plan_SwitchToOnwards_KeepsTheRowsAlreadySent()
     {
@@ -525,6 +616,18 @@ public class NotificationDigestTests
 
         Assert.Equal("2500", rendered.Subject);
         Assert.EndsWith("P100\n\n...and 2400 more. Open the query to see all.", rendered.Body);
+    }
+
+    [Fact]
+    public void Render_FewerRowsThanTheCapGiven_CountsTheRestFromTheRowsListed()
+    {
+        var rows = Enumerable.Range(1, 90).Select(i => (IReadOnlyList<object?>)[$"P{i}"]).ToList();
+
+        var rendered = NotificationDigest.Render("${count}", "${name}", NotificationBodyKind.Plain, ["name"], rows,
+            TimeZoneInfo.Utc, 140, null);
+
+        Assert.Equal("140", rendered.Subject);
+        Assert.EndsWith("P90\n\n...and 50 more. Open the query to see all.", rendered.Body);
     }
 
     private static readonly DateTime Now = new(2026, 10, 2, 12, 0, 0, DateTimeKind.Utc);

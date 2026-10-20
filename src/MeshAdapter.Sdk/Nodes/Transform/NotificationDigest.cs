@@ -136,30 +136,24 @@ internal static class NotificationDigest
         return new NotificationPlan(true, startedAt, startedAt + Overlap, sentRows);
     }
 
-    public static NotificationDigestDecision WithoutUnrendered(NotificationDigestDecision decision,
-        IEnumerable<string> requested, IReadOnlySet<string> rendered)
+    public static NotificationDigestDecision? Reconcile(NotificationPlan plan,
+        IReadOnlyList<NotificationCandidate> page, NotificationDigestDecision decision, IEnumerable<string> requested,
+        IReadOnlySet<string> read, DateTime now)
     {
-        var missing = requested.Where(rtId => !rendered.Contains(rtId)).ToHashSet(StringComparer.Ordinal);
-        if (missing.Count == 0)
+        if (read.Count == 0)
         {
-            return decision;
+            return null;
         }
 
-        var earliestMissing = decision.SentRows.Where(row => missing.Contains(row.RtId))
-            .Select(row => (DateTime?)row.ChangedAt).Min();
-        return decision with
-        {
-            NewRtIds = decision.NewRtIds.Where(rtId => !missing.Contains(rtId)).ToList(),
-            ProcessedUntil = earliestMissing < decision.ProcessedUntil ? earliestMissing : decision.ProcessedUntil,
-            SentRows = decision.SentRows.Where(row => !missing.Contains(row.RtId)).ToList()
-        };
+        var unlisted = requested.Where(rtId => !read.Contains(rtId)).ToHashSet(StringComparer.Ordinal);
+        return unlisted.Count == 0 ? decision : Decide(plan, page, now, unlisted);
     }
 
     public static DateTime? ReadFrom(DateTime? processedUntil) =>
         processedUntil is { } until && until > DateTime.MinValue + Overlap ? until - Overlap : null;
 
     public static NotificationDigestDecision Decide(NotificationPlan plan, IReadOnlyList<NotificationCandidate> page,
-        DateTime now)
+        DateTime now, IReadOnlySet<string>? unlisted = null)
     {
         var sent = new HashSet<string>(plan.SentRows.Select(row => row.RtId), StringComparer.Ordinal);
         var newRows = page.Where(row => !sent.Contains(row.RtId.ToString())).DistinctBy(row => row.RtId).ToList();
@@ -169,7 +163,19 @@ internal static class NotificationDigest
             processedUntil = before;
         }
 
-        var (sentRows, remembered) = Remember(plan.SentRows, newRows, processedUntil, now);
+        DateTime? earliestUnlisted = null;
+        if (unlisted is { Count: > 0 })
+        {
+            earliestUnlisted = newRows.Where(row => unlisted.Contains(row.RtId.ToString()))
+                .Select(row => (DateTime?)row.ChangedAt).Min();
+            newRows = newRows.Where(row => !unlisted.Contains(row.RtId.ToString())).ToList();
+            if (earliestUnlisted < processedUntil)
+            {
+                processedUntil = earliestUnlisted;
+            }
+        }
+
+        var (sentRows, remembered) = Remember(plan.SentRows, newRows, processedUntil, now, earliestUnlisted);
         return new NotificationDigestDecision(
             newRows.Count == 0 ? NotificationDigestAction.NothingNew : NotificationDigestAction.Send,
             newRows.Select(row => row.RtId.ToString()).ToList(), remembered, sentRows);
@@ -190,12 +196,18 @@ internal static class NotificationDigest
 
     private static (IReadOnlyList<SentRow> SentRows, DateTime? ProcessedUntil) Remember(
         IReadOnlyList<SentRow> sentRows, IEnumerable<NotificationCandidate> rows, DateTime? processedUntil,
-        DateTime now)
+        DateTime now, DateTime? earliestUnlisted)
     {
         var added = rows.Select(row => new SentRow(row.RtId.ToString(), now, row.ChangedAt)).ToList();
         var addedIds = added.Select(row => row.RtId).ToHashSet(StringComparer.Ordinal);
         var all = added.Concat(sentRows.Where(row => !addedIds.Contains(row.RtId))).ToList();
-        processedUntil = PastOverflow(all, processedUntil, added.Max(row => (DateTime?)row.ChangedAt));
+        var lastRead = added.Max(row => (DateTime?)row.ChangedAt);
+        if (earliestUnlisted is { } unlistedAt && !(lastRead <= unlistedAt))
+        {
+            lastRead = unlistedAt;
+        }
+
+        processedUntil = PastOverflow(all, processedUntil, lastRead);
         var readFrom = ReadFrom(processedUntil);
         var readAgain = all.Where(row => CanBeReadAgain(row, readFrom)).ToList();
         var rest = all.Where(row => !CanBeReadAgain(row, readFrom) && now - row.SentAt < SentRowRetention)
@@ -265,9 +277,9 @@ internal static class NotificationDigest
             throw new NotificationRenderException(unknown);
         }
 
-        if (totalCount > MaxRowsPerMail)
+        if (totalCount > blocks.Count)
         {
-            var more = totalCount - MaxRowsPerMail;
+            var more = totalCount - blocks.Count;
             if (string.IsNullOrWhiteSpace(queryName))
             {
                 blocks.Add($"...and {more} more. Open the query to see all.");

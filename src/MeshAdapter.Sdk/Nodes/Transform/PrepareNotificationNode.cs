@@ -171,11 +171,12 @@ internal class PrepareNotificationNode(
             var sentRtIds = plan.SentRows.Select(row => new OctoObjectId(row.RtId)).ToList();
 
             NotificationDigestDecision decision;
+            IReadOnlyList<NotificationCandidate> page;
             // AB#5028 — scoped: the query reads tenant business data under the pipeline's identity.
             using (var scopedSession = await etlContext.GetScopedSessionAsync())
             {
                 scopedSession.StartTransaction();
-                var page = await SimpleRtQueryExecution.FindChangedAsync(repository, ckCacheService,
+                page = await SimpleRtQueryExecution.FindChangedAsync(repository, ckCacheService,
                     scopedSession, simpleQuery, plan.ReadFrom, sentRtIds, NotificationDigest.RowsPerRun);
                 decision = NotificationDigest.Decide(plan, page, now);
 
@@ -254,22 +255,24 @@ internal class PrepareNotificationNode(
             }
 
             var readRtIds = result.Rows.Select(row => row.RtId.ToString()!).ToHashSet(StringComparer.Ordinal);
-            var listed = NotificationDigest.WithoutUnrendered(decision, requested, readRtIds);
-            if (listed.NewRtIds.Count < decision.NewRtIds.Count)
+            var listed = NotificationDigest.Reconcile(plan, page, decision, requested, readRtIds, now);
+            if (listed == null)
             {
-                nodeContext.Warning("Preference '{0}': {1} new row(s) could not be read for the mail and stay unsent",
-                    preferenceRtId, decision.NewRtIds.Count - listed.NewRtIds.Count);
-                decision = listed;
-            }
-
-            if (decision.NewRtIds.Count == 0)
-            {
+                nodeContext.Warning("Preference '{0}': none of the {1} row(s) the mail would list could be read; nothing is sent",
+                    preferenceRtId, requested.Count);
                 if (lease is { } heldLease)
                 {
                     await NotificationDeliveryStateStore.SaveHeldAsync(etlContext, stateRtId!.Value, preferenceRtId,
                         new NotificationDeliveryStateChange(ReleaseLease: true), heldLease);
                 }
                 return;
+            }
+
+            if (listed.NewRtIds.Count < decision.NewRtIds.Count)
+            {
+                nodeContext.Warning("Preference '{0}': {1} new row(s) could not be read for the mail and stay unsent",
+                    preferenceRtId, decision.NewRtIds.Count - listed.NewRtIds.Count);
+                decision = listed;
             }
 
             var newRows = result.Rows.Select(row => (IReadOnlyList<object?>)row.Values).ToList();

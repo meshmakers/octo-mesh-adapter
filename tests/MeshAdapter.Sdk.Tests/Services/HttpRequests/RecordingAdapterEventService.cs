@@ -1,3 +1,4 @@
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 
@@ -24,9 +25,10 @@ internal sealed class RecordingAdapterEventService : IAdapterEventService
         return Task.CompletedTask;
     }
 
-    public Task StoreWarningEventAsync(string? tenantId, string message)
+    public Task StoreWarningEventAsync(string? tenantId, string message, RtEntityId? associatedRtEntityId = null)
     {
         Events.Add((RtEventLevelsEnum.Warning, tenantId, message));
         return Task.CompletedTask;
     }
+
 }

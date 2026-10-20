@@ -385,11 +385,37 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var tick = await h.TickAsync(preference, (_, _) => throw new InvalidOperationException("smtp is down"));
 
         tick.Failure.Should().BeOfType<InvalidOperationException>().Which.Message.Should().Be("smtp is down");
+        h.Events.All.Should().BeEmpty("a failed run fails the pipeline, and the controller records that in the event log");
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Be("smtp is down");
         state.RunningSince.Should().BeNull();
         state.SentRows.Should().BeNullOrEmpty("the row that failed is not recorded as sent");
         state.LastSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AnUnknownTimeZone_IsReportedToTheEventLogOnce_AndAgainOnlyWhenItChanges()
+    {
+        var h = NewScenario();
+        await h.CreateSubscriptionAsync();
+        await h.AddReadingsAsync(1);
+        var preference = await h.CreatePreferenceAsync("user-a", onwards: false, timeZone: "Mars/Olympus");
+        await h.TickAndCommitAsync(preference);
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        await h.TickAndCommitAsync(preference);
+
+        h.Events.All.Should().ContainSingle().Which.Should().Match<(RtEventLevelsEnum Level, string Message, RtEntityId? Entity)>(
+            e => e.Level == RtEventLevelsEnum.Warning && e.Message.Contains("Mars/Olympus"));
+
+        await h.UpdateAsync<RtNotificationPreference>(SystemNotificationCkIds.RtCkNotificationPreferenceTypeId,
+            preference, p => p.TimeZone = "Venus/Maxwell");
+        h.Advance(TimeSpan.FromMinutes(1));
+        await h.AddReadingsAsync(1);
+        await h.TickAndCommitAsync(preference);
+
+        h.Events.All.Should().HaveCount(2);
+        h.Events.All[1].Message.Should().Contain("Venus/Maxwell");
     }
 
     [Fact]
@@ -528,7 +554,7 @@ public class NotificationEngineNodesIntegrationTests(NotificationEngineFixture f
         var tick = await h.TickAsync(preference);
 
         tick.Sent.Should().BeFalse();
-        tick.Failure!.Message.Should().Contain("no longer exists. Pick another user or delete the recipient.");
+        tick.Failure!.Message.Should().Contain("The user 'user-gone' of a recipient").And.Contain("no longer exists. Delete the recipient.");
         var state = (await h.StateOfAsync(preference))!;
         state.LastError.Should().Contain("no longer exists");
         state.RunningSince.Should().BeNull();

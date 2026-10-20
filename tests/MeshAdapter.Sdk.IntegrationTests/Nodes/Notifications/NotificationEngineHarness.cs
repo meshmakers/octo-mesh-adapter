@@ -57,6 +57,8 @@ internal sealed class NotificationEngineHarness
 
     public ISubjectChannelLookup SubjectLookup { get; }
 
+    public RecordedEvents Events { get; } = new();
+
     public OctoObjectId SubscriptionRtId { get; private set; }
 
     public OctoObjectId TemplateRtId { get; private set; }
@@ -305,7 +307,7 @@ internal sealed class NotificationEngineHarness
             }
         }
 
-        var node = new PrepareNotificationNode(Next, CreateEtlContext(), CkCache, SubjectLookup, Clock);
+        var node = new PrepareNotificationNode(Next, CreateEtlContext(), CkCache, SubjectLookup, Events, Clock);
         Exception? failure = null;
         try
         {
@@ -328,7 +330,7 @@ internal sealed class NotificationEngineHarness
         var config = new CommitNotificationStateNodeConfiguration { Path = "$.notification" };
         var rootContext = NodeContext.CreateRootNodeContext(_fixture.Provider!, A.Fake<IPipelineLogger>(), dataContext);
         var commitContext = rootContext.RegisterChildNode("CommitNotificationState", 1, config, dataContext);
-        var node = new CommitNotificationStateNode((_, _) => Task.CompletedTask, CreateEtlContext(), Clock);
+        var node = new CommitNotificationStateNode((_, _) => Task.CompletedTask, CreateEtlContext(), Events, SubjectLookup, Clock);
         await node.ProcessObjectAsync(dataContext, commitContext);
     }
 
@@ -377,6 +379,25 @@ internal sealed class NotificationEngineHarness
 }
 
 internal sealed record TickResult(bool Sent, PreparedNotification? Prepared, Exception? Failure);
+
+internal sealed class RecordedEvents : IAdapterEventService
+{
+    public List<(RtEventLevelsEnum Level, string Message, RtEntityId? Entity)> All { get; } = [];
+
+    public Task StoreDebugEventAsync(string? tenantId, string message) => Record(RtEventLevelsEnum.Debug, message, null);
+
+    public Task StoreInformationEventAsync(string? tenantId, string message) => Record(RtEventLevelsEnum.Information, message, null);
+
+    public Task StoreWarningEventAsync(string? tenantId, string message, RtEntityId? associatedRtEntityId = null) =>
+        Record(RtEventLevelsEnum.Warning, message, associatedRtEntityId);
+
+
+    private Task Record(RtEventLevelsEnum level, string message, RtEntityId? entity)
+    {
+        All.Add((level, message, entity));
+        return Task.CompletedTask;
+    }
+}
 
 internal sealed class TestClock(DateTimeOffset start) : TimeProvider
 {

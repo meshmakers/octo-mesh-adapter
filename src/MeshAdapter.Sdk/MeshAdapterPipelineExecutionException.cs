@@ -687,16 +687,18 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Subscription '{subscriptionName}' has no {missing}. Open the subscription and pick one.");
     }
 
-    public static Exception NotificationRecipientMissing(INodeContext nodeContext, string subscriptionName)
+    public static Exception NotificationRecipientMissing(INodeContext nodeContext, string subscriptionName,
+        string? subjectId)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: The user of this recipient of subscription '{subscriptionName}' no longer exists. Pick another user or delete the recipient.");
+            $"[{nodeContext.NodePath}]: The user '{subjectId}' of a recipient of subscription '{subscriptionName}' no longer exists. Delete the recipient.");
     }
 
-    public static Exception NotificationRecipientDuplicate(INodeContext nodeContext, string subscriptionName)
+    public static Exception NotificationRecipientDuplicate(INodeContext nodeContext, string subscriptionName,
+        string recipient)
     {
         return new MeshAdapterPipelineExecutionException(
-            $"[{nodeContext.NodePath}]: This user already gets subscription '{subscriptionName}' as an older recipient, so this one sends nothing. Delete it.");
+            $"[{nodeContext.NodePath}]: {recipient} already gets subscription '{subscriptionName}' as an older recipient, so this one sends nothing. Delete it.");
     }
 
     public static Exception NotificationQueryNotSupported(INodeContext nodeContext, string subscriptionName,

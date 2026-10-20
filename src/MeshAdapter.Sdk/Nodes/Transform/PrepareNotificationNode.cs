@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
@@ -13,6 +14,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
 using Meshmakers.Octo.Services.Notifications.Generated.System.Notification.v2;
 
@@ -40,8 +42,11 @@ internal class PrepareNotificationNode(
     IMeshEtlContext etlContext,
     ICkCacheService ckCacheService,
     ISubjectChannelLookup subjectChannelLookup,
+    IAdapterEventService eventService,
     TimeProvider? timeProvider = null) : IPipelineNode
 {
+    private static readonly ConcurrentDictionary<string, string> UnknownTimeZones = new(StringComparer.Ordinal);
+
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -127,6 +132,7 @@ internal class PrepareNotificationNode(
 
         var stateRtId = state?.RtId;
         DateTime? lease = null;
+        var recipientLabel = preference.SubjectId;
 
         try
         {
@@ -210,15 +216,20 @@ internal class PrepareNotificationNode(
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(preference.SubjectId) ||
-                await subjectChannelLookup.FindBySubjectIdAsync(etlContext.TenantId, preference.SubjectId) == null)
+            var recipientUser = string.IsNullOrWhiteSpace(preference.SubjectId)
+                ? null
+                : await subjectChannelLookup.FindBySubjectIdAsync(etlContext.TenantId, preference.SubjectId);
+            if (recipientUser == null)
             {
-                throw MeshAdapterPipelineExecutionException.NotificationRecipientMissing(nodeContext, subscriptionName);
+                throw MeshAdapterPipelineExecutionException.NotificationRecipientMissing(nodeContext, subscriptionName,
+                    preference.SubjectId);
             }
 
+            recipientLabel = RecipientLabel(recipientUser);
             if (NotificationDigest.HasOlderTwin(AsRecipient(preference), recipients.Select(AsRecipient)))
             {
-                throw MeshAdapterPipelineExecutionException.NotificationRecipientDuplicate(nodeContext, subscriptionName);
+                throw MeshAdapterPipelineExecutionException.NotificationRecipientDuplicate(nodeContext, subscriptionName,
+                    recipientLabel);
             }
 
             if (!dryRun)
@@ -258,8 +269,8 @@ internal class PrepareNotificationNode(
             var listed = NotificationDigest.Reconcile(plan, page, decision, requested, readRtIds, now);
             if (listed == null)
             {
-                nodeContext.Warning("Preference '{0}': none of the {1} row(s) the mail would list could be read; nothing is sent",
-                    preferenceRtId, requested.Count);
+                await WarnAsync(nodeContext, subscription,
+                    $"Notification '{subscriptionName}' for recipient {recipientLabel}: none of the {requested.Count} new row(s) could be read for the mail, so nothing was sent");
                 if (lease is { } heldLease)
                 {
                     await NotificationDeliveryStateStore.SaveHeldAsync(etlContext, stateRtId!.Value, preferenceRtId,
@@ -270,8 +281,8 @@ internal class PrepareNotificationNode(
 
             if (listed.NewRtIds.Count < decision.NewRtIds.Count)
             {
-                nodeContext.Warning("Preference '{0}': {1} new row(s) could not be read for the mail and stay unsent",
-                    preferenceRtId, decision.NewRtIds.Count - listed.NewRtIds.Count);
+                await WarnAsync(nodeContext, subscription,
+                    $"Notification '{subscriptionName}' for recipient {recipientLabel}: {decision.NewRtIds.Count - listed.NewRtIds.Count} new row(s) could not be read for the mail and stay unsent");
                 decision = listed;
             }
 
@@ -283,12 +294,13 @@ internal class PrepareNotificationNode(
                 ? NotificationBodyKind.Plain
                 : NotificationBodyKind.Markup;
 
+            var timeZone = await ResolveTimeZoneAsync(nodeContext, subscription, preference, recipientLabel);
             RenderedNotification rendered;
             try
             {
                 rendered = NotificationDigest.Render(template.SubjectTemplate, template.BodyTemplate, bodyKind,
                     result.Columns.Select(column => column.Header).ToList(), newRows,
-                    ResolveTimeZone(nodeContext, preference.TimeZone), decision.NewRtIds.Count, simpleQuery.Name);
+                    timeZone, decision.NewRtIds.Count, simpleQuery.Name);
             }
             catch (NotificationRenderException ex)
             {
@@ -327,8 +339,8 @@ internal class PrepareNotificationNode(
             }
             catch (Exception bookkeepingException)
             {
-                nodeContext.Warning("The failure of preference '{0}' could not be recorded: {1}", preferenceRtId,
-                    bookkeepingException.Message);
+                await WarnAsync(nodeContext, subscription,
+                    $"Notification '{subscription.Name ?? subscription.RtId.ToString()}' for recipient {recipientLabel}: the failure could not be recorded on the recipient: {bookkeepingException.Message}");
             }
 
             throw;
@@ -338,19 +350,44 @@ internal class PrepareNotificationNode(
     private static NotificationRecipient AsRecipient(RtNotificationPreference preference) =>
         new(preference.RtId.ToString(), preference.SubjectId, preference.RtCreationDateTime);
 
-    private static TimeZoneInfo ResolveTimeZone(INodeContext nodeContext, string? timeZone)
+    private async Task WarnAsync(INodeContext nodeContext, RtNotificationSubscription subscription, string message)
     {
+        nodeContext.Warning("{0}", message);
+        await eventService.StoreWarningEventAsync(etlContext.TenantId, message,
+            new RtEntityId(SystemNotificationCkIds.RtCkNotificationSubscriptionTypeId, subscription.RtId));
+    }
+
+    private static string RecipientLabel(SubjectChannelRecord user) =>
+        !string.IsNullOrWhiteSpace(user.Email) ? user.Email
+        : !string.IsNullOrWhiteSpace(user.Name) ? user.Name
+        : user.SubjectId;
+
+    private async Task<TimeZoneInfo> ResolveTimeZoneAsync(INodeContext nodeContext, RtNotificationSubscription subscription,
+        RtNotificationPreference preference, string recipientLabel)
+    {
+        var key = $"{etlContext.TenantId}/{preference.RtId}";
+        var timeZone = preference.TimeZone;
         if (string.IsNullOrWhiteSpace(timeZone))
         {
+            UnknownTimeZones.TryRemove(key, out _);
             return TimeZoneInfo.Utc;
         }
 
         if (TimeZoneInfo.TryFindSystemTimeZoneById(timeZone, out var zone))
         {
+            UnknownTimeZones.TryRemove(key, out _);
             return zone;
         }
 
-        nodeContext.Warning("Time zone '{0}' is unknown; dates are shown in UTC", timeZone);
+        if (UnknownTimeZones.TryGetValue(key, out var reported) && reported == timeZone)
+        {
+            nodeContext.Debug("Time zone '{0}' is unknown; dates are shown in UTC", timeZone);
+            return TimeZoneInfo.Utc;
+        }
+
+        UnknownTimeZones[key] = timeZone;
+        await WarnAsync(nodeContext, subscription,
+            $"Notification '{subscription.Name ?? subscription.RtId.ToString()}' for recipient {recipientLabel}: time zone '{timeZone}' is unknown, dates are shown in UTC");
         return TimeZoneInfo.Utc;
     }
 }

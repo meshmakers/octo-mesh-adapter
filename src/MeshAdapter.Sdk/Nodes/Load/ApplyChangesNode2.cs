@@ -279,6 +279,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
         // "set and cleared" pair (rule message 23) for a merge it did not ask for.
         var mergedAttributes = new Dictionary<string, object?>();
         var clearSecretAttributes = new List<string>();
+        // AB#7436: genuine conflicts are collected per attribute (first conflicting pair) and reported
+        // in ONE warning per entity and batch.
+        var conflicts = new Dictionary<string, (object? Existing, object? Incoming)>(StringComparer.Ordinal);
         foreach (var update in updates)
         {
             if (update.RtEntity != null)
@@ -297,11 +300,10 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                             string.Equals(c, kvp.Key, StringComparison.OrdinalIgnoreCase));
                     }
 
-                    if (mergedAttributes.TryGetValue(kvp.Key, out var existing) && !Equals(existing, kvp.Value))
+                    if (mergedAttributes.TryGetValue(kvp.Key, out var existing) &&
+                        !AttributeValueComparer.AreEqual(existing, kvp.Value))
                     {
-                        nodeContext.Warning(
-                            $"Merging entity {last.GetRtEntityId()}: attribute '{kvp.Key}' has conflicting values " +
-                            $"('{existing}' vs '{kvp.Value}') — later value wins");
+                        conflicts.TryAdd(kvp.Key, (existing, kvp.Value));
                     }
 
                     mergedAttributes[kvp.Key] = kvp.Value;
@@ -321,6 +323,19 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                     clearSecretAttributes.Add(cleared);
                 }
             }
+        }
+
+        if (conflicts.Count > 0)
+        {
+            var details = string.Join(", ", conflicts.Select(c =>
+                $"'{c.Key}' ({AttributeValueComparer.FormatAttribute(c.Key, c.Value.Existing)} vs " +
+                $"{AttributeValueComparer.FormatAttribute(c.Key, c.Value.Incoming)})"));
+            // The values go in as an argument: they may contain braces, which a log template would parse.
+            nodeContext.Warning(
+                conflicts.Count == 1
+                    ? "Merging entity {RtEntityId}: attribute {Conflicts} has conflicting values — later value wins"
+                    : "Merging entity {RtEntityId}: attributes {Conflicts} have conflicting values — later value wins",
+                last.GetRtEntityId().ToString()!, details);
         }
 
         var mergedEntity = new RtEntity(lastEntity.CkTypeId!, last.GetRtEntityId().RtId, mergedAttributes)

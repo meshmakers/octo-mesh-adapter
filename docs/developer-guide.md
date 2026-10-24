@@ -1109,6 +1109,12 @@ Applies entity updates to MongoDB.
 
 Alternative implementation with different transaction strategy.
 
+When one batch holds several updates for the same entity they are merged into one update; for a
+conflicting attribute the later value wins. Values are compared **structurally** (lists, dictionaries,
+records and JSON trees by content, numbers by value), so equal content is no conflict. A real conflict
+produces one warning per entity and batch naming all conflicting attributes with compact values
+truncated to 200 characters; credential-like attributes are shown as `<redacted>` (AB#7436).
+
 #### SaveStreamDataInArchiveNode
 
 Persists entity data to CrateDB time-series database.

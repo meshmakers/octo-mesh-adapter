@@ -329,6 +329,62 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
         Assert.Equal(3, merged.Attributes["Position"]);
     }
 
+    // ---- AB#7442: atomic RecordArray item updates travel through the node unchanged ----
+
+    private static RtRecordArrayItemUpdate ItemUpdate(string key, object value) =>
+        new("States", "ExternalId", key, new Dictionary<string, object?> { ["CurrentValue"] = value });
+
+    private static EntityUpdateInfo<RtEntity> ItemUpdateInfo(params RtRecordArrayItemUpdate[] items)
+    {
+        return EntityUpdateInfo<RtEntity>.CreateRecordArrayItemUpdate(CreateRtEntityId("000000000000000000000001"),
+            CreateRtEntity("000000000000000000000001"), items);
+    }
+
+    [Fact]
+    public async Task ItemUpdates_OfSeveralInfosForOneEntity_AreMergedInOrder_AndStayItemUpdates()
+    {
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger<ApplyChangesNodeConfiguration2>(config);
+        SetupEntityData(dataContext, EntityUpdatesPath,
+            [ItemUpdateInfo(ItemUpdate("a", 1)), ItemUpdateInfo(ItemUpdate("b", 2), ItemUpdate("a", 3))]);
+
+        IReadOnlyList<IEntityUpdateInfo<RtEntity>>? captured = null;
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Invokes((IOctoSession _, IReadOnlyList<IEntityUpdateInfo<RtEntity>> e,
+                IReadOnlyList<AssociationUpdateInfo> _, OperationResult _) => captured = e);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        var merged = Assert.Single(captured!);
+        Assert.Equal(["a", "b", "a"], merged.RecordArrayItemUpdates!.Select(i => (string)i.MatchValue));
+        Assert.Equal([1, 2, 3], merged.RecordArrayItemUpdates!.Select(i => (int)i.MemberUpdates["CurrentValue"]!));
+        Assert.Empty(WarningTexts(logger));
+    }
+
+    [Fact]
+    public async Task ItemUpdate_ThatMatchedNoItem_IsAWarning_AndTheTransactionIsCommitted()
+    {
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger<ApplyChangesNodeConfiguration2>(config);
+        SetupEntityData(dataContext, EntityUpdatesPath, [ItemUpdateInfo(ItemUpdate("missing", 1))]);
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Invokes((IOctoSession _, IReadOnlyList<IEntityUpdateInfo<RtEntity>> _,
+                IReadOnlyList<AssociationUpdateInfo> _, OperationResult result) =>
+                result.AddMessage(new OperationMessage(MessageLevel.Warning, null, 27,
+                    "No item of the record array(s) 'States' matched")));
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        var warning = Assert.Single(WarningTexts(logger));
+        Assert.Contains("matched", warning);
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => Session.AbortTransactionAsync()).MustNotHaveHappened();
+    }
+
     [Fact]
     public async Task Merge_VeryLongValues_AreTruncated()
     {

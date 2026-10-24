@@ -720,10 +720,34 @@ Constructs update information objects for entity persistence.
 | `CkTypeId` / `CkTypeIdPath` | string | Entity type |
 | `UpdateKind` | enum | Insert, Update, or Delete |
 | `AttributeUpdates` | ICollection | Field updates to apply |
+| `RecordArrayItemUpdates` | ICollection | Atomic updates of single RecordArray items, without reading the entity (AB#7442, below) |
 | `RtWellKnownName` / `RtWellKnownNamePath` | string | Semantic name |
 | `TimestampPath` | string | Optional timestamp override |
 
 **Output**: `EntityUpdateInfo` object for persistence operations.
+
+**`RecordArrayItemUpdates` (AB#7442).** Each entry changes one record of a RecordArray attribute in ONE atomic
+MongoDB update (`$set` with `arrayFilters` on the match member), executed by the engine (AB#7445) when
+`ApplyChanges@2` applies the info. The entity is not read, so there is nothing to overwrite: parallel executions
+that change different records of one entity do not lose each other, for the same record the last write wins.
+`UpdateKind: UPDATE` only; `AttributeUpdates` for other attributes may be combined (same statement).
+
+| Field | Description |
+|-------|-------------|
+| `AttributeName` | The RecordArray attribute of the entity |
+| `MatchAttributeName` | Record member that identifies the record (String, Integer, Integer64, Enum); not writable by the entry |
+| `MatchValue` / `MatchValuePath` | Key of the record (compared as text, converted by the engine); the path takes precedence |
+| `UpdatesPath` | Optional array: one item update per element, match/value paths relative to the element |
+| `AttributeUpdates` | `AttributeName` + `ValuePath` or `Value` (`=now()` = UTC now as ISO-8601 text); scalar members only |
+
+- An empty match value skips the entry with a node warning. A record that matches nothing (or an entity that does
+  not exist) writes nothing and logs the engine's warning from `ApplyChanges@2`; if only some entries of one update
+  miss, the rest is applied silently.
+- Validation is done by the engine against the CK: unknown attribute/member, a value that does not fit the member,
+  the match member as target and every `Secret` member are refused with a message naming type, attribute and member.
+- `ApplyChanges@2` keeps the item updates when it merges several infos of one entity.
+- Prefer it to the read-modify-write pattern whenever executions can run in parallel on one entity (see the limit
+  of `UpdateRecordArrayItem` below). Display name rules that reference the RecordArray are not recomputed.
 
 #### CreateAssociationUpdateNode
 
@@ -761,12 +785,12 @@ Creates association updates between entities.
 - Intended shape: `GroupBy@1` → `ForEach@1` → `GetRtEntitiesByType@1` → `UpdateRecordArrayItem@2` →
   `CreateUpdateInfo@1` → one `ApplyChanges@2`. One `ApplyChanges` call then holds one update per entity, so
   its "later update wins" merge has nothing to lose.
-- **Limit**: the node cannot detect that another execution changed the same entity between read and write.
-  `FromPipelineDataEvent@1` hands messages of one queue to several consumers in parallel (MassTransit default
-  concurrency, several replicas), so two messages for the same entity can overwrite each other. The existing
-  `AttributeNewerThanGuard` (`EntityUpdateInfo.UpdateGuard`) is a monotonic timestamp gate, not a
-  read-version check, and `CreateUpdateInfo`/`ApplyChanges` do not expose it; a real guard needs a
-  compare-and-set on the entity version plus a retry (tracked as a separate Bug).
+- **Limit**: the node cannot detect that another execution changed the same entity between read and write, and
+  neither can the read-modify-write sequence around it: `FromPipelineDataEvent@1` hands messages of one queue to
+  several consumers in parallel (MassTransit default concurrency, several replicas), so two messages for the same
+  entity overwrite each other's changes (lost update; measured by `RecordArrayItemUpdateIntegrationTests`: one of
+  two parallel changes lost in every pair). **Read-modify-write of a RecordArray is unsafe under parallel
+  executions.** Use the atomic item update of `CreateUpdateInfo@1` (`RecordArrayItemUpdates`, above) instead.
 
 #### MakeHttpRequestNode
 

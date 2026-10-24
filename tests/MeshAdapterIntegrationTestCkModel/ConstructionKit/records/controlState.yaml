@@ -1,0 +1,12 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+records:
+- recordId: ControlState
+  attributes:
+    - id: ${this}/StateExternalId
+      name: ExternalId
+    - id: ${this}/StateCurrentValue
+      name: CurrentValue
+      isOptional: true
+    - id: ${this}/StateLastUpdate
+      name: LastUpdate
+      isOptional: true

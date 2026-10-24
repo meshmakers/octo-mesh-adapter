@@ -208,6 +208,168 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
         Assert.Single(capturedEntities!);
     }
 
+    // ---- AB#7436: structural comparison of attribute values when several updates hit one entity ----
+
+    private static RtRecord StateRecord(string uuid, object? value)
+    {
+        return new RtRecord(new RtCkId<CkRecordId>("TestModel/State"),
+            new Dictionary<string, object?> { ["Uuid"] = uuid, ["CurrentValue"] = value });
+    }
+
+    private static EntityUpdateInfo<RtEntity> UpdateWith(params (string Name, object? Value)[] attributes)
+    {
+        var entity = CreateRtEntity("000000000000000000000001");
+        foreach (var (name, value) in attributes)
+        {
+            entity.SetAttributeRawValue(name, value);
+        }
+
+        return EntityUpdateInfo<RtEntity>.CreateUpdate(CreateRtEntityId("000000000000000000000001"), entity);
+    }
+
+    private async Task<(RtEntity Merged, IPipelineLogger Logger)> MergeAsync(params EntityUpdateInfo<RtEntity>[] updates)
+    {
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger<ApplyChangesNodeConfiguration2>(config);
+        SetupEntityData(dataContext, EntityUpdatesPath, [.. updates]);
+
+        IReadOnlyList<IEntityUpdateInfo<RtEntity>>? captured = null;
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Invokes((IOctoSession _, IReadOnlyList<IEntityUpdateInfo<RtEntity>> e,
+                IReadOnlyList<AssociationUpdateInfo> _, OperationResult _) => captured = e);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        return (Assert.Single(captured!).RtEntity!, logger);
+    }
+
+    private static string[] WarningTexts(IPipelineLogger logger)
+    {
+        return Fake.GetCalls(logger).Where(c => c.Method.Name == nameof(IPipelineLogger.Warning))
+            .Select(c => string.Join(" | ", new[] { (string)c.Arguments[2]! }.Concat(
+                ((object[])c.Arguments[3]!).Select(a => a?.ToString() ?? ""))))
+            .ToArray();
+    }
+
+    [Fact]
+    public async Task Merge_EqualListsOfRecords_LogsNoWarning()
+    {
+        var (merged, logger) = await MergeAsync(
+            UpdateWith(("States", new List<object?> { StateRecord("a", 1), StateRecord("b", "x") })),
+            UpdateWith(("States", new List<object?> { StateRecord("a", 1), StateRecord("b", "x") })));
+
+        Assert.Empty(WarningTexts(logger));
+        Assert.Equal(2, ((List<object?>)merged.Attributes["States"]!).Count);
+    }
+
+    [Fact]
+    public async Task Merge_IntVersusLongVersusDouble_OfEqualValue_LogsNoWarning()
+    {
+        var (_, logger) = await MergeAsync(
+            UpdateWith(("Count", 5), ("Items", new List<object?> { 1, 2.0 })),
+            UpdateWith(("Count", 5L), ("Items", new List<object?> { 1L, 2 })),
+            UpdateWith(("Count", 5.0)));
+
+        Assert.Empty(WarningTexts(logger));
+    }
+
+    [Fact]
+    public async Task Merge_EqualNestedDictionariesAndNulls_LogsNoWarning()
+    {
+        var (_, logger) = await MergeAsync(
+            UpdateWith(("Cfg", new Dictionary<string, object?>
+                { ["a"] = new List<object?> { new Dictionary<string, object?> { ["x"] = null } }, ["b"] = "s" }),
+                ("Nothing", null)),
+            UpdateWith(("Cfg", new Dictionary<string, object?>
+                { ["b"] = "s", ["a"] = new List<object?> { new Dictionary<string, object?> { ["x"] = null } } }),
+                ("Nothing", null)));
+
+        Assert.Empty(WarningTexts(logger));
+    }
+
+    [Fact]
+    public async Task Merge_EqualJsonElementAndClrValues_LogsNoWarning()
+    {
+        using var doc = JsonDocument.Parse("""{"n":3,"l":[1,"a"]}""");
+        var (_, logger) = await MergeAsync(
+            UpdateWith(("Cfg", doc.RootElement.Clone())),
+            UpdateWith(("Cfg", new Dictionary<string, object?> { ["n"] = 3L, ["l"] = new List<object?> { 1, "a" } })));
+
+        Assert.Empty(WarningTexts(logger));
+    }
+
+    [Fact]
+    public async Task Merge_DifferentLists_LogsExactlyOneWarningWithReadableValues_AndLaterWins()
+    {
+        var first = new List<object?> { StateRecord("a", 1), StateRecord("b", 10) };
+        var second = new List<object?> { StateRecord("a", 1), StateRecord("b", 20) };
+        var (merged, logger) = await MergeAsync(
+            UpdateWith(("States", first), ("LastStateUpdate", new DateTime(2026, 10, 24, 11, 43, 23, DateTimeKind.Utc))),
+            UpdateWith(("States", second), ("LastStateUpdate", new DateTime(2026, 10, 24, 11, 43, 24, DateTimeKind.Utc))));
+
+        var warning = Assert.Single(WarningTexts(logger));
+        Assert.Contains("attributes", warning);
+        Assert.Contains("'States'", warning);
+        Assert.Contains("'LastStateUpdate'", warning);
+        Assert.Contains("\"CurrentValue\":10", warning);
+        Assert.Contains("\"CurrentValue\":20", warning);
+        Assert.DoesNotContain("System.Collections.Generic", warning);
+        Assert.Same(second, merged.Attributes["States"]);
+    }
+
+    [Fact]
+    public async Task Merge_ThreeUpdatesConflictingTwice_StillOneWarningPerEntity()
+    {
+        var (merged, logger) = await MergeAsync(
+            UpdateWith(("Position", 1)), UpdateWith(("Position", 2)), UpdateWith(("Position", 3)));
+
+        Assert.Single(WarningTexts(logger));
+        Assert.Equal(3, merged.Attributes["Position"]);
+    }
+
+    [Fact]
+    public async Task Merge_VeryLongValues_AreTruncated()
+    {
+        var (_, logger) = await MergeAsync(
+            UpdateWith(("Text", new string('a', 5000))), UpdateWith(("Text", new string('b', 5000))));
+
+        var warning = Assert.Single(WarningTexts(logger));
+        Assert.True(warning.Length < 700, $"warning has {warning.Length} chars");
+        Assert.Contains("…", warning);
+    }
+
+    [Fact]
+    public async Task Merge_ConflictingCredentialAttribute_DoesNotPrintTheValues()
+    {
+        var (_, logger) = await MergeAsync(
+            UpdateWith(("ApiPassword", "first-plain")), UpdateWith(("ApiPassword", "second-plain")));
+
+        var warning = Assert.Single(WarningTexts(logger));
+        Assert.Contains("'ApiPassword'", warning);
+        Assert.DoesNotContain("first-plain", warning);
+        Assert.DoesNotContain("second-plain", warning);
+    }
+
+    [Theory]
+    [InlineData(1, "1", false)]
+    [InlineData(1, 1, true)]
+    [InlineData(null, 0, false)]
+    [InlineData("a", "a", true)]
+    public void AttributeValueComparer_Scalars(object? left, object? right, bool expected)
+    {
+        Assert.Equal(expected, AttributeValueComparer.AreEqual(left, right));
+    }
+
+    [Fact]
+    public void AttributeValueComparer_ListsOfDifferentLength_AreNotEqual()
+    {
+        Assert.False(AttributeValueComparer.AreEqual(new List<object?> { 1 }, new List<object?> { 1, 2 }));
+        Assert.False(AttributeValueComparer.AreEqual(StateRecord("a", 1), StateRecord("a", 2)));
+        Assert.True(AttributeValueComparer.AreEqual(StateRecord("a", 1), StateRecord("a", 1L)));
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_WithDuplicateAssociationUpdates_DeduplicatesByOriginAndTarget()
     {
@@ -366,8 +528,10 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
 
         Assert.Equal(DuplicateKeyHandling.Throw, config.OnDuplicateKey);
         Assert.Null(config.DuplicateKeyTargetPath);
-    }
-
+    }
+
+
+
     /// <summary>
     /// Report without somewhere to put the flag is not reporting. The decision lives in the
     /// exception filter, so when it says no the duplicate keeps travelling and the node throws -

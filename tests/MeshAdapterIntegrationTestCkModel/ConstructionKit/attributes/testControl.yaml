@@ -1,0 +1,14 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # UpdateRecordArrayItem@2 integration test (AB#7439): a Loxone-like control with a record array of states
+  - id: ControlName
+    valueType: String
+  - id: States
+    valueType: RecordArray
+    valueCkRecordId: ${this}/ControlState
+  - id: StateExternalId
+    valueType: String
+  - id: StateCurrentValue
+    valueType: String
+  - id: StateLastUpdate
+    valueType: String

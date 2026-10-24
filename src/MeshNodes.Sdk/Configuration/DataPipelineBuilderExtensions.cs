@@ -65,6 +65,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<ImportDataPointMappingsNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MapToRecordArrayNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<UpdateRecordArrayItemNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<UpdateRecordArrayItemV2NodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DataMappingNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FilterLatestUpdateInfoNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ImportFromCsvNodeConfiguration>();

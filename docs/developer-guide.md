@@ -738,6 +738,36 @@ Creates association updates between entities.
 
 **Output**: `AssociationUpdateInfo` for relation persistence.
 
+#### UpdateRecordArrayItemNode / UpdateRecordArrayItemV2Node
+
+`UpdateRecordArrayItem@1` changes exactly one record of a RecordArray per call. `UpdateRecordArrayItem@2`
+(AB#7439) updates several records of one array in a single in-memory pass and writes the array once:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Path` | string | RecordArray of the entity (e.g. `$.key.Attributes.States`) |
+| `UpdatesPath` | string | Array of changes; each item addresses one record |
+| `MatchAttributeName` | string | Record attribute to match (e.g. `ExternalId`) |
+| `ItemMatchValuePath` | string | JSONPath **relative to each change** to the match value |
+| `AttributeUpdates` | list | `AttributeName` + `ValuePath` (relative to each change) or `Value` (`=now()` supported) |
+| `TargetPath` | string | Where the modified array is written |
+
+- Several changes for one record apply in input order (last wins per attribute); other records and the
+  array order are kept; the source array is not modified.
+- Match: case-insensitive on the text of the value, first record wins on duplicate keys, the attribute key
+  is found as PascalCase or camelCase and updated in place.
+- Unmatched changes are skipped with one warning per run (count only, no values). No write to `TargetPath`
+  when nothing matched, the updates are empty, or `Path`/`UpdatesPath` is not an array.
+- Intended shape: `GroupBy@1` → `ForEach@1` → `GetRtEntitiesByType@1` → `UpdateRecordArrayItem@2` →
+  `CreateUpdateInfo@1` → one `ApplyChanges@2`. One `ApplyChanges` call then holds one update per entity, so
+  its "later update wins" merge has nothing to lose.
+- **Limit**: the node cannot detect that another execution changed the same entity between read and write.
+  `FromPipelineDataEvent@1` hands messages of one queue to several consumers in parallel (MassTransit default
+  concurrency, several replicas), so two messages for the same entity can overwrite each other. The existing
+  `AttributeNewerThanGuard` (`EntityUpdateInfo.UpdateGuard`) is a monotonic timestamp gate, not a
+  read-version check, and `CreateUpdateInfo`/`ApplyChanges` do not expose it; a real guard needs a
+  compare-and-set on the entity version plus a retry (tracked as a separate Bug).
+
 #### MakeHttpRequestNode
 
 Executes HTTP requests to external services.

@@ -1,0 +1,10 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+- typeId: TestControl
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/ControlName
+    name: ControlName
+  - id: ${this}/States
+    name: States
+    isOptional: true

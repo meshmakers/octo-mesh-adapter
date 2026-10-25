@@ -1,4 +1,5 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Messages;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
@@ -44,6 +45,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                 entityUpdatesPath = c.EntityUpdatesPath,
                 associationUpdatesPath = c.AssociationUpdatesPath,
                 entityUpdateCount = entityUpdates.Count,
+                recordArrayItemUpdateCount = entityUpdates.Sum(u => u.RecordArrayItemUpdates?.Count ?? 0),
                 associationUpdateCount = associationUpdates.Count,
                 wouldApplyEntityUpdates = entityUpdates,
                 wouldApplyAssociationUpdates = associationUpdates
@@ -108,6 +110,14 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
                         else
                         {
                             await session.CommitTransactionAsync();
+
+                            // AB#7442: an atomic RecordArray item update that matched no item is not an error; the
+                            // engine reports it as a warning and writes nothing for it.
+                            foreach (var warning in operationResult.Messages.Where(m =>
+                                         m.MessageLevel == MessageLevel.Warning))
+                            {
+                                nodeContext.Warning("{0}", warning.ToString());
+                            }
 
                             // Written on every run, not only on a duplicate: the node can run more
                             // than once against one data document (a ForEach over several records,
@@ -343,6 +353,15 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext) : 
             RtChangedDateTime = lastEntity.RtChangedDateTime,
             RtWellKnownName = lastEntity.RtWellKnownName
         };
+
+        // AB#7442: atomic RecordArray item updates of all items are kept in order (the engine merges entries for the
+        // same item, the last value wins).
+        var itemUpdates = updates.SelectMany(u => u.RecordArrayItemUpdates ?? []).ToList();
+        if (itemUpdates.Count > 0)
+        {
+            return EntityUpdateInfo<RtEntity>.CreateRecordArrayItemUpdate(last.GetRtEntityId(), mergedEntity,
+                itemUpdates, clearSecretAttributes.Count > 0 ? clearSecretAttributes : null);
+        }
 
         return EntityUpdateInfo<RtEntity>.CreateUpdate(last.GetRtEntityId(), mergedEntity,
             clearSecretAttributes.Count > 0 ? clearSecretAttributes : null);

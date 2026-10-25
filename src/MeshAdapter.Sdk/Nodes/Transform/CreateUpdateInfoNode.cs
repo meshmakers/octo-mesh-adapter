@@ -58,9 +58,17 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             return;
         }
 
-        if ((c.AttributeUpdates == null || c.AttributeUpdates.Count == 0) && updateKind != UpdateKind.Delete) 
+        var hasItemUpdateConfiguration = c.RecordArrayItemUpdates is { Count: > 0 };
+        if ((c.AttributeUpdates == null || c.AttributeUpdates.Count == 0) && !hasItemUpdateConfiguration &&
+            updateKind != UpdateKind.Delete)
         {
             nodeContext.Error("AttributeUpdates is not set");
+            return;
+        }
+
+        if (hasItemUpdateConfiguration && updateKind != UpdateKind.Update)
+        {
+            nodeContext.Error("RecordArrayItemUpdates are only supported with UpdateKind UPDATE");
             return;
         }
 
@@ -144,11 +152,25 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
             }
         }
 
+        // AB#7442: atomic updates of single RecordArray items, executed by the engine in one statement.
+        var itemUpdates = hasItemUpdateConfiguration
+            ? await BuildRecordArrayItemUpdatesAsync(dataContext, nodeContext, c.RecordArrayItemUpdates!)
+            : [];
+        if (itemUpdates.Count > 0)
+        {
+            hasUpdate = true;
+        }
+
         if (hasUpdate)
         {
             rtEntity.RtChangedDateTime = timeStamp.ToUniversalTime();
             EntityUpdateInfo<RtEntity>? updateItem;
-            if (updateKind == UpdateKind.Update)
+            if (updateKind == UpdateKind.Update && itemUpdates.Count > 0)
+            {
+                updateItem = EntityUpdateInfo<RtEntity>.CreateRecordArrayItemUpdate(new(ckTypeId, rtId!.Value),
+                    rtEntity, itemUpdates);
+            }
+            else if (updateKind == UpdateKind.Update)
             {
                 updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(new(ckTypeId, rtId!.Value), rtEntity);
             }
@@ -176,6 +198,119 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
 
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// AB#7442: turns the configured <see cref="RecordArrayItemUpdateConfiguration" /> entries into engine item
+    /// updates. An entry whose match value is empty is skipped with a warning (as UpdateRecordArrayItem skips a
+    /// missing record); with <c>UpdatesPath</c> one item update is created per element of the array.
+    /// </summary>
+    private static async Task<List<RtRecordArrayItemUpdate>> BuildRecordArrayItemUpdatesAsync(
+        IDataContext dataContext, INodeContext nodeContext,
+        IEnumerable<RecordArrayItemUpdateConfiguration> configurations)
+    {
+        var result = new List<RtRecordArrayItemUpdate>();
+        foreach (var configuration in configurations)
+        {
+            if (string.IsNullOrWhiteSpace(configuration.AttributeName) ||
+                string.IsNullOrWhiteSpace(configuration.MatchAttributeName))
+            {
+                nodeContext.Error("RecordArrayItemUpdates: AttributeName and MatchAttributeName must be set");
+                continue;
+            }
+
+            if (configuration.AttributeUpdates == null || configuration.AttributeUpdates.Count == 0)
+            {
+                nodeContext.Error("RecordArrayItemUpdates: AttributeUpdates of '{0}' is not set",
+                    configuration.AttributeName);
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(configuration.UpdatesPath))
+            {
+                AddRecordArrayItemUpdate(dataContext, nodeContext, configuration, result);
+                continue;
+            }
+
+            if (dataContext.GetKind(configuration.UpdatesPath) != DataKind.Array)
+            {
+                nodeContext.Warning("RecordArrayItemUpdates: no array of updates found at path '{0}'",
+                    configuration.UpdatesPath);
+                continue;
+            }
+
+            await dataContext.IterateArrayAsync(configuration.UpdatesPath, itemContext =>
+            {
+                AddRecordArrayItemUpdate(itemContext, nodeContext, configuration, result);
+                return Task.CompletedTask;
+            });
+        }
+
+        return result;
+    }
+
+    private static void AddRecordArrayItemUpdate(IDataContext context, INodeContext nodeContext,
+        RecordArrayItemUpdateConfiguration configuration, List<RtRecordArrayItemUpdate> result)
+    {
+        // As in UpdateRecordArrayItem: the key is compared as text; the engine converts it to the type of the key
+        // member (String, Integer, Integer64, Enum).
+        var matchValue = configuration.MatchValuePath != null
+            ? context.Get<JsonNode>(configuration.MatchValuePath)?.ToString()
+            : configuration.MatchValue;
+        if (string.IsNullOrEmpty(matchValue))
+        {
+            nodeContext.Warning("RecordArrayItemUpdates: match value of '{0}' is null or empty, update skipped",
+                configuration.AttributeName);
+            return;
+        }
+
+        var members = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var update in configuration.AttributeUpdates)
+        {
+            if (string.IsNullOrWhiteSpace(update.AttributeName))
+            {
+                nodeContext.Error("RecordArrayItemUpdates: attribute name of an update is not set");
+                continue;
+            }
+
+            members[update.AttributeName] = ResolveMemberValue(update, context);
+        }
+
+        if (members.Count > 0)
+        {
+            result.Add(new RtRecordArrayItemUpdate(configuration.AttributeName, configuration.MatchAttributeName,
+                matchValue, members));
+        }
+    }
+
+    private static object? ResolveMemberValue(RecordAttributeUpdate update, IDataContext context)
+    {
+        if (update.ValuePath != null)
+        {
+            return ReadScalar(context.Get<JsonNode>(update.ValuePath));
+        }
+
+        if (update.Value is string text && text == "=now()")
+        {
+            // ISO-8601 text like UpdateRecordArrayItem: it fits a String member as well as a DateTime member
+            // (the engine parses it).
+            return DateTime.UtcNow.ToString("O");
+        }
+
+        return update.Value is null
+            ? null
+            : ReadScalar(JsonSerializer.SerializeToNode(update.Value, SystemTextJsonOptions.Default));
+    }
+
+    /// <summary>A JSON scalar as CLR value; objects and arrays are handed on as they are (the engine refuses them).</summary>
+    private static object? ReadScalar(JsonNode? node)
+    {
+        return node switch
+        {
+            null => null,
+            JsonValue value => JsonScalar.ToClr(value),
+            _ => node.ToJsonString()
+        };
     }
 
     private bool SetAttributeValue(INodeContext nodeContext, string attributeName,

@@ -125,10 +125,17 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         ["name"] = name
     };
 
-    private ExecutePipelineMethodInvocation MarkerFor(OctoObjectId pipelineId)
+    /// <summary>
+    ///     The marker for the replacing method's own run of <paramref name="pipelineId" />. The tenant CK cache is
+    ///     loaded first: a test that asks for the marker before its first pipeline run (test order is not fixed)
+    ///     would otherwise see an empty cache.
+    /// </summary>
+    private async Task<ExecutePipelineMethodInvocation> MarkerFor(OctoObjectId pipelineId)
     {
+        var repository = fixture.GetSystemContext().GetSystemTenantRepository();
         var cache = fixture.GetService<ICkCacheService>();
-        GenericCreateReplacement.TryGetReplacingMethod(cache, fixture.GetSystemContext().GetSystemTenantRepository().TenantId,
+        await repository.LoadCacheForTenantAsync(cache);
+        GenericCreateReplacement.TryGetReplacingMethod(cache, repository.TenantId,
             new RtCkId<CkTypeId>(ReplacedType), out var method).Should().BeTrue("the test model flags ReplacedAccount");
         return new ExecutePipelineMethodInvocation
         {
@@ -145,7 +152,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         fixture.EnsureInitialized();
         var name = $"own-{Guid.NewGuid():N}";
 
-        await RunAsync(InsertAccountPipeline, Input(name), MethodPipelineId, MarkerFor(MethodPipelineId));
+        await RunAsync(InsertAccountPipeline, Input(name), MethodPipelineId, await MarkerFor(MethodPipelineId));
 
         (await CountAsync(ReadAccountPipeline, name)).Should().Be(1);
     }
@@ -182,7 +189,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         fixture.EnsureInitialized();
         var name = $"owndry-{Guid.NewGuid():N}";
 
-        await RunAsync(InsertAccountPipeline, Input(name), MethodPipelineId, MarkerFor(MethodPipelineId),
+        await RunAsync(InsertAccountPipeline, Input(name), MethodPipelineId, await MarkerFor(MethodPipelineId),
             dryRun: true);
 
         (await CountAsync(ReadAccountPipeline, name)).Should().Be(0);
@@ -210,7 +217,8 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         var name = $"leak-{Guid.NewGuid():N}";
 
         // Should the marker ever reach the downstream run, it names the upstream pipeline and does not match.
-        var act = () => RunAsync(InsertAccountPipeline, Input(name), OtherPipelineId, MarkerFor(MethodPipelineId));
+        var leaked = await MarkerFor(MethodPipelineId);
+        var act = () => RunAsync(InsertAccountPipeline, Input(name), OtherPipelineId, leaked);
 
         var ex = await act.Should().ThrowAsync<Exception>();
         Describe(ex.Which).Should().Contain("GENERIC_CREATE_REPLACED_BY_METHOD");
@@ -223,7 +231,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         fixture.EnsureInitialized();
         var rtId = OctoObjectId.GenerateNewId().ToString();
         var name = $"upd-{Guid.NewGuid():N}";
-        await RunAsync(InsertAccountPipeline, Input(name, rtId), MethodPipelineId, MarkerFor(MethodPipelineId));
+        await RunAsync(InsertAccountPipeline, Input(name, rtId), MethodPipelineId, await MarkerFor(MethodPipelineId));
 
         var renamed = $"{name}-renamed";
         await RunAsync(UpdateAccountPipeline, Input(renamed, rtId), OtherPipelineId, marker: null);

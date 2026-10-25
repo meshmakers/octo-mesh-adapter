@@ -51,7 +51,10 @@ internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCa
             executePipelineOptions.CallerAccessToken,
             identityResolver,
             // AB#5126: the effective trust the trigger resolved, so a node can demand a minimum.
-            executePipelineOptions.CallerTrust);
+            executePipelineOptions.CallerTrust,
+            // AB#7462: marker of a CK method invocation, a side channel like the token above (NOT in
+            // Dictionary); the generic-create guard reads it from the context.
+            executePipelineOptions.MethodInvocation);
 
 
         var etlContext = context as TContext;

@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
@@ -43,21 +44,30 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// demand a minimum before delegating (AB#5126). Defaults to
     /// <see cref="Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel.None" /> — no verified caller.
     /// </param>
+    /// <param name="methodInvocation">
+    /// Marker of a run started by a Construction Kit method invocation (AB#7462); <c>null</c> for
+    /// every other run. A per-execution side channel, never part of <c>properties</c>.
+    /// </param>
     public MeshEtlContext(string tenantId, ITenantRepository tenantRepository,
         OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
         IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties,
         Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? verifiedPrincipal = null,
         string? callerAccessToken = null,
         IPipelineIdentityResolver? identityResolver = null,
-        Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel callerTrust = Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel.None)
+        Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel callerTrust = Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel.None,
+        ExecutePipelineMethodInvocation? methodInvocation = null)
         : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal, callerAccessToken, callerTrust)
     {
         TenantRepository = tenantRepository;
         _identityResolver = identityResolver;
+        MethodInvocation = methodInvocation;
     }
 
     /// <inheritdoc />
     public ITenantRepository TenantRepository { get; }
+
+    /// <inheritdoc />
+    public ExecutePipelineMethodInvocation? MethodInvocation { get; }
 
     /// <inheritdoc />
     public async Task<IOctoSession> GetScopedSessionAsync()

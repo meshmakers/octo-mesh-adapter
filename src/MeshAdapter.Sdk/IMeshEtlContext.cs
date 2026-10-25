@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -14,6 +15,21 @@ public interface IMeshEtlContext : IEtlContext
     /// Returns the associated tenant repository
     /// </summary>
     ITenantRepository TenantRepository { get; }
+
+    /// <summary>
+    ///     Marker that tells the nodes this run was started by the invocation of a Construction Kit
+    ///     method (AB#7462, Feature AB#6884 F3.7), or <c>null</c> for every other run (manual,
+    ///     cron, event). Set by the controller's method invoker only; consumed by
+    ///     <see cref="Common.GenericCreateGuard" /> to let the replacing method's own pipeline run
+    ///     insert entities of a type whose method <c>replacesGenericCreate</c>.
+    /// </summary>
+    /// <remarks>
+    ///     A per-execution side channel like <see cref="IEtlContext.CallerAccessToken" />, deliberately
+    ///     <b>not</b> in <see cref="IEtlContext.Properties" />: that dictionary is shared by every run
+    ///     of the pipeline and can be written by pipeline nodes, so a marker there could be forged or
+    ///     leak into the next run. It does not travel over <c>ToPipelineDataEvent</c>.
+    /// </remarks>
+    ExecutePipelineMethodInvocation? MethodInvocation { get; }
 
     /// <summary>
     ///     Opens a session under the execution's <b>effective identity</b>: the trigger-verified

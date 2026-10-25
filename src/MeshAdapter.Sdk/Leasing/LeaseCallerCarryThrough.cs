@@ -43,6 +43,10 @@ public static class LeaseCallerCarryThrough
     public static CallerBindingOutcome Apply(LeaseDto lease, NodeDefinitionRoot? nodeDefinitionRoot,
         ExecutePipelineOptions options)
     {
+        // AB#7462: the method-invocation marker travels with the lease whatever the caller-binding
+        // rule says — it is not an identity, and the generic-create guard fails closed without it.
+        options.MethodInvocation = lease.MethodInvocation;
+
         var request = new ExecutePipelineRequest(lease.TenantId, lease.PipelineInput)
         {
             Caller = lease.Caller,

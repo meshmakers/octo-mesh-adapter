@@ -1632,6 +1632,23 @@ Return Result / Store in Time-Series / Send Notifications
 
 **Note**: The `Properties` dictionary in the context carries state across all nodes.
 
+### Method-invocation marker and the generic-create guard (AB#7462)
+
+A run started by the invocation of a Construction Kit method carries `IMeshEtlContext.MethodInvocation`
+(`ExecutePipelineMethodInvocation`: `MethodId`, `InvocationId`, `CkTypeId`, `PipelineRtId`), `null` for every other run.
+It reaches the context as a constructor argument of `MeshEtlContext` (side channel like `CallerAccessToken`, **not**
+in `Properties`): direct path via `ExecutePipelineOptions.MethodInvocation`, lease path via
+`LeaseCallerCarryThrough.Apply` (independent of `CallerBindingMode`).
+
+`GenericCreateGuard.EnsureAllowed(etlContext, ckCacheService, updateInfos)` (`MeshAdapter.Sdk/Common`) refuses an
+`Insert` of a type whose method declares `replacesGenericCreate` (own or inherited) unless the marker is present, its
+`MethodId` equals the replacing method's qualified id (ordinal) and its `PipelineRtId` equals the running pipeline.
+The whole batch is refused before any write with `GenericCreateReplacedByMethodException`
+(`Code` = `GENERIC_CREATE_REPLACED_BY_METHOD`, `Refusals` = type, method, cause). Update/Replace/Delete are not
+checked; the lookup is memoized per type. The nodes call it in AB#7463. Chained pipelines (`ToPipelineDataEvent`)
+do not inherit the marker and are refused. Rollout: core-libs train, then controller (System.Communication 4.12.0),
+then the adapter; no compatibility switch.
+
 ---
 
 ## Configuration

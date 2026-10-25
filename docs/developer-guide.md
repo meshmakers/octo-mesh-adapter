@@ -1645,7 +1645,9 @@ in `Properties`): direct path via `ExecutePipelineOptions.MethodInvocation`, lea
 `MethodId` equals the replacing method's qualified id (ordinal) and its `PipelineRtId` equals the running pipeline.
 The whole batch is refused before any write with `GenericCreateReplacedByMethodException`
 (`Code` = `GENERIC_CREATE_REPLACED_BY_METHOD`, `Refusals` = type, method, cause). Update/Replace/Delete are not
-checked; the lookup is memoized per type. The nodes call it in AB#7463. Chained pipelines (`ToPipelineDataEvent`)
+checked; the lookup is memoized per type. `ApplyChanges@1`, `ApplyChanges@2` and `ImportFromExcel` call it (AB#7463): on
+the update infos of the batch before the dry-run branch and before the first write (`ImportFromExcel` has no dry-run
+branch and always writes, so the guard in front of the write covers it). The pipeline run fails; nothing is written. Chained pipelines (`ToPipelineDataEvent`)
 do not inherit the marker and are refused. Rollout: core-libs train, then controller (System.Communication 4.12.0),
 then the adapter; no compatibility switch.
 

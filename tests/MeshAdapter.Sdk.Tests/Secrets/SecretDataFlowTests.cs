@@ -157,7 +157,7 @@ public class SecretDataFlowTests : SessionNodeTestBase
                 IReadOnlyList<AssociationUpdateInfo> _, OperationResult _) => captured = e);
         var applyContext = root.RegisterChildNode("ApplyChanges@2", 1,
             new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = "$.updates" }, dc);
-        await new ApplyChangesNode2(A.Fake<NodeDelegate>(), EtlContext).ProcessObjectAsync(dc, applyContext);
+        await new ApplyChangesNode2(A.Fake<NodeDelegate>(), EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>()).ProcessObjectAsync(dc, applyContext);
 
         Assert.NotNull(captured);
         return captured!;
@@ -263,7 +263,7 @@ public class SecretDataFlowTests : SessionNodeTestBase
         var applyContext = root.RegisterChildNode("ApplyChanges@2", 0,
             new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = "$.updates" }, dc);
 
-        await new ApplyChangesNode2(A.Fake<NodeDelegate>(), EtlContext).ProcessObjectAsync(dc, applyContext);
+        await new ApplyChangesNode2(A.Fake<NodeDelegate>(), EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>()).ProcessObjectAsync(dc, applyContext);
 
         var merged = Assert.Single(captured!);
         Assert.Equal(["Password", "Token"], merged.ClearSecretAttributes!.OrderBy(x => x));
@@ -294,7 +294,7 @@ public class SecretDataFlowTests : SessionNodeTestBase
         var applyContext = root.RegisterChildNode("ApplyChanges@2", 0,
             new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = "$.updates" }, dc);
 
-        await new ApplyChangesNode2(A.Fake<NodeDelegate>(), EtlContext).ProcessObjectAsync(dc, applyContext);
+        await new ApplyChangesNode2(A.Fake<NodeDelegate>(), EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>()).ProcessObjectAsync(dc, applyContext);
 
         var merged = Assert.Single(captured!);
         Assert.Null(merged.ClearSecretAttributes);

@@ -349,7 +349,7 @@ fails, the execution just sees different data.
 A CK method with `replacesGenericCreate` (Feature AB#6884 F3.7, decision note AB#7120) is the only way to create
 an entity of its type and of every derived type. `MeshAdapter.Sdk/Common/GenericCreateGuard.EnsureAllowed(IMeshEtlContext,
 ICkCacheService, IEnumerable<IEntityUpdateInfo<RtEntity>>)` is the shared pre-check for the nodes that insert
-(ApplyChanges@1/@2, ImportFromExcel — **wired in AB#7463, not yet called by any node**). Rules:
+(ApplyChanges@1/@2, ImportFromExcel — wired in AB#7463, see "Node wiring" below). Rules:
 
 - Only `EntityModOptions.Insert` is checked (Update/Replace/Delete cannot create). The replacing method comes from
   the engine helper `GenericCreateReplacement.TryGetReplacingMethod` (resolves inherited methods) on the tenant CK
@@ -362,6 +362,24 @@ ICkCacheService, IEnumerable<IEntityUpdateInfo<RtEntity>>)` is the shared pre-ch
   `Code` = `GENERIC_CREATE_REPLACED_BY_METHOD` (`GenericCreateReplacement.ReasonToken`) and `Refusals` (CK type,
   method id, cause `MISSING_METHOD_INVOCATION` / `METHOD_MISMATCH` / `PIPELINE_MISMATCH`); the message is for logs
   only. Call it before the dry-run branch and before the first write.
+
+**Node wiring (AB#7463).** All three nodes take `ICkCacheService` (DI) and call the guard once per batch, before the
+first write:
+- `ApplyChangesNode` (`ApplyChanges@1`, `ProcessObjectAsync`): on the whole `list` read from `Path`, **before the dry-run
+  branch**, so a dry run reports the refusal instead of "would apply".
+- `ApplyChangesNode2` (`ApplyChanges@2`): on the `entityUpdates` read from `EntityUpdatesPath` (every insert ends up in
+  `resultUpdateInfos`; merging only touches non-inserts), **before the dry-run branch**. A dry run of the method's own
+  run passes and still writes nothing.
+- `ImportFromExcelNode` (`StoreTreeInDatabase`): on the insert list, before `ApplyChangesInRepositoryAsync`. The node
+  has no dry-run branch (it always writes), so the guard in front of the write covers dry runs too. The exception is
+  thrown outside the repository `try/catch`, so it fails the node instead of being logged as a store error.
+The exception propagates and fails the pipeline run; nothing is written. Tests: `ApplyChangesReplacedCreateGuardTests`,
+`ImportFromExcelReplacedCreateGuardTests` (unit, per node: no marker, dry run, matching marker, other pipeline/method,
+plain type, Update/Replace unaffected) and `ReplacedGenericCreateIntegrationTests` (real orchestrator + MongoDB + CK
+cache, model type `MeshAdapterIntegrationTest/ReplacedAccount` with the static method `Provision-1`
+`replacesGenericCreate`). The integration test models the marker by building the `MeshEtlContext` with or without it;
+there is no controller/lease/event hub in that harness, so the hand-over from the method invocation to the node is
+covered only by the controller (AB#7461) and communication-sdk (AB#7459) tests.
 
 **Where the marker comes from.** The controller's method invoker sets `ExecutePipelineRequest.MethodInvocation`
 (direct path) or `LeaseDto.MethodInvocation` (lease path). Direct path: communication-sdk

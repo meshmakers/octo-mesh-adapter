@@ -35,7 +35,7 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
 
     private ApplyChangesNode2 CreateNode(NodeDelegate next)
     {
-        return new ApplyChangesNode2(next, EtlContext);
+        return new ApplyChangesNode2(next, EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>());
     }
 
     private static RtEntity CreateRtEntity(string? rtId = null)

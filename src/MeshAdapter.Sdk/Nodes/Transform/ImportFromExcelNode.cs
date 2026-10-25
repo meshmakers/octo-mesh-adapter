@@ -322,7 +322,7 @@ public class ImportFromExcelNode(
 
         // AB#7463: refuse inserts of a type whose CK method replaces the generic create (outside that
         // method's own run) before anything is written; the whole import is refused.
-        GenericCreateGuard.EnsureAllowed(etlContext, ckCacheService, entities);
+        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entities);
 
         await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
     }

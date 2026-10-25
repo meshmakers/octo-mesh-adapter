@@ -38,24 +38,32 @@ public static class GenericCreateGuard
     /// <param name="ckCacheService">The tenant CK cache</param>
     /// <param name="updateInfos">The entity update infos that are about to be applied</param>
     /// <exception cref="GenericCreateReplacedByMethodException">The batch is refused as a whole</exception>
-    public static void EnsureAllowed(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+    /// <exception cref="GenericCreateCheckUnavailableException">
+    ///     The tenant CK cache is not loaded and could not be loaded; the check cannot be made, so the batch is refused
+    ///     (fail closed)
+    /// </exception>
+    public static async Task EnsureAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
         IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos)
     {
         ArgumentNullException.ThrowIfNull(etlContext);
         ArgumentNullException.ThrowIfNull(ckCacheService);
         ArgumentNullException.ThrowIfNull(updateInfos);
 
+        // Materialized once: the enumerable is walked twice (is there an insert at all, then the check).
+        var inserts = updateInfos.Where(u => u.ModOption == EntityModOptions.Insert).ToList();
+        if (inserts.Count == 0)
+        {
+            return;
+        }
+
+        await EnsureTenantCacheLoadedAsync(etlContext, ckCacheService);
+
         // type -> qualified id of the replacing method, null when the generic create is allowed
         var replacingMethodByType = new Dictionary<RtCkId<CkTypeId>, string?>();
         List<GenericCreateRefusal>? refusals = null;
 
-        foreach (var updateInfo in updateInfos)
+        foreach (var updateInfo in inserts)
         {
-            if (updateInfo.ModOption != EntityModOptions.Insert)
-            {
-                continue;
-            }
-
             var ckTypeId = updateInfo.CkTypeId;
             if (!replacingMethodByType.TryGetValue(ckTypeId, out var replacingMethodId))
             {
@@ -82,6 +90,34 @@ public static class GenericCreateGuard
         if (refusals != null)
         {
             throw new GenericCreateReplacedByMethodException(refusals);
+        }
+    }
+
+    /// <summary>
+    ///     <c>TryGetReplacingMethod</c> answers "no replacing method" for a tenant whose cache is not loaded, which would
+    ///     let the insert through while the repository reloads the cache on its own and writes. The cache can be unloaded
+    ///     in the middle of a run (lease leave, CkModelChanged), so the guard loads it first and fails closed when that
+    ///     does not work.
+    /// </summary>
+    private static async Task EnsureTenantCacheLoadedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    {
+        if (ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        {
+            return;
+        }
+
+        try
+        {
+            await etlContext.TenantRepository.LoadCacheForTenantAsync(ckCacheService);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            throw new GenericCreateCheckUnavailableException(etlContext.TenantId, e);
+        }
+
+        if (!ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        {
+            throw new GenericCreateCheckUnavailableException(etlContext.TenantId, null);
         }
     }
 

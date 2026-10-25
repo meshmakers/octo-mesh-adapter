@@ -27,7 +27,7 @@ public class ApplyChangesNodeTests : SessionNodeTestBase
 
     private ApplyChangesNode CreateNode(NodeDelegate next)
     {
-        return new ApplyChangesNode(next, EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>());
+        return new ApplyChangesNode(next, EtlContext, MeshAdapter.Sdk.Tests.Helpers.ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes());
     }
 
     private static RtEntity CreateRtEntity(string? rtId = null)

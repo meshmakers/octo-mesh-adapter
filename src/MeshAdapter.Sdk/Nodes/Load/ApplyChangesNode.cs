@@ -32,7 +32,7 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICk
         // and before any write; the whole batch is refused.
         if (list != null)
         {
-            GenericCreateGuard.EnsureAllowed(etlContext, ckCacheService, list);
+            await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, list);
         }
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)

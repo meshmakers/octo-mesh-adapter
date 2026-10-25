@@ -5,6 +5,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
@@ -48,6 +49,7 @@ public class GenericCreateGuardTests
     private static ICkCacheService CkCache()
     {
         var cache = A.Fake<ICkCacheService>();
+        A.CallTo(() => cache.IsTenantLoaded(Tenant)).Returns(true);
         foreach (var (type, flagged) in new[] { (AccountType, true), (SpecialAccountType, true), (PlainType, false) })
         {
             var graph = Graph(type, flagged);
@@ -93,21 +95,21 @@ public class GenericCreateGuardTests
         };
     }
 
-    private static GenericCreateReplacedByMethodException Refused(IMeshEtlContext context, ICkCacheService cache,
+    private static Task<GenericCreateReplacedByMethodException> Refused(IMeshEtlContext context, ICkCacheService cache,
         params EntityUpdateInfo<RtEntity>[] infos) =>
-        Assert.Throws<GenericCreateReplacedByMethodException>(() =>
-            GenericCreateGuard.EnsureAllowed(context, cache, infos));
+        Assert.ThrowsAsync<GenericCreateReplacedByMethodException>(() =>
+            GenericCreateGuard.EnsureAllowedAsync(context, cache, infos));
 
     [Fact]
-    public void InsertOfFlaggedType_PassesWithMatchingMarker()
+    public async Task InsertOfFlaggedType_PassesWithMatchingMarker()
     {
-        GenericCreateGuard.EnsureAllowed(Context(Marker()), CkCache(), [Insert(AccountType)]);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(Marker()), CkCache(), [Insert(AccountType)]);
     }
 
     [Fact]
-    public void InsertOfFlaggedType_IsRefusedWithoutMarker()
+    public async Task InsertOfFlaggedType_IsRefusedWithoutMarker()
     {
-        var ex = Refused(Context(null), CkCache(), Insert(AccountType));
+        var ex = await Refused(Context(null), CkCache(), Insert(AccountType));
 
         Assert.Equal("GENERIC_CREATE_REPLACED_BY_METHOD", ex.Code);
         Assert.Equal(GenericCreateReplacement.ReasonToken, ex.Code);
@@ -119,83 +121,83 @@ public class GenericCreateGuardTests
     }
 
     [Fact]
-    public void InsertOfFlaggedType_IsRefusedWhenTheMethodDiffers()
+    public async Task InsertOfFlaggedType_IsRefusedWhenTheMethodDiffers()
     {
-        var ex = Refused(Context(Marker(methodId: "Test-1.0.0/Account/Other-1")), CkCache(), Insert(AccountType));
+        var ex = await Refused(Context(Marker(methodId: "Test-1.0.0/Account/Other-1")), CkCache(), Insert(AccountType));
 
         Assert.Equal(GenericCreateRefusalCause.MethodMismatch, Assert.Single(ex.Refusals).Cause);
     }
 
     [Fact]
-    public void InsertOfFlaggedType_IsRefusedWhenTheMethodDiffersOnlyInCase()
+    public async Task InsertOfFlaggedType_IsRefusedWhenTheMethodDiffersOnlyInCase()
     {
-        var ex = Refused(Context(Marker(methodId: ReplacingMethodId.ToUpperInvariant())), CkCache(),
+        var ex = await Refused(Context(Marker(methodId: ReplacingMethodId.ToUpperInvariant())), CkCache(),
             Insert(AccountType));
 
         Assert.Equal(GenericCreateRefusalCause.MethodMismatch, Assert.Single(ex.Refusals).Cause);
     }
 
     [Fact]
-    public void InsertOfFlaggedType_IsRefusedWhenThePipelineDiffers()
+    public async Task InsertOfFlaggedType_IsRefusedWhenThePipelineDiffers()
     {
         var other = OctoObjectId.GenerateNewId().ToString();
 
-        var ex = Refused(Context(Marker(pipelineRtId: other)), CkCache(), Insert(AccountType));
+        var ex = await Refused(Context(Marker(pipelineRtId: other)), CkCache(), Insert(AccountType));
 
         Assert.Equal(GenericCreateRefusalCause.PipelineMismatch, Assert.Single(ex.Refusals).Cause);
     }
 
     [Fact]
-    public void InsertOfFlaggedType_IsRefusedWhenTheMarkerHasNoPipeline()
+    public async Task InsertOfFlaggedType_IsRefusedWhenTheMarkerHasNoPipeline()
     {
-        var ex = Refused(Context(Marker(pipelineRtId: string.Empty)), CkCache(), Insert(AccountType));
+        var ex = await Refused(Context(Marker(pipelineRtId: string.Empty)), CkCache(), Insert(AccountType));
 
         Assert.Equal(GenericCreateRefusalCause.PipelineMismatch, Assert.Single(ex.Refusals).Cause);
     }
 
     [Fact]
-    public void InsertOfDerivedType_ResolvesTheInheritedMethod()
+    public async Task InsertOfDerivedType_ResolvesTheInheritedMethod()
     {
         // The graph of SpecialAccount holds the inherited method; its qualified id is the declaring type's.
-        GenericCreateGuard.EnsureAllowed(Context(Marker()), CkCache(), [Insert(SpecialAccountType)]);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(Marker()), CkCache(), [Insert(SpecialAccountType)]);
 
-        var ex = Refused(Context(null), CkCache(), Insert(SpecialAccountType));
+        var ex = await Refused(Context(null), CkCache(), Insert(SpecialAccountType));
         var refusal = Assert.Single(ex.Refusals);
         Assert.Equal(Rt(SpecialAccountType).FullName, refusal.CkTypeId);
         Assert.Equal(ReplacingMethodId, refusal.MethodId);
     }
 
     [Fact]
-    public void InsertOfUnflaggedType_PassesWithoutMarker()
+    public async Task InsertOfUnflaggedType_PassesWithoutMarker()
     {
-        GenericCreateGuard.EnsureAllowed(Context(null), CkCache(), [Insert(PlainType)]);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(null), CkCache(), [Insert(PlainType)]);
     }
 
     [Fact]
-    public void InsertOfUnknownType_IsNotRefused()
+    public async Task InsertOfUnknownType_IsNotRefused()
     {
         // not in the cache: the create fails on its own, the guard has nothing to say
-        GenericCreateGuard.EnsureAllowed(Context(null), CkCache(), [Insert("Test/Unknown")]);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(null), CkCache(), [Insert("Test/Unknown")]);
     }
 
     [Theory]
     [InlineData(EntityModOptions.Update)]
     [InlineData(EntityModOptions.Replace)]
     [InlineData(EntityModOptions.Delete)]
-    public void NonInsertOperations_AreNotCheckedAndCostNoLookup(EntityModOptions option)
+    public async Task NonInsertOperations_AreNotCheckedAndCostNoLookup(EntityModOptions option)
     {
         var cache = CkCache();
 
-        GenericCreateGuard.EnsureAllowed(Context(null), cache, [Update(AccountType, option), Update(AccountType, option)]);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(null), cache, [Update(AccountType, option), Update(AccountType, option)]);
 
         CkTypeGraph? any;
         A.CallTo(() => cache.TryGetRtCkType(A<string>._, A<RtCkId<CkTypeId>>._, out any)).MustNotHaveHappened();
     }
 
     [Fact]
-    public void MixedBatch_IsRefusedAsAWhole()
+    public async Task MixedBatch_IsRefusedAsAWhole()
     {
-        var ex = Refused(Context(null), CkCache(), Insert(PlainType), Insert(PlainType), Insert(AccountType),
+        var ex = await Refused(Context(null), CkCache(), Insert(PlainType), Insert(PlainType), Insert(AccountType),
             Update(AccountType, EntityModOptions.Update), Insert(SpecialAccountType));
 
         Assert.Equal(2, ex.Refusals.Count);
@@ -203,21 +205,21 @@ public class GenericCreateGuardTests
     }
 
     [Fact]
-    public void MixedBatch_WithMatchingMarker_PassesAsAWhole()
+    public async Task MixedBatch_WithMatchingMarker_PassesAsAWhole()
     {
-        GenericCreateGuard.EnsureAllowed(Context(Marker()), CkCache(),
+        await GenericCreateGuard.EnsureAllowedAsync(Context(Marker()), CkCache(),
             [Insert(PlainType), Insert(AccountType), Insert(SpecialAccountType),
                 Update(AccountType, EntityModOptions.Replace)]);
     }
 
     [Fact]
-    public void LookupIsMemoizedPerType()
+    public async Task LookupIsMemoizedPerType()
     {
         var cache = CkCache();
         var infos = Enumerable.Range(0, 50).Select(_ => Insert(AccountType))
             .Concat(Enumerable.Range(0, 50).Select(_ => Insert(PlainType))).ToList();
 
-        GenericCreateGuard.EnsureAllowed(Context(Marker()), cache, infos);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(Marker()), cache, infos);
 
         CkTypeGraph? any;
         A.CallTo(() => cache.TryGetRtCkType(Tenant, Rt(AccountType), out any)).MustHaveHappenedOnceExactly();
@@ -225,8 +227,97 @@ public class GenericCreateGuardTests
     }
 
     [Fact]
-    public void EmptyBatch_Passes()
+    public async Task EmptyBatch_Passes()
     {
-        GenericCreateGuard.EnsureAllowed(Context(null), CkCache(), []);
+        await GenericCreateGuard.EnsureAllowedAsync(Context(null), CkCache(), []);
+    }
+
+    // ---- tenant CK cache not loaded (unloaded mid-run by a lease leave / CkModelChanged) --------------------------
+
+    private static (IMeshEtlContext Context, ITenantRepository Repository, ICkCacheService Cache) UnloadedTenant(
+        ExecutePipelineMethodInvocation? marker, bool loadWorks)
+    {
+        var cache = CkCache();
+        var loaded = false;
+        A.CallTo(() => cache.IsTenantLoaded(Tenant)).ReturnsLazily(() => loaded);
+
+        var repository = A.Fake<ITenantRepository>();
+        A.CallTo(() => repository.LoadCacheForTenantAsync(cache))
+            .Invokes(() => loaded = loadWorks)
+            .Returns(Task.CompletedTask);
+
+        var context = Context(marker);
+        A.CallTo(() => context.TenantRepository).Returns(repository);
+        return (context, repository, cache);
+    }
+
+    [Fact]
+    public async Task UnloadedTenant_IsLoadedFirst_AndTheInsertIsRefusedWithoutMarker()
+    {
+        var (context, repository, cache) = UnloadedTenant(null, loadWorks: true);
+
+        var ex = await Refused(context, cache, Insert(AccountType));
+
+        Assert.Equal(GenericCreateRefusalCause.MissingMarker, Assert.Single(ex.Refusals).Cause);
+        A.CallTo(() => repository.LoadCacheForTenantAsync(cache)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task UnloadedTenant_IsLoadedFirst_AndTheInsertPassesWithMatchingMarker()
+    {
+        var (context, repository, cache) = UnloadedTenant(Marker(), loadWorks: true);
+
+        await GenericCreateGuard.EnsureAllowedAsync(context, cache, [Insert(AccountType), Insert(SpecialAccountType)]);
+
+        A.CallTo(() => repository.LoadCacheForTenantAsync(cache)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task UnloadedTenant_ThatStaysUnloaded_FailsClosed()
+    {
+        var (context, _, cache) = UnloadedTenant(Marker(), loadWorks: false);
+
+        var ex = await Assert.ThrowsAsync<GenericCreateCheckUnavailableException>(() =>
+            GenericCreateGuard.EnsureAllowedAsync(context, cache, [Insert(PlainType)]));
+
+        Assert.Equal("GENERIC_CREATE_CHECK_UNAVAILABLE", ex.Code);
+        Assert.Contains(Tenant, ex.Message);
+    }
+
+    [Fact]
+    public async Task UnloadedTenant_WhoseLoadFails_FailsClosedAndKeepsTheCause()
+    {
+        var (context, repository, cache) = UnloadedTenant(Marker(), loadWorks: true);
+        var failure = new InvalidOperationException("mongo down");
+        A.CallTo(() => repository.LoadCacheForTenantAsync(cache)).ThrowsAsync(failure);
+
+        var ex = await Assert.ThrowsAsync<GenericCreateCheckUnavailableException>(() =>
+            GenericCreateGuard.EnsureAllowedAsync(context, cache, [Insert(AccountType)]));
+
+        Assert.Same(failure, ex.InnerException);
+    }
+
+    [Fact]
+    public async Task UnloadedTenant_IsNotLoaded_WhenTheBatchHasNoInsert()
+    {
+        var (context, repository, cache) = UnloadedTenant(null, loadWorks: true);
+
+        await GenericCreateGuard.EnsureAllowedAsync(context, cache,
+            [Update(AccountType, EntityModOptions.Update), Update(AccountType, EntityModOptions.Replace)]);
+
+        A.CallTo(() => repository.LoadCacheForTenantAsync(A<ICkCacheService>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task LoadedTenant_IsNotLoadedAgain()
+    {
+        var cache = CkCache();
+        var repository = A.Fake<ITenantRepository>();
+        var context = Context(Marker());
+        A.CallTo(() => context.TenantRepository).Returns(repository);
+
+        await GenericCreateGuard.EnsureAllowedAsync(context, cache, [Insert(AccountType)]);
+
+        A.CallTo(() => repository.LoadCacheForTenantAsync(A<ICkCacheService>._)).MustNotHaveHappened();
     }
 }

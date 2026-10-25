@@ -57,7 +57,7 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         };
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(dataPath)).Returns(data);
 
-        var node = new ApplyChangesNode(next, EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>());
+        var node = new ApplyChangesNode(next, EtlContext, MeshAdapter.Sdk.Tests.Helpers.ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes());
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         AssertNoSessionOpened();
@@ -161,7 +161,7 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         };
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(dataPath)).Returns(data);
 
-        var node = new ApplyChangesNode(next, EtlContext, A.Fake<Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService>());
+        var node = new ApplyChangesNode(next, EtlContext, MeshAdapter.Sdk.Tests.Helpers.ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes());
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         AssertSystemSessionOpened();

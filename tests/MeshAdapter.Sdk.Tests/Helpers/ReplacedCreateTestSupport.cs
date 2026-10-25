@@ -52,6 +52,7 @@ internal static class ReplacedCreateTestSupport
     public static ICkCacheService CkCache(params string[] additionalReplacedTypes)
     {
         var cache = A.Fake<ICkCacheService>();
+        A.CallTo(() => cache.IsTenantLoaded(Tenant)).Returns(true);
         var types = new List<(string Type, bool Replaced)> { (ReplacedType, true), (PlainType, false) };
         types.AddRange(additionalReplacedTypes.Select(t => (t, true)));
         foreach (var (type, replaced) in types)
@@ -63,6 +64,14 @@ internal static class ReplacedCreateTestSupport
             A.CallTo(() => cache.GetRtCkType(Tenant, Rt(type))).Returns(graph);
         }
 
+        return cache;
+    }
+
+    /// <summary>A CK cache fake whose every tenant is loaded and that knows no type (nothing is replaced).</summary>
+    public static ICkCacheService LoadedCacheWithoutReplacedTypes()
+    {
+        var cache = A.Fake<ICkCacheService>();
+        A.CallTo(() => cache.IsTenantLoaded(A<string>._)).Returns(true);
         return cache;
     }
 

@@ -13,6 +13,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -166,7 +167,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         var act = () => RunAsync(InsertAccountPipeline, Input(name), MethodPipelineId, marker: null);
 
         var ex = await act.Should().ThrowAsync<Exception>();
-        Describe(ex.Which).Should().Contain("GENERIC_CREATE_REPLACED_BY_METHOD");
+        AssertRefusedByGuard(ex.Which);
         (await CountAsync(ReadAccountPipeline, name)).Should().Be(0);
     }
 
@@ -179,7 +180,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         var act = () => RunAsync(InsertAccountPipeline, Input(name), MethodPipelineId, marker: null, dryRun: true);
 
         var ex = await act.Should().ThrowAsync<Exception>();
-        Describe(ex.Which).Should().Contain("GENERIC_CREATE_REPLACED_BY_METHOD");
+        AssertRefusedByGuard(ex.Which);
         (await CountAsync(ReadAccountPipeline, name)).Should().Be(0);
     }
 
@@ -206,7 +207,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         var act = () => RunAsync(InsertAccountPipeline, Input(name), OtherPipelineId, marker: null);
 
         var ex = await act.Should().ThrowAsync<Exception>();
-        Describe(ex.Which).Should().Contain("GENERIC_CREATE_REPLACED_BY_METHOD");
+        AssertRefusedByGuard(ex.Which);
         (await CountAsync(ReadAccountPipeline, name)).Should().Be(0);
     }
 
@@ -221,7 +222,7 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
         var act = () => RunAsync(InsertAccountPipeline, Input(name), OtherPipelineId, leaked);
 
         var ex = await act.Should().ThrowAsync<Exception>();
-        Describe(ex.Which).Should().Contain("GENERIC_CREATE_REPLACED_BY_METHOD");
+        AssertRefusedByGuard(ex.Which);
         (await CountAsync(ReadAccountPipeline, name)).Should().Be(0);
     }
 
@@ -253,15 +254,21 @@ public class ReplacedGenericCreateIntegrationTests(PipelineExecutionFixture fixt
 
     // ---- helpers ------------------------------------------------------------------------------------------------
 
-    private static string Describe(Exception e)
+    /// <summary>
+    ///     The run failed because of the guard and for no other reason: the exception chain holds a
+    ///     <see cref="GenericCreateReplacedByMethodException" /> with the stable code and one refusal for the type.
+    /// </summary>
+    private static void AssertRefusedByGuard(Exception failure)
     {
-        var parts = new List<string>();
-        for (var current = e; current != null; current = current.InnerException)
+        GenericCreateReplacedByMethodException? refusal = null;
+        for (var current = failure; current != null && refusal == null; current = current.InnerException)
         {
-            parts.Add(current.Message);
+            refusal = current as GenericCreateReplacedByMethodException;
         }
 
-        return string.Join(" | ", parts);
+        refusal.Should().NotBeNull($"the failure was: {failure}");
+        refusal!.Code.Should().Be("GENERIC_CREATE_REPLACED_BY_METHOD");
+        refusal.Refusals.Should().ContainSingle().Which.CkTypeId.Should().Be(new RtCkId<CkTypeId>(ReplacedType).FullName);
     }
 
     private async Task<int> CountAsync(string readPipeline, string name)

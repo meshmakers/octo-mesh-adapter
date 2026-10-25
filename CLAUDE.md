@@ -344,6 +344,39 @@ plus the list of triggers that start an execution at all — the same house patt
 a principal changes the identity every pipeline behind it runs as, and does so invisibly: nothing
 fails, the execution just sees different data.
 
+### Generic-create guard — inserts of a type whose method replaces the generic create (AB#7462)
+
+A CK method with `replacesGenericCreate` (Feature AB#6884 F3.7, decision note AB#7120) is the only way to create
+an entity of its type and of every derived type. `MeshAdapter.Sdk/Common/GenericCreateGuard.EnsureAllowed(IMeshEtlContext,
+ICkCacheService, IEnumerable<IEntityUpdateInfo<RtEntity>>)` is the shared pre-check for the nodes that insert
+(ApplyChanges@1/@2, ImportFromExcel — **wired in AB#7463, not yet called by any node**). Rules:
+
+- Only `EntityModOptions.Insert` is checked (Update/Replace/Delete cannot create). The replacing method comes from
+  the engine helper `GenericCreateReplacement.TryGetReplacingMethod` (resolves inherited methods) on the tenant CK
+  cache; the answer is memoized per type per call, so a batch costs one lookup per distinct type.
+- An insert of a flagged type passes only if **all three** hold: `IMeshEtlContext.MethodInvocation != null`,
+  `MethodInvocation.MethodId` equals the replacing method's `QualifiedMethodId` (ordinal, case-sensitive) and
+  `MethodInvocation.PipelineRtId` equals `PipelineRtEntityId.RtId` of the running pipeline. The marker does not
+  travel over `ToPipelineDataEvent`, so a chained pipeline is refused (intended).
+- Otherwise the **whole batch** is refused before any write: `GenericCreateReplacedByMethodException` with
+  `Code` = `GENERIC_CREATE_REPLACED_BY_METHOD` (`GenericCreateReplacement.ReasonToken`) and `Refusals` (CK type,
+  method id, cause `MISSING_METHOD_INVOCATION` / `METHOD_MISMATCH` / `PIPELINE_MISMATCH`); the message is for logs
+  only. Call it before the dry-run branch and before the first write.
+
+**Where the marker comes from.** The controller's method invoker sets `ExecutePipelineRequest.MethodInvocation`
+(direct path) or `LeaseDto.MethodInvocation` (lease path). Direct path: communication-sdk
+`FromExecutePipelineCommandNode` copies it unconditionally to `ExecutePipelineOptions.MethodInvocation`. Lease path:
+`LeaseCallerCarryThrough.Apply` copies `lease.MethodInvocation` to the options **independent of `CallerBindingMode`**
+(it is not an identity). `MeshContextCreatorService.CreateEtlContext` passes it as a constructor argument of
+`MeshEtlContext`, a per-execution side channel like `CallerAccessToken` — 🔴 never put it into `Properties` (shared by
+all runs of the pipeline). Absent marker means fail closed.
+
+**Rollout order, no compatibility switch** (any switch could only fail open): core-libs train (octo-sdk +
+octo-communication-sdk) -> communication controller with System.Communication 4.12.0 -> mesh adapter. Old controller +
+new adapter: no marker, the method's own run is refused (availability only) — ship the adapter right after the
+controller. New controller + old adapter: the unknown member is ignored and today's gap remains until the adapter is
+upgraded.
+
 ### JSON / Serialization (System.Text.Json)
 
 The adapter and all ~35 nodes are System.Text.Json-only on the pipeline data path. Newtonsoft is no longer used for pipeline data flow (it may still appear in unrelated transports such as SignalR contracts).

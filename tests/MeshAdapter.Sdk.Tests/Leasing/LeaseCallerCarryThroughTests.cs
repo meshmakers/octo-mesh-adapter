@@ -13,13 +13,15 @@ namespace MeshAdapter.Sdk.Tests.Leasing;
 /// </summary>
 public class LeaseCallerCarryThroughTests
 {
-    private static LeaseDto ALease(ExecutePipelineCaller? caller, string? token = null) => new()
+    private static LeaseDto ALease(ExecutePipelineCaller? caller, string? token = null,
+        ExecutePipelineMethodInvocation? marker = null) => new()
     {
         TenantId = "borrower",
         PipelineRtId = "6ad562f3ff7c40ff80275b84",
         PipelineInput = "{\"x\":1}",
         Caller = caller,
-        CallerAccessToken = token
+        CallerAccessToken = token,
+        MethodInvocation = marker
     };
 
     private static NodeDefinitionRoot WithExecuteTrigger(CallerBindingMode mode) => new()
@@ -97,5 +99,57 @@ public class LeaseCallerCarryThroughTests
 
         Assert.Equal(CallerBindingMode.AnonymousAllowed, LeaseCallerCarryThrough.ResolveBindingMode(cronOnly));
         Assert.Equal(CallerBindingOutcome.RunAsServiceAccount, outcome);
+    }
+
+    private static ExecutePipelineMethodInvocation AMarker() => new()
+    {
+        MethodId = "Test-1.0.0/Account/Create-1",
+        InvocationId = Guid.NewGuid(),
+        CkTypeId = "Test-1.0.0/Account-1",
+        PipelineRtId = "6ad562f3ff7c40ff80275b84"
+    };
+
+    /// <summary>
+    ///     AB#7462: the method-invocation marker is not an identity — it reaches the options under every binding rule,
+    ///     with and without an invoker, and also when the lease is rejected.
+    /// </summary>
+    [Theory]
+    [InlineData(CallerBindingMode.AnonymousAllowed, true)]
+    [InlineData(CallerBindingMode.AnonymousAllowed, false)]
+    [InlineData(CallerBindingMode.BindingRequired, true)]
+    [InlineData(CallerBindingMode.BindingRequired, false)]
+    public void TheMethodInvocationMarker_ReachesTheOptionsUnderEveryBindingRule(CallerBindingMode mode,
+        bool withCaller)
+    {
+        var marker = AMarker();
+        var lease = ALease(withCaller ? ACaller() : null, marker: marker);
+        var options = new ExecutePipelineOptions(DateTime.UtcNow);
+
+        LeaseCallerCarryThrough.Apply(lease, WithExecuteTrigger(mode), options);
+
+        Assert.Same(marker, options.MethodInvocation);
+    }
+
+    [Fact]
+    public void ALeaseWithoutAMarker_LeavesTheOptionsWithoutOne()
+    {
+        var options = new ExecutePipelineOptions(DateTime.UtcNow) { MethodInvocation = AMarker() };
+
+        LeaseCallerCarryThrough.Apply(ALease(ACaller()), WithExecuteTrigger(CallerBindingMode.AnonymousAllowed),
+            options);
+
+        // The lease is the only source on the lease path: a missing marker clears whatever the options held.
+        Assert.Null(options.MethodInvocation);
+    }
+
+    [Fact]
+    public void ThePipelineWithoutAnExecuteTrigger_StillCarriesTheMarker()
+    {
+        var lease = ALease(caller: null, marker: AMarker());
+        var options = new ExecutePipelineOptions(DateTime.UtcNow);
+
+        LeaseCallerCarryThrough.Apply(lease, new NodeDefinitionRoot(), options);
+
+        Assert.NotNull(options.MethodInvocation);
     }
 }

@@ -1655,6 +1655,42 @@ written) if that does not work. Chained pipelines (`ToPipelineDataEvent`)
 do not inherit the marker and are refused. Rollout: core-libs train, then controller (System.Communication 4.12.0),
 then the adapter; no compatibility switch.
 
+**Nodes covered by the guard** (every SDK node that inserts `RtEntity` instances through
+`TenantRepository.ApplyChangesAsync`; AB#7463 and AB#7499):
+
+| Node | Where the guard runs |
+|------|----------------------|
+| `ApplyChanges@1`, `ApplyChanges@2` | on the entity updates of the batch, before the dry-run branch |
+| `ImportFromExcel` | on the insert list, before the write |
+| `CreateFileSystemItemUpdate@1` | on the single file-system-item insert, before the write session is opened |
+| `CreateZipArchive@1` (`persistAsFileSystemItem`) | on the file-system-item insert, before the write session is opened |
+| `RegisterSelfReportedMeteringPoint@1` | in the node's single write helper, so customer, metering point, anchor and participation period are checked; a refusal aborts the transaction |
+| `SaveTimeRangeSeriesInArchive@1` | on the anchor entities it inserts, before the write session is opened (archive rows are stream data, not entities, and are not checked) |
+
+Not covered, by decision: `NotificationDeliveryState` writes of the notification engine (`NotificationDeliveryStateStore`).
+The type is an internal System type that no CK author can flag with `replacesGenericCreate`, and guarding it would cost a
+CK-cache access on the hot per-notification path for no protection.
+
+**Using the guard in a custom write node.** A node that inserts entities itself must call the guard once per batch
+**before** it opens a write session or calls `ApplyChangesAsync`:
+
+```csharp
+public class MyWriteNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService) : IPipelineNode
+{
+    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
+    {
+        List<IEntityUpdateInfo<RtEntity>> updates = BuildUpdates(dataContext);
+        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, updates); // throws, nothing written
+        // ... session, ApplyChangesAsync, commit
+    }
+}
+```
+
+Take `ICkCacheService` as a constructor parameter (DI). Let the exception propagate: it fails the run. Do not swallow it
+in a `try/catch` that logs a store error. Tests belong next to the node: refused without marker (assert that
+`ApplyChangesAsync` was never called), allowed with `ConfigureRun(..., OwnRunMarker())`, non-flagged types and updates
+unaffected (see `ReplacedCreateTestSupport` in the test project).
+
 ---
 
 ## Configuration

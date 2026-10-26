@@ -17,7 +17,7 @@ public class CreateZipArchiveNodeTests : NodeTestBase
     private static string B64(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
 
     private static CreateZipArchiveNode NewNode(NodeDelegate next) =>
-        new(next, A.Fake<IMeshEtlContext>());
+        new(next, A.Fake<IMeshEtlContext>(), ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes());
 
     private static string? CapturedString(IDataContext dataContext, string targetPath)
     {

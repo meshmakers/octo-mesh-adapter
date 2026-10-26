@@ -3,6 +3,9 @@ using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using static MeshAdapter.Sdk.Tests.Helpers.ReplacedCreateTestSupport;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
@@ -125,7 +128,7 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
     }
 
     private async Task<JsonObject> RunAsync(JsonNode? body, DateTime? now = null,
-        RegisterSelfReportedMeteringPointNodeConfiguration? config = null)
+        RegisterSelfReportedMeteringPointNodeConfiguration? config = null, ICkCacheService? ckCache = null)
     {
         config ??= new RegisterSelfReportedMeteringPointNodeConfiguration { TargetPath = TargetPath };
         var (dataContext, nodeContext, next, _) = PrepareTestWithLogger(config);
@@ -135,7 +138,7 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
             .Where(call => call.Method.Name == nameof(IDataContext.Set) && (string)call.Arguments[0]! == TargetPath)
             .Invokes(call => result = (JsonObject)call.Arguments[1]!);
 
-        var node = new RegisterSelfReportedMeteringPointNode(next, EtlContext)
+        var node = new RegisterSelfReportedMeteringPointNode(next, EtlContext, ckCache ?? ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes())
         {
             Clock = new FakeTimeProvider(new DateTimeOffset(now ?? new DateTime(2026, 11, 20, 12, 0, 0, DateTimeKind.Utc),
                 TimeSpan.Zero))
@@ -170,6 +173,45 @@ public class RegisterSelfReportedMeteringPointNodeTests : SessionNodeTestBase
         if (dataSource is not null) e.SetAttributeValue("MeteringDataSource", AttributeValueTypesDto.Enum, dataSource.Value);
         (type == ConsumerType ? _consumers : _producers).Add(e);
         return e;
+    }
+
+    // ==================================================================== AB#7499 generic-create guard
+
+    [Fact]
+    public async Task Create_OfMethodReplacedMeteringPointType_WithoutMarker_IsRefused_AndNoMeteringPointIsWritten()
+    {
+        ConfigureRun(EtlContext, null);
+
+        var ex = await Assert.ThrowsAsync<GenericCreateReplacedByMethodException>(() =>
+            RunAsync(Consumption(), ckCache: CkCache(ConsumerType)));
+
+        Assert.Equal("GENERIC_CREATE_REPLACED_BY_METHOD", ex.Code);
+        Assert.DoesNotContain(_writes.SelectMany(w => w.Entities),
+            i => i.ModOption == EntityModOptions.Insert && i.RtEntity!.CkTypeId!.ToString() == ConsumerType);
+        A.CallTo(Session).Where(c => c.Method.Name == "AbortTransactionAsync").MustHaveHappened();
+        A.CallTo(Session).Where(c => c.Method.Name == "CommitTransactionAsync").MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task Create_OfMethodReplacedMeteringPointType_InTheMethodsOwnRun_IsWritten()
+    {
+        ConfigureRun(EtlContext, OwnRunMarker());
+
+        await RunAsync(Consumption(), ckCache: CkCache(ConsumerType));
+
+        Assert.Contains(_writes.SelectMany(w => w.Entities),
+            i => i.ModOption == EntityModOptions.Insert && i.RtEntity!.CkTypeId!.ToString() == ConsumerType);
+    }
+
+    [Fact]
+    public async Task Create_OfNonFlaggedTypes_WithoutMarker_IsNotAffected()
+    {
+        ConfigureRun(EtlContext, null);
+
+        await RunAsync(Consumption(), ckCache: CkCache());
+
+        Assert.Contains(_writes.SelectMany(w => w.Entities),
+            i => i.ModOption == EntityModOptions.Insert && i.RtEntity!.CkTypeId!.ToString() == ConsumerType);
     }
 
     // ==================================================================== create

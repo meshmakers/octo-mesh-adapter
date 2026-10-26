@@ -11,7 +11,9 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -166,7 +168,7 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest(config);
         SetupGetSimpleValueByPath(dataContext, "$.content", Convert.ToBase64String(Encoding.UTF8.GetBytes("abc")));
 
-        await new CreateFileSystemItemUpdateNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new CreateFileSystemItemUpdateNode(next, EtlContext, ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes()).ProcessObjectAsync(dataContext, nodeContext);
         return (captured.InsertedTypes, captured.Assocs, dataContext);
     }
 
@@ -237,7 +239,7 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         SetupGetSimpleValueByPath(dataContext, "$.content", Convert.ToBase64String("abc"u8.ToArray()));
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
-            new CreateFileSystemItemUpdateNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext));
+            new CreateFileSystemItemUpdateNode(next, EtlContext, ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes()).ProcessObjectAsync(dataContext, nodeContext));
         VerifyNextNotCalled(next, dataContext, nodeContext);
     }
 
@@ -257,7 +259,7 @@ public class FileSystemTransitionTests : SessionNodeTestBase
         SetupGetSimpleValueByPath(dataContext, "$.content", Convert.ToBase64String("abc"u8.ToArray()));
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
-            new CreateFileSystemItemUpdateNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext));
+            new CreateFileSystemItemUpdateNode(next, EtlContext, ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes()).ProcessObjectAsync(dataContext, nodeContext));
         Assert.Empty(types);
     }
 
@@ -279,7 +281,7 @@ public class FileSystemTransitionTests : SessionNodeTestBase
             PrepareTest(config, scratchSpace: new SessionIdentityBehaviourTests.InMemoryScratchSpace());
         A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
 
-        await new CreateZipArchiveNode(next, EtlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new CreateZipArchiveNode(next, EtlContext, ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes()).ProcessObjectAsync(dataContext, nodeContext);
         return captured.InsertedTypes;
     }
 
@@ -378,5 +380,119 @@ public class FileSystemTransitionTests : SessionNodeTestBase
 
         var ex = await Assert.ThrowsAsync<CkCacheException>(RunGetContentAsync);
         Assert.Contains(NewItem, ex.Message);
+    }
+
+    // ---------------------------------------------------------------- AB#7499 generic-create guard
+
+    private async Task RunFileItemAsync(ICkCacheService ckCache)
+    {
+        var config = new CreateFileSystemUpdateNodeConfiguration
+        {
+            Path = "$.content", TargetPath = "$.item", RootFolderWellKnownName = "Documents",
+            FileName = "a.txt", ContentType = "text/plain", ContentLength = 3, GenerateRtId = true
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        SetupGetSimpleValueByPath(dataContext, "$.content", Convert.ToBase64String("abc"u8.ToArray()));
+        await new CreateFileSystemItemUpdateNode(next, EtlContext, ckCache).ProcessObjectAsync(dataContext, nodeContext);
+    }
+
+    private async Task RunZipAsync(ICkCacheService ckCache)
+    {
+        var config = new CreateZipArchiveNodeConfiguration
+        {
+            Path = "$.entries", TargetPath = "$.zip", PersistAsFileSystemItem = true,
+            RootFolderWellKnownName = "Documents", FileName = "bundle.zip"
+        };
+        var entries = new JsonArray(new JsonObject
+        {
+            ["fileName"] = "a.txt", ["contentBase64"] = Convert.ToBase64String("abc"u8.ToArray())
+        });
+        var (dataContext, nodeContext, next) =
+            PrepareTest(config, scratchSpace: new SessionIdentityBehaviourTests.InMemoryScratchSpace());
+        A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
+        await new CreateZipArchiveNode(next, EtlContext, ckCache).ProcessObjectAsync(dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task CreateFileSystemUpdate_ItemTypeReplacedByMethod_WithoutMarker_IsRefused_AndNothingIsWritten()
+    {
+        GivenRoots(TypeState.Hit, TypeState.Empty);
+        var (types, _) = CaptureApplyChanges();
+        ReplacedCreateTestSupport.ConfigureRun(EtlContext, null);
+
+        var ex = await Assert.ThrowsAsync<GenericCreateReplacedByMethodException>(() =>
+            RunFileItemAsync(ReplacedCreateTestSupport.CkCache(NewItem)));
+
+        Assert.Equal("GENERIC_CREATE_REPLACED_BY_METHOD", ex.Code);
+        Assert.Empty(types);
+        AssertNoScopedWrite();
+    }
+
+    [Fact]
+    public async Task CreateFileSystemUpdate_ItemTypeReplacedByMethod_InTheMethodsOwnRun_IsWritten()
+    {
+        GivenRoots(TypeState.Hit, TypeState.Empty);
+        var (types, _) = CaptureApplyChanges();
+        ReplacedCreateTestSupport.ConfigureRun(EtlContext, ReplacedCreateTestSupport.OwnRunMarker());
+
+        await RunFileItemAsync(ReplacedCreateTestSupport.CkCache(NewItem));
+
+        Assert.Equal([new RtCkId<CkTypeId>(NewItem)], types);
+    }
+
+    [Fact]
+    public async Task CreateFileSystemUpdate_ItemTypeNotFlagged_WithoutMarker_IsNotAffected()
+    {
+        GivenRoots(TypeState.Hit, TypeState.Empty);
+        var (types, _) = CaptureApplyChanges();
+        ReplacedCreateTestSupport.ConfigureRun(EtlContext, null);
+
+        await RunFileItemAsync(ReplacedCreateTestSupport.CkCache());
+
+        Assert.Equal([new RtCkId<CkTypeId>(NewItem)], types);
+    }
+
+    [Fact]
+    public async Task CreateZipArchive_Persist_ItemTypeReplacedByMethod_WithoutMarker_IsRefused_AndNothingIsWritten()
+    {
+        GivenRoots(TypeState.Hit, TypeState.Empty);
+        var (types, _) = CaptureApplyChanges();
+        ReplacedCreateTestSupport.ConfigureRun(EtlContext, null);
+
+        var ex = await Assert.ThrowsAsync<GenericCreateReplacedByMethodException>(() =>
+            RunZipAsync(ReplacedCreateTestSupport.CkCache(NewItem)));
+
+        Assert.Equal("GENERIC_CREATE_REPLACED_BY_METHOD", ex.Code);
+        Assert.Empty(types);
+    }
+
+    [Fact]
+    public async Task CreateZipArchive_Persist_ItemTypeReplacedByMethod_InTheMethodsOwnRun_IsWritten()
+    {
+        GivenRoots(TypeState.Hit, TypeState.Empty);
+        var (types, _) = CaptureApplyChanges();
+        ReplacedCreateTestSupport.ConfigureRun(EtlContext, ReplacedCreateTestSupport.OwnRunMarker());
+
+        await RunZipAsync(ReplacedCreateTestSupport.CkCache(NewItem));
+
+        Assert.Equal([new RtCkId<CkTypeId>(NewItem)], types);
+    }
+
+    [Fact]
+    public async Task CreateZipArchive_Persist_ItemTypeNotFlagged_WithoutMarker_IsNotAffected()
+    {
+        GivenRoots(TypeState.Hit, TypeState.Empty);
+        var (types, _) = CaptureApplyChanges();
+        ReplacedCreateTestSupport.ConfigureRun(EtlContext, null);
+
+        await RunZipAsync(ReplacedCreateTestSupport.CkCache());
+
+        Assert.Equal([new RtCkId<CkTypeId>(NewItem)], types);
+    }
+
+    private void AssertNoScopedWrite()
+    {
+        // The guard runs before the scoped write session is opened; only the SYSTEM root lookup happened.
+        A.CallTo(TenantRepository).Where(c => c.Method.Name == "ApplyChangesAsync").MustNotHaveHappened();
     }
 }

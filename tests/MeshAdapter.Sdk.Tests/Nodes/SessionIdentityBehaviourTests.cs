@@ -244,7 +244,7 @@ public class SessionIdentityBehaviourTests : SessionNodeTestBase
         SetupGetSimpleValueByPath(dataContext, "$.content",
             Convert.ToBase64String(Encoding.UTF8.GetBytes("abc")));
 
-        var node = new CreateFileSystemItemUpdateNode(next, EtlContext);
+        var node = new CreateFileSystemItemUpdateNode(next, EtlContext, ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes());
         await Record.ExceptionAsync(() => node.ProcessObjectAsync(dataContext, nodeContext));
 
         // Both halves of the split, in one node.
@@ -275,7 +275,7 @@ public class SessionIdentityBehaviourTests : SessionNodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest(config, scratchSpace: scratchSpace);
         A.CallTo(() => dataContext.Get<JsonNode>("$.entries")).Returns(entries);
 
-        var node = new CreateZipArchiveNode(next, EtlContext);
+        var node = new CreateZipArchiveNode(next, EtlContext, ReplacedCreateTestSupport.LoadedCacheWithoutReplacedTypes());
         await Record.ExceptionAsync(() => node.ProcessObjectAsync(dataContext, nodeContext));
 
         AssertSystemSessionOpened();

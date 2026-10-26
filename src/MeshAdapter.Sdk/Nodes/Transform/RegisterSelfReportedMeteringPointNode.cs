@@ -6,6 +6,8 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
@@ -38,7 +40,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class RegisterSelfReportedMeteringPointNode(
     NodeDelegate next,
-    IMeshEtlContext etlContext) : IPipelineNode
+    IMeshEtlContext etlContext,
+    ICkCacheService ckCacheService) : IPipelineNode
 {
     private const string NodeName = "RegisterSelfReportedMeteringPoint";
 
@@ -466,6 +469,9 @@ internal class RegisterSelfReportedMeteringPointNode(
     private async Task ApplyAsync(IOctoSession session, List<IEntityUpdateInfo<RtEntity>> entities,
         List<AssociationUpdateInfo> associations, string what)
     {
+        // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
+        // method's own run; checked before the first write, the whole batch is refused.
+        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entities);
         var operationResult = new OperationResult();
         await etlContext.TenantRepository.ApplyChangesAsync(session, entities, associations, operationResult);
         if (operationResult.HasErrors || operationResult.HasFatalErrors)

@@ -8,7 +8,9 @@ using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -43,7 +45,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 [NodeConfiguration(typeof(CreateZipArchiveNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -230,6 +232,9 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext)
         // AB#5028 — scoped: the archive is a real user artefact, so it is created under the
         // execution's identity and carries its creator stamp. Note the deliberate split inside this
         // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
+        // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
+        // method's own run; checked before the first write, the whole batch is refused.
+        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entityUpdateInfoList);
         var session = await etlContext.GetSessionForAsync(config.Identity);
         session.StartTransaction();
         var operationResult = new OperationResult();

@@ -8,6 +8,7 @@ using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -283,6 +284,10 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         // AB#5028 / AB#5127 — scoped, same identity as the lookup above: the anchors are tenant
         // business data and carry a creator stamp. A separate session because the lookup's
         // transaction is already committed.
+        // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
+        // method's own run; checked before the first write, the whole batch is refused.
+        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entityUpdates);
+
         using var writeSession = await etlContext.GetSessionForAsync(c.Identity);
         writeSession.StartTransaction();
         var operationResult = new OperationResult();

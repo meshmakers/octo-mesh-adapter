@@ -374,6 +374,24 @@ first write:
 - `ImportFromExcelNode` (`StoreTreeInDatabase`): on the insert list, before `ApplyChangesInRepositoryAsync`. The node
   has no dry-run branch (it always writes), so the guard in front of the write covers dry runs too. The exception is
   thrown outside the repository `try/catch`, so it fails the node instead of being logged as a store error.
+**Direct writers (AB#7499).** The nodes that bypass `ApplyChanges` and call `TenantRepository.ApplyChangesAsync` themselves
+take `ICkCacheService` too and call the guard once per batch before the write:
+- `CreateFileSystemItemUpdateNode`: on the single file-system-item insert, before the scoped session is opened.
+- `CreateZipArchiveNode` (`PersistFileSystemItemAsync`, `persistAsFileSystemItem`): same.
+- `RegisterSelfReportedMeteringPointNode`: in `ApplyAsync`, the node's only write helper (customer, metering point,
+  anchor, participation period). The guard runs inside the open transaction; the refusal propagates through the
+  `catch { AbortTransactionAsync; throw; }`, so a customer written by an earlier helper call is rolled back.
+- `SaveTimeRangeSeriesInArchiveNode`: on the anchor entities (`entityUpdates`), before the write session is opened. Found
+  by the AB#7499 grep; archive rows themselves are stream data and are not checked.
+- **`NotificationDeliveryStateStore` is exempt (decision AB#7499).** `NotificationDeliveryState` is an internal System
+  type (`System.Notification`); a CK author cannot flag a System type, and a flag on a derived/other type never
+  applies to it. Guarding would add a tenant-cache access per notification delivery on a hot path without protecting
+  anything. If a System type ever gains `replacesGenericCreate`, revisit this. Do not copy this exemption to a node
+  whose type is configurable.
+- Complete list of `ApplyChangesAsync` callers in `src/` (grep, AB#7499): ApplyChanges@1/@2, ImportFromExcel, the four
+  nodes above, `NotificationDeliveryStateStore`. `SaveStreamDataInArchive` / `SaveTimeRangeStreamDataInArchive` write
+  stream rows, `UpdateRtEntityIfNewer` only emits update infos for `ApplyChanges`. A new write node must call the guard
+  (developer-guide, "Using the guard in a custom write node").
 The exception propagates and fails the pipeline run; nothing is written. Consequences worth knowing:
 - **A dry run of the method's own pipeline with `ImportFromExcel` writes for real** (the node has no dry-run branch);
   refusals do apply in dry runs. Do not dry-run an Excel import of a replaced type from the method's pipeline.
@@ -388,7 +406,8 @@ The exception propagates and fails the pipeline run; nothing is written. Consequ
   refused with `GenericCreateCheckUnavailableException` (`Code` = `GENERIC_CREATE_CHECK_UNAVAILABLE`, inner exception =
   the load failure). It is deliberately a different error than `GENERIC_CREATE_REPLACED_BY_METHOD`: the insert was not
   judged, nothing was written and the run can simply be repeated (retryable).
-Tests: `ApplyChangesReplacedCreateGuardTests`,
+Tests: `ApplyChangesReplacedCreateGuardTests`, the `AB#7499` guard tests in `FileSystemTransitionTests` (file item, zip) and
+`RegisterSelfReportedMeteringPointNodeTests`, `SaveTimeRangeSeriesInArchiveReplacedCreateGuardTests`,
 `ImportFromExcelReplacedCreateGuardTests` (unit, per node: no marker, dry run, matching marker, other pipeline/method,
 plain type, Update/Replace unaffected) and `ReplacedGenericCreateIntegrationTests` (real orchestrator + MongoDB + CK
 cache, model type `MeshAdapterIntegrationTest/ReplacedAccount` with the static method `Provision-1`

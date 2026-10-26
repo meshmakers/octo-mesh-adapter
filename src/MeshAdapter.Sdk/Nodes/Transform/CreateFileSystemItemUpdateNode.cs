@@ -1,5 +1,7 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -18,7 +20,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 [NodeConfiguration(typeof(CreateFileSystemUpdateNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext etlContext)
+public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService)
     : IPipelineNode
 {
     internal record FileSystemItemResult
@@ -105,6 +107,9 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
         // AB#5028 — scoped: the file system item is a real user artefact, so it is created under the
         // execution's identity and carries its creator stamp. Note the deliberate split inside this
         // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
+        // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
+        // method's own run; checked before the first write, the whole batch is refused.
+        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entityUpdateInfoList);
         var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         OperationResult operationResult = new();

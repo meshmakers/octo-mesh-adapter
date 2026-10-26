@@ -1,10 +1,12 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using MongoDB.Driver;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
@@ -14,7 +16,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// </summary>
 [NodeConfiguration(typeof(ApplyChangesNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService) : IPipelineNode
 {
     private static readonly SemaphoreSlim ApplySemaphoreSlim = new(1, 1);
 
@@ -24,6 +26,14 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext) : I
         var c = nodeContext.GetNodeConfiguration<ApplyChangesNodeConfiguration>();
 
         var list = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
+
+        // AB#7463: inserts of a type whose CK method replaces the generic create are refused outside that
+        // method's own run. Before the dry-run branch (a dry run must report the refusal, not "would apply")
+        // and before any write; the whole batch is refused.
+        if (list != null)
+        {
+            await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, list);
+        }
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {

@@ -347,9 +347,10 @@ fails, the execution just sees different data.
 ### Generic-create guard — inserts of a type whose method replaces the generic create (AB#7462)
 
 A CK method with `replacesGenericCreate` (Feature AB#6884 F3.7, decision note AB#7120) is the only way to create
-an entity of its type and of every derived type. `MeshAdapter.Sdk/Common/GenericCreateGuard.EnsureAllowed(IMeshEtlContext,
+an entity of its type and of every derived type. `MeshAdapter.Sdk/Common/GenericCreateGuard.EnsureAllowedAsync(IMeshEtlContext,
 ICkCacheService, IEnumerable<IEntityUpdateInfo<RtEntity>>)` is the shared pre-check for the nodes that insert
-(ApplyChanges@1/@2, ImportFromExcel — **wired in AB#7463, not yet called by any node**). Rules:
+(ApplyChanges@1/@2, ImportFromExcel — wired in AB#7463, see "Node wiring" below; the method is async since the
+unloaded-cache case needs a load, `EnsureAllowedAsync`). Rules:
 
 - Only `EntityModOptions.Insert` is checked (Update/Replace/Delete cannot create). The replacing method comes from
   the engine helper `GenericCreateReplacement.TryGetReplacingMethod` (resolves inherited methods) on the tenant CK
@@ -362,6 +363,38 @@ ICkCacheService, IEnumerable<IEntityUpdateInfo<RtEntity>>)` is the shared pre-ch
   `Code` = `GENERIC_CREATE_REPLACED_BY_METHOD` (`GenericCreateReplacement.ReasonToken`) and `Refusals` (CK type,
   method id, cause `MISSING_METHOD_INVOCATION` / `METHOD_MISMATCH` / `PIPELINE_MISMATCH`); the message is for logs
   only. Call it before the dry-run branch and before the first write.
+
+**Node wiring (AB#7463).** All three nodes take `ICkCacheService` (DI) and call the guard once per batch, before the
+first write:
+- `ApplyChangesNode` (`ApplyChanges@1`, `ProcessObjectAsync`): on the whole `list` read from `Path`, **before the dry-run
+  branch**, so a dry run reports the refusal instead of "would apply".
+- `ApplyChangesNode2` (`ApplyChanges@2`): on the `entityUpdates` read from `EntityUpdatesPath` (every insert ends up in
+  `resultUpdateInfos`; merging only touches non-inserts), **before the dry-run branch**. A dry run of the method's own
+  run passes and still writes nothing.
+- `ImportFromExcelNode` (`StoreTreeInDatabase`): on the insert list, before `ApplyChangesInRepositoryAsync`. The node
+  has no dry-run branch (it always writes), so the guard in front of the write covers dry runs too. The exception is
+  thrown outside the repository `try/catch`, so it fails the node instead of being logged as a store error.
+The exception propagates and fails the pipeline run; nothing is written. Consequences worth knowing:
+- **A dry run of the method's own pipeline with `ImportFromExcel` writes for real** (the node has no dry-run branch);
+  refusals do apply in dry runs. Do not dry-run an Excel import of a replaced type from the method's pipeline.
+- **A flag added later takes effect only after the CK cache reload** on `CkModelChanged`; a run that started earlier works
+  with the cache it loaded.
+- **Unloaded tenant cache (fail closed, AB#7463 review S1).** `GenericCreateReplacement.TryGetReplacingMethod` answers
+  "no replacing method" for a tenant whose cache is not loaded, and the repository reloads the cache on its own when it
+  writes, so a guard that just asked would wave the insert through. The cache can be unloaded in the middle of a run
+  (`CkModelCacheLeaseParticipant.LeaveLeaseAsync`, `CkModelChanged`). `GenericCreateGuard.EnsureAllowedAsync` therefore
+  looks at the batch first (no insert: no cache access at all), and when `!IsTenantLoaded(tenant)` it loads the cache with
+  `etlContext.TenantRepository.LoadCacheForTenantAsync`. If the load throws or leaves the tenant unloaded the batch is
+  refused with `GenericCreateCheckUnavailableException` (`Code` = `GENERIC_CREATE_CHECK_UNAVAILABLE`, inner exception =
+  the load failure). It is deliberately a different error than `GENERIC_CREATE_REPLACED_BY_METHOD`: the insert was not
+  judged, nothing was written and the run can simply be repeated (retryable).
+Tests: `ApplyChangesReplacedCreateGuardTests`,
+`ImportFromExcelReplacedCreateGuardTests` (unit, per node: no marker, dry run, matching marker, other pipeline/method,
+plain type, Update/Replace unaffected) and `ReplacedGenericCreateIntegrationTests` (real orchestrator + MongoDB + CK
+cache, model type `MeshAdapterIntegrationTest/ReplacedAccount` with the static method `Provision-1`
+`replacesGenericCreate`). The integration test models the marker by building the `MeshEtlContext` with or without it;
+there is no controller/lease/event hub in that harness, so the hand-over from the method invocation to the node is
+covered only by the controller (AB#7461) and communication-sdk (AB#7459) tests.
 
 **Where the marker comes from.** The controller's method invoker sets `ExecutePipelineRequest.MethodInvocation`
 (direct path) or `LeaseDto.MethodInvocation` (lease path). Direct path: communication-sdk

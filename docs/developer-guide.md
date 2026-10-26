@@ -1640,12 +1640,18 @@ It reaches the context as a constructor argument of `MeshEtlContext` (side chann
 in `Properties`): direct path via `ExecutePipelineOptions.MethodInvocation`, lease path via
 `LeaseCallerCarryThrough.Apply` (independent of `CallerBindingMode`).
 
-`GenericCreateGuard.EnsureAllowed(etlContext, ckCacheService, updateInfos)` (`MeshAdapter.Sdk/Common`) refuses an
+`await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, updateInfos)` (`MeshAdapter.Sdk/Common`) refuses an
 `Insert` of a type whose method declares `replacesGenericCreate` (own or inherited) unless the marker is present, its
 `MethodId` equals the replacing method's qualified id (ordinal) and its `PipelineRtId` equals the running pipeline.
 The whole batch is refused before any write with `GenericCreateReplacedByMethodException`
 (`Code` = `GENERIC_CREATE_REPLACED_BY_METHOD`, `Refusals` = type, method, cause). Update/Replace/Delete are not
-checked; the lookup is memoized per type. The nodes call it in AB#7463. Chained pipelines (`ToPipelineDataEvent`)
+checked; the lookup is memoized per type. `ApplyChanges@1`, `ApplyChanges@2` and `ImportFromExcel` call it (AB#7463): on
+the update infos of the batch before the dry-run branch and before the first write. `ImportFromExcel` has no dry-run
+branch and always writes, so a dry run of the method's own pipeline with `ImportFromExcel` writes for real (refusals do
+apply in dry runs). The pipeline run fails; nothing is written. A flag added later takes effect only after the CK cache
+reload on `CkModelChanged`. When the tenant CK cache is not loaded (it can be unloaded mid-run), the guard loads it first
+and fails closed with `GenericCreateCheckUnavailableException` (`GENERIC_CREATE_CHECK_UNAVAILABLE`, retryable, nothing
+written) if that does not work. Chained pipelines (`ToPipelineDataEvent`)
 do not inherit the marker and are refused. Rollout: core-libs train, then controller (System.Communication 4.12.0),
 then the adapter; no compatibility switch.
 

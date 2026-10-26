@@ -1,0 +1,5 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # Generic-create guard integration test (AB#7463)
+  - id: AccountName
+    valueType: String

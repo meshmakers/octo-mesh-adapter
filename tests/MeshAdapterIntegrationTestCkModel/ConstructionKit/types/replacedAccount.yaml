@@ -1,0 +1,13 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+# Generic-create guard integration test (AB#7463): the static method Provision-1 replaces the generic create, so a
+# new ReplacedAccount may only be inserted by the pipeline run of that method.
+- typeId: ReplacedAccount
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/AccountName
+    name: AccountName
+  methods:
+  - methodId: Provision-1
+    kind: Static
+    replacesGenericCreate: true

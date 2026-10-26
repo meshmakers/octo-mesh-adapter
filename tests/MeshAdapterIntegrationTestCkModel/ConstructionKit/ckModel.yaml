@@ -1,4 +1,6 @@
 $schema: https://schemas.meshmakers.cloud/construction-kit-meta.schema.json
+# ckLanguage 2: ReplacedAccount declares a static method with replacesGenericCreate (AB#7463, generic-create guard).
+ckLanguage: 2
 dependencies:
-  - System-[2.0,3.0)
+  - System-[2.5,3.0)
 modelId: MeshAdapterIntegrationTest

@@ -876,6 +876,11 @@ Parses and imports hierarchical data from Excel files.
 
 **Features**: Hierarchical entity parsing, parent-child relationship establishment, well-known name resolution.
 
+**Dry run (AB#7500)**: honours `IsDryRun` (`DryRunHonouredLoadNodes.ImportFromExcel`). The node validates the input,
+parses the tree and runs the replaced-create guard (a refusal such as `GENERIC_CREATE_REPLACED_BY_METHOD` still fails
+the run), then records a dry-run intent with `entityCount`, `associationCount` and `wouldInsert` (the entity ids that
+would be inserted) and writes no entities or associations. Without dry run the node writes as before.
+
 #### PdfOcrExtractionNode
 
 Extracts text from PDF files using IronOCR.
@@ -1646,9 +1651,8 @@ in `Properties`): direct path via `ExecutePipelineOptions.MethodInvocation`, lea
 The whole batch is refused before any write with `GenericCreateReplacedByMethodException`
 (`Code` = `GENERIC_CREATE_REPLACED_BY_METHOD`, `Refusals` = type, method, cause). Update/Replace/Delete are not
 checked; the lookup is memoized per type. `ApplyChanges@1`, `ApplyChanges@2` and `ImportFromExcel` call it (AB#7463): on
-the update infos of the batch before the dry-run branch and before the first write. `ImportFromExcel` has no dry-run
-branch and always writes, so a dry run of the method's own pipeline with `ImportFromExcel` writes for real (refusals do
-apply in dry runs). The pipeline run fails; nothing is written. A flag added later takes effect only after the CK cache
+the update infos of the batch before the dry-run branch and before the first write. `ImportFromExcel` honours dry runs
+since AB#7500 (it reports the counts and writes nothing); refusals apply in dry runs. The pipeline run fails; nothing is written. A flag added later takes effect only after the CK cache
 reload on `CkModelChanged`. When the tenant CK cache is not loaded (it can be unloaded mid-run), the guard loads it first
 and fails closed with `GenericCreateCheckUnavailableException` (`GENERIC_CREATE_CHECK_UNAVAILABLE`, retryable, nothing
 written) if that does not work. Chained pipelines (`ToPipelineDataEvent`)
@@ -1661,7 +1665,7 @@ then the adapter; no compatibility switch.
 | Node | Where the guard runs |
 |------|----------------------|
 | `ApplyChanges@1`, `ApplyChanges@2` | on the entity updates of the batch, before the dry-run branch |
-| `ImportFromExcel` | on the insert list, before the write |
+| `ImportFromExcel` | on the insert list, before the dry-run branch and the write |
 | `CreateFileSystemItemUpdate@1` | on the single file-system-item insert, before the write session is opened |
 | `CreateZipArchive@1` (`persistAsFileSystemItem`) | on the file-system-item insert, before the write session is opened |
 | `RegisterSelfReportedMeteringPoint@1` | in the node's single write helper, so customer, metering point, anchor and participation period are checked; a refusal aborts the transaction |

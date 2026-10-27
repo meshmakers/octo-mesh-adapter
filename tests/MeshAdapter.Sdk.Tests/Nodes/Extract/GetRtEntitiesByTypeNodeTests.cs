@@ -11,6 +11,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
@@ -153,8 +154,10 @@ public class GetRtEntitiesByTypeNodeTests : SessionNodeTestBase
 
         var node = CreateNode(next);
 
-        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+        // AB#6933: still a failure (as before), now with the stable code of the node validation.
+        var ex = await Assert.ThrowsAsync<RtEntitySelectionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Equal(RtEntitySelectionReasons.CkTypeOrCkInterfaceRequired, ex.Reason);
     }
 
     [Fact]

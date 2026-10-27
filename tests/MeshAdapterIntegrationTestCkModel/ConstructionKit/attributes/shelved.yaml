@@ -1,0 +1,7 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # Interface selection integration test (AB#6933): members of the Shelved-1 interface
+  - id: ShelfCode
+    valueType: String
+  - id: ShelfWeight
+    valueType: Int

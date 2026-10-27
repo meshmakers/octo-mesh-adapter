@@ -277,18 +277,18 @@ internal sealed class CommunityAllocator
     }
 
     /// <summary>
-    /// Rank of a quality name, higher is worse: L1 (measured) &lt; L2 (interpolated) &lt; Manual
-    /// (entered or corrected by a user, not a measurement) &lt; L3 (estimate). Any other name ranks
-    /// worst of all, so an unknown quality can never upgrade a slot.
+    /// Rank of a quality name, higher is worse: L1 (measured) &lt; L2 (interpolated) &lt; L3 (estimate).
+    /// Only the real quality ranks: a manual input counts with the quality it states, its origin is not a
+    /// quality level (AB#5356). Any other name ranks worst of all, so an unknown quality can never upgrade a
+    /// slot.
     /// </summary>
     internal static int QualityRank(string? quality)
         => quality switch
         {
             "L1" => 1,
             "L2" => 2,
-            "Manual" => 3,
-            "L3" => 4,
-            _ => 5
+            "L3" => 3,
+            _ => 4
         };
 
     /// <summary>The worst input quality of a slot (V-2); MissingQuality for a missing value.</summary>

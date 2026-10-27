@@ -140,17 +140,18 @@ internal static class CommunityInputReader
 internal static class CommunityValues
 {
     /// <summary>
-    /// Quality keys 1, 2, 3, 4 become L1, L2, L3, Manual (Basic.Energy DataQuality); any other present
-    /// value becomes L1. Manual is kept, not folded into L1, because the slot quality is the worst input
-    /// quality (V-2) and a manual value must not pass as a measurement.
+    /// Quality keys 1, 2, 3 become L1, L2, L3 (Basic.Energy DataQuality); any other present value becomes
+    /// L1. Whether a value was entered manually is the row's origin, not a quality (AB#5356): a manual input
+    /// counts with the real quality it states. The former key 4 ("Manual") is not a quality and is read as
+    /// L3, so a legacy row can never pass as a measurement.
     /// </summary>
     internal static string QualityName(object? raw)
         => AsInt(raw) switch
         {
             2 => "L2",
             3 => "L3",
-            4 => "Manual",
-            _ => raw is string s && s is "L1" or "L2" or "L3" or "Manual" ? s : "L1"
+            4 => "L3",
+            _ => raw is string s && s is "L1" or "L2" or "L3" ? s : raw is "Manual" ? "L3" : "L1"
         };
 
     internal static decimal? AsDecimal(object? raw)

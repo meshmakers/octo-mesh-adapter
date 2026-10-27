@@ -1,6 +1,7 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -35,7 +36,8 @@ internal sealed class ArchiveWriteOriginStamp
     /// <param name="reasonPath">Configured per-row reason read from the DataContext item (AB#7638), if the node supports one.</param>
     /// <param name="etlContext">The execution, which knows its verified caller and its service identity.</param>
     /// <remarks>
-    /// The writer of a manual row is, in this order: the verified user caller's subject id; the client id of
+    /// The writer of a manual row is, in this order: the verified caller's readable name (AB#7647), else its
+    /// subject id (for a client-credentials caller the trigger puts the client id there); the client id of
     /// the service identity the pipeline runs under (a file-based manual import has no user caller); the
     /// pipeline itself (<c>pipeline:&lt;rtId&gt;</c>) when the execution acts as the system context. All three
     /// are resolved by the platform, never read from the data, so the writer is never empty.
@@ -55,7 +57,7 @@ internal sealed class ArchiveWriteOriginStamp
             return new ArchiveWriteOriginStamp(ArchiveRowOrigin.Automated, null, null);
         }
 
-        var writer = etlContext.VerifiedPrincipal?.SubjectId;
+        var writer = ReadableCallerName(etlContext.VerifiedPrincipal);
         if (string.IsNullOrWhiteSpace(writer))
         {
             writer = await etlContext.GetServiceIdentitySubjectIdAsync();
@@ -69,6 +71,14 @@ internal sealed class ArchiveWriteOriginStamp
         return new ArchiveWriteOriginStamp(ArchiveRowOrigin.Manual, writer,
             string.IsNullOrEmpty(manualReason) ? null : manualReason);
     }
+
+    /// <summary>
+    /// The readable name of the verified caller (AB#7647): the name the trigger verified (the token's
+    /// <c>name</c>, else <c>preferred_username</c>, or the user record's name for a bound channel caller), else
+    /// the subject id. A client-credentials caller carries no name, so its client id stays the writer.
+    /// </summary>
+    private static string? ReadableCallerName(VerifiedPrincipal? principal)
+        => string.IsNullOrWhiteSpace(principal?.Name) ? principal?.SubjectId : principal.Name;
 
     /// <summary>
     /// The reason of one row, in this order: <paramref name="itemReason" /> (read from the DataContext item,

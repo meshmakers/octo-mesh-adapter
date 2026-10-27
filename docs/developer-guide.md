@@ -1194,7 +1194,7 @@ The write result says how many rows the archive stored and why the others were n
 automated deliveries; a manual row that cannot be stored always fails the node.
 
 A manual row records its writer as resolved by the platform, never from the data: the **verified user
-caller** (`VerifiedPrincipal.SubjectId`) when the trigger authenticated one; otherwise the **client id of
+caller**, by its readable name (`VerifiedPrincipal.Name`, else `SubjectId`), when the trigger authenticated one; otherwise the **client id of
 the service identity** the pipeline runs under (a file-based manual import has no user caller); and when
 the execution acts as the system context, `pipeline:<pipelineRtId>`. The writer is never empty and a
 manual write is never refused for lack of a caller. The writes run with the execution's rights like every

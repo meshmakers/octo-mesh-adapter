@@ -312,8 +312,37 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
 
         var point = Assert.Single(captured!);
         Assert.Equal(ArchiveRowOrigin.Manual, point.Origin);
-        Assert.Equal("user-rt-1", point.ManualWrittenBy);
+        Assert.Equal("u", point.ManualWrittenBy);
         Assert.Equal("meter exchanged", point.ManualReason);
+    }
+
+    [Fact]
+    public async Task OriginManual_RecordsTheReadableNameOfTheCaller_NotTheSubjectId()
+    {
+        // AB#7647: the writer is the verified caller's readable name, the opaque subject id only without one.
+        var named = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+        }, new VerifiedPrincipal("8a4c1f00-0000-4000-8000-000000000001", "acme", "jane@example.com", "Jane Doe", ["Writer"], null));
+        Assert.Equal("Jane Doe", Assert.Single(named!).ManualWrittenBy);
+
+        var unnamed = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+        }, new VerifiedPrincipal("8a4c1f00-0000-4000-8000-000000000001", "acme", null, " ", ["Writer"], null));
+        Assert.Equal("8a4c1f00-0000-4000-8000-000000000001", Assert.Single(unnamed!).ManualWrittenBy);
+    }
+
+    [Fact]
+    public async Task OriginManual_AClientCredentialsCaller_KeepsItsClientId()
+    {
+        // The HTTP trigger puts a client-credentials caller's client id into SubjectId and has no name for it.
+        var captured = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+        }, new VerifiedPrincipal("import-service", "acme", null, null, [], null));
+
+        Assert.Equal("import-service", Assert.Single(captured!).ManualWrittenBy);
     }
 
     [Fact]
@@ -357,7 +386,7 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
             Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
         }, Caller());
 
-        Assert.Equal("user-rt-1", Assert.Single(captured!).ManualWrittenBy);
+        Assert.Equal("u", Assert.Single(captured!).ManualWrittenBy);
     }
 
     [Fact]

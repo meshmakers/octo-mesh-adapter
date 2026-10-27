@@ -320,6 +320,6 @@ public class SaveStreamDataInArchiveNodeTests : NodeTestBase
         await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal(["meter exchanged", "static"], captured!.Select(p => p.ManualReason));
-        Assert.All(captured!, p => Assert.Equal("user-rt-1", p.ManualWrittenBy));
+        Assert.All(captured!, p => Assert.Equal("u", p.ManualWrittenBy));
     }
 }

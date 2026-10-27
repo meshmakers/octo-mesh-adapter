@@ -328,7 +328,7 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         origin.Should().AllSatisfy(o =>
         {
             o.Origin.Should().Be("manual");
-            o.WrittenBy.Should().Be("user-rt-7", "the writer is the verified caller of the execution");
+            o.WrittenBy.Should().Be("u", "the writer is the readable name of the verified caller of the execution");
             o.Reason.Should().Be("meter exchanged");
         });
 
@@ -370,7 +370,7 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         origin.Should().AllSatisfy(o =>
         {
             o.Origin.Should().Be("manual");
-            o.WrittenBy.Should().Be("user-rt-8");
+            o.WrittenBy.Should().Be("u");
         });
     }
 

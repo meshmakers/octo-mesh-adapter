@@ -70,7 +70,7 @@ public class GetRtEntitiesByInterfaceIntegrationTests(ShelvedFixture fixture, IT
         await SeedAsync();
 
         // The CK element id is Shelved-1; the runtime id of a tenant is version-less. Both spellings are accepted.
-        var yaml = BySortedCode.Replace("Shelved\n", "Shelved-1\n");
+        var yaml = BySortedCode.Replace("MeshAdapterIntegrationTest/Shelved", "MeshAdapterIntegrationTest/Shelved-1");
         yaml.Should().Contain("MeshAdapterIntegrationTest/Shelved-1");
         var result = await RunAsync(yaml);
 

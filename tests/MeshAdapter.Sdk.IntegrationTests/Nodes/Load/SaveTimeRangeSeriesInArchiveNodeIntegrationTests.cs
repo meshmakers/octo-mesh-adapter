@@ -345,16 +345,21 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
     }
 
     [Fact]
-    public async Task APipelineWithOriginManualButNoVerifiedCaller_WritesNothing()
+    public async Task APipelineWithOriginManualButNoCaller_IsStored_WithThePipelineAsWriter()
     {
+        // AB#7596: a manual import without a user caller and without a service account (the execution acts
+        // as the system context) is not refused; the writer is the pipeline, never empty.
         fixture.EnsureInitialized();
         var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_ManualNoCaller", withPrecedence: true, originFirst: true);
+        var key = UniqueKey("MANUAL-NOCALLER");
 
-        var act = () => ExecuteNodeAsync(archiveRtId, c => c with { Origin = ArchiveWriteOrigin.Manual }, caller: null,
-            Series(UniqueKey("MANUAL-NOCALLER"), [Value(0, 1.0, Measured, OlderDocument)]));
+        await ExecuteNodeAsync(archiveRtId, c => c with { Origin = ArchiveWriteOrigin.Manual }, caller: null,
+            Series(key, [Value(0, 1.0, Measured, OlderDocument)]));
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*verified caller*");
-        (await CountRowsAsync(archiveRtId)).Should().Be(0);
+        var anchor = await GetSingleAnchorAsync(key);
+        var origin = Assert.Single(await ReadOriginAsync(archiveRtId, anchor.RtId));
+        origin.Origin.Should().Be("manual");
+        origin.WrittenBy.Should().Be("pipeline:000000000000000000000099");
     }
 
     private async Task<IReadOnlyList<(string? Origin, string? WrittenBy, string? Reason)>> ReadOriginAsync(

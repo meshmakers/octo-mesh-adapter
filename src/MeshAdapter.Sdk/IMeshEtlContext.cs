@@ -45,6 +45,14 @@ public interface IMeshEtlContext : IEtlContext
     Task<IOctoSession> GetScopedSessionAsync();
 
     /// <summary>
+    ///     Subject of the service identity the pipeline runs under (AB#7596): the client id of the
+    ///     pipeline's service account, or <c>null</c> when none is configured and the execution acts as
+    ///     the system context. Platform-resolved, never taken from the data. Used as the writer of a manual
+    ///     archive row when the execution has no verified user caller.
+    /// </summary>
+    ValueTask<string?> GetServiceIdentitySubjectIdAsync() => ValueTask.FromResult<string?>(null);
+
+    /// <summary>
     ///     Opens a session that <b>deliberately</b> acts as <see cref="RtSecurityContext.System" />,
     ///     bypassing data-level permissions and creator stamping.
     /// </summary>

@@ -331,17 +331,47 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
     }
 
     [Fact]
-    public async Task OriginManual_WithoutAVerifiedCaller_IsRefusedBeforeAnythingIsWritten()
+    public async Task OriginManual_WithoutAUserCaller_RecordsTheServiceIdentity()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWithOriginAsync(
-            new SaveTimeRangeStreamDataInArchiveNodeConfiguration
-            {
-                Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
-            }, caller: null));
+        // A file-based manual import runs without a user caller: the writer is the client id of the service
+        // identity the pipeline runs under, never refused (AB#7596).
+        A.CallTo(() => EtlContext.GetServiceIdentitySubjectIdAsync()).Returns(new ValueTask<string?>("octo-pipeline-sa-1"));
 
-        Assert.Contains("verified", ex.Message);
-        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
-            A<OctoObjectId>._, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._)).MustNotHaveHappened();
+        var captured = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+        }, caller: null);
+
+        var point = Assert.Single(captured!);
+        Assert.Equal(ArchiveRowOrigin.Manual, point.Origin);
+        Assert.Equal("octo-pipeline-sa-1", point.ManualWrittenBy);
+    }
+
+    [Fact]
+    public async Task OriginManual_AUserCallerWinsOverTheServiceIdentity()
+    {
+        A.CallTo(() => EtlContext.GetServiceIdentitySubjectIdAsync()).Returns(new ValueTask<string?>("octo-pipeline-sa-1"));
+
+        var captured = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+        }, Caller());
+
+        Assert.Equal("user-rt-1", Assert.Single(captured!).ManualWrittenBy);
+    }
+
+    [Fact]
+    public async Task OriginManual_WithoutCallerOrServiceIdentity_RecordsThePipeline_NeverEmpty()
+    {
+        A.CallTo(() => EtlContext.GetServiceIdentitySubjectIdAsync()).Returns(new ValueTask<string?>((string?)null));
+        A.CallTo(() => EtlContext.PipelineRtEntityId).Returns(new RtEntityId("System/RtDataPipeline", new OctoObjectId("000000000000000000000099")));
+
+        var captured = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+        }, caller: null);
+
+        Assert.Equal("pipeline:000000000000000000000099", Assert.Single(captured!).ManualWrittenBy);
     }
 
     [Fact]

@@ -31,8 +31,8 @@ internal class SaveStreamDataInArchiveNode(
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);
 
         // AB#7596: refused before anything is read or written, also in a dry run.
-        var originStamp = ArchiveWriteOriginStamp.Resolve("SaveStreamDataInArchive", c.Origin, c.ManualReason,
-            c.ManualReasonAttributePath, etlContext.VerifiedPrincipal?.SubjectId);
+        var originStamp = await ArchiveWriteOriginStamp.ResolveAsync("SaveStreamDataInArchive", c.Origin, c.ManualReason,
+            c.ManualReasonAttributePath, etlContext);
 
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 

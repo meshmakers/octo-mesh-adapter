@@ -44,8 +44,8 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         var c = nodeContext.GetNodeConfiguration<SaveTimeRangeSeriesInArchiveNodeConfiguration>();
         ValidateConfiguration(c);
         // AB#7596: refused before anything is read or written.
-        var originStamp = ArchiveWriteOriginStamp.Resolve("SaveTimeRangeSeriesInArchive", c.Origin, c.ManualReason,
-            reasonAttributePath: null, etlContext.VerifiedPrincipal?.SubjectId);
+        var originStamp = await ArchiveWriteOriginStamp.ResolveAsync("SaveTimeRangeSeriesInArchive", c.Origin, c.ManualReason,
+            reasonAttributePath: null, etlContext);
 
         var seriesArray = dataContext.Get<JsonArray>(c.Path);
         if (seriesArray == null || seriesArray.Count == 0)

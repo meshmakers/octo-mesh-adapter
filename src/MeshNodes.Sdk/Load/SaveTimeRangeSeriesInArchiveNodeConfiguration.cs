@@ -171,8 +171,8 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     /// <summary>
     /// Origin of the rows this node writes (AB#7596): <see cref="ArchiveWriteOrigin.Automated" /> (default, the
     /// behaviour before the option existed) or <see cref="ArchiveWriteOrigin.Manual" />. A manual row records
-    /// the execution's verified caller as its writer and the platform time; the pipeline must therefore run
-    /// for an authenticated caller. An archive that ranks by <c>$Origin</c> keeps a manual value against
+    /// its writer (the verified user caller, else the client id of the pipeline's service identity) and the
+    /// platform time. An archive that ranks by <c>$Origin</c> keeps a manual value against
     /// every later automated delivery.
     /// </summary>
     [PropertyGroup("Origin", 0)]

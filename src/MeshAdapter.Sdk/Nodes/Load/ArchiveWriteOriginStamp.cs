@@ -5,9 +5,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
 /// <summary>
 /// The origin an archive load node writes (AB#5356, AB#7593, AB#7596): validated once per execution of the
-/// node, then applied to every row. A manual row records the execution's verified caller as its writer —
-/// the identity the trigger authenticated, never a value from the data — so a manual write without a
-/// verified caller is refused instead of writing an unattributed manual value.
+/// node, then applied to every row. A manual row records who wrote it as resolved by the platform — the
+/// verified user caller, else the pipeline's service identity — never a value from the data.
 /// </summary>
 internal sealed class ArchiveWriteOriginStamp
 {
@@ -32,9 +31,15 @@ internal sealed class ArchiveWriteOriginStamp
     /// <param name="origin">Configured origin.</param>
     /// <param name="manualReason">Configured static reason.</param>
     /// <param name="reasonAttributePath">Configured per-row reason attribute, if the node supports one.</param>
-    /// <param name="verifiedCallerSubjectId">Subject id of the execution's verified caller, if any.</param>
-    public static ArchiveWriteOriginStamp Resolve(string nodeName, ArchiveWriteOrigin origin, string? manualReason,
-        string? reasonAttributePath, string? verifiedCallerSubjectId)
+    /// <param name="etlContext">The execution, which knows its verified caller and its service identity.</param>
+    /// <remarks>
+    /// The writer of a manual row is, in this order: the verified user caller's subject id; the client id of
+    /// the service identity the pipeline runs under (a file-based manual import has no user caller); the
+    /// pipeline itself (<c>pipeline:&lt;rtId&gt;</c>) when the execution acts as the system context. All three
+    /// are resolved by the platform, never read from the data, so the writer is never empty.
+    /// </remarks>
+    public static async Task<ArchiveWriteOriginStamp> ResolveAsync(string nodeName, ArchiveWriteOrigin origin, string? manualReason,
+        string? reasonAttributePath, IMeshEtlContext etlContext)
     {
         if (origin != ArchiveWriteOrigin.Manual)
         {
@@ -47,14 +52,18 @@ internal sealed class ArchiveWriteOriginStamp
             return new ArchiveWriteOriginStamp(ArchiveRowOrigin.Automated, null, null);
         }
 
-        if (string.IsNullOrWhiteSpace(verifiedCallerSubjectId))
+        var writer = etlContext.VerifiedPrincipal?.SubjectId;
+        if (string.IsNullOrWhiteSpace(writer))
         {
-            throw new InvalidOperationException(
-                $"{nodeName}: origin Manual records the caller who wrote the values, and this execution has no verified " +
-                "caller. Trigger the pipeline through an authenticated request (for example a secured FromHttpRequest route).");
+            writer = await etlContext.GetServiceIdentitySubjectIdAsync();
         }
 
-        return new ArchiveWriteOriginStamp(ArchiveRowOrigin.Manual, verifiedCallerSubjectId,
+        if (string.IsNullOrWhiteSpace(writer))
+        {
+            writer = $"pipeline:{etlContext.PipelineRtEntityId.RtId}";
+        }
+
+        return new ArchiveWriteOriginStamp(ArchiveRowOrigin.Manual, writer,
             string.IsNullOrEmpty(manualReason) ? null : manualReason);
     }
 

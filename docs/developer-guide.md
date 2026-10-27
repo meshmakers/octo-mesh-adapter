@@ -1185,14 +1185,14 @@ nodes below declare it:
 | `ManualReason` | string? | Optional reason stored with every manual row; only allowed with `Origin: Manual` |
 | `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty) |
 
-A manual row records the execution's **verified caller** (`VerifiedPrincipal.SubjectId`) as its writer
-and the platform time; nothing in the data can set the writer. A manual write therefore needs a
-trigger that authenticates the caller (a secured `FromHttpRequest` route) — without a verified caller
-the node fails before it reads or writes anything, also in a dry run. The writes run with the
-caller's rights like every other write of the execution. An unknown `Origin` value fails the pipeline
-registration (strict YAML deserializer); a reason without `Origin: Manual` fails the node. An archive
-that ranks by the reserved precedence key `$Origin` keeps a manual value against every later automated
-delivery.
+A manual row records its writer as resolved by the platform, never from the data: the **verified user
+caller** (`VerifiedPrincipal.SubjectId`) when the trigger authenticated one; otherwise the **client id of
+the service identity** the pipeline runs under (a file-based manual import has no user caller); and when
+the execution acts as the system context, `pipeline:<pipelineRtId>`. The writer is never empty and a
+manual write is never refused for lack of a caller. The writes run with the execution's rights like every
+other write. An unknown `Origin` value fails the pipeline registration (strict YAML deserializer); a
+reason without `Origin: Manual` fails the node. An archive that ranks by the reserved precedence key
+`$Origin` keeps a manual value against every later automated delivery.
 
 ```yaml
 - type: SaveTimeRangeStreamDataInArchive@1

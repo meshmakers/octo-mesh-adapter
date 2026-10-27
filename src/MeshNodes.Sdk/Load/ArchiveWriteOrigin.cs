@@ -11,8 +11,9 @@ public enum ArchiveWriteOrigin
     Automated = 0,
 
     /// <summary>
-    /// Entered or corrected by a person. The row records the execution's verified caller as its writer, so
-    /// the pipeline must be triggered by an authenticated caller; without one the node refuses the write.
+    /// Entered or corrected by a person (or imported as such). The row records its writer as resolved by the
+    /// platform: the verified user caller, else the client id of the pipeline's service identity, else
+    /// <c>pipeline:&lt;rtId&gt;</c>.
     /// </summary>
     Manual = 1
 }

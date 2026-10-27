@@ -484,7 +484,7 @@ the rows themselves. Writes a `QueryResult` to `TargetPath`.
 |-----------|------|-------------|
 | `ArchiveRtId` | OctoObjectId | RtId of the archive to read. Must be activated. Required |
 | `Aggregations` | collection | The key figures: `attributePath` + `function`. At least one. Required |
-| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row |
+| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row. On raw and time-range archives `row_origin` (`manual` / `automated`, AB#7616) is groupable too, e.g. `[rtId, DataQuality, row_origin]` with `Count` counts manual intervals per series |
 | `WellKnownNames` / `WellKnownNamesPath` | collection\<string\> / string | Restrict to these source entities by name |
 | `RtIds` / `RtIdsPath` | collection\<string\> / string | Restrict to these source entities by runtime id |
 | `FieldFilters` | collection | Additional filters, AND-combined |

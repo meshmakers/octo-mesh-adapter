@@ -90,6 +90,25 @@ public class AggregateStreamDataNodeIntegrationTests(StreamDataFixture fixture)
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_GroupByRowOrigin_CountsTheIntervalsPerOrigin()
+    {
+        // AB#7616: aggregatedEnergyReport groups by [rtId, DataQuality, row_origin] to count manual intervals.
+        // The fixture's deliveries are all automated, so each meter yields one automated group.
+        fixture.EnsureInitialized();
+
+        var result = await ExecuteAsync(NewConfig(Agg("Temperature", AggregationTypesDto.Count)) with
+        {
+            GroupBy = ["rtId", "row_origin"]
+        });
+
+        result!.Columns.Select(c => c.Header).Should().Equal("rtId", "row_origin", "Temperature");
+        result.Rows.Should().HaveCount(2);
+        result.Rows.Select(r => r.Values[1]).Should().AllBeEquivalentTo("automated");
+        result.Rows.Select(r => Convert.ToInt64(r.Values[2]))
+            .Should().BeEquivalentTo(new[] { 8L, 8L - StreamDataFixture.MissingSlots.Count });
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_WithoutGrouping_AggregatesAcrossBothMeters()
     {
         fixture.EnsureInitialized();

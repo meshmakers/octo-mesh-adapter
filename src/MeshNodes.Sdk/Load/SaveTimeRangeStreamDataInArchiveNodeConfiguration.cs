@@ -63,6 +63,15 @@ public record SaveTimeRangeStreamDataInArchiveNodeConfiguration : PathNodeConfig
     public string? ManualReasonAttributePath { get; init; }
 
     /// <summary>
+    /// Optional path, relative to each item at <see cref="Path" />, that carries the reason of a manual row
+    /// (AB#7638), for example <c>$.manualReason</c>. The value is read from the DataContext item next to the
+    /// update info, so the CK type needs no reason attribute and nothing surfaces as a user column. Takes
+    /// precedence over <see cref="ManualReasonAttributePath" /> and <see cref="ManualReason" /> when the item
+    /// carries a non-empty string there. Only allowed with <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    public string? ManualReasonPath { get; init; }
+
+    /// <summary>
     /// Optional path the write result is stored at (AB#7598): <c>{ stored, skipped, skippedByReason }</c>, so a
     /// later node can branch on it. Rows that lose against a stored row are a normal outcome and do not fail the
     /// node unless <see cref="FailOnSkippedRows" /> is set.

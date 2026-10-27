@@ -38,7 +38,7 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
         // AB#7596: refused before anything is read or written, also in a dry run.
         var originStamp = await ArchiveWriteOriginStamp.ResolveAsync("SaveTimeRangeStreamDataInArchive", c.Origin, c.ManualReason,
-            c.ManualReasonAttributePath, etlContext);
+            c.ManualReasonAttributePath, c.ManualReasonPath, etlContext);
 
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
@@ -78,8 +78,9 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
         var toInsert = new List<TimeRangeStreamDataPoint>();
         var skippedNoWindow = 0;
 
-        foreach (var datapoint in data)
+        for (var index = 0; index < data.Count; index++)
         {
+            var datapoint = data[index];
             if (datapoint.RtEntity == null)
             {
                 continue;
@@ -106,7 +107,8 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                         continue;
                     }
 
-                    var reason = originStamp.ReasonFor(attrs, c.ManualReasonAttributePath);
+                    var reason = originStamp.ReasonFor(attrs, c.ManualReasonAttributePath,
+                        ArchiveWriteOriginStamp.ItemReason(dataContext, c.Path, index, c.ManualReasonPath));
                     toInsert.Add(new TimeRangeStreamDataPoint
                     {
                         From = from,

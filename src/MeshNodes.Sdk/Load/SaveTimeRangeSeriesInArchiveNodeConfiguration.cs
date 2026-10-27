@@ -186,6 +186,13 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     public string? ManualReason { get; init; }
 
     /// <summary>
+    /// Optional property of each value object that carries the reason of its manual row (AB#7638), for a reason
+    /// that differs per row. Takes precedence over <see cref="ManualReason" /> when the value carries a non-empty
+    /// string there. Only allowed with <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    public string? ManualReasonProperty { get; init; }
+
+    /// <summary>
     /// Optional path the write result is stored at (AB#7598): <c>{ stored, skipped, skippedByReason }</c>, so a
     /// later node can branch on it. Rows that lose against a stored row are a normal outcome and do not fail the
     /// node unless <see cref="FailOnSkippedRows" /> is set.

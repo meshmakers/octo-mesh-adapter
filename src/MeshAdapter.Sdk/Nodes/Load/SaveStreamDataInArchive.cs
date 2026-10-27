@@ -32,7 +32,7 @@ internal class SaveStreamDataInArchiveNode(
 
         // AB#7596: refused before anything is read or written, also in a dry run.
         var originStamp = await ArchiveWriteOriginStamp.ResolveAsync("SaveStreamDataInArchive", c.Origin, c.ManualReason,
-            c.ManualReasonAttributePath, etlContext);
+            c.ManualReasonAttributePath, c.ManualReasonPath, etlContext);
 
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
@@ -67,8 +67,9 @@ internal class SaveStreamDataInArchiveNode(
 
             var toInsert = new List<StreamDataPoint>();
 
-            foreach (var datapoint in data)
+            for (var index = 0; index < data.Count; index++)
             {
+                var datapoint = data[index];
                 if (datapoint.RtEntity == null)
                 {
                     continue;
@@ -84,7 +85,8 @@ internal class SaveStreamDataInArchiveNode(
                         var rtId = datapoint.RtId ?? datapoint.RtEntity.RtId;
 
                         var attributes = datapoint.RtEntity.Attributes.ToDictionary();
-                        var reason = originStamp.ReasonFor(attributes, c.ManualReasonAttributePath);
+                        var reason = originStamp.ReasonFor(attributes, c.ManualReasonAttributePath,
+                            ArchiveWriteOriginStamp.ItemReason(dataContext, c.Path, index, c.ManualReasonPath));
                         var streamDataPoint = new StreamDataPoint
                         {
                             Timestamp = datapoint.RtEntity.RtChangedDateTime

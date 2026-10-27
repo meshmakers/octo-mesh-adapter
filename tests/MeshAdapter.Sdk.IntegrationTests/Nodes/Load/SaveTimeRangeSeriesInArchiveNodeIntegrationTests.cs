@@ -345,6 +345,36 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
     }
 
     [Fact]
+    public async Task TwoManualRowsInOneBatch_KeepTheirOwnReason_ReadFromTheValueObjects()
+    {
+        // AB#7638: the reason comes from the request data (one per value), not from a CK attribute; a value
+        // without one falls back to the static reason.
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_ManualReasonPerRow", withPrecedence: true, originFirst: true);
+        var key = UniqueKey("MANUAL-REASON");
+        var caller = new Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal("user-rt-8", "test", "u@example.com", "u", ["Writer"], null);
+        var first = Value(0, 11.0, Estimated, OlderDocument);
+        first["reason"] = "meter exchanged";
+        var second = Value(1, 12.0, Estimated, OlderDocument);
+        second["reason"] = "reading corrected by phone";
+        var third = Value(2, 13.0, Estimated, OlderDocument);
+
+        var result = await ExecuteNodeAsync(archiveRtId,
+            c => c with { Origin = ArchiveWriteOrigin.Manual, ManualReason = "static", ManualReasonProperty = "reason", WriteResultPath = "$.writeResult" },
+            caller, Series(key, [first, second, third]));
+
+        result!["stored"]!.GetValue<int>().Should().Be(3);
+        var anchor = await GetSingleAnchorAsync(key);
+        var origin = await ReadOriginAsync(archiveRtId, anchor.RtId);
+        origin.Select(o => o.Reason).Should().BeEquivalentTo("meter exchanged", "reading corrected by phone", "static");
+        origin.Should().AllSatisfy(o =>
+        {
+            o.Origin.Should().Be("manual");
+            o.WrittenBy.Should().Be("user-rt-8");
+        });
+    }
+
+    [Fact]
     public async Task APipelineWithOriginManualButNoCaller_IsStored_WithThePipelineAsWriter()
     {
         // AB#7596: a manual import without a user caller and without a service account (the execution acts

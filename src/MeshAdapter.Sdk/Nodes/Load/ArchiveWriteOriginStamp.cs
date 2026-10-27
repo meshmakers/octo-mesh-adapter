@@ -1,5 +1,6 @@
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -31,6 +32,7 @@ internal sealed class ArchiveWriteOriginStamp
     /// <param name="origin">Configured origin.</param>
     /// <param name="manualReason">Configured static reason.</param>
     /// <param name="reasonAttributePath">Configured per-row reason attribute, if the node supports one.</param>
+    /// <param name="reasonPath">Configured per-row reason read from the DataContext item (AB#7638), if the node supports one.</param>
     /// <param name="etlContext">The execution, which knows its verified caller and its service identity.</param>
     /// <remarks>
     /// The writer of a manual row is, in this order: the verified user caller's subject id; the client id of
@@ -39,11 +41,12 @@ internal sealed class ArchiveWriteOriginStamp
     /// are resolved by the platform, never read from the data, so the writer is never empty.
     /// </remarks>
     public static async Task<ArchiveWriteOriginStamp> ResolveAsync(string nodeName, ArchiveWriteOrigin origin, string? manualReason,
-        string? reasonAttributePath, IMeshEtlContext etlContext)
+        string? reasonAttributePath, string? reasonPath, IMeshEtlContext etlContext)
     {
         if (origin != ArchiveWriteOrigin.Manual)
         {
-            if (!string.IsNullOrEmpty(manualReason) || !string.IsNullOrEmpty(reasonAttributePath))
+            if (!string.IsNullOrEmpty(manualReason) || !string.IsNullOrEmpty(reasonAttributePath) ||
+                !string.IsNullOrEmpty(reasonPath))
             {
                 throw new InvalidOperationException(
                     $"{nodeName}: a manual reason is only recorded for origin Manual; set 'origin: Manual' or remove the reason.");
@@ -68,19 +71,44 @@ internal sealed class ArchiveWriteOriginStamp
     }
 
     /// <summary>
-    /// The reason of one row: the per-row value popped from <paramref name="attributes" /> when the node names
-    /// an attribute for it and the row carries a non-empty string there, else the static reason. The attribute
-    /// is removed in every case so it never surfaces as a user column.
+    /// The reason of one row, in this order: <paramref name="itemReason" /> (read from the DataContext item,
+    /// AB#7638) when it is a non-empty string; the per-row value popped from <paramref name="attributes" /> when
+    /// the node names an attribute for it and the row carries a non-empty string there; else the static reason.
+    /// The attribute is removed in every case so it never surfaces as a user column.
     /// </summary>
-    public string? ReasonFor(IDictionary<string, object?> attributes, string? reasonAttributePath)
+    public string? ReasonFor(IDictionary<string, object?> attributes, string? reasonAttributePath, string? itemReason = null)
     {
-        if (string.IsNullOrEmpty(reasonAttributePath) || !attributes.Remove(reasonAttributePath, out var value))
+        string? attributeReason = null;
+        if (!string.IsNullOrEmpty(reasonAttributePath) && attributes.Remove(reasonAttributePath, out var value))
         {
-            return Reason;
+            attributeReason = value as string;
         }
 
-        return value is string s && !string.IsNullOrWhiteSpace(s) ? s : Reason;
+        if (Origin != ArchiveRowOrigin.Manual)
+        {
+            return null;
+        }
+
+        return NonEmpty(itemReason) ?? NonEmpty(attributeReason) ?? Reason;
     }
+
+    /// <summary>
+    /// The reason of one item read from the DataContext (AB#7638): <paramref name="reasonPath" /> evaluated against
+    /// the item at <paramref name="listPath" />[<paramref name="index" />]. <c>null</c> when no path is configured or
+    /// the item carries no string there.
+    /// </summary>
+    public static string? ItemReason(IDataContext dataContext, string listPath, int index, string? reasonPath)
+    {
+        if (string.IsNullOrEmpty(reasonPath))
+        {
+            return null;
+        }
+
+        var item = dataContext.Select($"{listPath}[{index}]");
+        return item != null && item.TryGet<string>(reasonPath, out var reason) ? reason : null;
+    }
+
+    private static string? NonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     /// <summary>Applies the origin to rows built without one (the series node builds them in the shaper).</summary>
     public List<TimeRangeStreamDataPoint> Apply(IReadOnlyList<TimeRangeStreamDataPoint> points)
@@ -100,7 +128,8 @@ internal sealed class ArchiveWriteOriginStamp
             Attributes = p.Attributes,
             Origin = Origin,
             ManualWrittenBy = Writer,
-            ManualReason = Reason
+            // A per-row reason the shaper read from the value object (AB#7638) wins over the static one.
+            ManualReason = string.IsNullOrWhiteSpace(p.ManualReason) ? Reason : p.ManualReason
         }).ToList();
     }
 }

@@ -384,6 +384,98 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
             }, Caller()));
     }
 
+    // ---- AB#7638: a per-row reason read from the DataContext item ----------------------------------------------
+
+    private async Task<List<TimeRangeStreamDataPoint>?> RunWithItemReasonsAsync(
+        SaveTimeRangeStreamDataInArchiveNodeConfiguration config, params string?[] itemReasons)
+    {
+        A.CallTo(() => EtlContext.VerifiedPrincipal).Returns(Caller());
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+        var data = new List<EntityUpdateInfo<RtEntity>>();
+        for (var i = 0; i < itemReasons.Length; i++)
+        {
+            var from = new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc).AddMinutes(15 * i);
+            var entity = CreateEntityWithWindow(from, from.AddMinutes(15));
+            entity.SetAttributeRawValue("Reason", "from the attribute");
+            data.Add(CreateInsert(entity));
+
+            var item = A.Fake<IDataContext>();
+            var reason = itemReasons[i];
+            string? ignored;
+            A.CallTo(() => item.TryGet("$.manualReason", out ignored))
+                .Returns(reason != null)
+                .AssignsOutAndRefParameters(reason);
+            A.CallTo(() => dataContext.Select($"{DataPath}[{i}]")).Returns(item);
+        }
+
+        SetupDataContext(dataContext, data);
+
+        List<TimeRangeStreamDataPoint>? captured = null;
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                ArchiveRtId, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .Invokes((OctoObjectId _, IEnumerable<TimeRangeStreamDataPoint> points, CancellationToken _) =>
+                captured = points.ToList());
+
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+        return captured;
+    }
+
+    [Fact]
+    public async Task OriginManual_APerItemReasonFromTheDataContext_IsStoredPerRow()
+    {
+        var captured = await RunWithItemReasonsAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual,
+            ManualReason = "static", ManualReasonPath = "$.manualReason"
+        }, "meter exchanged", "reading corrected");
+
+        Assert.Equal(["meter exchanged", "reading corrected"], captured!.Select(p => p.ManualReason));
+        Assert.All(captured!, p => Assert.Equal(ArchiveRowOrigin.Manual, p.Origin));
+    }
+
+    [Fact]
+    public async Task OriginManual_AnItemWithoutAReason_FallsBackToTheAttributeThenTheStaticReason()
+    {
+        var withAttribute = await RunWithItemReasonsAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual,
+            ManualReason = "static", ManualReasonPath = "$.manualReason", ManualReasonAttributePath = "Reason"
+        }, null, "  ");
+        Assert.Equal(["from the attribute", "from the attribute"], withAttribute!.Select(p => p.ManualReason));
+        Assert.All(withAttribute!, p => Assert.False(p.Attributes.ContainsKey("Reason")));
+
+        var staticOnly = await RunWithItemReasonsAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual,
+            ManualReason = "static", ManualReasonPath = "$.manualReason"
+        }, (string?)null);
+        Assert.Equal("static", Assert.Single(staticOnly!).ManualReason);
+    }
+
+    [Fact]
+    public async Task OriginManual_APerItemReasonWinsOverTheAttributeReason()
+    {
+        var captured = await RunWithItemReasonsAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual,
+            ManualReasonPath = "$.manualReason", ManualReasonAttributePath = "Reason"
+        }, "from the item");
+
+        Assert.Equal("from the item", Assert.Single(captured!).ManualReason);
+    }
+
+    [Fact]
+    public async Task APerItemReasonPathWithoutOriginManual_IsRefused()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWithItemReasonsAsync(
+            new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+            {
+                Path = DataPath, ArchiveRtId = ArchiveRtIdString, ManualReasonPath = "$.manualReason"
+            }, "why"));
+        Assert.Contains("only recorded for origin Manual", ex.Message);
+    }
+
     // ---- AB#7598: the write result ---------------------------------------------------------------------------
 
     private async Task<(IDataContext DataContext, INodeContext NodeContext)> RunWithResultAsync(

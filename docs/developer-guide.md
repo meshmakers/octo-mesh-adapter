@@ -1183,8 +1183,9 @@ nodes below declare it:
 |-----------|------|-------------|
 | `Origin` | enum | `Automated` (default — a pipeline without it writes exactly as before) or `Manual` |
 | `ManualReason` | string? | Optional reason stored with every manual row; only allowed with `Origin: Manual` |
-| `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty) |
-
+| `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty). The CK type must declare the attribute, otherwise `CreateUpdateInfo` refuses it — prefer `ManualReasonPath` |
+| `ManualReasonPath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only (AB#7638): path, relative to each item at `Path`, that carries the reason of that row, e.g. `$.manualReason` next to `rtEntity` in the update info. Read from the DataContext, so the CK type needs no reason attribute. Wins over `ManualReasonAttributePath` and `ManualReason` when not empty |
+| `ManualReasonProperty` | string? | `SaveTimeRangeSeriesInArchive@1` only (AB#7638): property of each value object that carries the reason of its row. Wins over `ManualReason` when not empty |
 | `WriteResultPath` | string? | All three nodes (AB#7598): path the write result `{ stored, skipped, skippedByReason }` is stored at |
 | `FailOnSkippedRows` | bool | All three nodes (AB#7598): fail when the archive did not store every row (default `false`: a warning names the rows not stored per reason) |
 
@@ -1216,7 +1217,7 @@ Persists entity data to CrateDB time-series database.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `Path` | string | EntityUpdateInfo collection path |
-| `Origin` / `ManualReason` / `ManualReasonAttributePath` | | See *Origin of archive rows* above |
+| `Origin` / `ManualReason` / `ManualReasonAttributePath` / `ManualReasonPath` | | See *Origin of archive rows* above |
 
 **Stored Data**:
 - Timestamp (entity change time or external timestamp)
@@ -1237,7 +1238,7 @@ CkTypeId and looked up, and the whole insert is refused naming the missing ids. 
 **system** session by decision (AB#5028) — under a narrow identity "you may not see it" would read as
 "it does not exist" and the node would refuse perfectly good measurements.
 
-`Origin`, `ManualReason` and `ManualReasonAttributePath`: see *Origin of archive rows* above.
+`Origin`, `ManualReason`, `ManualReasonAttributePath` and `ManualReasonPath`: see *Origin of archive rows* above.
 
 Use `SaveTimeRangeSeriesInArchive@1` below instead when the pipeline would have to create a runtime
 entity per window just to satisfy this node's `rtid` requirement.
@@ -1269,7 +1270,7 @@ windowed values at `ValuesProperty`.
 | `AnchorWindowFromAttribute` / `AnchorWindowToAttribute` | string? | Attribute paths the anchor's own window is written to; the `To` attribute also decides whether an existing anchor is advanced |
 | `ParentRtIdProperty` / `ParentCkTypeId` / `ParentAssociationRoleId` | string? | Parent association for newly created anchors — **all three or none** |
 | `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` (AB#5127) |
-| `Origin` / `ManualReason` | | See *Origin of archive rows* above |
+| `Origin` / `ManualReason` / `ManualReasonProperty` | | See *Origin of archive rows* above |
 
 **Order of operations, and why it is load-bearing:**
 

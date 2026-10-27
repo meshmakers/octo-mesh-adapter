@@ -9,6 +9,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -284,5 +285,41 @@ public class SaveStreamDataInArchiveNodeTests : NodeTestBase
         Assert.NotNull(capturedDataPoints);
         var dp = capturedDataPoints!.Single();
         Assert.Equal(_etlContext.TransactionStartedDateTime, dp.Timestamp);
+    }
+
+    [Fact]
+    public async Task OriginManual_APerItemReasonFromTheDataContext_IsStoredPerRow()
+    {
+        // AB#7638: the reason is read from the DataContext item next to the update info, so the CK type
+        // needs no reason attribute; each row keeps its own reason.
+        A.CallTo(() => _etlContext.VerifiedPrincipal)
+            .Returns(new VerifiedPrincipal("user-rt-1", "acme", "u@example.com", "u", ["Reader"], null));
+        var config = new SaveStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual,
+            ManualReason = "static", ManualReasonPath = "$.manualReason"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<SaveStreamDataInArchiveNodeConfiguration>(config);
+        SetupDataContextList(dataContext, DataPath, [CreateInsertUpdateInfo(), CreateInsertUpdateInfo()]);
+        string?[] reasons = ["meter exchanged", null];
+        for (var i = 0; i < reasons.Length; i++)
+        {
+            var item = A.Fake<IDataContext>();
+            var reason = reasons[i];
+            string? ignored;
+            A.CallTo(() => item.TryGet("$.manualReason", out ignored))
+                .Returns(reason != null)
+                .AssignsOutAndRefParameters(reason);
+            A.CallTo(() => dataContext.Select($"{DataPath}[{i}]")).Returns(item);
+        }
+
+        List<StreamDataPoint>? captured = null;
+        A.CallTo(() => _streamDataRepository.InsertAsync(ArchiveRtId, A<IEnumerable<StreamDataPoint>>._))
+            .Invokes((OctoObjectId _, IEnumerable<StreamDataPoint> points) => captured = points.ToList());
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(["meter exchanged", "static"], captured!.Select(p => p.ManualReason));
+        Assert.All(captured!, p => Assert.Equal("user-rt-1", p.ManualWrittenBy));
     }
 }

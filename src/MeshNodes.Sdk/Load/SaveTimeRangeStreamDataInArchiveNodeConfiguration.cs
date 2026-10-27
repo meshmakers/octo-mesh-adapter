@@ -38,4 +38,27 @@ public record SaveTimeRangeStreamDataInArchiveNodeConfiguration : PathNodeConfig
     /// DateTime). Default <c>"To"</c>. Same removal semantics as <see cref="FromAttributePath"/>.
     /// </summary>
     public string ToAttributePath { get; init; } = "To";
+
+    /// <summary>
+    /// Origin of the rows this node writes (AB#7596): <see cref="ArchiveWriteOrigin.Automated" /> (default, the
+    /// behaviour before the option existed) or <see cref="ArchiveWriteOrigin.Manual" />. A manual row records
+    /// the execution's verified caller as its writer and the platform time; the pipeline must therefore run
+    /// for an authenticated caller. An archive that ranks by <c>$Origin</c> keeps a manual value against
+    /// every later automated delivery.
+    /// </summary>
+    public ArchiveWriteOrigin Origin { get; init; } = ArchiveWriteOrigin.Automated;
+
+    /// <summary>
+    /// Optional reason recorded with every manual row of this node (AB#7593). Only allowed with
+    /// <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    public string? ManualReason { get; init; }
+
+    /// <summary>
+    /// Optional attribute on the upstream entity that carries the reason of a manual row (AB#7593), for a
+    /// reason that differs per row. Removed from the attributes like the window attributes; takes precedence
+    /// over <see cref="ManualReason" /> when present and not empty. Only allowed with
+    /// <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    public string? ManualReasonAttributePath { get; init; }
 }

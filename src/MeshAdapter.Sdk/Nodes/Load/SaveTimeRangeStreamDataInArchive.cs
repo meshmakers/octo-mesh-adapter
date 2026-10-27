@@ -36,6 +36,10 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);
 
+        // AB#7596: refused before anything is read or written, also in a dry run.
+        var originStamp = ArchiveWriteOriginStamp.Resolve("SaveTimeRangeStreamDataInArchive", c.Origin, c.ManualReason,
+            c.ManualReasonAttributePath, etlContext.VerifiedPrincipal?.SubjectId);
+
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
@@ -46,6 +50,7 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                 path = c.Path,
                 fromAttributePath = c.FromAttributePath,
                 toAttributePath = c.ToAttributePath,
+                origin = originStamp.Origin.ToString(),
                 count = data?.Count ?? 0,
                 wouldInsert = data
             });
@@ -101,6 +106,7 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                         continue;
                     }
 
+                    var reason = originStamp.ReasonFor(attrs, c.ManualReasonAttributePath);
                     toInsert.Add(new TimeRangeStreamDataPoint
                     {
                         From = from,
@@ -109,6 +115,9 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                         RtWellKnownName = datapoint.RtEntity.RtWellKnownName,
                         CkTypeId = datapoint.CkTypeId,
                         Attributes = attrs,
+                        Origin = originStamp.Origin,
+                        ManualWrittenBy = originStamp.Writer,
+                        ManualReason = reason,
                     });
                     break;
 

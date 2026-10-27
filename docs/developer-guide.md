@@ -1174,6 +1174,34 @@ records and JSON trees by content, numbers by value), so equal content is no con
 produces one warning per entity and batch naming all conflicting attributes with compact values
 truncated to 200 characters; credential-like attributes are shown as `<redacted>` (AB#7436).
 
+#### Origin of archive rows (all three archive load nodes, AB#5356 / AB#7593 / AB#7596)
+
+Every archive row records whether it was entered manually or delivered automatically. The three load
+nodes below declare it:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Origin` | enum | `Automated` (default — a pipeline without it writes exactly as before) or `Manual` |
+| `ManualReason` | string? | Optional reason stored with every manual row; only allowed with `Origin: Manual` |
+| `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty) |
+
+A manual row records the execution's **verified caller** (`VerifiedPrincipal.SubjectId`) as its writer
+and the platform time; nothing in the data can set the writer. A manual write therefore needs a
+trigger that authenticates the caller (a secured `FromHttpRequest` route) — without a verified caller
+the node fails before it reads or writes anything, also in a dry run. The writes run with the
+caller's rights like every other write of the execution. An unknown `Origin` value fails the pipeline
+registration (strict YAML deserializer); a reason without `Origin: Manual` fails the node. An archive
+that ranks by the reserved precedence key `$Origin` keeps a manual value against every later automated
+delivery.
+
+```yaml
+- type: SaveTimeRangeStreamDataInArchive@1
+  path: $.updates
+  archiveRtId: ec0000000000000000000a10
+  origin: Manual
+  manualReasonAttributePath: Reason
+```
+
 #### SaveStreamDataInArchiveNode
 
 Persists entity data to CrateDB time-series database.
@@ -1181,6 +1209,7 @@ Persists entity data to CrateDB time-series database.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `Path` | string | EntityUpdateInfo collection path |
+| `Origin` / `ManualReason` / `ManualReasonAttributePath` | | See *Origin of archive rows* above |
 
 **Stored Data**:
 - Timestamp (entity change time or external timestamp)
@@ -1200,6 +1229,8 @@ Before inserting it runs an **orphan guard**: the distinct source rtIds of the b
 CkTypeId and looked up, and the whole insert is refused naming the missing ids. That read uses a
 **system** session by decision (AB#5028) — under a narrow identity "you may not see it" would read as
 "it does not exist" and the node would refuse perfectly good measurements.
+
+`Origin`, `ManualReason` and `ManualReasonAttributePath`: see *Origin of archive rows* above.
 
 Use `SaveTimeRangeSeriesInArchive@1` below instead when the pipeline would have to create a runtime
 entity per window just to satisfy this node's `rtid` requirement.
@@ -1231,6 +1262,7 @@ windowed values at `ValuesProperty`.
 | `AnchorWindowFromAttribute` / `AnchorWindowToAttribute` | string? | Attribute paths the anchor's own window is written to; the `To` attribute also decides whether an existing anchor is advanced |
 | `ParentRtIdProperty` / `ParentCkTypeId` / `ParentAssociationRoleId` | string? | Parent association for newly created anchors — **all three or none** |
 | `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` (AB#5127) |
+| `Origin` / `ManualReason` | | See *Origin of archive rows* above |
 
 **Order of operations, and why it is load-bearing:**
 

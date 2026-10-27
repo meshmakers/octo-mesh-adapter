@@ -167,4 +167,21 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     /// <summary>Association role linking anchor to parent. Required when <see cref="ParentRtIdProperty" /> is set.</summary>
     [PropertyGroup("Parent", 2)]
     public string? ParentAssociationRoleId { get; init; }
+
+    /// <summary>
+    /// Origin of the rows this node writes (AB#7596): <see cref="ArchiveWriteOrigin.Automated" /> (default, the
+    /// behaviour before the option existed) or <see cref="ArchiveWriteOrigin.Manual" />. A manual row records
+    /// the execution's verified caller as its writer and the platform time; the pipeline must therefore run
+    /// for an authenticated caller. An archive that ranks by <c>$Origin</c> keeps a manual value against
+    /// every later automated delivery.
+    /// </summary>
+    [PropertyGroup("Origin", 0)]
+    public ArchiveWriteOrigin Origin { get; init; } = ArchiveWriteOrigin.Automated;
+
+    /// <summary>
+    /// Optional reason recorded with every manual row of this node (AB#7593). Only allowed with
+    /// <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    [PropertyGroup("Origin", 1)]
+    public string? ManualReason { get; init; }
 }

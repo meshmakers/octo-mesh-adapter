@@ -43,6 +43,9 @@ internal class SaveTimeRangeSeriesInArchiveNode(
     {
         var c = nodeContext.GetNodeConfiguration<SaveTimeRangeSeriesInArchiveNodeConfiguration>();
         ValidateConfiguration(c);
+        // AB#7596: refused before anything is read or written.
+        var originStamp = ArchiveWriteOriginStamp.Resolve("SaveTimeRangeSeriesInArchive", c.Origin, c.ManualReason,
+            reasonAttributePath: null, etlContext.VerifiedPrincipal?.SubjectId);
 
         var seriesArray = dataContext.Get<JsonArray>(c.Path);
         if (seriesArray == null || seriesArray.Count == 0)
@@ -105,7 +108,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         }
 
         await ResolveAndPersistAnchorsAsync(writable, ckTypeId, c, nodeContext);
-        await WriteArchiveRowsAsync(writable, ckTypeId, c, nodeContext);
+        await WriteArchiveRowsAsync(writable, ckTypeId, c, nodeContext, originStamp);
 
         await next(dataContext, nodeContext);
     }
@@ -452,7 +455,8 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         IReadOnlyList<ShapedSeries> series,
         RtCkId<CkTypeId> ckTypeId,
         SaveTimeRangeSeriesInArchiveNodeConfiguration c,
-        INodeContext nodeContext)
+        INodeContext nodeContext,
+        ArchiveWriteOriginStamp originStamp)
     {
         // The archive stores an Enum attribute as its integer KEY, so the raw "L1" that arrives in
         // the document has to become 1 before it reaches an integer column — the composition this
@@ -488,6 +492,6 @@ internal class SaveTimeRangeSeriesInArchiveNode(
 
         nodeContext.Debug(
             $"Inserting {points.Count} time-range data point(s) for {series.Count} series into archive '{c.ArchiveRtId}'");
-        await streamDataRepo.InsertTimeRangeAsync(new OctoObjectId(c.ArchiveRtId), points);
+        await streamDataRepo.InsertTimeRangeAsync(new OctoObjectId(c.ArchiveRtId), originStamp.Apply(points));
     }
 }

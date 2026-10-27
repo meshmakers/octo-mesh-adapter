@@ -11,6 +11,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Contracts.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 
@@ -263,5 +264,93 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
         A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
                 A<OctoObjectId>._, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
             .MustNotHaveHappened();
+    }
+
+    // ---- AB#7596: origin, writer and reason -----------------------------------------------------------------
+
+    private async Task<List<TimeRangeStreamDataPoint>?> RunWithOriginAsync(
+        SaveTimeRangeStreamDataInArchiveNodeConfiguration config, VerifiedPrincipal? caller, Action<RtEntity>? shape = null)
+    {
+        A.CallTo(() => EtlContext.VerifiedPrincipal).Returns(caller);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+        var entity = CreateEntityWithWindow(new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc));
+        shape?.Invoke(entity);
+        SetupDataContext(dataContext, new() { CreateInsert(entity) });
+
+        List<TimeRangeStreamDataPoint>? captured = null;
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                ArchiveRtId, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .Invokes((OctoObjectId _, IEnumerable<TimeRangeStreamDataPoint> points, CancellationToken _) =>
+                captured = points.ToList());
+
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+        return captured;
+    }
+
+    private static VerifiedPrincipal Caller() => new("user-rt-1", "acme", "u@example.com", "u", ["Reader"], null);
+
+    [Fact]
+    public async Task WithoutOrigin_WritesAutomatedRowsWithoutWriter_AsBefore()
+    {
+        var captured = await RunWithOriginAsync(
+            new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString }, Caller());
+
+        var point = Assert.Single(captured!);
+        Assert.Equal(ArchiveRowOrigin.Automated, point.Origin);
+        Assert.Null(point.ManualWrittenBy);
+    }
+
+    [Fact]
+    public async Task OriginManual_RecordsTheVerifiedCallerAndTheStaticReason()
+    {
+        var captured = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual, ManualReason = "meter exchanged"
+        }, Caller());
+
+        var point = Assert.Single(captured!);
+        Assert.Equal(ArchiveRowOrigin.Manual, point.Origin);
+        Assert.Equal("user-rt-1", point.ManualWrittenBy);
+        Assert.Equal("meter exchanged", point.ManualReason);
+    }
+
+    [Fact]
+    public async Task OriginManual_APerRowReasonWinsAndIsNoUserColumn()
+    {
+        var captured = await RunWithOriginAsync(new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual,
+            ManualReason = "static", ManualReasonAttributePath = "Reason"
+        }, Caller(), e => e.SetAttributeRawValue("Reason", "per row"));
+
+        var point = Assert.Single(captured!);
+        Assert.Equal("per row", point.ManualReason);
+        Assert.False(point.Attributes.ContainsKey("Reason"));
+    }
+
+    [Fact]
+    public async Task OriginManual_WithoutAVerifiedCaller_IsRefusedBeforeAnythingIsWritten()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWithOriginAsync(
+            new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+            {
+                Path = DataPath, ArchiveRtId = ArchiveRtIdString, Origin = ArchiveWriteOrigin.Manual
+            }, caller: null));
+
+        Assert.Contains("verified", ex.Message);
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+            A<OctoObjectId>._, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task AReasonWithoutOriginManual_IsRefused()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() => RunWithOriginAsync(
+            new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+            {
+                Path = DataPath, ArchiveRtId = ArchiveRtIdString, ManualReason = "why"
+            }, Caller()));
     }
 }

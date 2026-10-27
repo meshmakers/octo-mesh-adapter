@@ -143,7 +143,9 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
             nodeContext.Debug(
                 $"Inserting {toInsert.Count} time-range data point(s) into archive '{archiveRtId}'");
-            await streamDataRepo.InsertTimeRangeAsync(archiveRtId, toInsert);
+            var result = await streamDataRepo.InsertTimeRangeAsync(archiveRtId, toInsert);
+            ArchiveWriteResultReporter.Report("SaveTimeRangeStreamDataInArchive", result, c.WriteResultPath, c.FailOnSkippedRows,
+                dataContext, nodeContext);
         }
 
         await next(dataContext, nodeContext);

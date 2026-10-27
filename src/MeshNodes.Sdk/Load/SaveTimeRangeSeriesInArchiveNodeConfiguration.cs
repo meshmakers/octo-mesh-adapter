@@ -184,4 +184,20 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     /// </summary>
     [PropertyGroup("Origin", 1)]
     public string? ManualReason { get; init; }
+
+    /// <summary>
+    /// Optional path the write result is stored at (AB#7598): <c>{ stored, skipped, skippedByReason }</c>, so a
+    /// later node can branch on it. Rows that lose against a stored row are a normal outcome and do not fail the
+    /// node unless <see cref="FailOnSkippedRows" /> is set.
+    /// </summary>
+    [PropertyGroup("Origin", 2)]
+    public string? WriteResultPath { get; init; }
+
+    /// <summary>
+    /// Fails the node when the archive did not store every row (AB#7598), for example an automated delivery
+    /// against a manual value or a lower quality against a higher one. Default <c>false</c>: such rows are
+    /// reported as a warning. A manual row that could not be stored always fails the node.
+    /// </summary>
+    [PropertyGroup("Origin", 3)]
+    public bool FailOnSkippedRows { get; init; }
 }

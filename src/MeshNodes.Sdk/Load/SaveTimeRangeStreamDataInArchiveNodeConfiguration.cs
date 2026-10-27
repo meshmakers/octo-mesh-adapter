@@ -61,4 +61,18 @@ public record SaveTimeRangeStreamDataInArchiveNodeConfiguration : PathNodeConfig
     /// <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
     /// </summary>
     public string? ManualReasonAttributePath { get; init; }
+
+    /// <summary>
+    /// Optional path the write result is stored at (AB#7598): <c>{ stored, skipped, skippedByReason }</c>, so a
+    /// later node can branch on it. Rows that lose against a stored row are a normal outcome and do not fail the
+    /// node unless <see cref="FailOnSkippedRows" /> is set.
+    /// </summary>
+    public string? WriteResultPath { get; init; }
+
+    /// <summary>
+    /// Fails the node when the archive did not store every row (AB#7598), for example an automated delivery
+    /// against a manual value or a lower quality against a higher one. Default <c>false</c>: such rows are
+    /// reported as a warning. A manual row that could not be stored always fails the node.
+    /// </summary>
+    public bool FailOnSkippedRows { get; init; }
 }

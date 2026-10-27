@@ -1185,6 +1185,13 @@ nodes below declare it:
 | `ManualReason` | string? | Optional reason stored with every manual row; only allowed with `Origin: Manual` |
 | `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty) |
 
+| `WriteResultPath` | string? | All three nodes (AB#7598): path the write result `{ stored, skipped, skippedByReason }` is stored at |
+| `FailOnSkippedRows` | bool | All three nodes (AB#7598): fail when the archive did not store every row (default `false`: a warning names the rows not stored per reason) |
+
+The write result says how many rows the archive stored and why the others were not
+(`LowerPrecedence`, `ManualValueProtected`, `CkTypeMismatch`). Losing rows are a normal outcome for
+automated deliveries; a manual row that cannot be stored always fails the node.
+
 A manual row records its writer as resolved by the platform, never from the data: the **verified user
 caller** (`VerifiedPrincipal.SubjectId`) when the trigger authenticated one; otherwise the **client id of
 the service identity** the pipeline runs under (a file-based manual import has no user caller); and when

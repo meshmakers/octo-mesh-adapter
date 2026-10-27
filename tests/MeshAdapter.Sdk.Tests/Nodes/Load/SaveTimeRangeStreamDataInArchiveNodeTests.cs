@@ -383,4 +383,95 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
                 Path = DataPath, ArchiveRtId = ArchiveRtIdString, ManualReason = "why"
             }, Caller()));
     }
+
+    // ---- AB#7598: the write result ---------------------------------------------------------------------------
+
+    private async Task<(IDataContext DataContext, INodeContext NodeContext)> RunWithResultAsync(
+        SaveTimeRangeStreamDataInArchiveNodeConfiguration config, StreamDataWriteResult result)
+    {
+        A.CallTo(() => EtlContext.VerifiedPrincipal).Returns(null);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+        SetupDataContext(dataContext, new()
+        {
+            CreateInsert(CreateEntityWithWindow(new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc)))
+        });
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                ArchiveRtId, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .Returns(result);
+
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+        return (dataContext, nodeContext);
+    }
+
+    private static StreamDataWriteResult OneProtectedRow() => new(0,
+    [
+        new StreamDataSkippedRow(new OctoObjectId(SourceRtIdString), new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc), ArchiveRowOrigin.Automated, StreamDataSkipReason.ManualValueProtected)
+    ]);
+
+    [Fact]
+    public async Task SkippedRows_AreReportedAsAWarningWithTheReason()
+    {
+        A.CallTo(() => EtlContext.VerifiedPrincipal).Returns(null);
+        var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString };
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+        SetupDataContext(dataContext, new()
+        {
+            CreateInsert(CreateEntityWithWindow(new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc)))
+        });
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                ArchiveRtId, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .Returns(OneProtectedRow());
+
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+            A<string>.That.Contains("ManualValueProtected 1"), A<object[]>._)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task FailOnSkippedRows_FailsTheNode()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWithResultAsync(
+            new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+            {
+                Path = DataPath, ArchiveRtId = ArchiveRtIdString, FailOnSkippedRows = true
+            }, OneProtectedRow()));
+
+        Assert.Contains("1 not stored", ex.Message);
+    }
+
+    [Fact]
+    public async Task WriteResultPath_StoresTheCountsForLaterNodes()
+    {
+        System.Text.Json.Nodes.JsonObject? written = null;
+        var config = new SaveTimeRangeStreamDataInArchiveNodeConfiguration
+        {
+            Path = DataPath, ArchiveRtId = ArchiveRtIdString, WriteResultPath = "$.writeResult"
+        };
+        A.CallTo(() => EtlContext.VerifiedPrincipal).Returns(null);
+        var (dataContext, nodeContext, next) = PrepareTest<SaveTimeRangeStreamDataInArchiveNodeConfiguration>(config);
+        SetupDataContext(dataContext, new()
+        {
+            CreateInsert(CreateEntityWithWindow(new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc)))
+        });
+        A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
+                ArchiveRtId, A<IEnumerable<TimeRangeStreamDataPoint>>._, A<CancellationToken>._))
+            .Returns(OneProtectedRow());
+        A.CallTo(() => dataContext.Set("$.writeResult", A<System.Text.Json.Nodes.JsonObject?>._))
+            .Invokes((string _, System.Text.Json.Nodes.JsonObject? value) => written = value);
+
+        await new SaveTimeRangeStreamDataInArchiveNode(next, EtlContext, _systemContext)
+            .ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(written);
+        Assert.Equal(0, written!["stored"]!.GetValue<int>());
+        Assert.Equal(1, written["skipped"]!.GetValue<int>());
+        Assert.Equal(1, written["skippedByReason"]!["ManualValueProtected"]!.GetValue<int>());
+    }
 }

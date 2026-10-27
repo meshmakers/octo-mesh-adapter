@@ -108,7 +108,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         }
 
         await ResolveAndPersistAnchorsAsync(writable, ckTypeId, c, nodeContext);
-        await WriteArchiveRowsAsync(writable, ckTypeId, c, nodeContext, originStamp);
+        await WriteArchiveRowsAsync(writable, ckTypeId, c, nodeContext, originStamp, dataContext);
 
         await next(dataContext, nodeContext);
     }
@@ -456,7 +456,8 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         RtCkId<CkTypeId> ckTypeId,
         SaveTimeRangeSeriesInArchiveNodeConfiguration c,
         INodeContext nodeContext,
-        ArchiveWriteOriginStamp originStamp)
+        ArchiveWriteOriginStamp originStamp,
+        IDataContext dataContext)
     {
         // The archive stores an Enum attribute as its integer KEY, so the raw "L1" that arrives in
         // the document has to become 1 before it reaches an integer column — the composition this
@@ -492,6 +493,8 @@ internal class SaveTimeRangeSeriesInArchiveNode(
 
         nodeContext.Debug(
             $"Inserting {points.Count} time-range data point(s) for {series.Count} series into archive '{c.ArchiveRtId}'");
-        await streamDataRepo.InsertTimeRangeAsync(new OctoObjectId(c.ArchiveRtId), originStamp.Apply(points));
+        var result = await streamDataRepo.InsertTimeRangeAsync(new OctoObjectId(c.ArchiveRtId), originStamp.Apply(points));
+        ArchiveWriteResultReporter.Report("SaveTimeRangeSeriesInArchive", result, c.WriteResultPath, c.FailOnSkippedRows,
+            dataContext, nodeContext);
     }
 }

@@ -113,7 +113,9 @@ internal class SaveStreamDataInArchiveNode(
             {
                 nodeContext.Debug(
                     $"Inserting {toInsert.Count} data points into archive '{archiveRtId}'");
-                await streamDataRepo.InsertAsync(archiveRtId, toInsert);
+                var result = await streamDataRepo.InsertAsync(archiveRtId, toInsert);
+                ArchiveWriteResultReporter.Report("SaveStreamDataInArchive", result, c.WriteResultPath, c.FailOnSkippedRows,
+                    dataContext, nodeContext);
             }
         }
         else

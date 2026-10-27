@@ -52,6 +52,9 @@ public static class DryRunHonouredLoadNodes
     /// <summary>NodeName@Version key for <see cref="CommitNotificationStateNode"/>.</summary>
     public const string CommitNotificationState = "CommitNotificationState@1";
 
+    /// <summary>NodeName@Version key for <see cref="Transform.ImportFromExcelNode"/> (AB#7500).</summary>
+    public const string ImportFromExcel = "ImportFromExcel@1";
+
     // UpdateRtEntityIfNewer is intentionally NOT listed: it only reads from MongoDB to
     // diff candidates and writes its filtered output to the in-memory data context for
     // downstream Load nodes (typically ApplyChanges@1/@2) to actually persist. It has no
@@ -74,6 +77,7 @@ public static class DryRunHonouredLoadNodes
         SftpDelete,
         SftpUpload,
         ToDiscord,
-        CommitNotificationState
+        CommitNotificationState,
+        ImportFromExcel
     };
 }

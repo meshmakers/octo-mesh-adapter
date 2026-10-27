@@ -187,7 +187,8 @@ public class LoadNodesDryRunTests : SessionNodeTestBase
         Assert.Contains(DryRunHonouredLoadNodes.SftpUpload, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.ToDiscord, DryRunHonouredLoadNodes.All);
         Assert.Contains(DryRunHonouredLoadNodes.CommitNotificationState, DryRunHonouredLoadNodes.All);
-        Assert.Equal(13, DryRunHonouredLoadNodes.All.Count);
+        Assert.Contains(DryRunHonouredLoadNodes.ImportFromExcel, DryRunHonouredLoadNodes.All);
+        Assert.Equal(14, DryRunHonouredLoadNodes.All.Count);
     }
 
     [Fact]

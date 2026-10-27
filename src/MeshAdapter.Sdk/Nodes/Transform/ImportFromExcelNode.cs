@@ -15,6 +15,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
@@ -323,6 +324,18 @@ public class ImportFromExcelNode(
         // AB#7463: refuse inserts of a type whose CK method replaces the generic create (outside that
         // method's own run) before anything is written; the whole import is refused.
         await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entities);
+
+        // AB#7500: a dry run validates and guards (above) but writes nothing; it reports what would be written.
+        if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.ImportFromExcel, new
+            {
+                entityCount = entities.Count,
+                associationCount = assocs.Count,
+                wouldInsert = entities.Select(x => x.GetRtEntityId().ToString()).ToList()
+            });
+            return;
+        }
 
         await ApplyChangesInRepositoryAsync(nodeContext, entities, assocs);
     }

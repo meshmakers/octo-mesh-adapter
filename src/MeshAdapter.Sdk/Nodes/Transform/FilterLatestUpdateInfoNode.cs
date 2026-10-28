@@ -109,26 +109,37 @@ public class FilterLatestUpdateInfoNode(NodeDelegate next) : IPipelineNode
                 foldedUpdates.Add(update);
             }
 
-            result[i] = Merge(inserts.Concat(updates));
+            // Keep the batch order: it decides ties and missing timestamps
+            var members = new HashSet<EntityUpdateInfo<RtEntity>>(inserts.Concat(updates),
+                ReferenceEqualityComparer.Instance);
+            result[i] = Merge(list.Where(members.Contains));
         }
 
         return result;
     }
 
-    private static EntityUpdateInfo<RtEntity> Merge(IEnumerable<EntityUpdateInfo<RtEntity>> items)
+    private static EntityUpdateInfo<RtEntity> Merge(IEnumerable<EntityUpdateInfo<RtEntity>> itemsInBatchOrder)
     {
-        // Oldest first (stable, so equal or missing timestamps keep the order of the batch); later values win.
-        var ordered = items.OrderBy(x => x.RtEntity?.RtChangedDateTime).ToList();
-        var latestInsert = ordered.Last(x => x.ModOption == EntityModOptions.Insert);
+        // Oldest first. An item without timestamp takes the effective timestamp of the previous item in batch order,
+        // so it stays behind it; the sort is stable, so equal timestamps keep the batch order. Later values win.
+        var effective = DateTime.MinValue;
+        var ordered = itemsInBatchOrder
+            .Select(x => (Item: x, Time: effective = x.RtEntity?.RtChangedDateTime ?? effective))
+            .OrderBy(x => x.Time)
+            .Select(x => x.Item)
+            .ToList();
+        var latestInsertIndex = ordered.FindLastIndex(x => x.ModOption == EntityModOptions.Insert);
+        var latestInsert = ordered[latestInsertIndex];
 
         if (ordered.Count == 1)
         {
             return latestInsert;
         }
 
+        // Older inserts are replaced by the latest one; only updates after it are folded in.
         var latest = latestInsert.RtEntity!;
-        var attributes = new Dictionary<string, object?>();
-        foreach (var item in ordered)
+        var attributes = new Dictionary<string, object?>(latest.Attributes);
+        foreach (var item in ordered.Skip(latestInsertIndex + 1))
         {
             foreach (var (name, value) in item.RtEntity!.Attributes)
             {
@@ -136,7 +147,7 @@ public class FilterLatestUpdateInfoNode(NodeDelegate next) : IPipelineNode
             }
         }
 
-        var lastItem = ordered[^1].RtEntity!;
+        var lastItem = ordered[^1].RtEntity!; // the latest insert itself when no update follows it
         var merged = new RtEntity(latest.CkTypeId ?? latestInsert.CkTypeId, latest.RtId, attributes)
         {
             RtCreationDateTime = latest.RtCreationDateTime,

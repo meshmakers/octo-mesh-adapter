@@ -302,4 +302,32 @@ public class FilterLatestUpdateInfoNodeTests : NodeTestBase
         Assert.Equal(EntityModOptions.Insert, result[0].ModOption);
         Assert.Equal(EntityModOptions.Update, result[1].ModOption);
     }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithTimestampedInsertAndLaterUpdateWithoutTimestamp_UpdateWins()
+    {
+        var result = await RunAsync(new List<EntityUpdateInfo<RtEntity>>
+        {
+            InsertWith("000000000000000000000001", new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc), ("value", 1)),
+            UpdateWith("000000000000000000000001", null, ("value", 2))
+        });
+
+        var single = Assert.Single(result);
+        Assert.Equal(EntityModOptions.Insert, single.ModOption);
+        Assert.Equal(2, single.RtEntity!.Attributes["value"]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithOlderInsertAttributes_DoesNotLeakThemIntoLatestInsert()
+    {
+        var result = await RunAsync(new List<EntityUpdateInfo<RtEntity>>
+        {
+            InsertWith("000000000000000000000001", null, ("value", 1), ("stale", "old")),
+            InsertWith("000000000000000000000001", null, ("value", 2))
+        });
+
+        var single = Assert.Single(result);
+        Assert.Equal(2, single.RtEntity!.Attributes["value"]);
+        Assert.False(single.RtEntity.Attributes.ContainsKey("stale"));
+    }
 }

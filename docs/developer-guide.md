@@ -95,9 +95,35 @@ Retrieves all runtime entities of a specified type.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `CkTypeId` / `CkTypeIdPath` | string | Type identifier |
+| `CkInterfaceId` | string | CK interface id (AB#6933), e.g. `System/Named`. Selects the entities of **all** types that implement the interface, instead of `CkTypeId`; exactly one of the two |
 | `FieldFilters` | ICollection | Field-based filtering |
 | `SortOrders` | ICollection | Result sorting |
 | `Skip` / `Take` | int | Pagination |
+
+**Selecting by CK interface** (`CkInterfaceId`): the node makes one call of the engine's interface query
+(`GetRtEntitiesByInterfaceAsync`, AB#7019) and returns the same result shape as the type variant
+(`Items` with `CkTypeId` per row, `TotalCount`). v1 limits: `Take` is required (`Skip` defaults to 0) and
+`Skip` + `Take` must not exceed 1000; filters and sort orders may only use members of the interface; no text
+search, aggregation or navigation. The cost of a page is about (`Skip` + `Take`) x the number of collections the
+implementers live in, so filter instead of paging deep, and **index the sort field** in the implementing CK types
+(without an index the sort reads every matching row). The node runs with the caller's rights like the type variant
+(`Identity`, default `Caller`); types the caller may not read neither appear nor count.
+
+```yaml
+- type: GetRtEntitiesByType@1
+  ckInterfaceId: System/Named
+  skip: 0
+  take: 50
+  sortOrders:
+    - attributeName: Name
+      sortOrder: Ascending
+  targetPath: $.named
+```
+
+Failures carry a stable code, a reason token and parameters (class `RtEntitySelectionException`; the message text is
+not the contract): `NODE_CONFIGURATION_INVALID` (reasons `CK_TYPE_AND_CK_INTERFACE_BOTH_SET`,
+`CK_TYPE_OR_CK_INTERFACE_REQUIRED`, `CK_INTERFACE_ID_INVALID`, `TAKE_REQUIRED_FOR_INTERFACE`, `PAGING_NEGATIVE`) and
+`INTERFACE_QUERY` (the engine's message number 7019 with its reason token and parameters, unchanged).
 
 #### GetAssociationTargetsNode
 

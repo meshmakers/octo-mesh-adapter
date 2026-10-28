@@ -32,6 +32,18 @@ public record GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfigu
     public string? CkTypeIdPath { get; set; }
 
     /// <summary>
+    /// Runtime construction kit interface id, e.g. <c>System/Named</c> (AB#6933; the CK element id with its
+    /// version, <c>System/Named-1</c>, is accepted too). Selects the entities of
+    /// <b>all</b> types that implement the interface (derived types included) in one global order, via the
+    /// engine's interface query. Use it <b>instead of</b> <c>CkTypeId</c>/<c>CkTypeIdPath</c>; setting both, or
+    /// neither, fails the node. With an interface <c>Take</c> is required, <c>Skip</c> defaults to 0 and
+    /// <c>Skip</c> + <c>Take</c> must not exceed 1000; field filters and sort orders may only use members of the
+    /// interface (and system fields); text search, aggregations and navigation are not supported.
+    /// </summary>
+    [PropertyGroup("Entity", 2)]
+    public string? CkInterfaceId { get; set; }
+
+    /// <summary>
     /// Number of items to skip
     /// </summary>
     [PropertyGroup("Query", 0)]

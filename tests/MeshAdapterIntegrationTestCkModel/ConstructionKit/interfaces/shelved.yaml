@@ -1,0 +1,9 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+interfaces:
+  # GetRtEntitiesByType@1 with ckInterfaceId (AB#6933): a test interface implemented by unrelated types and a derived type.
+  - interfaceId: Shelved-1
+    attributes:
+      - id: ${this}/ShelfCode
+        name: ShelfCode
+      - id: ${this}/ShelfWeight
+        name: ShelfWeight

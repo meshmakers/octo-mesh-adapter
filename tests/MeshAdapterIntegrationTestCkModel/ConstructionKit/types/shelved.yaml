@@ -1,0 +1,41 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+# AB#6933: three types in two collection roots (ShelfBox, ShelfCrate + its derived type) implement Shelved-1;
+# ShelfPlain has the same members but does not implement it and must never appear in an interface selection.
+- typeId: ShelfBox
+  derivedFromCkTypeId: ${System}/Entity
+  implements:
+    - ${this}/Shelved-1
+  indexes:
+    - indexType: "Ascending"
+      fields:
+        - attributePaths:
+            - ShelfCode
+  attributes:
+  - id: ${this}/ShelfCode
+    name: ShelfCode
+  - id: ${this}/ShelfWeight
+    name: ShelfWeight
+- typeId: ShelfCrate
+  derivedFromCkTypeId: ${System}/Entity
+  implements:
+    - ${this}/Shelved-1
+  indexes:
+    - indexType: "Ascending"
+      fields:
+        - attributePaths:
+            - ShelfCode
+  attributes:
+  - id: ${this}/ShelfCode
+    name: ShelfCode
+  - id: ${this}/ShelfWeight
+    name: ShelfWeight
+- typeId: ShelfHeavyCrate
+  derivedFromCkTypeId: ${this}/ShelfCrate
+- typeId: ShelfPlain
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/ShelfCode
+    name: ShelfCode
+  - id: ${this}/ShelfWeight
+    name: ShelfWeight

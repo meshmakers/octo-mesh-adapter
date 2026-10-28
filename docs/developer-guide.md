@@ -953,7 +953,12 @@ Removes duplicate objects from arrays.
 
 #### FilterLatestUpdateInfoNode
 
-Filters to keep only the latest updates per entity, avoiding duplicate updates.
+Filters to keep only the latest update info per entity, avoiding duplicate writes in one batch.
+
+- Several inserts of the same RtId (e.g. several readings of a new device in one batch) collapse into one insert; the latest insert wins (by `RtChangedDateTime`, ties and missing timestamps resolved by batch order).
+- Plain updates of an RtId that is also inserted in the batch are folded into that insert attribute by attribute (later values win), so one insert carries the latest values. Updates with an update guard, secret clearing or record array item updates are not folded.
+- Updates without an insert in the batch keep the latest update per entity; deletes keep the latest delete.
+- Inserts of different RtIds, single inserts and inserts without an RtId pass through unchanged.
 
 #### PlaceholderReplaceNode
 

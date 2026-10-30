@@ -584,17 +584,30 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
     }
 
     [Fact]
-    public async Task ManualInput_IsReadAsManual_AndMarksTheWholeSlot()
+    public async Task ManualInput_CountsWithItsRealQuality()
     {
-        // Basic.Energy DataQuality key 4 = Manual (e.g. /manualMeteringEntry). It must not pass as L1:
-        // the slot carries the worst input quality (V-2) and Manual ranks below L2.
+        // AB#5356: a manual correction states its real quality (here L2 written by /manualMeteringEntry);
+        // the slot carries the worst real quality (V-2): manual L2 next to automated L3 gives L3.
         Fill(C1, ConsumerIn, _ => 0.1);
-        Fill(C2, ConsumerIn, _ => 0.1, quality: 2);
+        Fill(C2, ConsumerIn, _ => 0.1, quality: 3);
+        Fill(P1, ProducerIn, _ => 0.3, quality: 2);
+
+        var output = await RunAsync(Config());
+
+        Assert.All(output.Records!.SelectMany(r => r.EnergyQuantities), q => Assert.Equal("L3", q.Quality));
+    }
+
+    [Fact]
+    public async Task LegacyManualQualityKey_IsReadAsL3_NeverAsAMeasurement()
+    {
+        // The former DataQuality key 4 ("Manual") is not a quality; a row that still carries it must not pass as L1.
+        Fill(C1, ConsumerIn, _ => 0.1);
+        Fill(C2, ConsumerIn, _ => 0.1);
         Fill(P1, ProducerIn, _ => 0.3, quality: 4);
 
         var output = await RunAsync(Config());
 
-        Assert.All(output.Records!.SelectMany(r => r.EnergyQuantities), q => Assert.Equal("Manual", q.Quality));
+        Assert.All(output.Records!.SelectMany(r => r.EnergyQuantities), q => Assert.Equal("L3", q.Quality));
     }
 
     [Fact]

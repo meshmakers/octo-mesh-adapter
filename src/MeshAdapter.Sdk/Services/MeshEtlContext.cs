@@ -134,6 +134,13 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
             : RtSecurityContext.ForUser(VerifiedPrincipal.SubjectId, VerifiedPrincipal.Roles));
     }
 
+    /// <inheritdoc />
+    public async ValueTask<string?> GetServiceIdentitySubjectIdAsync()
+    {
+        var context = await ResolveServiceAccountContextAsync();
+        return context.IsSystem ? null : context.SubjectId;
+    }
+
     private ValueTask<RtSecurityContext> ResolveServiceAccountContextAsync()
     {
         if (_identityResolver != null)

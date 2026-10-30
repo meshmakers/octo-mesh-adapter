@@ -81,6 +81,25 @@ public class TimeRangeSeriesShaperTests
     }
 
     [Fact]
+    public void APerRowReasonIsReadFromTheValueObject_AndNeverBecomesAColumn()
+    {
+        // AB#7638: each value may carry the reason of its manual row; a value without one keeps none here
+        // (the origin stamp falls back to the static reason), and the property is no user column.
+        var c = Config() with { ManualReasonProperty = "Reason" };
+        var json = Parse(SeriesJson("1-1:2.9.0 G.03", 3, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        var values = (JsonArray)json[0]!["EnergyQuantities"]!;
+        values[0]!["Reason"] = "meter exchanged";
+        values[1]!["Reason"] = "2026-01-01T00:00:00Z";
+        var series = TimeRangeSeriesShaper.Shape(json, c, out _);
+        series[0].RtId = OctoObjectId.GenerateNewId();
+
+        var rows = TimeRangeSeriesShaper.BuildRows(series, CkType, c, PassThrough, out _);
+
+        Assert.Equal(["meter exchanged", "2026-01-01T00:00:00Z", null], rows.Select(r => r.ManualReason));
+        Assert.All(rows, r => Assert.False(r.Attributes.ContainsKey("Reason")));
+    }
+
+    [Fact]
     public void TheAnchorKeyIsBuiltFromTheSeriesProperties()
     {
         var series = TimeRangeSeriesShaper.Shape(

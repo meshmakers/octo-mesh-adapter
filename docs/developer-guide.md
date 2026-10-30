@@ -510,7 +510,7 @@ the rows themselves. Writes a `QueryResult` to `TargetPath`.
 |-----------|------|-------------|
 | `ArchiveRtId` | OctoObjectId | RtId of the archive to read. Must be activated. Required |
 | `Aggregations` | collection | The key figures: `attributePath` + `function`. At least one. Required |
-| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row |
+| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row. On raw and time-range archives `row_origin` (`manual` / `automated`, AB#7616) is groupable too, e.g. `[rtId, DataQuality, row_origin]` with `Count` counts manual intervals per series |
 | `WellKnownNames` / `WellKnownNamesPath` | collection\<string\> / string | Restrict to these source entities by name |
 | `RtIds` / `RtIdsPath` | collection\<string\> / string | Restrict to these source entities by runtime id |
 | `FieldFilters` | collection | Additional filters, AND-combined |
@@ -1205,6 +1205,42 @@ records and JSON trees by content, numbers by value), so equal content is no con
 produces one warning per entity and batch naming all conflicting attributes with compact values
 truncated to 200 characters; credential-like attributes are shown as `<redacted>` (AB#7436).
 
+#### Origin of archive rows (all three archive load nodes, AB#5356 / AB#7593 / AB#7596)
+
+Every archive row records whether it was entered manually or delivered automatically. The three load
+nodes below declare it:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Origin` | enum | `Automated` (default — a pipeline without it writes exactly as before) or `Manual` |
+| `ManualReason` | string? | Optional reason stored with every manual row; only allowed with `Origin: Manual` |
+| `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty). The CK type must declare the attribute, otherwise `CreateUpdateInfo` refuses it — prefer `ManualReasonPath` |
+| `ManualReasonPath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only (AB#7638): path, relative to each item at `Path`, that carries the reason of that row, e.g. `$.manualReason` next to `rtEntity` in the update info. Read from the DataContext, so the CK type needs no reason attribute. Wins over `ManualReasonAttributePath` and `ManualReason` when not empty |
+| `ManualReasonProperty` | string? | `SaveTimeRangeSeriesInArchive@1` only (AB#7638): property of each value object that carries the reason of its row. Wins over `ManualReason` when not empty |
+| `WriteResultPath` | string? | All three nodes (AB#7598): path the write result `{ stored, skipped, skippedByReason }` is stored at |
+| `FailOnSkippedRows` | bool | All three nodes (AB#7598): fail when the archive did not store every row (default `false`: a warning names the rows not stored per reason) |
+
+The write result says how many rows the archive stored and why the others were not
+(`LowerPrecedence`, `ManualValueProtected`, `CkTypeMismatch`). Losing rows are a normal outcome for
+automated deliveries; a manual row that cannot be stored always fails the node.
+
+A manual row records its writer as resolved by the platform, never from the data: the **verified user
+caller**, by its readable name (`VerifiedPrincipal.Name`, else `SubjectId`), when the trigger authenticated one; otherwise the **client id of
+the service identity** the pipeline runs under (a file-based manual import has no user caller); and when
+the execution acts as the system context, `pipeline:<pipelineRtId>`. The writer is never empty and a
+manual write is never refused for lack of a caller. The writes run with the execution's rights like every
+other write. An unknown `Origin` value fails the pipeline registration (strict YAML deserializer); a
+reason without `Origin: Manual` fails the node. An archive that ranks by the reserved precedence key
+`$Origin` keeps a manual value against every later automated delivery.
+
+```yaml
+- type: SaveTimeRangeStreamDataInArchive@1
+  path: $.updates
+  archiveRtId: ec0000000000000000000a10
+  origin: Manual
+  manualReasonAttributePath: Reason
+```
+
 #### SaveStreamDataInArchiveNode
 
 Persists entity data to CrateDB time-series database.
@@ -1212,6 +1248,7 @@ Persists entity data to CrateDB time-series database.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `Path` | string | EntityUpdateInfo collection path |
+| `Origin` / `ManualReason` / `ManualReasonAttributePath` / `ManualReasonPath` | | See *Origin of archive rows* above |
 
 **Stored Data**:
 - Timestamp (entity change time or external timestamp)
@@ -1231,6 +1268,8 @@ Before inserting it runs an **orphan guard**: the distinct source rtIds of the b
 CkTypeId and looked up, and the whole insert is refused naming the missing ids. That read uses a
 **system** session by decision (AB#5028) — under a narrow identity "you may not see it" would read as
 "it does not exist" and the node would refuse perfectly good measurements.
+
+`Origin`, `ManualReason`, `ManualReasonAttributePath` and `ManualReasonPath`: see *Origin of archive rows* above.
 
 Use `SaveTimeRangeSeriesInArchive@1` below instead when the pipeline would have to create a runtime
 entity per window just to satisfy this node's `rtid` requirement.
@@ -1262,6 +1301,7 @@ windowed values at `ValuesProperty`.
 | `AnchorWindowFromAttribute` / `AnchorWindowToAttribute` | string? | Attribute paths the anchor's own window is written to; the `To` attribute also decides whether an existing anchor is advanced |
 | `ParentRtIdProperty` / `ParentCkTypeId` / `ParentAssociationRoleId` | string? | Parent association for newly created anchors — **all three or none** |
 | `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` (AB#5127) |
+| `Origin` / `ManualReason` / `ManualReasonProperty` | | See *Origin of archive rows* above |
 
 **Order of operations, and why it is load-bearing:**
 

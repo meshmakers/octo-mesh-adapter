@@ -167,4 +167,44 @@ public record SaveTimeRangeSeriesInArchiveNodeConfiguration : PathNodeConfigurat
     /// <summary>Association role linking anchor to parent. Required when <see cref="ParentRtIdProperty" /> is set.</summary>
     [PropertyGroup("Parent", 2)]
     public string? ParentAssociationRoleId { get; init; }
+
+    /// <summary>
+    /// Origin of the rows this node writes (AB#7596): <see cref="ArchiveWriteOrigin.Automated" /> (default, the
+    /// behaviour before the option existed) or <see cref="ArchiveWriteOrigin.Manual" />. A manual row records
+    /// its writer (the verified user caller, else the client id of the pipeline's service identity) and the
+    /// platform time. An archive that ranks by <c>$Origin</c> keeps a manual value against
+    /// every later automated delivery.
+    /// </summary>
+    [PropertyGroup("Origin", 0)]
+    public ArchiveWriteOrigin Origin { get; init; } = ArchiveWriteOrigin.Automated;
+
+    /// <summary>
+    /// Optional reason recorded with every manual row of this node (AB#7593). Only allowed with
+    /// <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    [PropertyGroup("Origin", 1)]
+    public string? ManualReason { get; init; }
+
+    /// <summary>
+    /// Optional property of each value object that carries the reason of its manual row (AB#7638), for a reason
+    /// that differs per row. Takes precedence over <see cref="ManualReason" /> when the value carries a non-empty
+    /// string there. Only allowed with <see cref="Origin" /> <see cref="ArchiveWriteOrigin.Manual" />.
+    /// </summary>
+    public string? ManualReasonProperty { get; init; }
+
+    /// <summary>
+    /// Optional path the write result is stored at (AB#7598): <c>{ stored, skipped, skippedByReason }</c>, so a
+    /// later node can branch on it. Rows that lose against a stored row are a normal outcome and do not fail the
+    /// node unless <see cref="FailOnSkippedRows" /> is set.
+    /// </summary>
+    [PropertyGroup("Origin", 2)]
+    public string? WriteResultPath { get; init; }
+
+    /// <summary>
+    /// Fails the node when the archive did not store every row (AB#7598), for example an automated delivery
+    /// against a manual value or a lower quality against a higher one. Default <c>false</c>: such rows are
+    /// reported as a warning. A manual row that could not be stored always fails the node.
+    /// </summary>
+    [PropertyGroup("Origin", 3)]
+    public bool FailOnSkippedRows { get; init; }
 }

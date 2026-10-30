@@ -282,7 +282,12 @@ internal static class TimeRangeSeriesShaper
                     RtId = shaped.RtId,
                     RtWellKnownName = shaped.WellKnownName,
                     CkTypeId = ckTypeId,
-                    Attributes = attributes
+                    Attributes = attributes,
+                    // AB#7638: the per-row reason of a manual row; the origin stamp applies the origin and
+                    // falls back to the static reason when the value carries none.
+                    ManualReason = string.IsNullOrEmpty(c.ManualReasonProperty)
+                        ? null
+                        : ToScalar(value[c.ManualReasonProperty], parseDateStrings: false) as string
                 });
             }
         }

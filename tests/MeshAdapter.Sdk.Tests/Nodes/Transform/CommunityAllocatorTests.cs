@@ -197,14 +197,13 @@ public class CommunityAllocatorTests
     }
 
     [Theory]
-    [InlineData("L1", "L1", "L1", "L1")]
+    [InlineData("L1", "L1", "L1", "L1")]   // also: a manual L1 input next to automated L1 ones gives L1 (AB#5356)
     [InlineData("L1", "L2", "L1", "L2")]
-    [InlineData("L2", "L1", "Manual", "Manual")]
-    [InlineData("Manual", "L3", "L1", "L3")]
+    [InlineData("L2", "L3", "L1", "L3")]   // AB#5356: a manual L2 input next to an automated L3 one gives L3
     [InlineData("L1", "L1", "X", "X")]
     public void EveryRegister_CarriesTheWorstInputQualityOfTheSlot(string c1, string c2, string p1, string expected)
     {
-        // V-2: L1 < L2 < Manual < L3 < anything unknown.
+        // V-2: L1 < L2 < L3 < anything unknown. The origin of an input is not a quality level (AB#5356).
         var r = Run([M("c1", 0.4m, quality: c1), M("c2", 0.2m, quality: c2)], [M("p1", 1.0m, quality: p1)]);
 
         Assert.All(r.Consumers, c => Assert.Equal(expected, c.Quality));
@@ -212,11 +211,12 @@ public class CommunityAllocatorTests
     }
 
     [Fact]
-    public void QualityRank_OrdersMeasuredBeforeManualBeforeEstimate()
+    public void QualityRank_OrdersOnlyRealQualities()
     {
         Assert.True(CommunityAllocator.QualityRank("L1") < CommunityAllocator.QualityRank("L2"));
-        Assert.True(CommunityAllocator.QualityRank("L2") < CommunityAllocator.QualityRank("Manual"));
-        Assert.True(CommunityAllocator.QualityRank("Manual") < CommunityAllocator.QualityRank("L3"));
+        Assert.True(CommunityAllocator.QualityRank("L2") < CommunityAllocator.QualityRank("L3"));
+        Assert.True(CommunityAllocator.QualityRank("L3") < CommunityAllocator.QualityRank("Manual"),
+            "Manual is not a quality any more (AB#5356); an unknown name ranks worst");
         Assert.True(CommunityAllocator.QualityRank("L3") < CommunityAllocator.QualityRank("Unknown"));
     }
 
@@ -347,4 +347,13 @@ public class CommunityAllocatorTests
 
     private static int RandomPf(Random random)
         => random.Next(4) == 0 ? 100 : random.Next(0, 101);
+
+    [Theory]
+    [InlineData("Manual")]
+    [InlineData("Unknown")]
+    [InlineData("")]
+    public void MissingQuality_ThatIsNoRealQuality_IsRefused(string missingQuality)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CommunityAllocator(0.01m, missingQuality));
+    }
 }

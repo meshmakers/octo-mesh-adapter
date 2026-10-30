@@ -36,6 +36,10 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);
 
+        // AB#7596: refused before anything is read or written, also in a dry run.
+        var originStamp = await ArchiveWriteOriginStamp.ResolveAsync("SaveTimeRangeStreamDataInArchive", c.Origin, c.ManualReason,
+            c.ManualReasonAttributePath, c.ManualReasonPath, etlContext);
+
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
@@ -46,6 +50,7 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                 path = c.Path,
                 fromAttributePath = c.FromAttributePath,
                 toAttributePath = c.ToAttributePath,
+                origin = originStamp.Origin.ToString(),
                 count = data?.Count ?? 0,
                 wouldInsert = data
             });
@@ -73,8 +78,9 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
         var toInsert = new List<TimeRangeStreamDataPoint>();
         var skippedNoWindow = 0;
 
-        foreach (var datapoint in data)
+        for (var index = 0; index < data.Count; index++)
         {
+            var datapoint = data[index];
             if (datapoint.RtEntity == null)
             {
                 continue;
@@ -101,6 +107,8 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                         continue;
                     }
 
+                    var reason = originStamp.ReasonFor(attrs, c.ManualReasonAttributePath,
+                        ArchiveWriteOriginStamp.ItemReason(dataContext, c.Path, index, c.ManualReasonPath));
                     toInsert.Add(new TimeRangeStreamDataPoint
                     {
                         From = from,
@@ -109,6 +117,9 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
                         RtWellKnownName = datapoint.RtEntity.RtWellKnownName,
                         CkTypeId = datapoint.CkTypeId,
                         Attributes = attrs,
+                        Origin = originStamp.Origin,
+                        ManualWrittenBy = originStamp.Writer,
+                        ManualReason = reason,
                     });
                     break;
 
@@ -134,7 +145,9 @@ internal class SaveTimeRangeStreamDataInArchiveNode(
 
             nodeContext.Debug(
                 $"Inserting {toInsert.Count} time-range data point(s) into archive '{archiveRtId}'");
-            await streamDataRepo.InsertTimeRangeAsync(archiveRtId, toInsert);
+            var result = await streamDataRepo.InsertTimeRangeAsync(archiveRtId, toInsert);
+            ArchiveWriteResultReporter.Report("SaveTimeRangeStreamDataInArchive", result, c.WriteResultPath, c.FailOnSkippedRows,
+                dataContext, nodeContext);
         }
 
         await next(dataContext, nodeContext);

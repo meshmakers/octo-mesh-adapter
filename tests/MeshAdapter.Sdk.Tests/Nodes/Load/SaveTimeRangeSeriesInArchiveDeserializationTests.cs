@@ -133,4 +133,32 @@ public class SaveTimeRangeSeriesInArchiveDeserializationTests : NodeTestBase
         Assert.Null(c.ParentRtIdProperty);
         Assert.Single(c.Columns);
     }
+
+    // ---- AB#7596: the origin options through the real deserializer ---------------------------------------
+
+    [Fact]
+    public async Task OriginAndReason_AreReadByMemberName()
+    {
+        var config = await DeserializeAsync(RealPipelineBlock + "\n    origin: Manual\n    manualReason: meter exchanged\n");
+
+        Assert.Equal(ArchiveWriteOrigin.Manual, config.Origin);
+        Assert.Equal("meter exchanged", config.ManualReason);
+    }
+
+    [Fact]
+    public async Task WithoutOrigin_ThePipelineIsUnchanged_Automated()
+    {
+        var config = await DeserializeAsync(RealPipelineBlock);
+
+        Assert.Equal(ArchiveWriteOrigin.Automated, config.Origin);
+        Assert.Null(config.ManualReason);
+    }
+
+    [Fact]
+    public async Task AnInvalidOrigin_FailsTheDeserialization()
+    {
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => DeserializeAsync(RealPipelineBlock + "\n    origin: Manuel\n"));
+
+        Assert.Contains("Manuel", ex.ToString());
+    }
 }

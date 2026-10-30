@@ -307,6 +307,110 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
     /// Writes two competing deliveries for the same three windows in both arrival orders, each order on
     /// its own anchor, and returns the stored rows of both anchors.
     /// </summary>
+    // ---- AB#7596 / AB#7598: a pipeline writes manual rows, the archive keeps them, the writer learns it ----
+
+    [Fact]
+    public async Task APipelineWithOriginManual_WritesManualRowsWithTheCaller_AndAnAutomatedRedeliveryIsReportedNotStored()
+    {
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_Manual", withPrecedence: true, originFirst: true);
+        var key = UniqueKey("MANUAL");
+        var caller = new Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal("user-rt-7", "test", "u@example.com", "u", ["Writer"], null);
+
+        // The manual correction: an estimate, entered by a person.
+        var manualResult = await ExecuteNodeAsync(archiveRtId,
+            c => c with { Origin = ArchiveWriteOrigin.Manual, ManualReason = "meter exchanged", WriteResultPath = "$.writeResult" },
+            caller, Series(key, Enumerable.Range(0, 2).Select(slot => Value(slot, 99.0, Estimated, OlderDocument))));
+
+        manualResult!["stored"]!.GetValue<int>().Should().Be(2);
+        var anchor = await GetSingleAnchorAsync(key);
+        var origin = await ReadOriginAsync(archiveRtId, anchor.RtId);
+        origin.Should().AllSatisfy(o =>
+        {
+            o.Origin.Should().Be("manual");
+            o.WrittenBy.Should().Be("u", "the writer is the readable name of the verified caller of the execution");
+            o.Reason.Should().Be("meter exchanged");
+        });
+
+        // The automated measurement arriving later, better quality, newer document: it must not replace the
+        // manual value, and the pipeline is told so.
+        var automatedResult = await ExecuteNodeAsync(archiveRtId,
+            c => c with { WriteResultPath = "$.writeResult" }, caller: null,
+            Series(key, Enumerable.Range(0, 2).Select(slot => Value(slot, 10.0, Measured, NewerDocument))));
+
+        automatedResult!["stored"]!.GetValue<int>().Should().Be(0);
+        automatedResult["skipped"]!.GetValue<int>().Should().Be(2);
+        automatedResult["skippedByReason"]!["ManualValueProtected"]!.GetValue<int>().Should().Be(2);
+        (await ReadRowsAsync(archiveRtId, anchor.RtId)).Should().OnlyContain(r => r.Temperature == 99.0 && r.Quality == Estimated);
+    }
+
+    [Fact]
+    public async Task TwoManualRowsInOneBatch_KeepTheirOwnReason_ReadFromTheValueObjects()
+    {
+        // AB#7638: the reason comes from the request data (one per value), not from a CK attribute; a value
+        // without one falls back to the static reason.
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_ManualReasonPerRow", withPrecedence: true, originFirst: true);
+        var key = UniqueKey("MANUAL-REASON");
+        var caller = new Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal("user-rt-8", "test", "u@example.com", "u", ["Writer"], null);
+        var first = Value(0, 11.0, Estimated, OlderDocument);
+        first["reason"] = "meter exchanged";
+        var second = Value(1, 12.0, Estimated, OlderDocument);
+        second["reason"] = "reading corrected by phone";
+        var third = Value(2, 13.0, Estimated, OlderDocument);
+
+        var result = await ExecuteNodeAsync(archiveRtId,
+            c => c with { Origin = ArchiveWriteOrigin.Manual, ManualReason = "static", ManualReasonProperty = "reason", WriteResultPath = "$.writeResult" },
+            caller, Series(key, [first, second, third]));
+
+        result!["stored"]!.GetValue<int>().Should().Be(3);
+        var anchor = await GetSingleAnchorAsync(key);
+        var origin = await ReadOriginAsync(archiveRtId, anchor.RtId);
+        origin.Select(o => o.Reason).Should().BeEquivalentTo("meter exchanged", "reading corrected by phone", "static");
+        origin.Should().AllSatisfy(o =>
+        {
+            o.Origin.Should().Be("manual");
+            o.WrittenBy.Should().Be("u");
+        });
+    }
+
+    [Fact]
+    public async Task APipelineWithOriginManualButNoCaller_IsStored_WithThePipelineAsWriter()
+    {
+        // AB#7596: a manual import without a user caller and without a service account (the execution acts
+        // as the system context) is not refused; the writer is the pipeline, never empty.
+        fixture.EnsureInitialized();
+        var archiveRtId = await CreateAndActivateSeriesArchiveAsync("SeriesArchive_ManualNoCaller", withPrecedence: true, originFirst: true);
+        var key = UniqueKey("MANUAL-NOCALLER");
+
+        await ExecuteNodeAsync(archiveRtId, c => c with { Origin = ArchiveWriteOrigin.Manual }, caller: null,
+            Series(key, [Value(0, 1.0, Measured, OlderDocument)]));
+
+        var anchor = await GetSingleAnchorAsync(key);
+        var origin = Assert.Single(await ReadOriginAsync(archiveRtId, anchor.RtId));
+        origin.Origin.Should().Be("manual");
+        origin.WrittenBy.Should().Be("pipeline:000000000000000000000099");
+    }
+
+    private async Task<IReadOnlyList<(string? Origin, string? WrittenBy, string? Reason)>> ReadOriginAsync(
+        OctoObjectId archiveRtId, OctoObjectId anchorRtId)
+    {
+        await using var conn = new NpgsqlConnection(fixture.CrateDbConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            $"SELECT row_origin, manual_written_by, manual_reason FROM {QualifiedTable(archiveRtId)} WHERE rtid = @rtid", conn);
+        cmd.Parameters.AddWithValue("rtid", anchorRtId.ToString());
+        var rows = new List<(string?, string?, string?)>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add((reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2)));
+        }
+
+        return rows;
+    }
+
     private async Task<(IReadOnlyList<ArchiveRow> FirstThenSecond, IReadOnlyList<ArchiveRow> SecondThenFirst)>
         WriteInBothOrdersAsync(OctoObjectId archiveRtId, string keyPrefix,
             Func<int, JsonObject> first, Func<int, JsonObject> second)
@@ -376,7 +480,7 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
     /// mapped attribute. With <paramref name="withPrecedence" /> it declares
     /// <c>[{Quality, LowerWins}, {SourceDate, HigherWins}]</c> — the energy-metering rule.
     /// </summary>
-    private async Task<OctoObjectId> CreateAndActivateSeriesArchiveAsync(string name, bool withPrecedence)
+    private async Task<OctoObjectId> CreateAndActivateSeriesArchiveAsync(string name, bool withPrecedence, bool originFirst = false)
     {
         var systemContext = fixture.GetSystemContext();
         var tenantRepository = systemContext.GetSystemTenantRepository();
@@ -403,6 +507,15 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
                 new() { Column = "Quality", Order = RtCkConflictKeyOrderEnum.LowerWins },
                 new() { Column = "SourceDate", Order = RtCkConflictKeyOrderEnum.HigherWins }
             };
+            if (originFirst)
+            {
+                // AB#5356: a manual value is permanent against automated deliveries.
+                archive.ConflictPrecedence.Insert(0, new RtCkArchiveConflictKeyRecord
+                {
+                    Column = Meshmakers.Octo.Runtime.Contracts.StreamData.ArchiveConflictKey.OriginKey,
+                    Order = RtCkConflictKeyOrderEnum.HigherWins
+                });
+            }
         }
 
         using (var session = await tenantRepository.GetSessionAsync())
@@ -419,14 +532,20 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         return archive.RtId;
     }
 
-    private async Task ExecuteNodeAsync(OctoObjectId archiveRtId, params JsonObject[] series)
+    private Task ExecuteNodeAsync(OctoObjectId archiveRtId, params JsonObject[] series)
+        => ExecuteNodeAsync(archiveRtId, c => c, caller: null, series);
+
+    /// <summary>Runs the node with a changed configuration and an optional verified caller; returns the data context's write result.</summary>
+    private async Task<JsonNode?> ExecuteNodeAsync(OctoObjectId archiveRtId,
+        Func<SaveTimeRangeSeriesInArchiveNodeConfiguration, SaveTimeRangeSeriesInArchiveNodeConfiguration> configure,
+        Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? caller, params JsonObject[] series)
     {
         var systemContext = fixture.GetSystemContext();
         var tenantRepository = systemContext.GetSystemTenantRepository();
         var ckCacheService = fixture.GetService<ICkCacheService>();
         await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
 
-        var config = CreateConfiguration(archiveRtId, fixture.TestCkTypeId);
+        var config = configure(CreateConfiguration(archiveRtId, fixture.TestCkTypeId));
         // Cloned: a JsonNode can only have one parent, and a test may hand the same series in twice
         var input = new JsonObject { ["series"] = new JsonArray(series.Select(s => s.DeepClone()).ToArray()) };
         using var document = JsonDocument.Parse(input.ToJsonString());
@@ -436,11 +555,12 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         var nodeContext = rootContext.RegisterChildNode("SaveTimeRangeSeriesInArchive", 0, config, dataContext);
 
         Task Next(IDataContext dc, INodeContext nc) => Task.CompletedTask;
-        var node = new SaveTimeRangeSeriesInArchiveNode(Next, CreateMeshEtlContext(tenantRepository),
+        var node = new SaveTimeRangeSeriesInArchiveNode(Next, CreateMeshEtlContext(tenantRepository, caller),
             systemContext, ckCacheService);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
         await fixture.RefreshArchiveAsync(archiveRtId);
+        return config.WriteResultPath is { } path && dataContext.TryGet<JsonNode>(path, out var result) ? result?.DeepClone() : null;
     }
 
     /// <summary>Swaps the window boundaries of a value, which makes its window unusable.</summary>
@@ -529,7 +649,8 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
         _ => throw new InvalidOperationException($"Unexpected timestamp type {value.GetType()}")
     };
 
-    private static MeshEtlContext CreateMeshEtlContext(ITenantRepository tenantRepository)
+    private static MeshEtlContext CreateMeshEtlContext(ITenantRepository tenantRepository,
+        Meshmakers.Octo.Sdk.Common.Services.VerifiedPrincipal? caller = null)
     {
         var pipelineId = new OctoObjectId("000000000000000000000099");
 
@@ -546,7 +667,8 @@ public class SaveTimeRangeSeriesInArchiveNodeIntegrationTests(StreamDataFixture 
             adapterReceivedDateTime: DateTime.UtcNow,
             externalReceivedDateTime: null,
             globalConfiguration: globalConfig,
-            properties: new Dictionary<string, object?>());
+            properties: new Dictionary<string, object?>(),
+            verifiedPrincipal: caller);
     }
 
     private sealed record ArchiveRow(

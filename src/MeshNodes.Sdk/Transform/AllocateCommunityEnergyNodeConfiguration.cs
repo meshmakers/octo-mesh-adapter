@@ -263,8 +263,10 @@ public record AllocateCommunityEnergyNodeConfiguration : NodeConfiguration
 
     /// <summary>
     /// Quality of a missing input value (the value then counts as 0). Default <c>L3</c>. Present inputs
-    /// are read as keys 1, 2, 3, 4 = L1, L2, L3, Manual (any other key = L1). Every register of a slot
-    /// carries the WORST input quality of that slot (decision V-2), ranked L1 &lt; L2 &lt; Manual &lt; L3,
+    /// are read as keys 1, 2, 3 = L1, L2, L3 (any other key = L1; the former key 4 "Manual" reads as L3, since
+    /// manual entry is the row origin, not a quality, AB#5356). Every register of a slot
+    /// carries the WORST input quality of that slot (decision V-2), ranked L1 &lt; L2 &lt; L3 (a manual input counts
+    /// with its real quality),
     /// so one missing value makes every register of the slot <c>MissingQuality</c>.
     /// </summary>
     [PropertyGroup("Output", 2)]

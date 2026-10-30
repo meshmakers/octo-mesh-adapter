@@ -30,6 +30,10 @@ internal class SaveStreamDataInArchiveNode(
 
         var archiveRtId = new OctoObjectId(c.ArchiveRtId);
 
+        // AB#7596: refused before anything is read or written, also in a dry run.
+        var originStamp = await ArchiveWriteOriginStamp.ResolveAsync("SaveStreamDataInArchive", c.Origin, c.ManualReason,
+            c.ManualReasonAttributePath, c.ManualReasonPath, etlContext);
+
         var data = dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(c.Path);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
@@ -38,6 +42,7 @@ internal class SaveStreamDataInArchiveNode(
             {
                 archiveRtId = c.ArchiveRtId,
                 path = c.Path,
+                origin = originStamp.Origin.ToString(),
                 count = data?.Count ?? 0,
                 wouldInsert = data
             });
@@ -62,8 +67,9 @@ internal class SaveStreamDataInArchiveNode(
 
             var toInsert = new List<StreamDataPoint>();
 
-            foreach (var datapoint in data)
+            for (var index = 0; index < data.Count; index++)
             {
+                var datapoint = data[index];
                 if (datapoint.RtEntity == null)
                 {
                     continue;
@@ -78,6 +84,9 @@ internal class SaveStreamDataInArchiveNode(
                         // so we fall back to the entity's own RtId.
                         var rtId = datapoint.RtId ?? datapoint.RtEntity.RtId;
 
+                        var attributes = datapoint.RtEntity.Attributes.ToDictionary();
+                        var reason = originStamp.ReasonFor(attributes, c.ManualReasonAttributePath,
+                            ArchiveWriteOriginStamp.ItemReason(dataContext, c.Path, index, c.ManualReasonPath));
                         var streamDataPoint = new StreamDataPoint
                         {
                             Timestamp = datapoint.RtEntity.RtChangedDateTime
@@ -86,7 +95,10 @@ internal class SaveStreamDataInArchiveNode(
                             RtId = rtId,
                             RtWellKnownName = datapoint.RtEntity.RtWellKnownName,
                             CkTypeId = datapoint.CkTypeId,
-                            Attributes = datapoint.RtEntity.Attributes.ToDictionary()
+                            Attributes = attributes,
+                            Origin = originStamp.Origin,
+                            ManualWrittenBy = originStamp.Writer,
+                            ManualReason = reason
                         };
 
                         toInsert.Add(streamDataPoint);
@@ -103,7 +115,9 @@ internal class SaveStreamDataInArchiveNode(
             {
                 nodeContext.Debug(
                     $"Inserting {toInsert.Count} data points into archive '{archiveRtId}'");
-                await streamDataRepo.InsertAsync(archiveRtId, toInsert);
+                var result = await streamDataRepo.InsertAsync(archiveRtId, toInsert);
+                ArchiveWriteResultReporter.Report("SaveStreamDataInArchive", result, c.WriteResultPath, c.FailOnSkippedRows,
+                    dataContext, nodeContext);
             }
         }
         else

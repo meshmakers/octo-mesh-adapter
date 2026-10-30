@@ -40,6 +40,14 @@ internal static class ArchiveWriteResultReporter
 
         var summary = $"{nodeName}: stored {result.Stored} row(s), {result.SkippedCount} not stored " +
                       $"({string.Join(", ", byReason.Select(kv => $"{kv.Key} {kv.Value}"))}).";
+        // A manual row that could not be stored always fails the node, whatever failOnSkippedRows says. The repository
+        // already throws for it; this keeps the node contract even if a store only reports it.
+        var manualSkipped = result.Skipped.Count(r => r.Origin == ArchiveRowOrigin.Manual);
+        if (manualSkipped > 0)
+        {
+            throw new InvalidOperationException(summary + $" {manualSkipped} of them are manual rows, which always fail the node.");
+        }
+
         if (failOnSkippedRows)
         {
             throw new InvalidOperationException(summary + " The node is configured with failOnSkippedRows.");

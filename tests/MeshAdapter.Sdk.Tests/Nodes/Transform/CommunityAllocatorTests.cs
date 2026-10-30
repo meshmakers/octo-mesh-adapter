@@ -347,4 +347,13 @@ public class CommunityAllocatorTests
 
     private static int RandomPf(Random random)
         => random.Next(4) == 0 ? 100 : random.Next(0, 101);
+
+    [Theory]
+    [InlineData("Manual")]
+    [InlineData("Unknown")]
+    [InlineData("")]
+    public void MissingQuality_ThatIsNoRealQuality_IsRefused(string missingQuality)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CommunityAllocator(0.01m, missingQuality));
+    }
 }

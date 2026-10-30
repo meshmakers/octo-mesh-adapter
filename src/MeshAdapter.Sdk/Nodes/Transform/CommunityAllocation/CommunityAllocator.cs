@@ -71,6 +71,12 @@ internal sealed class CommunityAllocator
                 "The resolution must be greater than 0.");
         }
 
+        if (QualityRank(missingQuality) > 3)
+        {
+            throw new ArgumentOutOfRangeException(nameof(missingQuality), missingQuality,
+                "The missing quality must be a real quality (L1, L2 or L3); manual entry is an origin, not a quality (AB#5356).");
+        }
+
         Resolution = resolution;
         MissingQuality = missingQuality;
         (_qNumerator, _qDenominator) = ToFraction(resolution);

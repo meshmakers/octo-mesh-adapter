@@ -567,6 +567,21 @@ public class SaveTimeRangeStreamDataInArchiveNodeTests : SessionNodeTestBase
     }
 
     [Fact]
+    public async Task ASkippedManualRow_FailsTheNode_EvenWithoutFailOnSkippedRows()
+    {
+        var manual = new StreamDataWriteResult(0,
+        [
+            new StreamDataSkippedRow(new OctoObjectId(SourceRtIdString), new DateTime(2026, 5, 12, 13, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 5, 12, 13, 15, 0, DateTimeKind.Utc), ArchiveRowOrigin.Manual, StreamDataSkipReason.LowerPrecedence)
+        ]);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWithResultAsync(
+            new SaveTimeRangeStreamDataInArchiveNodeConfiguration { Path = DataPath, ArchiveRtId = ArchiveRtIdString }, manual));
+
+        Assert.Contains("manual rows", ex.Message);
+    }
+
+    [Fact]
     public async Task WriteResultPath_StoresTheCountsForLaterNodes()
     {
         System.Text.Json.Nodes.JsonObject? written = null;

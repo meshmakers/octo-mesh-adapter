@@ -286,7 +286,7 @@ internal class SaveTimeRangeSeriesInArchiveNode(
         // transaction is already committed.
         // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
         // method's own run; checked before the first write, the whole batch is refused.
-        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entityUpdates);
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdates);
 
         using var writeSession = await etlContext.GetSessionForAsync(c.Identity);
         writeSession.StartTransaction();

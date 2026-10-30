@@ -88,7 +88,7 @@ public class GetAssociationTargetsNodeTests : SessionNodeTestBase
             TargetPath = "$.result"
         };
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetAssociationTargets");
-        var node = new GetAssociationTargetsNode(next, EtlContext);
+        var node = new GetAssociationTargetsNode(next, EtlContext, CkCache);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -133,7 +133,7 @@ public class GetAssociationTargetsNodeTests : SessionNodeTestBase
             TargetPath = "$.result"
         };
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetAssociationTargets");
-        var node = new GetAssociationTargetsNode(next, EtlContext);
+        var node = new GetAssociationTargetsNode(next, EtlContext, CkCache);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

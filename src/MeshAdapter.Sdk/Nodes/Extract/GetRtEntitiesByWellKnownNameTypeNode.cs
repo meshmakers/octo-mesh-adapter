@@ -1,4 +1,5 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
@@ -16,7 +17,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 /// </summary>
 [NodeConfiguration(typeof(GetRtEntitiesByWellKnownNameNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlContext etlContext,
+    ICkCacheService ckCacheService) : IPipelineNode
 {
     /// <summary>Resolved write-back values for one source item, keyed by well-known name.</summary>
     private sealed record Resolution(
@@ -59,6 +61,9 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
         var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip,
             c.Take);
         await session.CommitTransactionAsync();
+
+        // AB#7768: the attributes copied back into the items must not carry Hidden values.
+        r = await RtAttributeAccessGuard.DropHiddenAsync(etlContext, ckCacheService, r);
 
         // Build the resolution map keyed by well-known name. Matched entities resolve to an
         // Update; unmatched names (when GenerateInsertOperation) resolve to a freshly-id'd Insert.

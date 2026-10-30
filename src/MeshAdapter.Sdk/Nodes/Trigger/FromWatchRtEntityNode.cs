@@ -46,9 +46,22 @@ public class FromWatchRtEntityNode(ISystemContext systemContext, ICkCacheService
 
         var tenantRepository = await systemContext.FindTenantRepositoryAsync(context.TenantId);
 
+        // AB#7768: a watch filter on a Hidden attribute is an oracle for its value (the stream fires or not).
+        if (!ckCacheService.IsTenantLoaded(context.TenantId))
+        {
+            await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
+        }
+
+        var node = context.NodeContext.NodePath.ToString();
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, node, [c.CkTypeId],
+            (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, node, [c.CkTypeId],
+            (c.BeforeFieldFilters ?? []).Select(f => f.AttributePath), "before field filter");
+
         _updateStream = await tenantRepository.WatchRtEntitiesAsync(c.CkTypeId, filter);
         _updateStream.GetUpdates()
             .Select(u => MaskSecrets(context.TenantId, u))
+            .Select(u => DropHidden(tenantRepository, context.TenantId, u))
             .Select(u =>
                 Observable.FromAsync(() => context.ExecuteAsync(new ExecutePipelineOptions(DateTime.UtcNow), u))
                     .Catch<object?, Exception>(ex =>
@@ -72,6 +85,44 @@ public class FromWatchRtEntityNode(ISystemContext systemContext, ICkCacheService
         SecretAttributes.MaskLegacyValues(ckCacheService, tenantId, update.Document);
         SecretAttributes.MaskLegacyValues(ckCacheService, tenantId, update.DocumentBeforeChange);
         return update;
+    }
+
+    /// <summary>
+    /// AB#7768: the changed entity (<c>$.Document</c>) and its state before the change must not carry Hidden values
+    /// into the data context. The change-stream documents are copied, never modified.
+    /// </summary>
+    internal IUpdateInfo<RtEntity> DropHidden(ITenantRepository tenantRepository, string tenantId,
+        IUpdateInfo<RtEntity> update)
+    {
+        if (!ckCacheService.IsTenantLoaded(tenantId))
+        {
+            // The cache can be unloaded in the middle of a run; without it nothing can be judged, so load it.
+            tenantRepository.LoadCacheForTenantAsync(ckCacheService).GetAwaiter().GetResult();
+            if (!ckCacheService.IsTenantLoaded(tenantId))
+            {
+                throw new RtAttributeAccessCheckUnavailableException(tenantId, null);
+            }
+        }
+
+        var document = update.Document == null ? null : RtAttributeAccessGuard.DropHidden(ckCacheService, tenantId, update.Document);
+        var before = update.DocumentBeforeChange == null
+            ? null
+            : RtAttributeAccessGuard.DropHidden(ckCacheService, tenantId, update.DocumentBeforeChange);
+        if (ReferenceEquals(document, update.Document) && ReferenceEquals(before, update.DocumentBeforeChange))
+        {
+            return update;
+        }
+
+        return new ProjectedUpdateInfo(update, document, before);
+    }
+
+    private sealed class ProjectedUpdateInfo(IUpdateInfo<RtEntity> source, RtEntity? document, RtEntity? before)
+        : IUpdateInfo<RtEntity>
+    {
+        public string[] UpdateFields => source.UpdateFields;
+        public UpdateTypes UpdateType => source.UpdateType;
+        public RtEntity? Document => document;
+        public RtEntity? DocumentBeforeChange => before;
     }
 
     /// <inheritdoc />

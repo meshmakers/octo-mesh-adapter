@@ -437,6 +437,24 @@ new adapter: no marker, the method's own run is refused (availability only) — 
 controller. New controller + old adapter: the unknown member is ignored and today's gap remains until the adapter is
 upgraded.
 
+### Attribute access in pipelines — Hidden, MethodOnly, ReadOnly (AB#7768)
+
+`MeshAdapter.Sdk/Common/RtAttributeAccessGuard` applies the CK v2 attribute `access` to the nodes (a pipeline reads the
+repository with system rights, so the GraphQL guards do not reach it). Full description, node list and exceptions:
+`docs/developer-guide.md` ("Attribute access in pipelines"). Rules in one place:
+
+- **Hidden**: dropped from every entity an extract node or `FromWatchRtEntity@1` emits (a copy; never the repository's
+  instance); a field filter, sort order or query column that reaches it fails the node (`RT_ATTRIBUTE_HIDDEN`, node and
+  path, no value); never written, not even in a method run.
+- **MethodOnly**: readable; written only when `IMeshEtlContext.MethodInvocation` is set, its method belongs to the
+  entity's type and its pipeline is the running one (the `GenericCreateGuard` pattern); otherwise the whole batch is refused
+  (`RT_ATTRIBUTE_WRITE_RESTRICTED`).
+- **ReadOnly**: readable; a pipeline never writes it (also not on insert). A `Replace` that would clear an attribute the run
+  may not write is refused. Presence in an update counts as a write.
+- Write nodes call `RtAttributeAccessGuard.EnsureWritesAllowedAsync` (it runs `GenericCreateGuard` first); extract nodes
+  call `DropHidden(Async)` and `EnsureNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.
+  `SessionNodeTestBase.CkCache` gives tests a loaded cache that knows no type.
+
 ### JSON / Serialization (System.Text.Json)
 
 The adapter and all ~35 nodes are System.Text.Json-only on the pipeline data path. Newtonsoft is no longer used for pipeline data flow (it may still appear in unrelated transports such as SignalR contracts).

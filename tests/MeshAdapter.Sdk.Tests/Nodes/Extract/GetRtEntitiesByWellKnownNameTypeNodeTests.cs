@@ -99,7 +99,7 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : SessionNodeTestBase
 
         var config = DefaultConfig();
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetRtEntitiesByWellKnownName");
-        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext);
+        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext, CkCache);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -153,7 +153,7 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : SessionNodeTestBase
 
         var config = DefaultConfig();
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetRtEntitiesByWellKnownName");
-        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext);
+        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext, CkCache);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -183,7 +183,7 @@ public class GetRtEntitiesByWellKnownNameTypeNodeTests : SessionNodeTestBase
 
         var config = DefaultConfig() with { GenerateInsertOperation = true, AttributeTargetPath = "$.attributes" };
         var (nodeContext, next) = PrepareNode(dataContext, config, "GetRtEntitiesByWellKnownName");
-        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext);
+        var node = new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext, CkCache);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

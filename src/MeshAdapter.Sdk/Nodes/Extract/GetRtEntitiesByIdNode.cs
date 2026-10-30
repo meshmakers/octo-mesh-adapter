@@ -1,5 +1,6 @@
 using GraphQL.Client.Abstractions.Utilities;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -14,7 +15,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 /// </summary>
 [NodeConfiguration(typeof(GetRtEntitiesByIdNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) : IPipelineNode
+public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context, ICkCacheService ckCacheService)
+    : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -39,6 +41,11 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
             return;
         }
 
+        // AB#7768: no filter on a Hidden attribute.
+        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(context, ckCacheService);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
+            [ckTypeId], (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
+
         var queryOptions = RtEntityQueryOptions.Create();
         c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
@@ -48,6 +55,9 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context) :
         var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, ckTypeId, rtIds,
             queryOptions, c.Skip, c.Take);
         await session.CommitTransactionAsync();
+
+        // AB#7768: Hidden values never enter the data context.
+        r = await RtAttributeAccessGuard.DropHiddenAsync(context, ckCacheService, r);
 
         dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 

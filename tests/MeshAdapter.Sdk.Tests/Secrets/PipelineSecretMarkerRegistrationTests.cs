@@ -75,7 +75,7 @@ public class PipelineSecretMarkerRegistrationTests : SessionNodeTestBase
             CkTypeId = SecretTestSupport.CkTypeId, RtIds = [RtId], TargetPath = "$.result"
         }, dataContext);
 
-        await new GetRtEntitiesByIdNode(A.Fake<NodeDelegate>(), EtlContext).ProcessObjectAsync(dataContext, nodeContext);
+        await new GetRtEntitiesByIdNode(A.Fake<NodeDelegate>(), EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext);
 
         var json = dataContext.Get<JsonNode>("$")!;
         Assert.DoesNotContain(Plaintext, json.ToJsonString());

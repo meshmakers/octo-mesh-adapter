@@ -43,7 +43,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
         // AB#7463: inserts of a type whose CK method replaces the generic create are refused outside that
         // method's own run. Checked on the raw entity updates (every insert is part of the later
         // resultUpdateInfos), before the dry-run branch and before any write; the whole batch is refused.
-        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entityUpdates);
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdates);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {

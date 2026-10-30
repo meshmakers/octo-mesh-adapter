@@ -1,5 +1,6 @@
 using System.Globalization;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
@@ -21,7 +22,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 /// </summary>
 [NodeConfiguration(typeof(GetRtEntitiesByTypeNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -44,6 +46,16 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
             // and merges nothing itself. Filters and sort orders are translated exactly as for the type variant, the
             // security filter lives in the engine method and acts on the session of the node's identity.
             var ckInterfaceId = ValidateInterfaceSelection(c, nodeContext, out var skip, out var take);
+            // AB#7768: no filter or sort on a Hidden attribute of any implementing type.
+            await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+            var implementingTypes =
+                RtAttributeAccessGuard.TypesOfInterface(ckCacheService, etlContext.TenantId, ckInterfaceId);
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+                nodeContext.NodePath.ToString(), implementingTypes,
+                (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+                nodeContext.NodePath.ToString(), implementingTypes,
+                (c.SortOrders ?? []).Select(s => s.AttributeName), "sort order");
             c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
             c.SortOrders.GetSortOrders(queryOptions);
             query = async session =>
@@ -64,6 +76,14 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         else
         {
             var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+            // AB#7768: no filter or sort on a Hidden attribute.
+            await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+                nodeContext.NodePath.ToString(), [ckTypeId],
+                (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+                nodeContext.NodePath.ToString(), [ckTypeId],
+                (c.SortOrders ?? []).Select(s => s.AttributeName), "sort order");
             c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
             c.SortOrders.GetSortOrders(queryOptions);
             query = session => etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions,
@@ -84,6 +104,9 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
             await session.AbortTransactionAsync();
             throw;
         }
+
+        // AB#7768: Hidden values never enter the data context.
+        r = await RtAttributeAccessGuard.DropHiddenAsync(etlContext, ckCacheService, r);
 
         dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 

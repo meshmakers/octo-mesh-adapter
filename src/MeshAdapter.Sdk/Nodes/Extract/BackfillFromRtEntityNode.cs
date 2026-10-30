@@ -1,4 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
@@ -14,7 +16,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 internal class BackfillFromRtEntityNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
-    ISystemContext systemContext)
+    ISystemContext systemContext,
+    ICkCacheService ckCacheService)
     : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -87,6 +90,14 @@ internal class BackfillFromRtEntityNode(
             {
                 persistedEntity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(
                     session, new RtEntityId(entityUpdateInfo.CkTypeId, rtId));
+                // AB#7768: an archive column never reaches a Hidden attribute (engine guard); dropped here too.
+                if (persistedEntity != null)
+                {
+                    await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+                    persistedEntity = RtAttributeAccessGuard.DropHidden(ckCacheService, etlContext.TenantId,
+                        persistedEntity);
+                }
+
                 entityCache[rtId] = persistedEntity;
                 loadedCount++;
             }

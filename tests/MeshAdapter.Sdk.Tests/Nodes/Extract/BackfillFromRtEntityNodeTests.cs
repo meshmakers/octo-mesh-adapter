@@ -89,7 +89,7 @@ public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext, CkCache);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal(230.0, update.RtEntity!.GetAttributeValueOrDefault<double>("Voltage"));
@@ -111,7 +111,7 @@ public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext, CkCache);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal(230.0, update.RtEntity!.GetAttributeValueOrDefault<double>("Voltage"));
@@ -138,7 +138,7 @@ public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext, CkCache);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // Same RtId across two update infos — only one Mongo lookup expected.
@@ -157,7 +157,7 @@ public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(null);
 
-        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext, CkCache);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._)).MustNotHaveHappened();
@@ -176,7 +176,7 @@ public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext, CkCache);
         await Assert.ThrowsAsync<InvalidOperationException>(() => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
@@ -196,7 +196,7 @@ public class BackfillFromRtEntityNodeTests : SessionNodeTestBase
         A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(DataPath))
             .Returns(data);
 
-        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext);
+        var node = new BackfillFromRtEntityNode(next, EtlContext, _systemContext, CkCache);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.False(update.RtEntity!.Attributes.ContainsKey("Voltage"));

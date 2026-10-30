@@ -25,7 +25,7 @@ public class NodeExecutionIdentitySelectionTests : SessionNodeTestBase
         }
 
         var (dataContext, nodeContext, next) = PrepareTest(config);
-        var node = new GetRtEntitiesByTypeNode(next, EtlContext);
+        var node = new GetRtEntitiesByTypeNode(next, EtlContext, CkCache);
         await Record.ExceptionAsync(() => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -14,7 +15,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 [NodeConfiguration(typeof(CheckDuplicateNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class CheckDuplicateNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+public class CheckDuplicateNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -34,6 +36,11 @@ public class CheckDuplicateNode(NodeDelegate next, IMeshEtlContext etlContext) :
             await next(dataContext, nodeContext);
             return;
         }
+
+        // AB#7768: a duplicate check on a Hidden attribute is an oracle for its value.
+        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId, nodeContext.NodePath.ToString(),
+            [config.CkTypeId], [config.AttributeName], "field filter");
 
         var queryOptions = RtEntityQueryOptions.Create()
             .FieldFilter(config.AttributeName, FieldFilterOperator.Equals, value);
@@ -58,6 +65,7 @@ public class CheckDuplicateNode(NodeDelegate next, IMeshEtlContext etlContext) :
             var existingEntity = result.Items.FirstOrDefault();
             if (existingEntity != null)
             {
+                existingEntity = RtAttributeAccessGuard.DropHidden(ckCacheService, etlContext.TenantId, existingEntity);
                 dataContext.Set(config.ExistingEntityPath, existingEntity, DocumentModes.Extend,
                     ValueKinds.Simple, TargetValueWriteModes.Overwrite);
             }

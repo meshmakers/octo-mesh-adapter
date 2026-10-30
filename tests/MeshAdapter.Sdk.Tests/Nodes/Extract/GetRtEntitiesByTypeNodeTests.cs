@@ -28,7 +28,7 @@ public class GetRtEntitiesByTypeNodeTests : SessionNodeTestBase
 
     private GetRtEntitiesByTypeNode CreateNode(NodeDelegate next)
     {
-        return new GetRtEntitiesByTypeNode(next, EtlContext);
+        return new GetRtEntitiesByTypeNode(next, EtlContext, CkCache);
     }
 
     private static IResultSet<RtEntity> CreateResultSet(params RtEntity[] entities)

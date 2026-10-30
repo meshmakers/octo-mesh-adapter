@@ -109,7 +109,7 @@ public class CreateFileSystemItemUpdateNode(NodeDelegate next, IMeshEtlContext e
         // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
         // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
         // method's own run; checked before the first write, the whole batch is refused.
-        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, entityUpdateInfoList);
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdateInfoList);
         var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         OperationResult operationResult = new();

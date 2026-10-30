@@ -1,4 +1,5 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -12,7 +13,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 [NodeConfiguration(typeof(GetOrCreateRtEntitiesByTypeNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlContext,
+    ICkCacheService ckCacheService) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -25,6 +27,11 @@ internal class GetOrCreateRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContex
             nodeContext.Error("FieldFilters is not set");
             return;
         }
+
+        // AB#7768: no filter on a Hidden attribute.
+        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId, nodeContext.NodePath.ToString(),
+            [ckTypeId], (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
 
         var queryOptions = RtEntityQueryOptions.Create();
         // Add field filters from the configuration

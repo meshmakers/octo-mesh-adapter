@@ -1,4 +1,5 @@
 using FakeItEasy;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -71,6 +72,12 @@ public abstract class SessionNodeTestBase : NodeTestBase, IDisposable
     /// </summary>
     protected ISecureSessionFactory SecureSessionFactory { get; }
 
+    /// <summary>
+    ///     A CK cache with a loaded tenant that knows no type (AB#7768: the attribute-access guard of the extract and
+    ///     load nodes is a pass-through for it). Tests that need hidden/method-only attributes build their own.
+    /// </summary>
+    protected ICkCacheService CkCache { get; }
+
     /// <summary>The session handed out for every accepted session request.</summary>
     protected IOctoSession Session { get; }
 
@@ -101,6 +108,8 @@ public abstract class SessionNodeTestBase : NodeTestBase, IDisposable
     protected SessionNodeTestBase()
     {
         EtlContext = A.Fake<IMeshEtlContext>();
+        CkCache = A.Fake<ICkCacheService>();
+        A.CallTo(() => CkCache.IsTenantLoaded(A<string>._)).Returns(true);
         TenantRepository = A.Fake<ITenantRepository>(o => o.Implements<ISecureSessionFactory>());
         SecureSessionFactory = (ISecureSessionFactory)TenantRepository;
         Session = A.Fake<IOctoSession>();

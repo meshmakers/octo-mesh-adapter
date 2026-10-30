@@ -1,17 +1,20 @@
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.PipelineDataTransferObjects;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
 [NodeConfiguration(typeof(GetAssociationTargetsNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlContext) : IPipelineNode
+internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlContext,
+    ICkCacheService ckCacheService) : IPipelineNode
 {
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -49,6 +52,13 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
             throw MeshAdapterPipelineExecutionException.GraphDirectionNotSet(nodeContext);
         }
 
+        // AB#7768: no filter on a Hidden attribute.
+        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId, nodeContext.NodePath.ToString(),
+            [targetCkTypeId], (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId, nodeContext.NodePath.ToString(),
+            [targetCkTypeId], (c.SortOrders ?? []).Select(s => s.AttributeName), "sort order");
+
         var queryOptions = RtEntityQueryOptions.Create();
 
         // Add field filters from the configuration
@@ -75,7 +85,8 @@ internal class GetAssociationTargetsNode(NodeDelegate next, IMeshEtlContext etlC
                 OriginRtId =  r.Key.RtId,
                 OriginCkTypeId = r.Key.CkTypeId,
                 TotalCount = r.Value.TotalCount,
-                Items = r.Value.Items
+                // AB#7768: Hidden values never enter the data context.
+                Items = r.Value.Items.Select(e => RtAttributeAccessGuard.DropHidden(ckCacheService, etlContext.TenantId, e)).ToList()
             });
         }
 

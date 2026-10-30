@@ -13,6 +13,7 @@ using Meshmakers.Octo.Runtime.Engine.StreamData;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -106,6 +107,15 @@ public class GetQueryByIdNode(
                 throw MeshAdapterPipelineExecutionException.UnsupportedQueryType(nodeContext,
                     rtQuery.GetType().Name);
         }
+
+        // AB#7768: a query whose columns or filters reach a Hidden attribute is refused as a whole - its result
+        // would carry the value (column) or act as an oracle for it (filter).
+        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(context, ckCacheService);
+        var queryType = new RtCkId<CkTypeId>(queryCkTypeId);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
+            [queryType], columnPaths, "query column");
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
+            [queryType], (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
 
         // Add field filters from the pipeline configuration
         c.FieldFilters.GetFieldFilter(dataContext, queryOptions);

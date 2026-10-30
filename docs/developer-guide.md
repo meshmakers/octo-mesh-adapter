@@ -1715,7 +1715,8 @@ public class MyWriteNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCache
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         List<IEntityUpdateInfo<RtEntity>> updates = BuildUpdates(dataContext);
-        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, updates); // throws, nothing written
+        // runs the generic-create guard, then the attribute-access guard (AB#7768)
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, updates); // throws, nothing written
         // ... session, ApplyChangesAsync, commit
     }
 }
@@ -1725,6 +1726,53 @@ Take `ICkCacheService` as a constructor parameter (DI). Let the exception propag
 in a `try/catch` that logs a store error. Tests belong next to the node: refused without marker (assert that
 `ApplyChangesAsync` was never called), allowed with `ConfigureRun(..., OwnRunMarker())`, non-flagged types and updates
 unaffected (see `ReplacedCreateTestSupport` in the test project).
+
+### Attribute access in pipelines: Hidden, MethodOnly, ReadOnly (AB#7768)
+
+A pipeline runs with system rights and reads the repository directly, so the GraphQL guards of CK v2 attribute access
+(`access: Hidden | MethodOnly | ReadOnly`) do not reach it. `MeshAdapter.Sdk/Common/RtAttributeAccessGuard` applies them
+(rules from the engine helpers of AB#7767: `CkTypeAttributeGraph.IsReadableOutsideMethod` / `IsWritableOutsideMethod`):
+
+| Access | Emitted by extract nodes | Filter / sort / query column | Written by load nodes |
+|--------|-------------------------|------------------------------|-----------------------|
+| `ReadWrite` | yes | yes | yes |
+| `ReadOnly` | yes | yes | **refused** (also on insert, also in a method run) |
+| `MethodOnly` | yes | yes | **refused**, except in the method run of the entity's type |
+| `Hidden` | **dropped** (also record members) | **refused** | **refused** (also in a method run) |
+
+* **Read.** `DropHidden` / `DropHiddenAsync` return the entity without Hidden values: the same instance when nothing is
+  hidden, otherwise a copy (the engine's entity may be shared/cached, `RemoveAttribute` is internal). Used by
+  `GetRtEntitiesByType@1` (type and interface variant), `GetRtEntitiesById@1`, `GetRtEntitiesByWellKnownName@1`
+  (attributes copied back into the items), `GetAssociationTargets@1`, `CheckDuplicate@1` (existing entity),
+  `BackfillFromRtEntity@1` and, on the change-stream documents, `FromWatchRtEntity@1` (`Document`, `DocumentBeforeChange`).
+  Not changed: `GetPipelineConfigByCkTypeId` / `GetPipelineConfigByWellKnownName` (controller-projected configuration,
+  not tenant entities), `RevealSecret@1` (deliberate Secret reveal), stream-data nodes (archives refuse Hidden columns in
+  the engine, `ArchiveHiddenColumnGuard`), nodes that read fixed platform types (data point mappings, notification,
+  community energy, file system).
+* **Filter / sort.** `EnsureNotHidden(cache, tenant, node, types, paths, usage)` throws `RtAttributeHiddenException`
+  (`RT_ATTRIBUTE_HIDDEN`; node path and configured path, never a value) before any query: `GetRtEntitiesByType@1`,
+  `GetRtEntitiesById@1`, `GetAssociationTargets@1`, `GetOrCreateRtEntitiesByType@1`, `CheckDuplicate@1`,
+  `FromWatchRtEntity@1` (in `StartAsync`), `GetQueryById@1` (columns and filters; the persisted query's own filters are not
+  checked). It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
+  that contains a Hidden member counts). Interface queries check every implementing type; a navigated path
+  (`role.Type->attribute`) is judged by its trailing attribute on every CK type of the tenant (conservative).
+* **Write.** `EnsureWritesAllowedAsync` (all nodes that called `GenericCreateGuard` now call it; it runs that guard
+  first) refuses the whole batch with `RtAttributeWriteRestrictedException` (`RT_ATTRIBUTE_WRITE_RESTRICTED`,
+  `Refusals` = type, attribute path, access, cause). Checked per update (not Delete): attributes and record members in
+  `RtEntity.Attributes`, `RecordArrayItemUpdates` (attribute and members) and `ClearSecretAttributes`. A `MethodOnly`
+  write passes only if `MethodInvocation` is present, its `MethodId` is one of `AllMethods` of the entity's type (own or
+  inherited, ordinal) and its `PipelineRtId` is the running pipeline (pattern of `GenericCreateGuard`); causes
+  `METHOD_ONLY_MISSING_METHOD_INVOCATION`, `METHOD_ONLY_METHOD_MISMATCH`, `METHOD_ONLY_PIPELINE_MISMATCH`. A `Replace` of
+  an entity whose type has an attribute this run may not write is refused (`REPLACE_WOULD_CLEAR`): the replacement
+  document would clear the stored value. Presence counts as a write, so read-modify-write of a whole entity fails on a
+  ReadOnly/MethodOnly attribute. Runs before the dry-run branch, so a dry run reports the refusal.
+* **Cache.** Types unknown to the tenant CK cache are not judged. An unloaded cache is loaded first;
+  if that fails the guard fails closed (`RtAttributeAccessCheckUnavailableException`, retryable).
+* **Tests.** Test model `Helpers/AttributeAccessTestModel` (every access, a record with a Hidden member, a method);
+  guard rules in `Nodes/Access/RtAttributeAccessGuardTests`, node wiring in `NodeAttributeAccessTests` /
+  `NodeAttributeAccessMoreTests`. `SessionNodeTestBase.CkCache` is a loaded cache that knows no type (pass-through).
+  A new node that emits entities must call `DropHidden`, a new node with a configurable filter must call
+  `EnsureNotHidden`, a new write node must call `EnsureWritesAllowedAsync`.
 
 ---
 

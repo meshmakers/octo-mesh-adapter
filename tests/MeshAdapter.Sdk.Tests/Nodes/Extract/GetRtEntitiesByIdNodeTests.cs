@@ -27,7 +27,7 @@ public class GetRtEntitiesByIdNodeTests : SessionNodeTestBase
 
     private GetRtEntitiesByIdNode CreateNode(NodeDelegate next)
     {
-        return new GetRtEntitiesByIdNode(next, EtlContext);
+        return new GetRtEntitiesByIdNode(next, EtlContext, CkCache);
     }
 
     private static IResultSet<RtEntity> CreateResultSet(params RtEntity[] entities)

@@ -61,7 +61,7 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
 
     public GetQueryByIdNodeTests()
     {
-        _ckCacheService = A.Fake<ICkCacheService>();
+        _ckCacheService = CkCache;
         _systemContext = A.Fake<ISystemContext>();
         _tenantContext = A.Fake<ITenantContext>();
         _streamDataRepository = A.Fake<IStreamDataRepository>();

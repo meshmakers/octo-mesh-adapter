@@ -615,7 +615,7 @@ public class SimulateEnergyMeasurementsV2NodeTests : SessionNodeTestBase
             CkTypeId = new RtCkId<CkTypeId>(SettingsCkTypeId),
             TargetPath = "$.settings"
         };
-        await new GetRtEntitiesByTypeNode(A.Fake<NodeDelegate>(), EtlContext)
+        await new GetRtEntitiesByTypeNode(A.Fake<NodeDelegate>(), EtlContext, CkCache)
             .ProcessObjectAsync(dataContext, root.RegisterChildNode("GetRtEntitiesByType", 0, getConfig, dataContext));
 
         var simConfig = CreateConfig(Utc(2026, 11, 1), 2, SettingsPath) with { EntityUpdatesOutputPath = "$.out" };

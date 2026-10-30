@@ -62,7 +62,7 @@ public class CheckDuplicateNodeTests : SessionNodeTestBase
         var nodeContext = rootNodeContext.RegisterChildNode("CheckDuplicate", 0, config, dataContext);
 
         var next = A.Fake<NodeDelegate>();
-        var node = new CheckDuplicateNode(next, EtlContext);
+        var node = new CheckDuplicateNode(next, EtlContext, CkCache);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

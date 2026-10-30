@@ -29,7 +29,7 @@ public class GetRtEntitiesByTypeNodeInterfaceTests : SessionNodeTestBase
 {
     private static readonly RtCkId<CkInterfaceId> NamedInterface = new("System/Named-1");
 
-    private GetRtEntitiesByTypeNode CreateNode(NodeDelegate next) => new(next, EtlContext);
+    private GetRtEntitiesByTypeNode CreateNode(NodeDelegate next) => new(next, EtlContext, CkCache);
 
     private static GetRtEntitiesByTypeNodeConfiguration InterfaceConfig(Action<GetRtEntitiesByTypeNodeConfiguration>? tune = null)
     {

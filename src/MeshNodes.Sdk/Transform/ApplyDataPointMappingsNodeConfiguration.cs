@@ -6,6 +6,11 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// Configuration for the ApplyDataPointMappings node.
 /// Evaluates DataPointMapping entities associated with a source entity
 /// and produces update items for the mapped target entities.
+/// The node emits one update item per target entity: when several mappings of the same
+/// source value target the same entity (e.g. <c>IsOn</c> and <c>DimmingLevel</c> of one
+/// luminaire), their attributes are merged into a single update, so a downstream
+/// <c>SaveStreamDataInArchive</c> writes one row per entity and state change. All update
+/// items of one invocation share the same <c>RtChangedDateTime</c>.
 /// </summary>
 [NodeName("ApplyDataPointMappings", 1)]
 public record ApplyDataPointMappingsNodeConfiguration : TargetPathNodeConfiguration

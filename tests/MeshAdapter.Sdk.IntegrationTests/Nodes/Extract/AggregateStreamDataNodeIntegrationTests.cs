@@ -188,8 +188,9 @@ public class AggregateStreamDataNodeIntegrationTests(StreamDataFixture fixture)
     [Fact]
     public async Task ProcessObjectAsync_IntegralOnATimeRangeArchive_IsRefusedByTheStorageLayer()
     {
-        // AB#7919: the node passes Integral through; the engine serves it over raw archives only (AB#7918)
-        // and refuses the fixture's time-range archive with a message that names the column. The node
+        // AB#7919: the node passes Integral through; the engine serves it over raw archives and over
+        // rollups that materialise a TimeWeightedAvg (AB#7918, AB#7920) and refuses the fixture's
+        // time-range archive with a message that names the column. The node
         // wraps it with the archive id instead of returning a figure.
         fixture.EnsureInitialized();
 
@@ -198,7 +199,7 @@ public class AggregateStreamDataNodeIntegrationTests(StreamDataFixture fixture)
 
         var thrown = await act.Should().ThrowAsync<MeshAdapterPipelineExecutionException>();
         thrown.Which.InnerException.Should().NotBeNull();
-        thrown.Which.InnerException!.Message.Should().Contain("raw (event-based) archives only");
+        thrown.Which.InnerException!.Message.Should().Contain("time-range archives are not supported");
     }
 
     [Fact]

@@ -16,7 +16,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
 /// <summary>
 /// Evaluates DataPointMapping entities associated with a source entity via MapsFrom,
-/// applies optional mapping expressions, and produces update items for the mapped target entities.
+/// applies optional mapping expressions, and produces update items for the mapped target entities —
+/// one update per target entity (all mapped attributes merged), with one RtChangedDateTime per invocation.
 /// </summary>
 [NodeConfiguration(typeof(ApplyDataPointMappingsNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -68,7 +69,14 @@ internal class ApplyDataPointMappingsNode(
             return;
         }
 
-        var updateItems = new List<EntityUpdateInfo<RtEntity>>();
+        // AB#7962: one update per target entity, not one per mapping. Several mappings of one source
+        // state may target the same entity (e.g. IsOn and DimmingLevel of a Luminaire); emitting one
+        // update each made SaveStreamDataInArchive@1 write one archive row per mapping. The attributes
+        // of all mappings onto one target are merged into a single RtEntity (first-seen order is kept),
+        // and every update of this invocation carries the same RtChangedDateTime.
+        var changedAt = DateTime.UtcNow;
+        var targetEntities = new Dictionary<RtEntityId, RtEntity>();
+        var targetOrder = new List<RtEntityId>();
 
         foreach (var mappingAssoc in mappingAssociations)
         {
@@ -182,27 +190,32 @@ internal class ApplyDataPointMappingsNode(
 
             if (valueToMap == null) continue;
 
-            // Step 5: Create update info for the target entity
-            var rtEntity = new RtEntity
+            // Step 5: Set the value on the (shared) update entity of this target
+            var targetEntityId = new RtEntityId(targetCkTypeId, targetRtId);
+            if (!targetEntities.TryGetValue(targetEntityId, out var rtEntity))
             {
-                CkTypeId = targetCkTypeId,
-                RtChangedDateTime = DateTime.UtcNow
-            };
+                rtEntity = new RtEntity
+                {
+                    CkTypeId = targetCkTypeId,
+                    RtChangedDateTime = changedAt
+                };
+                targetEntities.Add(targetEntityId, rtEntity);
+                targetOrder.Add(targetEntityId);
+            }
 
             RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId,
                 rtEntity, targetAttributePath, valueToMap);
-
-            var updateItem = EntityUpdateInfo<RtEntity>.CreateUpdate(
-                new RtEntityId(targetCkTypeId, targetRtId), rtEntity);
-            updateItems.Add(updateItem);
 
             nodeContext.Debug(
                 $"DataPointMapping {mappingRtId}: {sourceAttributePath ?? "(direct)"} -> " +
                 $"{targetCkTypeId}@{targetRtId}.{targetAttributePath} = {valueToMap}");
         }
 
-        if (updateItems.Count > 0)
+        if (targetOrder.Count > 0)
         {
+            var updateItems = targetOrder
+                .Select(id => EntityUpdateInfo<RtEntity>.CreateUpdate(id, targetEntities[id]))
+                .ToList();
             dataContext.Set(c.TargetPath, updateItems, c.DocumentMode, c.TargetValueKind,
                 c.TargetValueWriteMode);
         }

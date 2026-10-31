@@ -546,12 +546,12 @@ public class AggregateStreamDataNodeTests : NodeTestBase
             new StreamDataRow
             {
                 RtId = new OctoObjectId("000000000000000000000001"),
-                Values = new Dictionary<string, object?> { ["rtId"] = "a", ["energy_integral"] = 900.0 }
+                Values = new Dictionary<string, object?> { ["rtid"] = "a", ["energy_integral"] = 900.0 }
             },
             new StreamDataRow
             {
                 RtId = new OctoObjectId("000000000000000000000002"),
-                Values = new Dictionary<string, object?> { ["rtId"] = "b", ["energy_integral"] = 750.0 }
+                Values = new Dictionary<string, object?> { ["rtid"] = "b", ["energy_integral"] = 750.0 }
             });
 
         var config = Config(Agg("Energy", AggregationTypesDto.Integral)) with { GroupBy = ["rtId"] };
@@ -561,6 +561,7 @@ public class AggregateStreamDataNodeTests : NodeTestBase
         await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.Equal(AggregationFunction.Integral, Assert.Single(_capturedGrouped!.AggregationColumns).Function);
+        Assert.Equal(["a", "b"], captured.Value!.Rows.Select(r => r.Values[0]));
         Assert.Equal([900.0, 750.0], captured.Value!.Rows.Select(r => r.Values[1]));
     }
 

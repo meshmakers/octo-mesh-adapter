@@ -901,7 +901,14 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: No aggregations configured. Provide at least one entry with " +
-            "an attribute path and a function (Count, Minimum, Maximum, Average or Sum).");
+            "an attribute path and a function (Count, Minimum, Maximum, Average, Sum or Integral).");
+    }
+
+    public static Exception IntegralTimeRangeRequired(INodeContext nodeContext, string column)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Integral on '{column}' needs both ends of the time range: set From/To " +
+            "(or FromPath/ToPath). The integral is taken over [From, To) in value unit x hours.");
     }
 
     public static Exception UnsupportedAggregationFunction(INodeContext nodeContext, string function,
@@ -909,7 +916,7 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     {
         return new MeshAdapterPipelineExecutionException(
             $"[{nodeContext.NodePath}]: Aggregation '{function}' on '{attributePath}' is not " +
-            "supported here. Available: Count, Minimum, Maximum, Average, Sum. A time-weighted " +
+            "supported here. Available: Count, Minimum, Maximum, Average, Sum, Integral. A time-weighted " +
             "average and a state duration need per-column metadata this node cannot carry — use " +
             "GetQueryById@1 with a persisted query that defines the aggregation per column.");
     }

@@ -519,7 +519,11 @@ the rows themselves. Writes a `QueryResult` to `TargetPath`.
 | `ExpectedInterval` | TimeSpan? | Interval the completeness check counts in. Defaults to the archive's period |
 | `MaxGapScanRows` | int? | Row cap for the completeness check (default 200000) |
 
-**Functions: `COUNT`, `MINIMUM`, `MAXIMUM`, `AVERAGE`, `SUM`.** `TIME_WEIGHTED_AVERAGE` and
+**Functions: `COUNT`, `MINIMUM`, `MAXIMUM`, `AVERAGE`, `SUM`, `INTEGRAL`.** `INTEGRAL` (AB#7919) is the
+engine's step integral over `[from, to)` in value unit x hours (a power column in W gives Wh): the last value
+holds until the next row, the last row before `from` carries in, several entities are summed (per group with
+`groupBy`), an empty window gives null. It needs both `from` and `to` (refused before the query otherwise) and a
+raw archive (the storage layer refuses rollup and time-range archives). `TIME_WEIGHTED_AVERAGE` and
 `STATE_DURATION` are refused: they need metadata this node cannot carry — a comparison value, or a
 raw archive's LOCF path — and their result keys follow different rules. Use `GetQueryById@1` with a
 persisted query that defines the aggregation per column; the error message says so.

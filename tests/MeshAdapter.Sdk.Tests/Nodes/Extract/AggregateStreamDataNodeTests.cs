@@ -516,6 +516,75 @@ public class AggregateStreamDataNodeTests : NodeTestBase
         Assert.Contains("GetQueryById", ex.Message);
     }
 
+    // ----------------------------------------------------------- integral (AB#7919)
+
+    [Fact]
+    public async Task ProcessObjectAsync_Integral_RequestsTheEngineIntegralAndReadsItsKey()
+    {
+        SetupAggregationResult(new StreamDataRow
+        {
+            Values = new Dictionary<string, object?> { ["energy_integral"] = 1650.0, ["energy_sum"] = 7.0 }
+        });
+
+        var config = Config(Agg("Energy", AggregationTypesDto.Integral));
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        var column = Assert.Single(_capturedPlain!.AggregationColumns);
+        Assert.Equal(AggregationFunction.Integral, column.Function);
+        Assert.Equal(From, _capturedPlain.From);
+        Assert.Equal(To, _capturedPlain.To);
+        Assert.Equal(1650.0, Assert.Single(captured.Value!.Rows).Values[0]);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_GroupedIntegral_ReadsTheIntegralPerGroup()
+    {
+        SetupGroupedResult(
+            new StreamDataRow
+            {
+                RtId = new OctoObjectId("000000000000000000000001"),
+                Values = new Dictionary<string, object?> { ["rtid"] = "a", ["energy_integral"] = 900.0 }
+            },
+            new StreamDataRow
+            {
+                RtId = new OctoObjectId("000000000000000000000002"),
+                Values = new Dictionary<string, object?> { ["rtid"] = "b", ["energy_integral"] = 750.0 }
+            });
+
+        var config = Config(Agg("Energy", AggregationTypesDto.Integral)) with { GroupBy = ["rtId"] };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var captured = CaptureResult(dataContext);
+
+        await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(AggregationFunction.Integral, Assert.Single(_capturedGrouped!.AggregationColumns).Function);
+        Assert.Equal(["a", "b"], captured.Value!.Rows.Select(r => r.Values[0]));
+        Assert.Equal([900.0, 750.0], captured.Value!.Rows.Select(r => r.Values[1]));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task ProcessObjectAsync_IntegralWithoutBothBoundaries_ThrowsBeforeTheQuery(bool withFrom, bool withTo)
+    {
+        var config = Config(Agg("Energy", AggregationTypesDto.Integral)) with
+        {
+            From = withFrom ? From : null,
+            To = withTo ? To : null
+        };
+        var (dataContext, nodeContext, next) = PrepareTest(config);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("Integral", ex.Message);
+        Assert.Contains("From/To", ex.Message);
+        Assert.Null(_capturedPlain);
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_UnknownAggregationColumn_Throws()
     {

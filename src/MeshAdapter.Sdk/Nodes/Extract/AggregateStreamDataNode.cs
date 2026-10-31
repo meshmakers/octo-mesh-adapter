@@ -57,6 +57,16 @@ public class AggregateStreamDataNode(
         var aggregations = ResolveAggregations(c, snapshot, resolver, nodeContext);
         var groupBy = ResolveGroupBy(c, snapshot, resolver, nodeContext);
 
+        // AB#7919: the integral is taken over the query window, so both boundaries must be known.
+        var integralHeader = aggregations
+            .Where(a => a.Function == AggregationTypesDto.Integral)
+            .Select(a => a.Header)
+            .FirstOrDefault();
+        if (integralHeader != null && (!from.HasValue || !to.HasValue))
+        {
+            throw MeshAdapterPipelineExecutionException.IntegralTimeRangeRequired(nodeContext, integralHeader);
+        }
+
         if (c.RequireGapFree)
         {
             ValidateGapGuardConfiguration(c, snapshot, from, to, nodeContext);
@@ -167,10 +177,12 @@ public class AggregateStreamDataNode(
     }
 
     /// <summary>
-    /// Only the five functions the shared mapping knows are accepted. A time-weighted average and a
-    /// state duration need metadata this node cannot carry — a comparison value, or the raw archive's
-    /// LOCF path — and their result keys follow different rules, so they are refused with the route
-    /// that does support them.
+    /// The five functions the shared mapping knows plus <see cref="AggregationTypesDto.Integral"/> are
+    /// accepted. Integral (AB#7919) is the engine's step integral over [From, To) in value unit x hours: it
+    /// needs no per-column metadata and its result key follows the standard <c>{column}_integral</c> rule.
+    /// A time-weighted average and a state duration need metadata this node cannot carry — a comparison
+    /// value, or the raw archive's LOCF path — and their result keys follow different rules, so they are
+    /// refused with the route that does support them.
     /// </summary>
     private static void EnsureSupportedFunction(AggregationTypesDto function, string attributePath,
         INodeContext nodeContext)
@@ -182,6 +194,7 @@ public class AggregateStreamDataNode(
             case AggregationTypesDto.Average:
             case AggregationTypesDto.Minimum:
             case AggregationTypesDto.Maximum:
+            case AggregationTypesDto.Integral:
                 return;
             default:
                 throw MeshAdapterPipelineExecutionException.UnsupportedAggregationFunction(nodeContext,
@@ -245,8 +258,7 @@ public class AggregateStreamDataNode(
         DateTime? to, INodeContext nodeContext)
     {
         var columns = aggregations
-            .Select(a => new AggregationColumn(a.QueryName,
-                StreamDataNodeHelpers.MapStreamAggregation(a.Function).Function))
+            .Select(a => new AggregationColumn(a.QueryName, MapFunction(a.Function).Function))
             .ToList();
 
         try
@@ -329,8 +341,30 @@ public class AggregateStreamDataNode(
     }
 
     private static object? ResolveValue(StreamDataRow row, Aggregation aggregation)
-        => StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, aggregation.StorageKey,
+    {
+        if (aggregation.Function == AggregationTypesDto.Integral)
+        {
+            // The engine names the integral output "{storageKey}_integral" (AB#7918).
+            return row.Values.TryGetValue($"{aggregation.StorageKey}_{IntegralKeyToken}", out var value)
+                ? value
+                : null;
+        }
+
+        return StreamDataNodeHelpers.ResolveStreamAggregationValue(row.Values, aggregation.StorageKey,
             aggregation.Function);
+    }
+
+    private const string IntegralKeyToken = "integral";
+
+    /// <summary>
+    /// The engine function for a configured aggregation. Integral is mapped here and not in the shared
+    /// <see cref="StreamDataNodeHelpers.MapStreamAggregation"/>, because GetQueryById@1 uses that mapping for
+    /// downsampling and rollup selection, where an integral has no counterpart (AB#7919).
+    /// </summary>
+    private static (AggregationFunction Function, string KeyToken) MapFunction(AggregationTypesDto function)
+        => function == AggregationTypesDto.Integral
+            ? (AggregationFunction.Integral, IntegralKeyToken)
+            : StreamDataNodeHelpers.MapStreamAggregation(function);
 
     /// <summary>
     /// Names the incomplete series for the guard's error message: the well-known name (or rtId),

@@ -1823,7 +1823,7 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   `GetRtEntitiesById@1`, `GetAssociationTargets@1`, `GetOrCreateRtEntitiesByType@1`, `CheckDuplicate@1`,
   `FromWatchRtEntity@1` (in `StartAsync`), `GetQueryById@1` (the node's filters). An entity-selector key
   (`nav.Type[passwordHash=X]->name`, an equality lookup) is refused when it names a Hidden attribute of any CK type of the
-  tenant; the error shows the path with the selector values removed. It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
+  tenant; the error shows the path with the selector values removed (`WithoutSelectorValues`, AB#8077: everything from the first `=` inside a selector to the last `]` is replaced, but that `]` only ends the redaction when the rest is a valid path suffix — `->name`, `.name`, `::meta` or nothing; an unclosed selector or a value with a `]` followed by anything else is redacted to the end of the path, the same rule as the asset repository's access errors). It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
   that contains a Hidden member counts). Interface queries check every implementing type; a navigated path
   (`role.Type->attribute`) is judged by its trailing attribute on every CK type of the tenant (conservative).
 * **Stored queries.** `EnsureStoredQueryNotHidden(cache, tenant, node, query)` checks the paths a persisted query carries

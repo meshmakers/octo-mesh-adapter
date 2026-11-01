@@ -150,7 +150,8 @@ internal class MeshAdapterTriggerContext(
             completedAt,
             durationMs,
             ex.Message,
-            failureKind: PipelineExecutionFailureKinds.Of(ex));
+            null,
+            PipelineExecutionFailureKinds.Of(ex));
     }
 
     /// <inheritdoc />

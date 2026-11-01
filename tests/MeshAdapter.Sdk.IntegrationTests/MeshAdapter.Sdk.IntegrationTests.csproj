@@ -50,6 +50,10 @@
         <None Update="testData\**\*">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
+        <!-- Credential guard tests: compiler output of the real System.Identity model (provenance: TestData/ck-models/README.md). -->
+        <None Update="TestData\ck-models\*.yaml">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
     </ItemGroup>
 
 </Project>

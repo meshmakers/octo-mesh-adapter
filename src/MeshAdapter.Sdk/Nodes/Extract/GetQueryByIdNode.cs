@@ -66,8 +66,8 @@ public class GetQueryByIdNode(
         await RtAttributeAccessGuard.EnsureCacheLoadedAsync(context, ckCacheService);
         RtAttributeAccessGuard.EnsureStoredQueryNotHidden(ckCacheService, context.TenantId,
             nodeContext.NodePath.ToString(), rtQuery);
-        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
-            [new RtCkId<CkTypeId>(rtQuery.QueryCkTypeId)], (c.FieldFilters ?? []).Select(f => f.AttributePath),
+        RtAttributeAccessGuard.EnsureNotHiddenForQueryType(ckCacheService, context.TenantId,
+            nodeContext.NodePath.ToString(), rtQuery.QueryCkTypeId, (c.FieldFilters ?? []).Select(f => f.AttributePath),
             "field filter");
 
         // Stream-data queries share the RtPersistentQuery base but are executed against the

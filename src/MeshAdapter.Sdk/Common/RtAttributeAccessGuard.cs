@@ -317,6 +317,20 @@ public static class RtAttributeAccessGuard
         }
     }
 
+    /// <summary>
+    ///     Refuses a path (e.g. a field filter of the node configuration) that reaches a Hidden attribute of the query type
+    ///     or of any type derived from it - the set of types a stored query returns; an unknown query type is checked
+    ///     against every type of the tenant (fail closed). Same type set as <see cref="EnsureStoredQueryNotHidden" />.
+    /// </summary>
+    /// <exception cref="RtAttributeHiddenException">A path reaches a hidden attribute</exception>
+    public static void EnsureNotHiddenForQueryType(ICkCacheService ckCacheService, string tenantId, string node,
+        string? queryCkTypeId, IEnumerable<string?> paths, string usage)
+    {
+        ArgumentNullException.ThrowIfNull(ckCacheService);
+        EnsureNotHidden(ckCacheService, tenantId, node, QueryTargetTypes(ckCacheService, tenantId, queryCkTypeId), paths,
+            usage);
+    }
+
     /// <summary>Every path a stored query uses, grouped by what it is used for.</summary>
     internal static IEnumerable<(string Usage, IEnumerable<string?> Paths)> StoredQueryPaths(RtPersistentQuery query)
     {

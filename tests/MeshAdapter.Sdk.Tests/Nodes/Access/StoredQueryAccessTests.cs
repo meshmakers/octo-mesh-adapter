@@ -186,6 +186,19 @@ public class StoredQueryAccessTests : SessionNodeTestBase
     {
         // The query type is a base type; the repository returns derived entities too, so a derived type's Hidden
         // attribute is an oracle as well.
+        var cache = DerivedTypeCache();
+        var query = new RtSimpleRtQuery
+        {
+            QueryCkTypeId = "Test/Base", Columns = new AttributeStringValueList(["name"]),
+            FieldFilter = Filter("PasswordHash")
+        };
+
+        Assert.Throws<RtAttributeHiddenException>(() =>
+            RtAttributeAccessGuard.EnsureStoredQueryNotHidden(cache, Tenant, Node, query));
+    }
+
+    private static ICkCacheService DerivedTypeCache()
+    {
         var cache = A.Fake<ICkCacheService>();
         var baseGraph = BaseTypeWithDerivedAccount();
         var baseOut = (CkTypeGraph?)baseGraph;
@@ -198,14 +211,18 @@ public class StoredQueryAccessTests : SessionNodeTestBase
         A.CallTo(() => cache.GetRtCkType(Tenant, AccountType)).Returns(account);
         A.CallTo(() => cache.GetRtCkType(Tenant, new RtCkId<CkTypeId>("Test/Base"))).Returns(baseGraph);
         A.CallTo(() => cache.GetCkTypes(Tenant)).Returns(new List<CkTypeGraph> { baseGraph, account });
-        var query = new RtSimpleRtQuery
-        {
-            QueryCkTypeId = "Test/Base", Columns = new AttributeStringValueList(["name"]),
-            FieldFilter = Filter("PasswordHash")
-        };
+        return cache;
+    }
 
-        Assert.Throws<RtAttributeHiddenException>(() =>
-            RtAttributeAccessGuard.EnsureStoredQueryNotHidden(cache, Tenant, Node, query));
+    [Fact]
+    public void Guard_ANodeFilterOnAnAttributeThatOnlyADerivedTypeHides_IsRefused()
+    {
+        // The node's own filters are judged against the same type set as the stored query (review of PR #99).
+        var cache = DerivedTypeCache();
+
+        Assert.Throws<RtAttributeHiddenException>(() => RtAttributeAccessGuard.EnsureNotHiddenForQueryType(cache,
+            Tenant, Node, "Test/Base", ["PasswordHash"], "field filter"));
+        RtAttributeAccessGuard.EnsureNotHiddenForQueryType(cache, Tenant, Node, "Test/Base", ["Name"], "field filter");
     }
 
     [Theory]

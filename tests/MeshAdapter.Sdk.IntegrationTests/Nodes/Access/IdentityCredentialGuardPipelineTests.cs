@@ -339,7 +339,10 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
                     valuePath: $.value
               - type: ApplyChanges@2
                 entityUpdatesPath: $._inserts
-            """, "IDENTITY_OWNED", new JsonObject { ["rtId"] = rtId, ["value"] = SampleValue(valueType) });
+            """, new JsonObject { ["rtId"] = rtId, ["value"] = SampleValue(valueType) }, null,
+            // Once System.Identity/User replaces the generic create (User.Create), the replaced-create guard refuses the
+            // insert first; either refusal keeps the identity-owned value out.
+            "IDENTITY_OWNED", "GENERIC_CREATE_REPLACED_BY_METHOD");
 
         (await UserExistsAsync(rtId)).Should().BeFalse("nothing is written");
     }
@@ -516,15 +519,18 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         };
     }
 
-    private async Task AssertRefusedAsync(string yaml, string code, JsonObject? input = null,
-        ExecutePipelineMethodInvocation? marker = null)
+    private Task AssertRefusedAsync(string yaml, string code, JsonObject? input = null,
+        ExecutePipelineMethodInvocation? marker = null) => AssertRefusedAsync(yaml, input, marker, code);
+
+    private async Task AssertRefusedAsync(string yaml, JsonObject? input, ExecutePipelineMethodInvocation? marker,
+        params string[] anyOfCodes)
     {
         var logStart = fixture.LogCount;
         var (output, failure) = await RunAsync(yaml, input, marker);
 
         failure.Should().NotBeNull($"the pipeline must be refused, but returned {output}");
         var text = failure!.ToString();
-        text.Should().Contain(code);
+        anyOfCodes.Should().Contain(code => text.Contains(code), $"the refusal names one of {string.Join(", ", anyOfCodes)}");
         AssertNoCredential(text);
         fixture.LogLinesWithDummyValuesSince(logStart).Should().BeEmpty("no log line may carry a credential");
     }

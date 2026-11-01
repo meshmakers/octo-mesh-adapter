@@ -1133,7 +1133,15 @@ Formats query results as Markdown tables for report generation.
 
 #### GenerateAndStoreReportNode
 
-Creates and persists reports from pipeline data.
+Creates and persists reports from pipeline data: calls `{tenantId}/v1/reports/generateAndStore` (or
+`generateAndStoreWithRelatedEntity` when a related entity is configured) on the reporting service.
+
+**Authenticated as the adapter (AB#7581).** The reporting routes require a bearer token of the route tenant with the
+`octo_api` scope. The node sends the adapter's own service token (`IServiceClientAccessToken`, kept current by
+`AdapterAccessTokenService` from `Adapter:ClientId` / `Adapter:IssuerUri`; the borrower's token during a leased execution).
+An adapter without a configured client sends the request anonymously with a node warning, and an enforcing reporting service
+answers 401 — the node then fails with an error naming the missing credential. Pipelines must not call these routes through a
+generic `MakeHttpRequest@1`: that node never carries the adapter's token.
 
 #### CreateFileSystemItemUpdateNode
 

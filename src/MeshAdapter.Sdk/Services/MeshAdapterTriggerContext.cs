@@ -127,7 +127,8 @@ internal class MeshAdapterTriggerContext(
     /// Closes an execution whose start was reported but which never reached the orchestrator
     /// (AB#5493): logs the failure and reports it as <see cref="PipelineExecutionStatus.Failed" />
     /// under the same execution id, so the controller's statistics and the failure metric see it.
-    /// Mirrors the SDK host (AdapterTriggerContext).
+    /// Mirrors the SDK host (AdapterTriggerContext). The failure kind (AB#8037) is classified like a
+    /// failure of the running pipeline.
     /// </summary>
     private async Task ReportExecutionFailedBeforeRunAsync(Guid pipelineExecutionId, DateTime startedDateTime,
         Exception ex)
@@ -148,7 +149,8 @@ internal class MeshAdapterTriggerContext(
             PipelineExecutionStatus.Failed,
             completedAt,
             durationMs,
-            ex.Message);
+            ex.Message,
+            failureKind: PipelineExecutionFailureKinds.Of(ex));
     }
 
     /// <inheritdoc />
@@ -198,6 +200,7 @@ internal class MeshAdapterTriggerContext(
 
         var status = PipelineExecutionStatus.Running;
         string? errorMessage = null;
+        PipelineExecutionFailureKind? failureKind = null;
         object? result = null;
 
         try
@@ -209,6 +212,9 @@ internal class MeshAdapterTriggerContext(
         {
             status = PipelineExecutionStatus.Failed;
             errorMessage = ex.Message;
+            // AB#8037: an unacknowledged write (ApplyChanges under w:majority) is reported as a structured
+            // kind, so the controller answers a pipeline method METHOD_OUTCOME_UNKNOWN; never a message marker
+            failureKind = PipelineExecutionFailureKinds.Of(ex);
             _logger.LogError(ex, "[{TenantId}] Pipeline execution failed for pipeline {PipelineRtEntityId}",
                 TenantId, PipelineRtEntityId);
             throw;
@@ -237,7 +243,8 @@ internal class MeshAdapterTriggerContext(
                     completedAt,
                     durationMs,
                     errorMessage,
-                    outputData);
+                    outputData,
+                    failureKind);
             }
 
             _logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId} with status {Status}",

@@ -10,6 +10,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 /// at the node's <c>WriteResultPath</c>, and a failure when the node asks for it. No pipeline reports success for
 /// a value that was not stored without saying so.
 /// </summary>
+/// <remarks>
+/// Automated rows skipped only for <see cref="StreamDataSkipReason.CkTypeMismatch" /> are logged at Debug, not as a
+/// warning (AB#7988): pipelines deliberately feed one update list to one archive node per archive, and each archive
+/// keeps its own CK type, so the rows of the other types are an expected outcome on every run. Their counts stay in
+/// the result at <c>WriteResultPath</c>; <c>failOnSkippedRows</c> still fails for them.
+/// </remarks>
 internal static class ArchiveWriteResultReporter
 {
     /// <summary>Reports <paramref name="result" /> for the node <paramref name="nodeName" />.</summary>
@@ -51,6 +57,16 @@ internal static class ArchiveWriteResultReporter
         if (failOnSkippedRows)
         {
             throw new InvalidOperationException(summary + " The node is configured with failOnSkippedRows.");
+        }
+
+        // Rows of other CK types are the expected result of fanning one update list out to one node per archive
+        // (AB#7988); only they, and only for automated rows, stay at Debug. Any other reason keeps the warning.
+        var expectedSkips = result.Skipped.Count(r =>
+            r.Origin == ArchiveRowOrigin.Automated && r.Reason == StreamDataSkipReason.CkTypeMismatch);
+        if (expectedSkips == result.SkippedCount)
+        {
+            nodeContext.Debug(summary + " Rows of other CK types are expected when one update list feeds one node per archive.");
+            return;
         }
 
         nodeContext.Warning(summary);

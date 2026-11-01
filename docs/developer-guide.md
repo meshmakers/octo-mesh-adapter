@@ -1842,6 +1842,12 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   `NodeAttributeAccessMoreTests`. `SessionNodeTestBase.CkCache` is a loaded cache that knows no type (pass-through).
   A new node that emits entities must call `DropHidden`, a new node with a configurable filter must call
   `EnsureNotHidden`, a new write node must call `EnsureWritesAllowedAsync`.
+* **Credential guard regression tests.** `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Access/IdentityCredentialGuardPipelineTests`
+  prove the rules for the real `System.Identity` user (snapshot of the compiled model in `TestData/ck-models/`, see the README there):
+  no extract node emits `PasswordHash`, `SecurityStamp` or `UserTokens`, filters and sorts on them are refused, and `ApplyChanges@1/@2`
+  refuse writes of the Hidden, MethodOnly (`UserName`, `Email`) and ReadOnly (`LockoutEnd`, `AccessFailedCount`) attributes; the
+  seeded user carries fixed dummy values that no output, error or log line may contain. Known gap (skipped test): the persisted
+  query's own filters in `GetQueryById@1` are not checked, so a stored filter on a Hidden attribute answers "equal or not".
 
 ---
 

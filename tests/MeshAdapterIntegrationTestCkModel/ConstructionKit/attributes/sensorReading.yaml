@@ -11,6 +11,9 @@ attributes:
     valueType: Int
   - id: SourceDate
     valueType: DateTime
+  # AB#8049: a Hidden attribute (assigned with access: Hidden on SensorReading) for the stored-query access tests
+  - id: ReadingSecret
+    valueType: String
   # Record-typed attribute for testing dotted stream-data column paths (Amount.Value / Amount.Unit)
   - id: Amount
     valueType: Record

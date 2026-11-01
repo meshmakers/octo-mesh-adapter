@@ -171,7 +171,7 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         fixture.LogLinesWithDummyValuesSince(logStart).Should().BeEmpty();
     }
 
-    [Fact(Skip = "AB#8049: a stored query's own field filter on a Hidden attribute is applied unchecked (equality oracle)")]
+    [Fact]
     public async Task GetQueryById_WithACredentialFilterInTheStoredQuery_IsRefused()
     {
         var queryRtId = await fixture.CreateUserQueryAsync(["UserName"], ("PasswordHash", F.DummyPasswordHash));

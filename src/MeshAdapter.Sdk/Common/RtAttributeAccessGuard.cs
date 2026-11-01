@@ -1,8 +1,10 @@
 using System.Collections;
+using System.Text.RegularExpressions;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
@@ -35,6 +37,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Common;
 public static class RtAttributeAccessGuard
 {
     private const int MaxDepth = 16;
+
+    // An entity selector `[key=value]` inside a path (AB#8049); group 1 is the key.
+    private static readonly Regex EntitySelectorRegex = new(@"\[([^\[\]=]+)=[^\[\]]*\]", RegexOptions.Compiled);
 
     // ---------------------------------------------------------------- read
 
@@ -198,6 +203,11 @@ public static class RtAttributeAccessGuard
     ///     the given types. A path that navigates through associations (<c>-&gt;</c>, <c>::</c>) is checked by its
     ///     trailing attribute against every CK type of the tenant (conservative: refused if any type hides it).
     /// </summary>
+    /// <remarks>
+    ///     An entity-selector key (<c>nav.Type[passwordHash=X]-&gt;name</c>) is an equality lookup on the key, so a key
+    ///     that names a Hidden attribute of any CK type of the tenant is refused as well (AB#8049). The error message
+    ///     shows the path with the selector values removed.
+    /// </remarks>
     /// <exception cref="RtAttributeHiddenException">A path reaches a hidden attribute</exception>
     public static void EnsureNotHidden(ICkCacheService ckCacheService, string tenantId, string node,
         IEnumerable<RtCkId<CkTypeId>> ckTypeIds, IEnumerable<string?> paths, string usage)
@@ -209,6 +219,12 @@ public static class RtAttributeAccessGuard
             if (string.IsNullOrWhiteSpace(path))
             {
                 continue;
+            }
+
+            var hiddenSelectorKey = FindHiddenSelectorKey(ckCacheService, tenantId, path);
+            if (hiddenSelectorKey != null)
+            {
+                throw new RtAttributeHiddenException(node, WithoutSelectorValues(path), hiddenSelectorKey, usage);
             }
 
             string? hidden = null;
@@ -233,9 +249,172 @@ public static class RtAttributeAccessGuard
 
             if (hidden != null)
             {
-                throw new RtAttributeHiddenException(node, path, hidden, usage);
+                throw new RtAttributeHiddenException(node, WithoutSelectorValues(path), hidden, usage);
             }
         }
+    }
+
+    /// <summary>
+    ///     The Hidden attribute an entity-selector key of the path names (<c>[key=value]</c>), checked by its trailing
+    ///     attribute name against every CK type of the tenant (conservative), or <c>null</c>.
+    /// </summary>
+    private static string? FindHiddenSelectorKey(ICkCacheService ckCacheService, string tenantId, string path)
+    {
+        if (!path.Contains('['))
+        {
+            return null;
+        }
+
+        foreach (Match match in EntitySelectorRegex.Matches(path))
+        {
+            var key = match.Groups[1].Value.Trim();
+            var lastDot = key.LastIndexOf('.');
+            var name = lastDot >= 0 ? key[(lastDot + 1)..] : key;
+            if (name.Length == 0)
+            {
+                continue;
+            }
+
+            // The key may be a record path (Credentials.Token): check it as written and by its trailing attribute.
+            var hidden = ckCacheService.GetCkTypes(tenantId)
+                .SelectMany(t => new[] { key, name }.Select(candidate =>
+                    ArchiveHiddenColumnGuard.FindHiddenAttribute(ckCacheService, tenantId, t.CkTypeId.ToRtCkId(),
+                        candidate)))
+                .FirstOrDefault(h => h != null);
+            if (hidden != null)
+            {
+                return hidden;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     The path with the values of its entity selectors removed (<c>[key=…]</c>), for error messages: everything from
+    ///     the first <c>=</c> inside a selector up to the last <c>]</c> of the path is replaced, so a value that itself
+    ///     contains <c>]</c> cannot leak a part of it.
+    /// </summary>
+    internal static string WithoutSelectorValues(string path)
+    {
+        var open = path.IndexOf('[');
+        var equals = open < 0 ? -1 : path.IndexOf('=', open);
+        var close = path.LastIndexOf(']');
+        return equals < 0 || close < equals ? path : path[..equals] + "=…" + path[close..];
+    }
+
+    // ------------------------------------------------------------ stored query
+
+    /// <summary>
+    ///     Refuses a stored query (<c>System/PersistentQuery</c> and its subtypes) whose own columns, field filters, sort
+    ///     orders, attribute-search paths, group-by columns or aggregation columns reach a Hidden attribute (AB#8049).
+    ///     The asset repository refuses to store such a query, but a query can also arrive through an import, a restore
+    ///     or an older version, so every node that runs a stored query checks it before it reaches the repository: a
+    ///     stored filter on a hidden attribute is an oracle for its value (the number of rows answers the guess). The
+    ///     paths are checked against the query type and every type derived from it; a query type the CK cache does
+    ///     not know (e.g. a CK interface) is checked against every type of the tenant (fail closed). The caller has
+    ///     made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync" />).
+    /// </summary>
+    /// <exception cref="RtAttributeHiddenException">A stored path reaches a hidden attribute</exception>
+    public static void EnsureStoredQueryNotHidden(ICkCacheService ckCacheService, string tenantId, string node,
+        RtPersistentQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(ckCacheService);
+        ArgumentNullException.ThrowIfNull(query);
+        var types = QueryTargetTypes(ckCacheService, tenantId, query.QueryCkTypeId);
+        foreach (var (usage, paths) in StoredQueryPaths(query))
+        {
+            EnsureNotHidden(ckCacheService, tenantId, node, types, paths, usage);
+        }
+    }
+
+    /// <summary>
+    ///     Refuses a path (e.g. a field filter of the node configuration) that reaches a Hidden attribute of the query type
+    ///     or of any type derived from it - the set of types a stored query returns; an unknown query type is checked
+    ///     against every type of the tenant (fail closed). Same type set as <see cref="EnsureStoredQueryNotHidden" />.
+    /// </summary>
+    /// <exception cref="RtAttributeHiddenException">A path reaches a hidden attribute</exception>
+    public static void EnsureNotHiddenForQueryType(ICkCacheService ckCacheService, string tenantId, string node,
+        string? queryCkTypeId, IEnumerable<string?> paths, string usage)
+    {
+        ArgumentNullException.ThrowIfNull(ckCacheService);
+        EnsureNotHidden(ckCacheService, tenantId, node, QueryTargetTypes(ckCacheService, tenantId, queryCkTypeId), paths,
+            usage);
+    }
+
+    /// <summary>Every path a stored query uses, grouped by what it is used for.</summary>
+    internal static IEnumerable<(string Usage, IEnumerable<string?> Paths)> StoredQueryPaths(RtPersistentQuery query)
+    {
+        switch (query)
+        {
+            case RtSimpleRtQuery simple:
+                yield return ("stored query column", Strings(simple.Columns));
+                yield return ("stored field filter", Paths(simple.FieldFilter));
+                yield return ("stored sort order", Paths(simple.Sorting));
+                yield return ("stored attribute search", Strings(simple.AttributeSearchFilter?.AttributePaths));
+                break;
+            case RtAggregationRtQuery aggregation:
+                yield return ("stored aggregation column", Paths(aggregation.Columns));
+                yield return ("stored field filter", Paths(aggregation.FieldFilter));
+                yield return ("stored attribute search", Strings(aggregation.AttributeSearchFilter?.AttributePaths));
+                break;
+            case RtGroupingAggregationRtQuery grouping:
+                yield return ("stored group-by column", Strings(grouping.GroupingColumns));
+                yield return ("stored aggregation column", Paths(grouping.Columns));
+                yield return ("stored field filter", Paths(grouping.FieldFilter));
+                yield return ("stored attribute search", Strings(grouping.AttributeSearchFilter?.AttributePaths));
+                break;
+            case RtStreamDataQuery streamData:
+                yield return ("stored field filter", Paths(streamData.FieldFilter));
+                switch (streamData)
+                {
+                    case RtSimpleSdQuery simpleSd:
+                        yield return ("stored query column", Strings(simpleSd.Columns));
+                        yield return ("stored sort order", Paths(simpleSd.Sorting));
+                        break;
+                    case RtAggregationSdQuery aggregationSd:
+                        yield return ("stored aggregation column", Paths(aggregationSd.Columns));
+                        break;
+                    case RtGroupingAggregationSdQuery groupingSd:
+                        yield return ("stored group-by column", Strings(groupingSd.GroupingColumns));
+                        yield return ("stored aggregation column", Paths(groupingSd.Columns));
+                        break;
+                    case RtDownsamplingSdQuery downsamplingSd:
+                        yield return ("stored aggregation column", Paths(downsamplingSd.Columns));
+                        break;
+                }
+
+                break;
+        }
+    }
+
+    private static IEnumerable<string?> Strings(IEnumerable<string>? paths) => paths ?? Enumerable.Empty<string>();
+
+    private static IEnumerable<string?> Paths(IEnumerable<RtFieldFilterRecord>? filters) =>
+        filters?.Select(f => f.AttributePath) ?? Enumerable.Empty<string?>();
+
+    private static IEnumerable<string?> Paths(IEnumerable<RtSortOrderItemRecord>? sortOrders) =>
+        sortOrders?.Select(s => s.AttributePath) ?? Enumerable.Empty<string?>();
+
+    private static IEnumerable<string?> Paths(IEnumerable<RtAggregationQueryColumnRecord>? columns) =>
+        columns?.Select(c => c.AttributePath) ?? Enumerable.Empty<string?>();
+
+    /// <summary>
+    ///     The query type and every type derived from it; every type of the tenant when the cache does not know the
+    ///     query type (fail closed).
+    /// </summary>
+    private static IReadOnlyList<RtCkId<CkTypeId>> QueryTargetTypes(ICkCacheService ckCacheService, string tenantId,
+        string? queryCkTypeId)
+    {
+        if (!string.IsNullOrWhiteSpace(queryCkTypeId) &&
+            ckCacheService.TryGetRtCkType(tenantId, new RtCkId<CkTypeId>(queryCkTypeId), out var graph) &&
+            graph != null)
+        {
+            return graph.GetAllDerivedTypes(true).Select(t => t.ToRtCkId()).Prepend(graph.CkTypeId.ToRtCkId())
+                .Distinct().ToList();
+        }
+
+        return ckCacheService.GetCkTypes(tenantId).Select(t => t.CkTypeId.ToRtCkId()).ToList();
     }
 
     /// <summary>

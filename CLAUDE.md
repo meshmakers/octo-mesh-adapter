@@ -452,8 +452,12 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   (`RT_ATTRIBUTE_WRITE_RESTRICTED`).
 - **ReadOnly**: readable; a pipeline never writes it (also not on insert). A `Replace` that would clear an attribute the run
   may not write is refused. Presence in an update counts as a write.
+- **Stored queries (AB#8049)**: a persisted query whose own columns, filters, sort orders, attribute-search, group-by or
+  aggregation paths reach Hidden is refused before it runs (`EnsureStoredQueryNotHidden`, `GetQueryById@1` for every query kind,
+  `PrepareNotification@1`); paths are checked against the query type and its derived types (unknown type: every type). Entity-selector
+  keys (`[passwordHash=X]`) count as Hidden paths; error messages remove selector values.
 - Write nodes call `RtAttributeAccessGuard.EnsureWritesAllowedAsync` (it runs `GenericCreateGuard` first); extract nodes
-  call `DropHidden(Async)` and `EnsureNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.
+  call `DropHidden(Async)` and `EnsureNotHidden`; nodes that run a stored query call `EnsureStoredQueryNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.
   `SessionNodeTestBase.CkCache` gives tests a loaded cache that knows no type.
 - **Credential guard regression tests (AB#7781)**: `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Access/IdentityCredentialGuardPipelineTests`
   run the real orchestrator and nodes against the **real** System.Identity model (compiler output in `TestData/ck-models/`, loaded by
@@ -461,8 +465,8 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   `UserTokens` hold fixed dummy values (`IdentityCredentialPipelineFixture`): extract nodes (`GetRtEntitiesByType@1`, `GetRtEntitiesById@1`,
   `GetAssociationTargets@1`, `GetQueryById@1` with a stored Hidden column) emit no credential, filters and sorts on them are refused,
   `ApplyChanges@1/@2` refuse Hidden, MethodOnly and ReadOnly user attributes (Hidden also in an identity method run); no output, error or
-  captured log line contains a dummy value. Open gap, skipped with the bug id: AB#8049 (`GetQueryById@1` applies a stored query's own
-  filter on a Hidden attribute, an equality oracle).
+  captured log line contains a dummy value; a stored query whose own filter reaches a credential is refused by `GetQueryById@1`
+  (AB#8049, `GetQueryById_WithACredentialFilterInTheStoredQuery_IsRefused`).
 
 ### JSON / Serialization (System.Text.Json)
 

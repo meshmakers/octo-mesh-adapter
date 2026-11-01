@@ -42,12 +42,28 @@ public static class RtAttributeWriteRefusalCause
     ///     document would clear the stored value.
     /// </summary>
     public const string ReplaceWouldClear = "REPLACE_WOULD_CLEAR";
+
+    /// <summary>
+    ///     AB#8059: an identity-owned attribute of <c>System.Identity/User</c> or an edge of an identity association role
+    ///     (<c>IdentityOwnedWrites</c> of the engine). Only the identity service writes them; a pipeline only in the method
+    ///     run of a System.Identity type.
+    /// </summary>
+    public const string IdentityOwned = "IDENTITY_OWNED";
+
+    /// <summary>
+    ///     The <see cref="RtAttributeWriteRefusal.Access" /> value of a refused association change (an association has no
+    ///     attribute access).
+    /// </summary>
+    public const string AssociationAccess = "Association";
 }
 
 /// <summary>One refused attribute write: type, attribute path, its access and the cause.</summary>
 /// <param name="CkTypeId">Version-less CK type id of the entity</param>
-/// <param name="AttributePath">The attribute, or <c>Record.Member</c> for a record member</param>
-/// <param name="Access">The declared access of the attribute</param>
+/// <param name="AttributePath">
+///     The attribute, <c>Record.Member</c> for a record member, or <c>association &lt;roleId&gt; -&gt; &lt;target type&gt;</c>
+///     for an association change (AB#8059)
+/// </param>
+/// <param name="Access">The declared access of the attribute, <c>Association</c> for an association change</param>
 /// <param name="Cause">One of the <see cref="RtAttributeWriteRefusalCause" /> tokens</param>
 public sealed record RtAttributeWriteRefusal(string CkTypeId, string AttributePath, string Access, string Cause);
 
@@ -92,8 +108,8 @@ public sealed class RtAttributeHiddenException : PipelineExecutionException
 
 /// <summary>
 ///     Thrown by <see cref="RtAttributeAccessGuard" /> before any write when the batch contains a value for an attribute
-///     that a pipeline may not write (AB#7768). The whole batch is refused. The message lists types, attribute paths
-///     and causes, never values.
+///     that a pipeline may not write (AB#7768) or an identity-owned attribute or association change (AB#8059). The whole
+///     batch is refused. The message lists types, attribute paths or association roles and causes, never values or rtIds.
 /// </summary>
 public sealed class RtAttributeWriteRestrictedException : PipelineExecutionException
 {
@@ -123,7 +139,7 @@ public sealed class RtAttributeWriteRestrictedException : PipelineExecutionExcep
 
         var sb = new StringBuilder();
         sb.Append(RtAttributeAccessCodes.WriteRestricted).Append(": the batch is refused, ").Append(refusals.Count)
-            .Append(" write(s) touch attributes that a pipeline may not write: ");
+            .Append(" write(s) touch attributes or associations that a pipeline may not write: ");
         sb.AppendJoin("; ", refusals.Take(MaxListedRefusals)
             .Select(r => $"type '{r.CkTypeId}', attribute '{r.AttributePath}' ({r.Access}), reason {r.Cause}"));
         if (refusals.Count > MaxListedRefusals)

@@ -452,6 +452,15 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   (`RT_ATTRIBUTE_WRITE_RESTRICTED`).
 - **ReadOnly**: readable; a pipeline never writes it (also not on insert). A `Replace` that would clear an attribute the run
   may not write is refused. Presence in an update counts as a write.
+- **Identity-owned writes (AB#8059)**: the same write call enforces the engine's `IdentityOwnedWrites` list (identity-owned
+  `System.Identity/User` attributes, incl. `LockoutEnd`/`AccessFailedCount`, and the association roles `AssignedRole`,
+  `GroupMember`, `ChildGroup`, `MayActAs`, `GrantsPermission`): refused with cause `IDENTITY_OWNED` (attributes on insert/update/
+  replace, associations on insert **and** delete in both directions; messages name type, attribute or role and target type,
+  never values or rtIds). Allowed only in the method run of the User type (attributes) or of a `System.Identity` type at either
+  end (associations). Write nodes with associations call the overload
+  `EnsureWritesAllowedAsync(etlContext, cache, entityUpdates, associationUpdates)` (ApplyChanges@2, SaveTimeRangeSeriesInArchive,
+  ImportFromExcel, CreateFileSystemUpdate, CreateZipArchive, RegisterSelfReportedMeteringPoint); a new write node that writes
+  associations must pass them. Tests: `Nodes/Access/IdentityOwnedWriteGuardTests`, `IdentityCredentialGuardPipelineTests`.
 - **Stored queries (AB#8049)**: a persisted query whose own columns, filters, sort orders, attribute-search, group-by or
   aggregation paths reach Hidden is refused before it runs (`EnsureStoredQueryNotHidden`, `GetQueryById@1` for every query kind,
   `PrepareNotification@1`); paths are checked against the query type and its derived types (unknown type: every type). Entity-selector

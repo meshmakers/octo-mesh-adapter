@@ -114,6 +114,28 @@ public class IdentityCredentialPipelineFixture : PipelineExecutionFixture
         ProbeRoleRtId = role.RtId.ToString();
     }
 
+    /// <summary>AB#8059: an extra role (written through the repository, like the identity service does).</summary>
+    public async Task<string> CreateRoleAsync(string name)
+    {
+        var repository = GetSystemContext().GetSystemTenantRepository();
+        var roleType = new RtCkId<CkTypeId>(RoleCkTypeId);
+        var role = await repository.CreateTransientRtEntityByRtCkIdAsync(roleType);
+        role.SetAttributeValue("Name", AttributeValueTypesDto.String, name);
+        role.SetAttributeValue("NormalizedName", AttributeValueTypesDto.String, name.ToUpperInvariant());
+        using var session = await repository.GetSessionAsync();
+        session.StartTransaction();
+        var result = new OperationResult();
+        await repository.ApplyChangesAsync(session, [EntityUpdateInfo<RtEntity>.CreateInsert(roleType, role)], [], result);
+        if (result.HasErrors || result.HasFatalErrors)
+        {
+            throw new InvalidOperationException("Creating the role failed: " +
+                                                string.Join(", ", result.Messages.Select(m => m.MessageText)));
+        }
+
+        await session.CommitTransactionAsync();
+        return role.RtId.ToString();
+    }
+
     /// <summary>
     ///     Stores a <c>System/SimpleRtQuery</c> on the user type - written through the repository, i.e. the way an import
     ///     or any other non-GraphQL writer stores one.

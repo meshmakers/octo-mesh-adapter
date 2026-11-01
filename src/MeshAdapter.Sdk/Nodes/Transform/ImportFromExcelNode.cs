@@ -323,7 +323,7 @@ public class ImportFromExcelNode(
 
         // AB#7463: refuse inserts of a type whose CK method replaces the generic create (outside that
         // method's own run) before anything is written; the whole import is refused.
-        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entities);
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entities, assocs);
 
         // AB#7500: a dry run validates and guards (above) but writes nothing; it reports what would be written.
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)

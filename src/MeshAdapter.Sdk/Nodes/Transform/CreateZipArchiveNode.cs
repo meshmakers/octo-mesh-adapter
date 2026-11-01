@@ -234,7 +234,8 @@ public class CreateZipArchiveNode(NodeDelegate next, IMeshEtlContext etlContext,
         // node — the FolderRoot lookup below is platform configuration and stays SYSTEM.
         // AB#7499: an insert of a type whose CK method replaces the generic create is refused outside that
         // method's own run; checked before the first write, the whole batch is refused.
-        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdateInfoList);
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdateInfoList,
+            assocUpdateInfoList);
         var session = await etlContext.GetSessionForAsync(config.Identity);
         session.StartTransaction();
         var operationResult = new OperationResult();

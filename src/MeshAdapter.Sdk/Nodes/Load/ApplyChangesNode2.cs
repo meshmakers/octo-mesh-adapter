@@ -43,7 +43,10 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
         // AB#7463: inserts of a type whose CK method replaces the generic create are refused outside that
         // method's own run. Checked on the raw entity updates (every insert is part of the later
         // resultUpdateInfos), before the dry-run branch and before any write; the whole batch is refused.
-        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdates);
+        // AB#8059: the same call refuses identity-owned User attributes and identity association edges (insert and
+        // delete) outside the method run of a System.Identity type.
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdates,
+            associationUpdates);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {

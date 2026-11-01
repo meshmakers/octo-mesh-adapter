@@ -1845,6 +1845,29 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   an entity whose type has an attribute this run may not write is refused (`REPLACE_WOULD_CLEAR`): the replacement
   document would clear the stored value. Presence counts as a write, so read-modify-write of a whole entity fails on a
   ReadOnly/MethodOnly attribute. Runs before the dry-run branch, so a dry run reports the refusal.
+* **Identity-owned User fields and identity associations (AB#8059).** The same call enforces the engine's list
+  `IdentityOwnedWrites` (`ConstructionKit.Contracts`), which asset-repo GraphQL and the user-started RT import enforce too:
+  the `System.Identity/User` attributes `NormalizedUserName`, `NormalizedEmail`, `EmailConfirmed`, `PhoneNumberConfirmed`,
+  `TwoFactorEnabled`, `LockoutEnabled`, `ResetPasswordOnLogin`, `Claims`, `UserLogins`, `PreferredChannelBindingId`,
+  `LockoutEnd`, `AccessFailedCount`, and the edges of the association roles `System.Identity/AssignedRole`, `GroupMember`,
+  `ChildGroup`, `MayActAs`, `GrantsPermission`. Only the identity service writes them (its REST API and methods: role-change
+  guard, audit, 2FA, external logins). Matching is version-less and case-insensitive on the attribute name.
+  - An attribute of the list is refused like a `MethodOnly` attribute (cause `IDENTITY_OWNED`): on insert, update, record-array
+    item update and as a value of a `Replace`; a `Replace` of a User that leaves one out is refused with `REPLACE_WOULD_CLEAR`.
+    It is allowed in the method run of the User type (the `MethodOnly` rule). An attribute that its CK access already refuses
+    (`LockoutEnd`, `AccessFailedCount` are `ReadOnly`) is reported once, with the access cause.
+  - An association change of a listed role is refused in both directions, on insert **and** delete (cause `IDENTITY_OWNED`,
+    access `Association`, path `association <roleId> -> <target type>`; rtIds are not in the message). It is allowed only in
+    the method run of a `System.Identity` type at either end of the edge (marker present, method of that type, declared by a
+    `System.Identity` type, running pipeline). A method of a tenant model's type does not open them.
+  - Write nodes pass their association changes through the overload
+    `EnsureWritesAllowedAsync(etlContext, cache, entityUpdates, associationUpdates)`: `ApplyChanges@2`,
+    `SaveTimeRangeSeriesInArchive@1`, `ImportFromExcel@1`, `CreateFileSystemUpdate@1`, `CreateZipArchive@1`,
+    `RegisterSelfReportedMeteringPoint@1`. `ApplyChanges@1` writes no associations. `NotificationDeliveryStateStore` stays
+    exempt (fixed internal System type and role).
+  - Not affected: the identity service's own repository writes, blueprint seeds and tenant restores (they never run in a
+    pipeline). Tests: `Nodes/Access/IdentityOwnedWriteGuardTests` (unit, synthetic System.Identity graph) and the
+    identity-owned section of `IdentityCredentialGuardPipelineTests` (integration, real model).
 * **Cache.** Types unknown to the tenant CK cache are not judged. An unloaded cache is loaded first;
   if that fails the guard fails closed (`RtAttributeAccessCheckUnavailableException`, retryable).
 * **Tests.** Test model `Helpers/AttributeAccessTestModel` (every access, a record with a Hidden member, a method);
@@ -1859,7 +1882,9 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   no extract node emits `PasswordHash`, `SecurityStamp` or `UserTokens`, filters and sorts on them are refused (also in the
   persisted query's own filters of `GetQueryById@1`, AB#8049), and `ApplyChanges@1/@2` refuse writes of the Hidden, MethodOnly
   (`UserName`, `Email`) and ReadOnly (`LockoutEnd`, `AccessFailedCount`) attributes; the seeded user carries fixed dummy values that
-  no output, error or log line may contain.
+  no output, error or log line may contain. Since AB#8059 they also prove that every identity-owned User attribute (update and
+  insert, `ApplyChanges@1/@2`) and every identity association role (insert and delete, from either end) is refused outside an
+  identity method run and allowed in it.
 
 ---
 

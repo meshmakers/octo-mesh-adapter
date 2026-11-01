@@ -24,7 +24,10 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Access;
 ///     attributes outside the method run. Real orchestrator, real nodes, real CK cache, MongoDB. The seeded user holds known
 ///     dummy values (<see cref="F.DummyValues" />); no pipeline output, error or captured log line may contain them. Since
 ///     AB#8059 the load nodes also refuse the identity-owned User attributes and the identity association edges (insert and
-///     delete) outside the run of an identity method (the engine's <c>IdentityOwnedWrites</c> list). The
+///     delete) outside the run of an identity method (the engine's <c>IdentityOwnedWrites</c> list). Since AB#7777 the
+///     generic writers refuse every new <c>System.Identity/User</c> (<c>GENERIC_CREATE_REPLACED_BY_METHOD</c>, the user is
+///     created by the <c>User.CreateUser-1</c> method), so the inserts below assert that refusal; the attribute guards
+///     (<c>RT_ATTRIBUTE_WRITE_RESTRICTED</c>, <c>IDENTITY_OWNED</c>) stay covered by the updates of the existing user. The
 ///     guard rules themselves are covered with a test model in <c>MeshAdapter.Sdk.Tests/Nodes/Access</c>.
 /// </summary>
 [Trait("Category", "Integration")]
@@ -221,11 +224,40 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         await AssertProbeUserUnchangedAsync();
     }
 
+    [Fact]
+    public async Task ApplyChanges2_InsertOfAUser_WithOnlyVisibleAttributes_IsRefusedByTheGenericCreateRule()
+    {
+        // AB#7777: a new System.Identity/User is created only by the User.CreateUser-1 method; the generic writers refuse
+        // the insert even when it carries no restricted attribute at all.
+        var rtId = OctoObjectId.GenerateNewId().ToString();
+
+        await AssertRefusedAsync("""
+            transformations:
+              - type: CreateUpdateInfo@1
+                targetPath: $._inserts
+                targetValueKind: Array
+                updateKind: INSERT
+                ckTypeId: System.Identity/User
+                rtIdPath: $.rtId
+                attributeUpdates:
+                  - attributeName: FirstName
+                    attributeValueType: String
+                    value: inserted
+              - type: ApplyChanges@2
+                entityUpdatesPath: $._inserts
+            """, "GENERIC_CREATE_REPLACED_BY_METHOD", new JsonObject { ["rtId"] = rtId });
+
+        (await UserExistsAsync(rtId)).Should().BeFalse("nothing is written");
+    }
+
     [Theory]
     [InlineData("PasswordHash", F.DummyPasswordHash)]
     [InlineData("UserName", "inserted-by-pipeline")]
-    public async Task ApplyChanges2_InsertOfAUser_WithARestrictedAttribute_IsRefused(string attribute, string value)
+    public async Task ApplyChanges2_InsertOfAUser_WithARestrictedAttribute_IsRefusedByTheGenericCreateRule(string attribute,
+        string value)
     {
+        // AB#7777: the replaced-create guard refuses the insert before the attribute guard looks at it; the
+        // RT_ATTRIBUTE_WRITE_RESTRICTED refusal of these attributes is covered by the update tests above.
         var rtId = OctoObjectId.GenerateNewId().ToString();
 
         await AssertRefusedAsync($"""
@@ -245,7 +277,7 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
                     valuePath: $.value
               - type: ApplyChanges@2
                 entityUpdatesPath: $._inserts
-            """, "RT_ATTRIBUTE_WRITE_RESTRICTED", new JsonObject { ["rtId"] = rtId, ["value"] = value });
+            """, "GENERIC_CREATE_REPLACED_BY_METHOD", new JsonObject { ["rtId"] = rtId, ["value"] = value });
 
         (await UserExistsAsync(rtId)).Should().BeFalse("nothing is written");
     }
@@ -318,7 +350,8 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
 
     [Theory]
     [MemberData(nameof(IdentityOwnedUpdates))]
-    public async Task ApplyChanges2_InsertOfAUser_WithAnIdentityOwnedAttribute_IsRefused(string attribute, string valueType)
+    public async Task ApplyChanges2_InsertOfAUser_WithAnIdentityOwnedAttribute_IsRefusedByTheGenericCreateRule(
+        string attribute, string valueType)
     {
         var rtId = OctoObjectId.GenerateNewId().ToString();
 
@@ -339,10 +372,10 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
                     valuePath: $.value
               - type: ApplyChanges@2
                 entityUpdatesPath: $._inserts
-            """, new JsonObject { ["rtId"] = rtId, ["value"] = SampleValue(valueType) }, null,
-            // Once System.Identity/User replaces the generic create (User.Create), the replaced-create guard refuses the
-            // insert first; either refusal keeps the identity-owned value out.
-            "IDENTITY_OWNED", "GENERIC_CREATE_REPLACED_BY_METHOD");
+            """, "GENERIC_CREATE_REPLACED_BY_METHOD",
+            // AB#7777: System.Identity/User replaces the generic create (User.CreateUser-1), so the replaced-create guard
+            // refuses the insert first; the IDENTITY_OWNED refusal is covered by the update tests above.
+            new JsonObject { ["rtId"] = rtId, ["value"] = SampleValue(valueType) });
 
         (await UserExistsAsync(rtId)).Should().BeFalse("nothing is written");
     }

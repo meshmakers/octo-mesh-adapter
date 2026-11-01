@@ -477,6 +477,19 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   captured log line contains a dummy value; a stored query whose own filter reaches a credential is refused by `GetQueryById@1`
   (AB#8049, `GetQueryById_WithACredentialFilterInTheStoredQuery_IsRefused`).
 
+### Failure kind of a failed execution — unacknowledged writes (AB#8037)
+
+A pipeline method whose ApplyChanges write was not acknowledged (MongoDB write-concern error under `w:majority`, or
+`UnknownTransactionCommitResult`) may have written; the caller must get `METHOD_OUTCOME_UNKNOWN`, not
+`METHOD_HANDLER_FAILED` (rule R3, same as service handlers since AB#8020). The adapter is the only place that still sees the
+exception, so it classifies it with `PipelineExecutionFailureKinds.Of(ex)` (octo-sdk, delegating to the engine's
+`UnacknowledgedWriteClassifier`) and reports the structured kind next to `Failed`, at three places:
+`MeshAdapterTriggerContext.EndExecutePipelineAsync` (pipeline task faulted), `ReportExecutionFailedBeforeRunAsync` (context
+creation failed) and `LeasedPipelineWorkItem` (`LeaseWorkOutcome.Failed(message, kind)`; an exception that escapes the work
+item is classified by `AdapterPoolClient`). The controller stores it on `PipelineExecution.FailureKind` (System.Communication
+4.14.0) and maps it. Never a marker in the error message. Tests: `MeshAdapterTriggerContextTests` (`*NotAcknowledged*`,
+`*UnacknowledgedWrite*`), `Leasing/LeasedPipelineWorkItemFailureKindTests`.
+
 ### JSON / Serialization (System.Text.Json)
 
 The adapter and all ~35 nodes are System.Text.Json-only on the pipeline data path. Newtonsoft is no longer used for pipeline data flow (it may still appear in unrelated transports such as SignalR contracts).

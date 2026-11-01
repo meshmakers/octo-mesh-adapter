@@ -403,6 +403,7 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         (await RawAsync("UserName")).Should().Be(F.ProbeUserName);
         (await RawAsync("Email")).Should().Be(F.ProbeUserEmail);
         Convert.ToInt32(await RawAsync("AccessFailedCount")).Should().Be(3);
+        (await RawAsync("LockoutEnd")).Should().BeNull("the seed does not set LockoutEnd");
         ((System.Collections.IEnumerable)(await RawAsync("UserTokens"))!).Cast<object>().Should().HaveCount(1);
     }
 

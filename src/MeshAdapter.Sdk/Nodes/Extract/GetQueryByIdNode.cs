@@ -59,6 +59,17 @@ public class GetQueryByIdNode(
             throw MeshAdapterPipelineExecutionException.QueryNotFound(nodeContext, c.QueryRtId);
         }
 
+        // AB#7768 / AB#8049: a query whose own columns, filters, sort orders or search paths - or the filters of the
+        // node configuration - reach a Hidden attribute is refused as a whole, for every query kind: its result would
+        // carry the value (column) or act as an oracle for it (filter, sort). The stored query is checked here because
+        // it can arrive through an import or a restore without the asset repository's store-time check.
+        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(context, ckCacheService);
+        RtAttributeAccessGuard.EnsureStoredQueryNotHidden(ckCacheService, context.TenantId,
+            nodeContext.NodePath.ToString(), rtQuery);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
+            [new RtCkId<CkTypeId>(rtQuery.QueryCkTypeId)], (c.FieldFilters ?? []).Select(f => f.AttributePath),
+            "field filter");
+
         // Stream-data queries share the RtPersistentQuery base but are executed against the
         // tenant's stream-data repository (CrateDB) rather than the runtime graph query. Handle
         // them on a dedicated path; the runtime-graph switch below only knows the *RtQuery types.
@@ -107,15 +118,6 @@ public class GetQueryByIdNode(
                 throw MeshAdapterPipelineExecutionException.UnsupportedQueryType(nodeContext,
                     rtQuery.GetType().Name);
         }
-
-        // AB#7768: a query whose columns or filters reach a Hidden attribute is refused as a whole - its result
-        // would carry the value (column) or act as an oracle for it (filter).
-        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(context, ckCacheService);
-        var queryType = new RtCkId<CkTypeId>(queryCkTypeId);
-        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
-            [queryType], columnPaths, "query column");
-        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
-            [queryType], (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
 
         // Add field filters from the pipeline configuration
         c.FieldFilters.GetFieldFilter(dataContext, queryOptions);

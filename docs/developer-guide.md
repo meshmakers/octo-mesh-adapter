@@ -1821,10 +1821,20 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
 * **Filter / sort.** `EnsureNotHidden(cache, tenant, node, types, paths, usage)` throws `RtAttributeHiddenException`
   (`RT_ATTRIBUTE_HIDDEN`; node path and configured path, never a value) before any query: `GetRtEntitiesByType@1`,
   `GetRtEntitiesById@1`, `GetAssociationTargets@1`, `GetOrCreateRtEntitiesByType@1`, `CheckDuplicate@1`,
-  `FromWatchRtEntity@1` (in `StartAsync`), `GetQueryById@1` (columns and filters; the persisted query's own filters are not
-  checked). It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
+  `FromWatchRtEntity@1` (in `StartAsync`), `GetQueryById@1` (the node's filters). An entity-selector key
+  (`nav.Type[passwordHash=X]->name`, an equality lookup) is refused when it names a Hidden attribute of any CK type of the
+  tenant; the error shows the path with the selector values removed. It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
   that contains a Hidden member counts). Interface queries check every implementing type; a navigated path
   (`role.Type->attribute`) is judged by its trailing attribute on every CK type of the tenant (conservative).
+* **Stored queries.** `EnsureStoredQueryNotHidden(cache, tenant, node, query)` checks the paths a persisted query carries
+  itself - columns, field filters, sort orders, attribute-search paths, group-by and aggregation columns, for every runtime and
+  stream-data query kind - against the query type and every type derived from it (an unknown query type, e.g. a CK interface,
+  against every type of the tenant). A stored filter on a Hidden attribute is an oracle for its value (the number of rows answers
+  the guess, AB#8049); the asset repository refuses to save such a query, but a query can also arrive through an import, a
+  restore or an older version. Called by `GetQueryById@1` (before the query, for runtime and stream-data queries) and
+  `PrepareNotification@1` (before the subscription's query runs; the refusal is recorded as the preference's `LastError`).
+  Usages in the error: `stored query column`, `stored field filter`, `stored sort order`, `stored attribute search`,
+  `stored group-by column`, `stored aggregation column`.
 * **Write.** `EnsureWritesAllowedAsync` (all nodes that called `GenericCreateGuard` now call it; it runs that guard
   first) refuses the whole batch with `RtAttributeWriteRestrictedException` (`RT_ATTRIBUTE_WRITE_RESTRICTED`,
   `Refusals` = type, attribute path, access, cause). Checked per update (not Delete): attributes and record members in
@@ -1839,9 +1849,11 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   if that fails the guard fails closed (`RtAttributeAccessCheckUnavailableException`, retryable).
 * **Tests.** Test model `Helpers/AttributeAccessTestModel` (every access, a record with a Hidden member, a method);
   guard rules in `Nodes/Access/RtAttributeAccessGuardTests`, node wiring in `NodeAttributeAccessTests` /
-  `NodeAttributeAccessMoreTests`. `SessionNodeTestBase.CkCache` is a loaded cache that knows no type (pass-through).
+  `NodeAttributeAccessMoreTests`, stored queries in `StoredQueryAccessTests` (unit) and
+  `IntegrationTests/Nodes/Access/StoredQueryHiddenAttributeIntegrationTests` (real MongoDB, `GetQueryById@1` and the notification
+  engine; test attribute `MeshAdapterIntegrationTest/SensorReading.ReadingSecret`, `access: Hidden`). `SessionNodeTestBase.CkCache` is a loaded cache that knows no type (pass-through).
   A new node that emits entities must call `DropHidden`, a new node with a configurable filter must call
-  `EnsureNotHidden`, a new write node must call `EnsureWritesAllowedAsync`.
+  `EnsureNotHidden`, a new node that runs a stored query must call `EnsureStoredQueryNotHidden`, a new write node must call `EnsureWritesAllowedAsync`.
 
 ---
 

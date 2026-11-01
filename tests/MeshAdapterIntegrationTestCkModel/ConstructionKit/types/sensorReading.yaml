@@ -17,3 +17,8 @@ types:
   - id: ${this}/SourceDate
     name: SourceDate
     isOptional: true
+  # AB#8049: never readable, filterable or sortable outside a CK method (stored-query access tests)
+  - id: ${this}/ReadingSecret
+    name: ReadingSecret
+    isOptional: true
+    access: Hidden

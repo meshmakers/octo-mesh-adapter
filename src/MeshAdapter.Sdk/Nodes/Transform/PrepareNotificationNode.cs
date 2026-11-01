@@ -13,6 +13,7 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CallerBinding;
@@ -154,6 +155,12 @@ internal class PrepareNotificationNode(
                 throw MeshAdapterPipelineExecutionException.NotificationQueryNotSupported(nodeContext, subscriptionName,
                     query.GetType().Name);
             }
+
+            // AB#8049: the subscription's stored query must not filter, sort, search or select by a Hidden attribute:
+            // whether a notification is sent would answer a guess, and a column would put the value into the message.
+            await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+            RtAttributeAccessGuard.EnsureStoredQueryNotHidden(ckCacheService, etlContext.TenantId,
+                nodeContext.NodePath.ToString(), simpleQuery);
 
             if (SimpleRtQueryExecution.FiltersThroughAssociations(simpleQuery))
             {

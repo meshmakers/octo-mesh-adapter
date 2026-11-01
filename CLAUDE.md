@@ -452,8 +452,12 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   (`RT_ATTRIBUTE_WRITE_RESTRICTED`).
 - **ReadOnly**: readable; a pipeline never writes it (also not on insert). A `Replace` that would clear an attribute the run
   may not write is refused. Presence in an update counts as a write.
+- **Stored queries (AB#8049)**: a persisted query whose own columns, filters, sort orders, attribute-search, group-by or
+  aggregation paths reach Hidden is refused before it runs (`EnsureStoredQueryNotHidden`, `GetQueryById@1` for every query kind,
+  `PrepareNotification@1`); paths are checked against the query type and its derived types (unknown type: every type). Entity-selector
+  keys (`[passwordHash=X]`) count as Hidden paths; error messages remove selector values.
 - Write nodes call `RtAttributeAccessGuard.EnsureWritesAllowedAsync` (it runs `GenericCreateGuard` first); extract nodes
-  call `DropHidden(Async)` and `EnsureNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.
+  call `DropHidden(Async)` and `EnsureNotHidden`; nodes that run a stored query call `EnsureStoredQueryNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.
   `SessionNodeTestBase.CkCache` gives tests a loaded cache that knows no type.
 
 ### JSON / Serialization (System.Text.Json)

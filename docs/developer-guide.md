@@ -1222,11 +1222,28 @@ nodes below declare it:
 | `ManualReasonPath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only (AB#7638): path, relative to each item at `Path`, that carries the reason of that row, e.g. `$.manualReason` next to `rtEntity` in the update info. Read from the DataContext, so the CK type needs no reason attribute. Wins over `ManualReasonAttributePath` and `ManualReason` when not empty |
 | `ManualReasonProperty` | string? | `SaveTimeRangeSeriesInArchive@1` only (AB#7638): property of each value object that carries the reason of its row. Wins over `ManualReason` when not empty |
 | `WriteResultPath` | string? | All three nodes (AB#7598): path the write result `{ stored, skipped, skippedByReason }` is stored at |
-| `FailOnSkippedRows` | bool | All three nodes (AB#7598): fail when the archive did not store every row (default `false`: a warning names the rows not stored per reason) |
+| `FailOnSkippedRows` | bool | All three nodes (AB#7598): fail when the archive did not store every row, for any reason including `CkTypeMismatch` (default `false`: rows not stored are logged per reason, see below) |
 
 The write result says how many rows the archive stored and why the others were not
 (`LowerPrecedence`, `ManualValueProtected`, `CkTypeMismatch`). Losing rows are a normal outcome for
 automated deliveries; a manual row that cannot be stored always fails the node.
+
+How rows not stored are logged (AB#7988):
+
+| Rows not stored | Without `FailOnSkippedRows` | With `FailOnSkippedRows` |
+|-----------------|-----------------------------|--------------------------|
+| Only automated rows with `CkTypeMismatch` | Debug line with the counts | Node fails |
+| Any other reason among them (`LowerPrecedence`, `ManualValueProtected`, a later reason) | Warning listing all reasons, `CkTypeMismatch` included | Node fails |
+| A manual row among them | Node fails | Node fails |
+
+`CkTypeMismatch` of automated rows is logged at Debug because it is the expected result of a common
+pattern: a pipeline hands one update list to one archive node per archive, and each archive keeps
+only its own CK type, so the rows of the other types are skipped on every run. As a warning that was
+~73,000 lines per hour on one tenant, and it hid the skips that matter. A summary once per node and
+interval was not chosen: it would need state per node across runs and a timer in the adapter, and
+the counts are already available per run at `WriteResultPath` (`skippedByReason.CkTypeMismatch`),
+where a pipeline can check them. To find a real mis-routing, read that result or set
+`FailOnSkippedRows`, which still fails for `CkTypeMismatch`.
 
 A manual row records its writer as resolved by the platform, never from the data: the **verified user
 caller**, by its readable name (`VerifiedPrincipal.Name`, else `SubjectId`), when the trigger authenticated one; otherwise the **client id of

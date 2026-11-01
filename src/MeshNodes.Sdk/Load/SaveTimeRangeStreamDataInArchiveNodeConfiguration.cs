@@ -79,9 +79,11 @@ public record SaveTimeRangeStreamDataInArchiveNodeConfiguration : PathNodeConfig
     public string? WriteResultPath { get; init; }
 
     /// <summary>
-    /// Fails the node when the archive did not store every row (AB#7598), for example an automated delivery
-    /// against a manual value or a lower quality against a higher one. Default <c>false</c>: such rows are
-    /// reported as a warning. A manual row that could not be stored always fails the node.
+    /// Fails the node when the archive did not store every row (AB#7598), for any reason including
+    /// <c>CkTypeMismatch</c>, for example an automated delivery against a manual value or a lower quality against
+    /// a higher one. Default <c>false</c>: automated rows not stored only for <c>CkTypeMismatch</c> are logged at
+    /// Debug (AB#7988, expected when one update list feeds one node per archive); any other reason is reported as a
+    /// warning. A manual row that could not be stored always fails the node.
     /// </summary>
     public bool FailOnSkippedRows { get; init; }
 }

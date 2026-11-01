@@ -155,6 +155,23 @@ public class StoredQueryAccessTests : SessionNodeTestBase
         Assert.DoesNotContain(Guess, ex.AttributePath);
     }
 
+    [Theory]
+    [InlineData("members.Test/Account[credentials.token=" + Guess + "]->name")]
+    [InlineData("members.Test/Account[passwordHash=" + Guess + "]suffix]->name")]
+    public void Guard_ADottedOrBracketedSelector_IsRefused_AndNoPartOfTheValueIsEchoed(string column)
+    {
+        var query = new RtSimpleRtQuery
+        {
+            QueryCkTypeId = "Test/Plain", Columns = new AttributeStringValueList([column])
+        };
+
+        var ex = Assert.Throws<RtAttributeHiddenException>(() =>
+            RtAttributeAccessGuard.EnsureStoredQueryNotHidden(_cache, Tenant, Node, query));
+
+        Assert.DoesNotContain(Guess, ex.Message);
+        Assert.DoesNotContain("suffix", ex.Message);
+    }
+
     [Fact]
     public void Guard_AnEntitySelectorKeyOnAVisibleAttribute_Passes()
     {

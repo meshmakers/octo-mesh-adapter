@@ -275,9 +275,11 @@ public static class RtAttributeAccessGuard
                 continue;
             }
 
+            // The key may be a record path (Credentials.Token): check it as written and by its trailing attribute.
             var hidden = ckCacheService.GetCkTypes(tenantId)
-                .Select(t => ArchiveHiddenColumnGuard.FindHiddenAttribute(ckCacheService, tenantId,
-                    t.CkTypeId.ToRtCkId(), name))
+                .SelectMany(t => new[] { key, name }.Select(candidate =>
+                    ArchiveHiddenColumnGuard.FindHiddenAttribute(ckCacheService, tenantId, t.CkTypeId.ToRtCkId(),
+                        candidate)))
                 .FirstOrDefault(h => h != null);
             if (hidden != null)
             {
@@ -288,9 +290,18 @@ public static class RtAttributeAccessGuard
         return null;
     }
 
-    /// <summary>The path with the values of its entity selectors removed (<c>[key=…]</c>), for error messages.</summary>
-    internal static string WithoutSelectorValues(string path) =>
-        path.Contains('[') ? EntitySelectorRegex.Replace(path, "[$1=…]") : path;
+    /// <summary>
+    ///     The path with the values of its entity selectors removed (<c>[key=…]</c>), for error messages: everything from
+    ///     the first <c>=</c> inside a selector up to the last <c>]</c> of the path is replaced, so a value that itself
+    ///     contains <c>]</c> cannot leak a part of it.
+    /// </summary>
+    internal static string WithoutSelectorValues(string path)
+    {
+        var open = path.IndexOf('[');
+        var equals = open < 0 ? -1 : path.IndexOf('=', open);
+        var close = path.LastIndexOf(']');
+        return equals < 0 || close < equals ? path : path[..equals] + "=…" + path[close..];
+    }
 
     // ------------------------------------------------------------ stored query
 

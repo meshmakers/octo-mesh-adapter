@@ -12,6 +12,9 @@ public class SelectorValueRedactionTests
 {
     private const string Guess = "dummy-guess-0001";
 
+    // Without '-', so that the text after the ']' is a valid path suffix and only the quote check can hide it.
+    private const string PathLikeGuess = "dummyguess0001";
+
     private readonly Meshmakers.Octo.ConstructionKit.Contracts.Services.ICkCacheService _cache = Cache();
 
     [Theory]
@@ -34,7 +37,7 @@ public class SelectorValueRedactionTests
     [InlineData("members.t[passwordHash='AQ]AA]-secret']->name", "members.t[passwordHash=…]->name")]
     [InlineData("members.t[passwordHash='AQ[AA]-secret']->name", "members.t[passwordHash=…]->name")]
     [InlineData("members.t[passwordHash=AQ]AA-secret]", "members.t[passwordHash=…]")]
-    [InlineData("members.t[passwordHash='AQ]AA::secret[x]", "members.t[passwordHash=…]")]
+    [InlineData("members.t[passwordHash=\"AQ]AA-secret\"]->name", "members.t[passwordHash=…]->name")]
     // an unclosed selector: used to be returned unchanged
     [InlineData("members.t[passwordHash='AQAA-secret", "members.t[passwordHash=…")]
     [InlineData("members.t[name=AQAA-secret->passwordHash", "members.t[name=…")]
@@ -43,6 +46,11 @@ public class SelectorValueRedactionTests
     [InlineData("members.t[passwordHash='AQ]AA-secret", "members.t[passwordHash=…")]
     [InlineData("members.t[passwordHash='AQ]AA.secret", "members.t[passwordHash=…")]
     [InlineData("members.t[passwordHash='AQ]->AA=secret", "members.t[passwordHash=…")]
+    // a quoted value still open at the last ']': the rest looks like a path but belongs to the value (review of #103)
+    [InlineData("members.t[passwordHash='AQ]->AAsecret", "members.t[passwordHash=…")]
+    [InlineData("members.t[passwordHash='AQ]AA::secret[x]", "members.t[passwordHash=…")]
+    [InlineData("members.t[passwordHash=\"AQ]->AAsecret", "members.t[passwordHash=…")]
+    [InlineData("a.t[x='1'].b.u[passwordHash='AQ]->AAsecret", "a.t[x=…")]
     public void TheWholeSelectorValue_IsRemoved_WhateverBracketsItContains(string path, string expected)
     {
         var redacted = RtAttributeAccessGuard.WithoutSelectorValues(path);
@@ -58,6 +66,8 @@ public class SelectorValueRedactionTests
     [InlineData("members.Test/Account[passwordHash=x]" + Guess)]
     // unclosed selector, refused by its hidden trailing attribute
     [InlineData("members.Test/Account[name=" + Guess + "->passwordHash")]
+    // hidden selector key, quoted value still open at the ']' (review of #103)
+    [InlineData("members.Test/Account[passwordHash='x]->" + PathLikeGuess)]
     public void EnsureNotHidden_TheRefusal_EchoesNoPartOfTheValue(string path)
     {
         var ex = Assert.Throws<RtAttributeHiddenException>(() =>
@@ -66,5 +76,7 @@ public class SelectorValueRedactionTests
 
         Assert.DoesNotContain(Guess, ex.Message);
         Assert.DoesNotContain(Guess, ex.AttributePath);
+        Assert.DoesNotContain(PathLikeGuess, ex.Message);
+        Assert.DoesNotContain(PathLikeGuess, ex.AttributePath);
     }
 }

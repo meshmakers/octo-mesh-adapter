@@ -309,6 +309,9 @@ public static class RtAttributeAccessGuard
     ///     AB#8052): the last <c>]</c> only ends the redaction when the rest of the path is a valid path suffix in the
     ///     grammar of the engine (<c>-&gt;name</c>, <c>.name</c>, <c>::meta</c>, or nothing). Otherwise that <c>]</c>
     ///     belongs to the value of an unterminated selector (<c>[passwordHash='AQ]AA-secret</c>), and the path is redacted
+    ///     to its end; so it is when a quoted value is still open at that <c>]</c> (an odd number of <c>'</c> or <c>"</c>
+    ///     between the <c>=</c> and the <c>]</c>, <c>[passwordHash='AQ]-&gt;AAsecret</c>), even if the rest looks like a
+    ///     path. Otherwise the path is redacted
     ///     to its end - as is a selector without any <c>]</c> after its <c>=</c> (<c>[passwordHash='AQAA</c>), which used
     ///     to be returned unchanged. Path segments between the first selector value and the last <c>]</c> are not shown
     ///     (<c>a.t[x=1].b.u[y=2]-&gt;c</c> becomes <c>a.t[x=…]-&gt;c</c>). A <c>[</c> without a following <c>=</c>
@@ -324,9 +327,34 @@ public static class RtAttributeAccessGuard
         }
 
         var close = path.LastIndexOf(']');
-        return close > equals && PathSuffixRegex.IsMatch(path[(close + 1)..])
+        return close > equals && QuotesBalanced(path, equals + 1, close) && PathSuffixRegex.IsMatch(path[(close + 1)..])
             ? path[..equals] + "=…" + path[close..]
             : path[..equals] + "=…";
+    }
+
+    /// <summary>
+    ///     True when <c>'</c> and <c>"</c> each occur an even number of times in <paramref name="path" /> from
+    ///     <paramref name="start" /> (inclusive) to <paramref name="end" /> (exclusive). An odd count means a quoted value is
+    ///     still open at <paramref name="end" />, so the <c>]</c> there and what follows belong to the value (AB#8077 review).
+    /// </summary>
+    private static bool QuotesBalanced(string path, int start, int end)
+    {
+        var single = 0;
+        var doubleQuotes = 0;
+        for (var i = start; i < end; i++)
+        {
+            switch (path[i])
+            {
+                case '\'':
+                    single++;
+                    break;
+                case '"':
+                    doubleQuotes++;
+                    break;
+            }
+        }
+
+        return single % 2 == 0 && doubleQuotes % 2 == 0;
     }
 
     // ------------------------------------------------------------ stored query

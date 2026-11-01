@@ -26,10 +26,15 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Common;
 ///         entity is never modified: a changed entity is a copy.</item>
 ///         <item><b>Filter / sort / column</b>: <see cref="EnsureNotHidden" /> refuses a path that reaches a Hidden
 ///         attribute (an oracle for its value). The error names the node and the path, never a value.</item>
-///         <item><b>Write</b>: <see cref="EnsureWritesAllowedAsync" /> refuses Hidden always, ReadOnly always, MethodOnly
+///         <item><b>Write</b>: <see cref="EnsureWritesAllowedAsync(IMeshEtlContext, ICkCacheService, IEnumerable{IEntityUpdateInfo{RtEntity}}, IEnumerable{AssociationUpdateInfo})" /> refuses Hidden always, ReadOnly always, MethodOnly
 ///         unless the run is the method run of the entity's type (marker present, method belongs to the type, marker
 ///         pipeline is the running pipeline - the pattern of <see cref="GenericCreateGuard" />), and a Replace of
 ///         an entity whose type has an attribute the run may not write (the replacement would clear it).</item>
+///         <item><b>Identity-owned</b> (AB#8059): the identity-owned attributes of <c>System.Identity/User</c> and the edges
+///         of the identity association roles (<see cref="IdentityOwnedWrites" />, the engine's one list, also enforced by
+///         asset-repo GraphQL and the user-started RT import) are refused like a <c>MethodOnly</c> attribute: allowed only
+///         in the method run of a <c>System.Identity</c> type (for an attribute: the entity's type; for an association:
+///         a type at either end), on insert, update, replace and association insert and delete.</item>
 ///     </list>
 ///     A type that is not in the tenant CK cache is not judged (nothing is known about it). An unloaded cache is loaded
 ///     first; if that fails the guard fails closed.
@@ -442,12 +447,22 @@ public static class RtAttributeAccessGuard
     ///     every value the batch writes. Call it before the dry-run branch and before the first write; the whole batch is
     ///     refused.
     /// </summary>
+    public static Task EnsureWritesAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+        IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos) =>
+        EnsureWritesAllowedAsync(etlContext, ckCacheService, updateInfos, []);
+
+    /// <summary>
+    ///     Runs the checks of a write batch with association changes: the replaced-create guard first (AB#7462), then the
+    ///     attribute access of every value the batch writes and the identity-owned attributes and associations (AB#8059).
+    ///     Call it before the dry-run branch and before the first write; the whole batch is refused.
+    /// </summary>
     public static async Task EnsureWritesAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
-        IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos)
+        IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos, IEnumerable<AssociationUpdateInfo> associationUpdates)
     {
         ArgumentNullException.ThrowIfNull(etlContext);
         ArgumentNullException.ThrowIfNull(ckCacheService);
         ArgumentNullException.ThrowIfNull(updateInfos);
+        ArgumentNullException.ThrowIfNull(associationUpdates);
 
         var all = updateInfos.ToList();
 
@@ -455,7 +470,9 @@ public static class RtAttributeAccessGuard
         await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, all);
 
         var updates = all.Where(u => u.ModOption != EntityModOptions.Delete).ToList();
-        if (updates.Count == 0)
+        var identityAssociations = associationUpdates
+            .Where(a => IdentityOwnedWrites.IsIdentityOwnedAssociation(a.RoleId)).ToList();
+        if (updates.Count == 0 && identityAssociations.Count == 0)
         {
             return;
         }
@@ -463,6 +480,22 @@ public static class RtAttributeAccessGuard
         await EnsureCacheLoadedAsync(etlContext, ckCacheService);
 
         List<RtAttributeWriteRefusal>? refusals = null;
+
+        // AB#8059: an identity association edge (insert or delete, either direction) only in the method run of a
+        // System.Identity type at one of its ends. The message names the role and the two types, never an rtId or a value.
+        foreach (var association in identityAssociations)
+        {
+            if (IsIdentityMethodRunFor(etlContext, ckCacheService, association.Origin.CkTypeId) ||
+                IsIdentityMethodRunFor(etlContext, ckCacheService, association.Target.CkTypeId))
+            {
+                continue;
+            }
+
+            (refusals ??= []).Add(new RtAttributeWriteRefusal(association.Origin.CkTypeId.FullName,
+                $"association {association.RoleId.FullName} -> {association.Target.CkTypeId.FullName}",
+                RtAttributeWriteRefusalCause.AssociationAccess, RtAttributeWriteRefusalCause.IdentityOwned));
+        }
+
         foreach (var update in updates)
         {
             if (!ckCacheService.TryGetRtCkType(etlContext.TenantId, update.CkTypeId, out var graph) || graph == null)
@@ -518,10 +551,19 @@ public static class RtAttributeAccessGuard
                 }
             }
 
+            var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, attribute) in written)
             {
                 var cause = RefusalCause(attribute.Access, methodCause);
-                if (cause != null)
+                // AB#8059: the identity list judges the top-level attributes of the User type (a record member path such
+                // as Claims[0].Value is covered by its attribute, which is collected as a top-level path as well).
+                if (cause == null && IsTopLevel(path) &&
+                    IdentityOwnedWrites.IsIdentityOwnedAttribute(update.CkTypeId, attribute.AttributeName))
+                {
+                    cause = IdentityOwnedCause(methodCause);
+                }
+
+                if (cause != null && reported.Add(path))
                 {
                     Report(path, attribute.Access, cause);
                 }
@@ -533,8 +575,10 @@ public static class RtAttributeAccessGuard
                 var writtenTop = written.Select(w => w.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 foreach (var attribute in graph.AllAttributes.Values)
                 {
-                    if (RefusalCause(attribute.Access, methodCause) != null &&
-                        !writtenTop.Contains(attribute.AttributeName))
+                    var mayNotWrite = RefusalCause(attribute.Access, methodCause) != null ||
+                                      (IdentityOwnedWrites.IsIdentityOwnedAttribute(update.CkTypeId,
+                                           attribute.AttributeName) && IdentityOwnedCause(methodCause) != null);
+                    if (mayNotWrite && !writtenTop.Contains(attribute.AttributeName))
                     {
                         Report(attribute.AttributeName, attribute.Access, RtAttributeWriteRefusalCause.ReplaceWouldClear);
                     }
@@ -556,6 +600,39 @@ public static class RtAttributeAccessGuard
         CkAttributeAccessDto.MethodOnly => methodRunCause,
         _ => null
     };
+
+    /// <summary>
+    ///     AB#8059: the cause token for a write of an identity-owned User attribute, null in the method run of the User type
+    ///     (the same rule as <c>MethodOnly</c>: the list stands in for the CK access until the next System.Identity major).
+    /// </summary>
+    private static string? IdentityOwnedCause(string? methodRunCause) =>
+        methodRunCause == null ? null : RtAttributeWriteRefusalCause.IdentityOwned;
+
+    private static bool IsTopLevel(string path) => path.IndexOfAny(['.', '[']) < 0;
+
+    /// <summary>
+    ///     AB#8059: true when this run is the method run of <paramref name="ckTypeId" /> (marker present, method of the type,
+    ///     running pipeline) and the method is declared by a <c>System.Identity</c> type. A type that is not in the cache
+    ///     never qualifies.
+    /// </summary>
+    private static bool IsIdentityMethodRunFor(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+        RtCkId<CkTypeId> ckTypeId)
+    {
+        var marker = etlContext.MethodInvocation;
+        if (marker == null ||
+            !ckCacheService.TryGetRtCkType(etlContext.TenantId, ckTypeId, out var graph) || graph == null ||
+            GetMethodRunCause(etlContext, graph) != null)
+        {
+            return false;
+        }
+
+        var method = graph.AllMethods.Values.First(m =>
+            string.Equals(m.QualifiedMethodId, marker.MethodId, StringComparison.Ordinal));
+        // CkModelId.Name is the model name without the version.
+        return string.Equals(method.DeclaringCkTypeId.ModelId.Name, IdentityModelName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private const string IdentityModelName = "System.Identity";
 
     /// <summary>
     ///     Null when this run is the method run of the entity's type: the marker names a method of the type (own or

@@ -22,7 +22,9 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Access;
 ///     emit the user's <c>PasswordHash</c>, <c>SecurityStamp</c> or <c>UserTokens</c>, refuse a filter or sort on them, and
 ///     load nodes refuse writes of those Hidden attributes (also in a method run) and of the MethodOnly / ReadOnly identity
 ///     attributes outside the method run. Real orchestrator, real nodes, real CK cache, MongoDB. The seeded user holds known
-///     dummy values (<see cref="F.DummyValues" />); no pipeline output, error or captured log line may contain them. The
+///     dummy values (<see cref="F.DummyValues" />); no pipeline output, error or captured log line may contain them. Since
+///     AB#8059 the load nodes also refuse the identity-owned User attributes and the identity association edges (insert and
+///     delete) outside the run of an identity method (the engine's <c>IdentityOwnedWrites</c> list). The
 ///     guard rules themselves are covered with a test model in <c>MeshAdapter.Sdk.Tests/Nodes/Access</c>.
 /// </summary>
 [Trait("Category", "Integration")]
@@ -273,11 +275,211 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         await AssertProbeUserUnchangedAsync();
     }
 
+    // ------------------------------------------------------------------------------------- identity-owned (AB#8059)
+
+    // The engine's IdentityOwnedWrites list: User attributes only the identity service writes (its REST API and methods).
+    public static TheoryData<string, string> IdentityOwnedUpdates() => new()
+    {
+        // attribute, pipeline value type
+        { "NormalizedUserName", "String" },
+        { "NormalizedEmail", "String" },
+        { "EmailConfirmed", "Boolean" },
+        { "PhoneNumberConfirmed", "Boolean" },
+        { "TwoFactorEnabled", "Boolean" },
+        { "LockoutEnabled", "Boolean" },
+        { "ResetPasswordOnLogin", "Boolean" },
+        { "Claims", "RecordArray" },
+        { "UserLogins", "RecordArray" },
+        { "PreferredChannelBindingId", "String" }
+    };
+
+    [Theory]
+    [MemberData(nameof(IdentityOwnedUpdates))]
+    public async Task ApplyChanges2_UpdateOfAnIdentityOwnedUserAttribute_IsRefused_AndNothingChanges(string attribute,
+        string valueType)
+    {
+        await AssertRefusedAsync(UpdatePipeline("ApplyChanges@2", attribute, valueType), "IDENTITY_OWNED",
+            new JsonObject { ["rtId"] = fixture.ProbeUserRtId, ["value"] = SampleValue(valueType) });
+
+        await AssertProbeUserUnchangedAsync();
+    }
+
+    [Theory]
+    [InlineData("TwoFactorEnabled", "Boolean")]
+    [InlineData("Claims", "RecordArray")]
+    public async Task ApplyChanges1_UpdateOfAnIdentityOwnedUserAttribute_IsRefused_AndNothingChanges(string attribute,
+        string valueType)
+    {
+        await AssertRefusedAsync(UpdatePipeline("ApplyChanges@1", attribute, valueType), "IDENTITY_OWNED",
+            new JsonObject { ["rtId"] = fixture.ProbeUserRtId, ["value"] = SampleValue(valueType) });
+
+        await AssertProbeUserUnchangedAsync();
+    }
+
+    [Theory]
+    [MemberData(nameof(IdentityOwnedUpdates))]
+    public async Task ApplyChanges2_InsertOfAUser_WithAnIdentityOwnedAttribute_IsRefused(string attribute, string valueType)
+    {
+        var rtId = OctoObjectId.GenerateNewId().ToString();
+
+        await AssertRefusedAsync($"""
+            transformations:
+              - type: CreateUpdateInfo@1
+                targetPath: $._inserts
+                targetValueKind: Array
+                updateKind: INSERT
+                ckTypeId: System.Identity/User
+                rtIdPath: $.rtId
+                attributeUpdates:
+                  - attributeName: FirstName
+                    attributeValueType: String
+                    value: inserted
+                  - attributeName: {attribute}
+                    attributeValueType: {valueType}
+                    valuePath: $.value
+              - type: ApplyChanges@2
+                entityUpdatesPath: $._inserts
+            """, new JsonObject { ["rtId"] = rtId, ["value"] = SampleValue(valueType) }, null,
+            // Once System.Identity/User replaces the generic create (User.Create), the replaced-create guard refuses the
+            // insert first; either refusal keeps the identity-owned value out.
+            "IDENTITY_OWNED", "GENERIC_CREATE_REPLACED_BY_METHOD");
+
+        (await UserExistsAsync(rtId)).Should().BeFalse("nothing is written");
+    }
+
+    public static TheoryData<string, string> IdentityAssociationChanges()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var role in new[]
+                 {
+                     "System.Identity/AssignedRole", "System.Identity/GroupMember", "System.Identity/ChildGroup",
+                     "System.Identity/GrantsPermission", "System.Identity/MayActAs"
+                 })
+        {
+            data.Add(role, "Create");
+            data.Add(role, "Delete");
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(IdentityAssociationChanges))]
+    public async Task ApplyChanges2_IdentityAssociationChange_IsRefused_AndTheRoleAssignmentStays(string roleId,
+        string updateKind)
+    {
+        // The guard judges the role, not the end types; the seeded user -> role edge is the one a delete would remove.
+        await AssertRefusedAsync($"""
+            transformations:
+              - type: CreateAssociationUpdate@1
+                targetPath: $._associations
+                targetValueKind: Array
+                updateKind: {updateKind}
+                originRtId: '{fixture.ProbeUserRtId}'
+                originCkTypeId: System.Identity/User
+                targetRtId: '{fixture.ProbeRoleRtId}'
+                targetCkTypeId: System.Identity/Role
+                associationRoleId: {roleId}
+              - type: ApplyChanges@2
+                associationUpdatesPath: $._associations
+            """, "IDENTITY_OWNED");
+
+        await AssertRoleAssignmentStaysAsync();
+    }
+
+    [Fact]
+    public async Task ApplyChanges2_RoleAssignmentDelete_FromTheRoleSide_IsRefused()
+    {
+        await AssertRefusedAsync($"""
+            transformations:
+              - type: CreateAssociationUpdate@1
+                targetPath: $._associations
+                targetValueKind: Array
+                updateKind: Delete
+                originRtId: '{fixture.ProbeRoleRtId}'
+                originCkTypeId: System.Identity/Role
+                targetRtId: '{fixture.ProbeUserRtId}'
+                targetCkTypeId: System.Identity/User
+                associationRoleId: System.Identity-2.30.0/AssignedRole
+              - type: ApplyChanges@2
+                associationUpdatesPath: $._associations
+            """, "IDENTITY_OWNED");
+
+        await AssertRoleAssignmentStaysAsync();
+    }
+
+    [Fact]
+    public async Task ApplyChanges2_IdentityAssociation_IsAllowed_InTheRunOfAnIdentityMethod_AndTheEdgeIsWritten()
+    {
+        // The exemption: a pipeline that implements a System.Identity method on the User (marker of the running
+        // pipeline) may write the identity associations. Insert a second role edge and remove it again.
+        var marker = await MarkerAsync("SetRoles-1");
+        var roleRtId = await fixture.CreateRoleAsync("ProbeRole-" + Guid.NewGuid().ToString("N")[..6]);
+
+        string Change(string kind) => $"""
+            transformations:
+              - type: CreateAssociationUpdate@1
+                targetPath: $._associations
+                targetValueKind: Array
+                updateKind: {kind}
+                originRtId: '{fixture.ProbeUserRtId}'
+                originCkTypeId: System.Identity/User
+                targetRtId: '{roleRtId}'
+                targetCkTypeId: System.Identity/Role
+                associationRoleId: System.Identity/AssignedRole
+              - type: ApplyChanges@2
+                associationUpdatesPath: $._associations
+            """;
+
+        var (_, insertFailure) = await RunAsync(Change("Create"), marker: marker);
+        insertFailure.Should().BeNull();
+        (await RoleUsersAsync(roleRtId)).Should().Contain(F.ProbeUserName);
+
+        var (_, deleteFailure) = await RunAsync(Change("Delete"), marker: marker);
+        deleteFailure.Should().BeNull();
+        (await RoleUsersAsync(roleRtId)).Should().NotContain(F.ProbeUserName);
+    }
+
+    [Fact]
+    public async Task ApplyChanges2_IdentityOwnedAttribute_IsAllowed_InTheRunOfAnIdentityMethod()
+    {
+        var marker = await MarkerAsync("SetRoles-1");
+        var before = await RawAsync("PhoneNumberConfirmed");
+
+        var (_, failure) = await RunAsync(UpdatePipeline("ApplyChanges@2", "PhoneNumberConfirmed", "Boolean"),
+            new JsonObject { ["rtId"] = fixture.ProbeUserRtId, ["value"] = false }, marker);
+
+        failure.Should().BeNull();
+        (await RawAsync("PhoneNumberConfirmed")).Should().Be(before ?? false);
+    }
+
+    private static JsonNode SampleValue(string valueType) => valueType switch
+    {
+        "Boolean" => JsonValue.Create(true),
+        "RecordArray" => new JsonArray(),
+        _ => JsonValue.Create("SET-BY-PIPELINE-8059")
+    };
+
+    private async Task<string> RoleUsersAsync(string roleRtId) => await RunOkAsync($"""
+        transformations:
+          - type: GetAssociationTargets@1
+            originRtId: '{roleRtId}'
+            originCkTypeId: System.Identity/Role
+            targetCkTypeId: System.Identity/User
+            associationRoleId: System.Identity/AssignedRole
+            graphDirection: Inbound
+            targetPath: $.users
+        """);
+
+    private async Task AssertRoleAssignmentStaysAsync() =>
+        (await RoleUsersAsync(fixture.ProbeRoleRtId)).Should().Contain(F.ProbeUserName,
+            "the seeded role assignment is not removed");
+
     // ------------------------------------------------------------------------------------------------- helpers
 
-    private static string UpdatePipeline(string applyNode, string attribute)
+    private static string UpdatePipeline(string applyNode, string attribute, string? valueType = null)
     {
-        var valueType = attribute switch
+        valueType ??= attribute switch
         {
             "AccessFailedCount" => "Int",
             "LockoutEnd" => "DateTime",
@@ -317,15 +519,18 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         };
     }
 
-    private async Task AssertRefusedAsync(string yaml, string code, JsonObject? input = null,
-        ExecutePipelineMethodInvocation? marker = null)
+    private Task AssertRefusedAsync(string yaml, string code, JsonObject? input = null,
+        ExecutePipelineMethodInvocation? marker = null) => AssertRefusedAsync(yaml, input, marker, code);
+
+    private async Task AssertRefusedAsync(string yaml, JsonObject? input, ExecutePipelineMethodInvocation? marker,
+        params string[] anyOfCodes)
     {
         var logStart = fixture.LogCount;
         var (output, failure) = await RunAsync(yaml, input, marker);
 
         failure.Should().NotBeNull($"the pipeline must be refused, but returned {output}");
         var text = failure!.ToString();
-        text.Should().Contain(code);
+        anyOfCodes.Should().Contain(code => text.Contains(code), $"the refusal names one of {string.Join(", ", anyOfCodes)}");
         AssertNoCredential(text);
         fixture.LogLinesWithDummyValuesSince(logStart).Should().BeEmpty("no log line may carry a credential");
     }
@@ -404,6 +609,17 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
         (await RawAsync("Email")).Should().Be(F.ProbeUserEmail);
         Convert.ToInt32(await RawAsync("AccessFailedCount")).Should().Be(3);
         (await RawAsync("LockoutEnd")).Should().BeNull("the seed does not set LockoutEnd");
+        // AB#8059: the identity-owned fields keep their seeded values.
+        (await RawAsync("NormalizedUserName")).Should().Be(F.ProbeUserName.ToUpperInvariant());
+        (await RawAsync("NormalizedEmail")).Should().Be(F.ProbeUserEmail.ToUpperInvariant());
+        (await RawAsync("EmailConfirmed")).Should().Be(true);
+        (await RawAsync("PhoneNumberConfirmed")).Should().Be(false);
+        (await RawAsync("TwoFactorEnabled")).Should().Be(false);
+        (await RawAsync("LockoutEnabled")).Should().Be(true);
+        (await RawAsync("ResetPasswordOnLogin")).Should().Be(false);
+        (await RawAsync("Claims")).Should().BeNull("the seed does not set Claims");
+        (await RawAsync("UserLogins")).Should().BeNull("the seed does not set UserLogins");
+        (await RawAsync("PreferredChannelBindingId")).Should().BeNull();
         ((System.Collections.IEnumerable)(await RawAsync("UserTokens"))!).Cast<object>().Should().HaveCount(1);
     }
 

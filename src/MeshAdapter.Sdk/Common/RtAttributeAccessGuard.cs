@@ -46,6 +46,10 @@ public static class RtAttributeAccessGuard
     // An entity selector `[key=value]` inside a path (AB#8049); group 1 is the key.
     private static readonly Regex EntitySelectorRegex = new(@"\[([^\[\]=]+)=[^\[\]]*\]", RegexOptions.Compiled);
 
+    // What may follow the last selector of a path (AB#8077): path segments of the engine grammar (`->name`, `.name`,
+    // `::meta`), no brackets, no value.
+    private static readonly Regex PathSuffixRegex = new(@"^(?:(?:->|\.|::)[^.\[\]\->:=]+)*$", RegexOptions.Compiled);
+
     // ---------------------------------------------------------------- read
 
     /// <summary>
@@ -300,12 +304,73 @@ public static class RtAttributeAccessGuard
     ///     the first <c>=</c> inside a selector up to the last <c>]</c> of the path is replaced, so a value that itself
     ///     contains <c>]</c> cannot leak a part of it.
     /// </summary>
+    /// <remarks>
+    ///     AB#8077 (same rule as the asset repository's <c>HiddenAttributeAccessException.RedactSelectorValues</c>,
+    ///     AB#8052): the last <c>]</c> only ends the redaction when the rest of the path is a valid path suffix in the
+    ///     grammar of the engine (<c>-&gt;name</c>, <c>.name</c>, <c>::meta</c>, or nothing). Otherwise that <c>]</c>
+    ///     belongs to the value of an unterminated selector (<c>[passwordHash='AQ]AA-secret</c>), and the path is redacted
+    ///     to its end; so it is when a quoted value is still open at that <c>]</c> (an odd number of <c>'</c> or <c>"</c>
+    ///     between the <c>=</c> and the <c>]</c>, <c>[passwordHash='AQ]-&gt;AAsecret</c>), even if the rest looks like a
+    ///     path. Otherwise the path is redacted
+    ///     to its end - as is a selector without any <c>]</c> after its <c>=</c> (<c>[passwordHash='AQAA</c>), which used
+    ///     to be returned unchanged. Path segments between the first selector value and the last <c>]</c> are not shown
+    ///     (<c>a.t[x=1].b.u[y=2]-&gt;c</c> becomes <c>a.t[x=…]-&gt;c</c>). A <c>[</c> without a following <c>=</c>
+    ///     (<c>items[0].name</c>) is no selector and is kept.
+    /// </remarks>
     internal static string WithoutSelectorValues(string path)
     {
         var open = path.IndexOf('[');
         var equals = open < 0 ? -1 : path.IndexOf('=', open);
+        if (equals < 0)
+        {
+            return path;
+        }
+
         var close = path.LastIndexOf(']');
-        return equals < 0 || close < equals ? path : path[..equals] + "=…" + path[close..];
+        return close > equals && QuotesBalanced(path, equals + 1, close) && PathSuffixRegex.IsMatch(path[(close + 1)..])
+            ? path[..equals] + "=…" + path[close..]
+            : path[..equals] + "=…";
+    }
+
+    /// <summary>
+    ///     True when <c>'</c> and <c>"</c> each occur an even number of times in <paramref name="path" /> from
+    ///     <paramref name="start" /> (inclusive) to <paramref name="end" /> (exclusive) <b>and</b> no quoted value is open at
+    ///     <paramref name="end" /> when the quotes are read in order (a quote of the other kind inside a quoted value is part
+    ///     of the value). Either failure means the <c>]</c> there and what follows belong to the value (AB#8077 review; the
+    ///     order scan catches <c>[x='a"b' "secret].c</c>, where both counts are even, AB#8085). Same rule as the asset
+    ///     repository's <c>HiddenAttributeAccessException</c> (AB#8081).
+    /// </summary>
+    private static bool QuotesBalanced(string path, int start, int end)
+    {
+        var single = 0;
+        var doubleQuotes = 0;
+        char? openQuote = null;
+        for (var i = start; i < end; i++)
+        {
+            if (path[i] is '\'' or '"')
+            {
+                if (openQuote == null)
+                {
+                    openQuote = path[i];
+                }
+                else if (openQuote == path[i])
+                {
+                    openQuote = null;
+                }
+            }
+
+            switch (path[i])
+            {
+                case '\'':
+                    single++;
+                    break;
+                case '"':
+                    doubleQuotes++;
+                    break;
+            }
+        }
+
+        return single % 2 == 0 && doubleQuotes % 2 == 0 && openQuote == null;
     }
 
     // ------------------------------------------------------------ stored query

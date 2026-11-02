@@ -1823,7 +1823,7 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   `GetRtEntitiesById@1`, `GetAssociationTargets@1`, `GetOrCreateRtEntitiesByType@1`, `CheckDuplicate@1`,
   `FromWatchRtEntity@1` (in `StartAsync`), `GetQueryById@1` (the node's filters). An entity-selector key
   (`nav.Type[passwordHash=X]->name`, an equality lookup) is refused when it names a Hidden attribute of any CK type of the
-  tenant; the error shows the path with the selector values removed. It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
+  tenant; the error shows the path with the selector values removed (`WithoutSelectorValues`, AB#8077: everything from the first `=` inside a selector to the last `]` is replaced, but that `]` only ends the redaction when the rest is a valid path suffix — `->name`, `.name`, `::meta` or nothing; an unclosed selector, a value with a `]` followed by anything else, or a quoted value still open at that `]` (odd number of `'` or `"` between the `=` and the `]`, or a quote still open when the quotes are read in order, AB#8085) is redacted to the end of the path; the same rule as the asset repository's access errors). It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
   that contains a Hidden member counts). Interface queries check every implementing type; a navigated path
   (`role.Type->attribute`) is judged by its trailing attribute on every CK type of the tenant (conservative).
 * **Stored queries.** `EnsureStoredQueryNotHidden(cache, tenant, node, query)` checks the paths a persisted query carries
@@ -1882,9 +1882,12 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   no extract node emits `PasswordHash`, `SecurityStamp` or `UserTokens`, filters and sorts on them are refused (also in the
   persisted query's own filters of `GetQueryById@1`, AB#8049), and `ApplyChanges@1/@2` refuse writes of the Hidden, MethodOnly
   (`UserName`, `Email`) and ReadOnly (`LockoutEnd`, `AccessFailedCount`) attributes; the seeded user carries fixed dummy values that
-  no output, error or log line may contain. Since AB#8059 they also prove that every identity-owned User attribute (update and
-  insert, `ApplyChanges@1/@2`) and every identity association role (insert and delete, from either end) is refused outside an
-  identity method run and allowed in it.
+  no output, error or log line may contain. Since AB#8059 they also prove that every identity-owned User attribute (update,
+  `ApplyChanges@1/@2`) and every identity association role (insert and delete, from either end) is refused outside an
+  identity method run and allowed in it. Since AB#7777 (engine) the generic writers refuse every new `System.Identity/User`
+  with `GENERIC_CREATE_REPLACED_BY_METHOD` (users are created by `User.CreateUser-1`), so the insert tests assert that refusal
+  (also for an insert without any restricted attribute); the attribute refusals (`RT_ATTRIBUTE_WRITE_RESTRICTED`,
+  `IDENTITY_OWNED`) are proven by the updates of the seeded user.
 
 ---
 

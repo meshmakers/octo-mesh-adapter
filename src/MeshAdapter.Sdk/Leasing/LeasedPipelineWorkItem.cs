@@ -165,7 +165,9 @@ internal sealed class LeasedPipelineWorkItem(
                 registration.PipelineRtEntityId, tenantId, pipelineExecutionId);
             // Failed, not thrown: the release has to carry the reason onto the borrower's execution,
             // and an exception escaping here would be reported as a lease failure with no pipeline in it.
-            return LeaseWorkOutcome.Failed(e.Message);
+            // AB#8037: an unacknowledged write travels as a structured kind (METHOD_OUTCOME_UNKNOWN for a
+            // pipeline method), never as a marker in the message.
+            return LeaseWorkOutcome.Failed(e.Message, PipelineExecutionFailureKinds.Of(e));
         }
     }
 

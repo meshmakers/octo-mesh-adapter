@@ -465,7 +465,7 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   aggregation paths reach Hidden is refused before it runs (`EnsureStoredQueryNotHidden`, `GetQueryById@1` for every query kind,
   `PrepareNotification@1`); paths are checked against the query type and its derived types (unknown type: every type). Entity-selector
   keys (`[passwordHash=X]`) count as Hidden paths; error messages remove selector values (`WithoutSelectorValues`: from the first
-  selector `=` to the last `]` followed by a valid path suffix with balanced quotes before it, else to the end — also unclosed
+  selector `=` to the last `]` followed by a valid path suffix with balanced quotes before it (even counts, none open in reading order, AB#8085), else to the end — also unclosed
   selectors and open quoted values, AB#8077; tests `SelectorValueRedactionTests`).
 - Write nodes call `RtAttributeAccessGuard.EnsureWritesAllowedAsync` (it runs `GenericCreateGuard` first); extract nodes
   call `DropHidden(Async)` and `EnsureNotHidden`; nodes that run a stored query call `EnsureStoredQueryNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.

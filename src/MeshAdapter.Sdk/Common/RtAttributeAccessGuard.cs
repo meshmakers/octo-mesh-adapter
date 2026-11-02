@@ -334,15 +334,31 @@ public static class RtAttributeAccessGuard
 
     /// <summary>
     ///     True when <c>'</c> and <c>"</c> each occur an even number of times in <paramref name="path" /> from
-    ///     <paramref name="start" /> (inclusive) to <paramref name="end" /> (exclusive). An odd count means a quoted value is
-    ///     still open at <paramref name="end" />, so the <c>]</c> there and what follows belong to the value (AB#8077 review).
+    ///     <paramref name="start" /> (inclusive) to <paramref name="end" /> (exclusive) <b>and</b> no quoted value is open at
+    ///     <paramref name="end" /> when the quotes are read in order (a quote of the other kind inside a quoted value is part
+    ///     of the value). Either failure means the <c>]</c> there and what follows belong to the value (AB#8077 review; the
+    ///     order scan catches <c>[x='a"b' "secret].c</c>, where both counts are even, AB#8085). Same rule as the asset
+    ///     repository's <c>HiddenAttributeAccessException</c> (AB#8081).
     /// </summary>
     private static bool QuotesBalanced(string path, int start, int end)
     {
         var single = 0;
         var doubleQuotes = 0;
+        char? openQuote = null;
         for (var i = start; i < end; i++)
         {
+            if (path[i] is '\'' or '"')
+            {
+                if (openQuote == null)
+                {
+                    openQuote = path[i];
+                }
+                else if (openQuote == path[i])
+                {
+                    openQuote = null;
+                }
+            }
+
             switch (path[i])
             {
                 case '\'':
@@ -354,7 +370,7 @@ public static class RtAttributeAccessGuard
             }
         }
 
-        return single % 2 == 0 && doubleQuotes % 2 == 0;
+        return single % 2 == 0 && doubleQuotes % 2 == 0 && openQuote == null;
     }
 
     // ------------------------------------------------------------ stored query

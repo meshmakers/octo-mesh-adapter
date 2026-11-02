@@ -38,6 +38,7 @@ public class SelectorValueRedactionTests
     [InlineData("members.t[passwordHash='AQ[AA]-secret']->name", "members.t[passwordHash=…]->name")]
     [InlineData("members.t[passwordHash=AQ]AA-secret]", "members.t[passwordHash=…]")]
     [InlineData("members.t[passwordHash=\"AQ]AA-secret\"]->name", "members.t[passwordHash=…]->name")]
+    [InlineData("members.t[passwordHash='AQ\"AA\"-secret']->name", "members.t[passwordHash=…]->name")]
     // an unclosed selector: used to be returned unchanged
     [InlineData("members.t[passwordHash='AQAA-secret", "members.t[passwordHash=…")]
     [InlineData("members.t[name=AQAA-secret->passwordHash", "members.t[name=…")]
@@ -51,6 +52,10 @@ public class SelectorValueRedactionTests
     [InlineData("members.t[passwordHash='AQ]AA::secret[x]", "members.t[passwordHash=…")]
     [InlineData("members.t[passwordHash=\"AQ]->AAsecret", "members.t[passwordHash=…")]
     [InlineData("a.t[x='1'].b.u[passwordHash='AQ]->AAsecret", "a.t[x=…")]
+    // both quote counts even, but a quote is still open in reading order at the last ']' (AB#8085)
+    [InlineData("a.t[x='AQ\"AA' \"secret].c", "a.t[x=…")]
+    [InlineData("a.t[x=\"AQ'AA\" 'secret].c", "a.t[x=…")]
+    [InlineData("members.t[passwordHash='AQ\"AA' \"secret]->name", "members.t[passwordHash=…")]
     public void TheWholeSelectorValue_IsRemoved_WhateverBracketsItContains(string path, string expected)
     {
         var redacted = RtAttributeAccessGuard.WithoutSelectorValues(path);
@@ -68,6 +73,8 @@ public class SelectorValueRedactionTests
     [InlineData("members.Test/Account[name=" + Guess + "->passwordHash")]
     // hidden selector key, quoted value still open at the ']' (review of #103)
     [InlineData("members.Test/Account[passwordHash='x]->" + PathLikeGuess)]
+    // hidden selector key, a double quote still open in reading order although both counts are even (AB#8085)
+    [InlineData("members.Test/Account[passwordHash='a\"b' \"x]->" + PathLikeGuess)]
     public void EnsureNotHidden_TheRefusal_EchoesNoPartOfTheValue(string path)
     {
         var ex = Assert.Throws<RtAttributeHiddenException>(() =>

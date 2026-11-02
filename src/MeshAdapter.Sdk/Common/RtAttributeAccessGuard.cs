@@ -30,11 +30,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Common;
 ///         unless the run is the method run of the entity's type (marker present, method belongs to the type, marker
 ///         pipeline is the running pipeline - the pattern of <see cref="GenericCreateGuard" />), and a Replace of
 ///         an entity whose type has an attribute the run may not write (the replacement would clear it).</item>
-///         <item><b>Identity-owned</b> (AB#8059): the identity-owned attributes of <c>System.Identity/User</c> and the edges
-///         of the identity association roles (<see cref="IdentityOwnedWrites" />, the engine's one list, also enforced by
-///         asset-repo GraphQL and the user-started RT import) are refused like a <c>MethodOnly</c> attribute: allowed only
-///         in the method run of a <c>System.Identity</c> type (for an attribute: the entity's type; for an association:
-///         a type at either end), on insert, update, replace and association insert and delete.</item>
+///         <item><b>Identity-owned</b> (AB#8059, AB#8053): the identity-owned attributes of <c>System.Identity/User</c> are
+///         <c>MethodOnly</c> in the model since System.Identity 3.0.0 and judged like every <c>MethodOnly</c> attribute. The edges
+///         of the identity association roles (<see cref="IdentityOwnedWrites" />, the engine's list - the CK access model cannot
+///         restrict associations -, also enforced by asset-repo GraphQL and the user-started RT import) are refused like a
+///         <c>MethodOnly</c> attribute: allowed only in the method run of a <c>System.Identity</c> type (a type at either
+///         end), on association insert and delete.</item>
 ///     </list>
 ///     A type that is not in the tenant CK cache is not judged (nothing is known about it). An unloaded cache is loaded
 ///     first; if that fails the guard fails closed.
@@ -619,14 +620,8 @@ public static class RtAttributeAccessGuard
             var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, attribute) in written)
             {
+                // AB#8053: the identity-owned User attributes are access MethodOnly in System.Identity 3.0.0 and judged here.
                 var cause = RefusalCause(attribute.Access, methodCause);
-                // AB#8059: the identity list judges the top-level attributes of the User type (a record member path such
-                // as Claims[0].Value is covered by its attribute, which is collected as a top-level path as well).
-                if (cause == null && IsTopLevel(path) &&
-                    IdentityOwnedWrites.IsIdentityOwnedAttribute(update.CkTypeId, attribute.AttributeName))
-                {
-                    cause = IdentityOwnedCause(methodCause);
-                }
 
                 if (cause != null && reported.Add(path))
                 {
@@ -640,9 +635,7 @@ public static class RtAttributeAccessGuard
                 var writtenTop = written.Select(w => w.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 foreach (var attribute in graph.AllAttributes.Values)
                 {
-                    var mayNotWrite = RefusalCause(attribute.Access, methodCause) != null ||
-                                      (IdentityOwnedWrites.IsIdentityOwnedAttribute(update.CkTypeId,
-                                           attribute.AttributeName) && IdentityOwnedCause(methodCause) != null);
+                    var mayNotWrite = RefusalCause(attribute.Access, methodCause) != null;
                     if (mayNotWrite && !writtenTop.Contains(attribute.AttributeName))
                     {
                         Report(attribute.AttributeName, attribute.Access, RtAttributeWriteRefusalCause.ReplaceWouldClear);
@@ -665,15 +658,6 @@ public static class RtAttributeAccessGuard
         CkAttributeAccessDto.MethodOnly => methodRunCause,
         _ => null
     };
-
-    /// <summary>
-    ///     AB#8059: the cause token for a write of an identity-owned User attribute, null in the method run of the User type
-    ///     (the same rule as <c>MethodOnly</c>: the list stands in for the CK access until the next System.Identity major).
-    /// </summary>
-    private static string? IdentityOwnedCause(string? methodRunCause) =>
-        methodRunCause == null ? null : RtAttributeWriteRefusalCause.IdentityOwned;
-
-    private static bool IsTopLevel(string path) => path.IndexOfAny(['.', '[']) < 0;
 
     /// <summary>
     ///     AB#8059: true when this run is the method run of <paramref name="ckTypeId" /> (marker present, method of the type,

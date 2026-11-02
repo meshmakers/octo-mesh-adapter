@@ -309,7 +309,8 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
 
     // ------------------------------------------------------------------------------------- identity-owned (AB#8059)
 
-    // The engine's IdentityOwnedWrites list: User attributes only the identity service writes (its REST API and methods).
+    // User attributes only the identity service writes (its REST API and methods): MethodOnly in System.Identity 3.0.0 (AB#8053),
+    // before the engine's IdentityOwnedWrites list (cause IDENTITY_OWNED, which stays for the identity associations).
     public static TheoryData<string, string> IdentityOwnedUpdates() => new()
     {
         // attribute, pipeline value type
@@ -330,7 +331,7 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
     public async Task ApplyChanges2_UpdateOfAnIdentityOwnedUserAttribute_IsRefused_AndNothingChanges(string attribute,
         string valueType)
     {
-        await AssertRefusedAsync(UpdatePipeline("ApplyChanges@2", attribute, valueType), "IDENTITY_OWNED",
+        await AssertRefusedAsync(UpdatePipeline("ApplyChanges@2", attribute, valueType), "METHOD_ONLY_MISSING_METHOD_INVOCATION",
             new JsonObject { ["rtId"] = fixture.ProbeUserRtId, ["value"] = SampleValue(valueType) });
 
         await AssertProbeUserUnchangedAsync();
@@ -342,7 +343,7 @@ public class IdentityCredentialGuardPipelineTests(F fixture) : IClassFixture<F>
     public async Task ApplyChanges1_UpdateOfAnIdentityOwnedUserAttribute_IsRefused_AndNothingChanges(string attribute,
         string valueType)
     {
-        await AssertRefusedAsync(UpdatePipeline("ApplyChanges@1", attribute, valueType), "IDENTITY_OWNED",
+        await AssertRefusedAsync(UpdatePipeline("ApplyChanges@1", attribute, valueType), "METHOD_ONLY_MISSING_METHOD_INVOCATION",
             new JsonObject { ["rtId"] = fixture.ProbeUserRtId, ["value"] = SampleValue(valueType) });
 
         await AssertProbeUserUnchangedAsync();

@@ -17,10 +17,10 @@ namespace MeshAdapter.Sdk.IntegrationTests.Fixtures;
 public sealed class SystemIdentitySnapshotCkModel(ICkYamlSerializer ckYamlSerializer) : ICkEmbeddedModel
 {
     /// <summary>The model version of the snapshot.</summary>
-    public const string ModelFullName = "System.Identity-2.29.0";
+    public const string ModelFullName = "System.Identity-3.0.0";
 
     private static readonly string SnapshotPath =
-        Path.Combine(AppContext.BaseDirectory, "TestData", "ck-models", "ck-system.identity-2.29.0.yaml");
+        Path.Combine(AppContext.BaseDirectory, "TestData", "ck-models", "ck-system.identity-3.0.0.yaml");
 
     public CkModelId ModelId => new(ModelFullName);
 

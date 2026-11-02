@@ -13,7 +13,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 namespace MeshAdapter.Sdk.Tests.Nodes.Access;
 
 /// <summary>
-///     AB#8059 - the pipeline write guard enforces the engine's <see cref="IdentityOwnedWrites" /> list: the identity-owned
+///     AB#8059 / AB#8053 - the pipeline write guard refuses the identity-owned User attributes through their CK access (MethodOnly since System.Identity 3.0.0) and the identity associations through the engine's <see cref="IdentityOwnedWrites" /> list: the identity-owned
 ///     attributes of <c>System.Identity/User</c> and the edges of the identity association roles are refused on insert,
 ///     update, replace and association insert/delete, except in the method run of a System.Identity type. Synthetic graph
 ///     modelled on System.Identity (version-qualified model ids, as in the cache); the integration suite
@@ -22,7 +22,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Access;
 public class IdentityOwnedWriteGuardTests
 {
     private const string Tenant = ReplacedCreateTestSupport.Tenant;
-    private const string IdentityModel = "System.Identity-2.30.0";
+    private const string IdentityModel = "System.Identity-3.0.0";
 
     private static readonly RtCkId<CkTypeId> UserType = new("System.Identity/User");
     private static readonly RtCkId<CkTypeId> RoleType = new("System.Identity/Role");
@@ -57,7 +57,7 @@ public class IdentityOwnedWriteGuardTests
 
         var refusal = Assert.Single(ex.Refusals);
         Assert.Equal(attribute, refusal.AttributePath);
-        Assert.Equal(RtAttributeWriteRefusalCause.IdentityOwned, refusal.Cause);
+        Assert.Equal(RtAttributeWriteRefusalCause.MethodOnlyMissingMarker, refusal.Cause);
         Assert.Equal("RT_ATTRIBUTE_WRITE_RESTRICTED", ex.Code);
         Assert.DoesNotContain("'x'", ex.Message);
     }
@@ -69,20 +69,20 @@ public class IdentityOwnedWriteGuardTests
         var ex = await Assert.ThrowsAsync<RtAttributeWriteRestrictedException>(() =>
             Write([EntityUpdateInfo<RtEntity>.CreateInsert(UserType, Entity(UserType, ("FirstName", "f"), (attribute, "x")))]));
 
-        Assert.Equal(RtAttributeWriteRefusalCause.IdentityOwned, Assert.Single(ex.Refusals).Cause);
+        Assert.Equal(RtAttributeWriteRefusalCause.MethodOnlyMissingMarker, Assert.Single(ex.Refusals).Cause);
     }
 
     [Theory]
     [InlineData("LockoutEnd")]
     [InlineData("AccessFailedCount")]
-    public async Task Update_OfALockoutField_IsRefusedOnce_AsReadOnly(string attribute)
+    public async Task Update_OfALockoutField_IsRefusedOnce_AsMethodOnly(string attribute)
     {
-        // ReadOnly in the model and on the identity list: one refusal per path, the access cause wins.
+        // MethodOnly since System.Identity 3.0.0 (ReadOnly until 2.30.0): one refusal per path.
         var ex = await Assert.ThrowsAsync<RtAttributeWriteRestrictedException>(() =>
             Write([Update(UserType, (attribute, "0"))]));
 
         var refusal = Assert.Single(ex.Refusals);
-        Assert.Equal(RtAttributeWriteRefusalCause.ReadOnly, refusal.Cause);
+        Assert.Equal(RtAttributeWriteRefusalCause.MethodOnlyMissingMarker, refusal.Cause);
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public class IdentityOwnedWriteGuardTests
 
         var refusal = Assert.Single(ex.Refusals);
         Assert.Equal("Claims", refusal.AttributePath);
-        Assert.Equal(RtAttributeWriteRefusalCause.IdentityOwned, refusal.Cause);
+        Assert.Equal(RtAttributeWriteRefusalCause.MethodOnlyMissingMarker, refusal.Cause);
     }
 
     [Fact]
@@ -296,12 +296,12 @@ public class IdentityOwnedWriteGuardTests
         var userAttributes = new List<CkTypeAttributeGraph>
         {
             Attr(IdentityModel, "FirstName"), Attr(IdentityModel, "LastName"),
-            Attr(IdentityModel, "LockoutEnd", CkAttributeAccessDto.ReadOnly),
-            Attr(IdentityModel, "AccessFailedCount", CkAttributeAccessDto.ReadOnly)
+            Attr(IdentityModel, "LockoutEnd", CkAttributeAccessDto.MethodOnly),
+            Attr(IdentityModel, "AccessFailedCount", CkAttributeAccessDto.MethodOnly)
         };
         userAttributes.AddRange(OwnedReadWrite.Select(n => n == "Claims"
-            ? Attr(IdentityModel, n, null, AttributeValueTypesDto.RecordArray, claimRecordId)
-            : Attr(IdentityModel, n)));
+            ? Attr(IdentityModel, n, CkAttributeAccessDto.MethodOnly, AttributeValueTypesDto.RecordArray, claimRecordId)
+            : Attr(IdentityModel, n, CkAttributeAccessDto.MethodOnly)));
         var user = Type(IdentityModel, "User", UserMethod(), userAttributes.ToArray());
         var role = Type(IdentityModel, "Role", null, Attr(IdentityModel, "Name"));
         var plain = Type("Test-1.0.0", "Plain", PlainMethod(), Attr("Test-1.0.0", "Name"),

@@ -44,7 +44,7 @@ public static class RtAttributeWriteRefusalCause
     public const string ReplaceWouldClear = "REPLACE_WOULD_CLEAR";
 
     /// <summary>
-    ///     AB#8059: an identity-owned attribute of <c>System.Identity/User</c> or an edge of an identity association role
+    ///     AB#8059: an edge of an identity association role
     ///     (<c>IdentityOwnedWrites</c> of the engine). Only the identity service writes them; a pipeline only in the method
     ///     run of a System.Identity type.
     /// </summary>

@@ -1882,9 +1882,12 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   no extract node emits `PasswordHash`, `SecurityStamp` or `UserTokens`, filters and sorts on them are refused (also in the
   persisted query's own filters of `GetQueryById@1`, AB#8049), and `ApplyChanges@1/@2` refuse writes of the Hidden, MethodOnly
   (`UserName`, `Email`) and ReadOnly (`LockoutEnd`, `AccessFailedCount`) attributes; the seeded user carries fixed dummy values that
-  no output, error or log line may contain. Since AB#8059 they also prove that every identity-owned User attribute (update and
-  insert, `ApplyChanges@1/@2`) and every identity association role (insert and delete, from either end) is refused outside an
-  identity method run and allowed in it.
+  no output, error or log line may contain. Since AB#8059 they also prove that every identity-owned User attribute (update,
+  `ApplyChanges@1/@2`) and every identity association role (insert and delete, from either end) is refused outside an
+  identity method run and allowed in it. Since AB#7777 (engine) the generic writers refuse every new `System.Identity/User`
+  with `GENERIC_CREATE_REPLACED_BY_METHOD` (users are created by `User.CreateUser-1`), so the insert tests assert that refusal
+  (also for an insert without any restricted attribute); the attribute refusals (`RT_ATTRIBUTE_WRITE_RESTRICTED`,
+  `IDENTITY_OWNED`) are proven by the updates of the seeded user.
 
 ---
 

@@ -282,15 +282,16 @@ public class StreamDataNodeHelpersTests
     public void ResolveStreamColumnValue_ReadsByStorageKey()
     {
         // No derivation happens here any more — the caller supplies the key the query layer used,
-        // which is what makes a versioned computed column readable at all (AB#4764).
+        // which is what makes a computed column readable at all (AB#4764). A formula change
+        // versions the physical column, but the row key stays the logical name (AB#8236).
         var values = new Dictionary<string, object?>
         {
             ["amountvalue"] = 42.0,
-            ["mycomputed__v2"] = 7.5
+            ["mycomputed"] = 7.5
         };
 
         Assert.Equal(42.0, StreamDataNodeHelpers.ResolveStreamColumnValue(values, "amountvalue"));
-        Assert.Equal(7.5, StreamDataNodeHelpers.ResolveStreamColumnValue(values, "mycomputed__v2"));
+        Assert.Equal(7.5, StreamDataNodeHelpers.ResolveStreamColumnValue(values, "mycomputed"));
     }
 
     [Fact]

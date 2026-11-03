@@ -756,12 +756,14 @@ public class GetStreamDataNodeTests : NodeTestBase
     public async Task ProcessObjectAsync_VersionedComputedColumn_ReadsItsValue()
     {
         // The bug itself (AB#4764): after a formula change the physical column is {base}__v{N}, which
-        // no derivation from the name reproduces. Deriving it yielded null for every row.
+        // no derivation from the name reproduces. Deriving it yielded null for every row. Since
+        // AB#8236 the engine keeps the versioned physical name internal and returns the logical
+        // (unversioned) name as the row key, so the node must read the value under that key.
         SetupArchive(CreateSnapshot(false, Computed("Derived", version: 2)));
         SetupQueryResult(new StreamDataRow
         {
             Timestamp = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
-            Values = new Dictionary<string, object?> { ["derived__v2"] = 99.5 }
+            Values = new Dictionary<string, object?> { ["derived"] = 99.5 }
         });
 
         var config = Config() with { Columns = ["Derived"] };
@@ -770,7 +772,7 @@ public class GetStreamDataNodeTests : NodeTestBase
 
         await CreateNode(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        // The query asks by logical name, the value is read by the versioned storage key.
+        // The query asks by logical name, the value is read by the logical row key the engine returns.
         Assert.Equal(["Derived"], _capturedOptions!.Columns);
         Assert.Equal(["Timestamp", "Derived"], captured.Value!.Columns.Select(x => x.Header));
         Assert.Equal(99.5, Assert.Single(captured.Value.Rows).Values[1]);

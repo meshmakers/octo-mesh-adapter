@@ -344,7 +344,7 @@ public class GetStreamDataNodeIntegrationTests(StreamDataFixture fixture)
         fixture.EnsureInitialized();
 
         // The regression test for AB#4764. The fixture's computed column has been through a formula
-        // change, so it lives in power__v1 — a storage key no derivation from its name reproduces.
+        // change, so it lives in the versioned physical column power__v1; the row key stays the logical name (AB#8236).
         // Before the fix every value here came back null, with no error at all.
         var result = await ExecuteAsync(TimeRangeConfig() with
         {

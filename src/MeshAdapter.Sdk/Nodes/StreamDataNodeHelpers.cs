@@ -80,7 +80,8 @@ internal static class StreamDataNodeHelpers
         // The storage layer's own resolver decides both whether the name exists and what key the row
         // values carry. Asking it rather than deriving the key is what makes computed columns work:
         // after a formula change their physical column is versioned ({base}__v{N}) and no derivation
-        // from the attribute path can reproduce it (AB#4764). It also keeps the node honest about
+        // from the attribute path can reproduce it (AB#4764). The engine keeps that physical name
+        // internal and returns the logical (unversioned) name as row key (AB#8236). It also keeps the node honest about
         // which names are resolvable at all — the same judgement the query would apply.
         var resolved = resolver.Resolve(queryName);
         if (resolved == null)

@@ -141,6 +141,19 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 "Reads the tenant off the CURRENT HTTP request and throws when there is none. A pool "
                 + "member serves no tenant-addressed HTTP routes, so this cannot answer with a stale "
                 + "tenant - it can only fail to answer.",
+            ["OctoExceptionHandler"] =
+                "AB#8233 / AB#8228. The common-services exception handler holds no tenant state of its "
+                + "own: its only field is the process-wide TenantDatabaseUserHealer, which the sweep "
+                + "flags by type name. The healer keeps nothing but two per-tenant rate-limit "
+                + "timestamp maps (last heal attempt, last pooled-client eviction), keyed by tenant id "
+                + "- so a lookup for tenant B can never read tenant A's entry - and holds no credential, "
+                + "connection or tenant data. The handler resolves the tenant per call from the failing "
+                + "HTTP request and, on a MongoDB authentication failure, evicts that tenant's cached "
+                + "repository clients. The only effect of a timestamp that outlives a lease is that a "
+                + "repeated eviction for the same tenant is skipped for at most the 15 s eviction "
+                + "window. A pool member serves no tenant-addressed HTTP routes, so the handler hardly "
+                + "runs there at all; the database lease participant evicts the released tenant's "
+                + "clients on every release anyway.",
             ["TenantHierarchyReader"] =
                 "Caches (child, ancestor) pairs of the tenant TREE, not tenant data - the same answer "
                 + "for every process, with its own bounded eviction. Nothing a lease owns.",

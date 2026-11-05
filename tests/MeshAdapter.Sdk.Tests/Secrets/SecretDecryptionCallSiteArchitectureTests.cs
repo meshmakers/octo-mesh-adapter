@@ -4,7 +4,7 @@ namespace MeshAdapter.Sdk.Tests.Secrets;
 
 public class SecretDecryptionCallSiteArchitectureTests
 {
-    private static readonly Regex DecryptCall = new(@"\.\s*(Unprotect|RevealOrNull)\s*\(", RegexOptions.Compiled);
+    private static readonly Regex DecryptCall = new(@"\.\s*(Unprotect|RevealOrNull|GetSecretPlaintext)\s*\(", RegexOptions.Compiled);
 
     private static readonly IReadOnlyDictionary<string, int> AllowList = new Dictionary<string, int>
     {
@@ -58,7 +58,7 @@ public class SecretDecryptionCallSiteArchitectureTests
             .ToList();
 
         Assert.True(unexpected.Count == 0,
-            "New decryption call sites of ISecretAttributeProtector.Unprotect/RevealOrNull outside the allow-list: " +
+            "New decryption call sites of Unprotect/RevealOrNull/GetSecretPlaintext outside the allow-list: " +
             string.Join("; ", unexpected));
     }
 
@@ -72,6 +72,16 @@ public class SecretDecryptionCallSiteArchitectureTests
             .ToList();
 
         Assert.True(stale.Count == 0, "Allow-list entries without a matching call site: " + string.Join("; ", stale));
+    }
+
+    [Theory]
+    [InlineData("var plain = protector.Unprotect(value, context);")]
+    [InlineData("var plain = protector.RevealOrNull(value, context);")]
+    [InlineData("var plain = entity.GetSecretPlaintext(\"Password\", protector, tenantId);")]
+    [InlineData("    .GetSecretPlaintext (\"Password\", protector);")]
+    public void TheDetection_FindsEveryDecryptingCall(string line)
+    {
+        Assert.Matches(DecryptCall, line);
     }
 
     [Fact]

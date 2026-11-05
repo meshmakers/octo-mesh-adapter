@@ -1,5 +1,6 @@
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
@@ -77,5 +78,41 @@ public class PlatformOnlySecretsTests
 
         Assert.False(PlatformOnlySecrets.IsPlatformOnly(cache, "t", unknown));
         Assert.True(PlatformOnlySecrets.IsPlatformOnly(cache, "t", (RtCkId<CkTypeId>)"System.Communication/SecretDefault"));
+    }
+
+    [Fact]
+    public void IsPlatformOnly_WithCache_RefusesATypeDerivedFromSecretDefault()
+    {
+        var derived = (RtCkId<CkTypeId>)"Tenant.Model/CustomSecretDefault";
+        var cache = CacheWith(derived, "Tenant.Model-1.0.0/CustomSecretDefault",
+            "System.Communication-4.15.0/SecretDefault");
+
+        Assert.True(PlatformOnlySecrets.IsPlatformOnly(cache, "t", derived));
+    }
+
+    [Fact]
+    public void IsPlatformOnly_WithCache_AllowsACachedTypeNotDerivedFromSecretDefault()
+    {
+        var unrelated = (RtCkId<CkTypeId>)"Tenant.Model/ApiCredential";
+        var cache = CacheWith(unrelated, "Tenant.Model-1.0.0/ApiCredential",
+            "System.Communication-4.15.0/Application");
+
+        Assert.False(PlatformOnlySecrets.IsPlatformOnly(cache, "t", unrelated));
+    }
+
+    private static ICkCacheService CacheWith(RtCkId<CkTypeId> rtCkTypeId, string ckTypeId, string baseCkTypeId)
+    {
+        var self = new CkId<CkTypeId>(ckTypeId);
+        var graph = new CkTypeGraph(self, isAbstract: false, isFinal: false, isCollectionRoot: false,
+            baseTypes: [new CkGraphTypeInheritance(self, new CkId<CkTypeId>(baseCkTypeId), 0)],
+            derivedFromCkTypeId: null, definingCollectionRootCkTypeId: null, derivedTypes: [], definedAttributes: [],
+            allAttributes: new Dictionary<CkId<CkAttributeId>, CkTypeAttributeGraph>(),
+            indexes: [], associations: new CkGraphDirectedAssociations([]), description: "test",
+            enableChangeStreamPreAndPostImages: false);
+        var graphOut = (CkTypeGraph?)graph;
+        var cache = A.Fake<ICkCacheService>();
+        A.CallTo(() => cache.TryGetRtCkType("t", rtCkTypeId, out graphOut)).Returns(true)
+            .AssignsOutAndRefParameters(graph);
+        return cache;
     }
 }

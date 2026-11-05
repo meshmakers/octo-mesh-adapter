@@ -9,14 +9,18 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Common;
 /// </summary>
 public static class PlatformOnlySecrets
 {
+    /// <summary>The secret default entity type.</summary>
     public static readonly RtCkId<CkTypeId> SecretDefaultCkTypeId = new("System.Communication/SecretDefault");
 
+    /// <summary>The Application type that declares secret defaults.</summary>
     public static readonly RtCkId<CkTypeId> ApplicationCkTypeId = new("System.Communication/Application");
 
+    /// <summary>The record array of the Application with the secret defaults.</summary>
     public const string SecretDefaultsAttributeName = "SecretDefaults";
 
     private static readonly Regex VersionedModelSuffix = new(@"-\d+(\.\d+)*$", RegexOptions.Compiled);
 
+    /// <summary>True when the type is the secret default entity.</summary>
     public static bool IsPlatformOnly(RtCkId<CkTypeId>? ckTypeId)
     {
         return ckTypeId != null && SecretDefaultCkTypeId.Equals(ckTypeId);

@@ -2,11 +2,6 @@ using System.Text.RegularExpressions;
 
 namespace MeshAdapter.Sdk.Tests.Secrets;
 
-/// <summary>
-/// AB#7246: every place of the mesh adapter that decrypts a Secret is a reveal path, so it must be known.
-/// A new call site fails this test until it is allow-listed here, which is the moment to decide how it
-/// refuses platform-only secrets (see <c>PlatformOnlySecrets</c> and docs/developer-guide.md).
-/// </summary>
 public class SecretDecryptionCallSiteArchitectureTests
 {
     private static readonly Regex DecryptCall = new(@"\.\s*(Unprotect|RevealOrNull)\s*\(", RegexOptions.Compiled);

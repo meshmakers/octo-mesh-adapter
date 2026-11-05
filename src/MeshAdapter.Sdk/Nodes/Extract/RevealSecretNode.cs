@@ -70,9 +70,6 @@ public class RevealSecretNode(
 
         var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
 
-        // AB#7246: a platform-only secret (a SecretDefault, or the SecretDefaults of an Application) is never
-        // revealed to a pipeline, whoever runs it. Refused before the entity is read; the error names the
-        // type and never a value.
         if (PlatformOnlySecrets.IsPlatformOnly(ckCacheService, etlContext.TenantId, ckTypeId))
         {
             throw MeshAdapterPipelineExecutionException.PlatformOnlySecretRefused(nodeContext,

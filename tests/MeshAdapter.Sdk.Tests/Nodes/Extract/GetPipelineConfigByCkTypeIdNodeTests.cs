@@ -145,4 +145,44 @@ public class GetPipelineConfigByCkTypeIdNodeTests : NodeTestBase
 
         VerifyNextCalled(next, dataContext, nodeContext);
     }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSecretDefaultCkTypeId_FailsBeforeReadingAnyConfiguration()
+    {
+        var config = new GetPipelineConfigByCkTypeIdNodeConfiguration
+        {
+            CkTypeId = "System.Communication/SecretDefault",
+            TargetPath = "$.configs"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
+        var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
+
+        var exception = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains("System.Communication/SecretDefault", exception.Message);
+        Assert.Contains("platform-only", exception.Message);
+        A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId(A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => dataContext.Set(A<string>._, A<JsonArray?>._, A<DocumentModes>._, A<ValueKinds>._,
+            A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithSecretDefaultCkTypeIdFromPath_FailsBeforeReadingAnyConfiguration()
+    {
+        var config = new GetPipelineConfigByCkTypeIdNodeConfiguration
+        {
+            CkTypeIdPath = "$.ckTypeId",
+            TargetPath = "$.configs"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
+        SetupGetSimpleValueByPath(dataContext, "$.ckTypeId", "System.Communication/SecretDefault");
+        var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId(A<string>._)).MustNotHaveHappened();
+    }
 }

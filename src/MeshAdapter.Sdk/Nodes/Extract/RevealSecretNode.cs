@@ -69,6 +69,22 @@ public class RevealSecretNode(
         }
 
         var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+
+        // AB#7246: a platform-only secret (a SecretDefault, or the SecretDefaults of an Application) is never
+        // revealed to a pipeline, whoever runs it. Refused before the entity is read; the error names the
+        // type and never a value.
+        if (PlatformOnlySecrets.IsPlatformOnly(ckCacheService, etlContext.TenantId, ckTypeId))
+        {
+            throw MeshAdapterPipelineExecutionException.PlatformOnlySecretRefused(nodeContext,
+                $"RevealSecret: CK type '{ckTypeId}' is platform-only");
+        }
+
+        if (PlatformOnlySecrets.IsPlatformOnlyAttribute(ckTypeId, c.AttributeName))
+        {
+            throw MeshAdapterPipelineExecutionException.PlatformOnlySecretRefused(nodeContext,
+                $"RevealSecret: attribute '{PlatformOnlySecrets.SecretDefaultsAttributeName}' of '{ckTypeId}' is platform-only");
+        }
+
         var rtId = ResolveRtId(c, dataContext, nodeContext);
         var segments = ResolveSecretPath(ckTypeId, c.AttributeName.Trim(), nodeContext);
         var attributePath = string.Join('.', segments);

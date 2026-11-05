@@ -4,6 +4,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -26,6 +27,12 @@ public class GetPipelineConfigByCkTypeIdNode(
         var c = nodeContext.GetNodeConfiguration<GetPipelineConfigByCkTypeIdNodeConfiguration>();
 
         var ckTypeId = ResolveCkTypeId(c, dataContext, nodeContext);
+
+        if (PlatformOnlySecrets.IsPlatformOnlyCkTypeId(ckTypeId))
+        {
+            throw MeshAdapterPipelineExecutionException.PlatformOnlySecretRefused(nodeContext,
+                $"GetPipelineConfigByCkTypeId: CK type '{ckTypeId}' is platform-only and is not pipeline configuration");
+        }
 
         var rawJsonValues = etlContext.GlobalConfiguration.GetAllRawJsonByCkTypeId(ckTypeId);
         var configurationsArray = new JsonArray(rawJsonValues.Select(j => JsonNode.Parse(j)).ToArray());

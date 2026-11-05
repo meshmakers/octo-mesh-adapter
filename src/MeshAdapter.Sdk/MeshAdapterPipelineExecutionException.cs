@@ -81,6 +81,16 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             : new MeshAdapterPipelineExecutionException(message, inner);
     }
 
+    /// <summary>
+    /// A node was asked to reveal or ship a platform-only secret (AB#7246, <c>PlatformOnlySecrets</c>). The
+    /// reason names the type or attribute, never a value.
+    /// </summary>
+    public static Exception PlatformOnlySecretRefused(INodeContext nodeContext, string reason)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {reason}; its value is usable only by platform nodes and is never revealed to a pipeline.");
+    }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");

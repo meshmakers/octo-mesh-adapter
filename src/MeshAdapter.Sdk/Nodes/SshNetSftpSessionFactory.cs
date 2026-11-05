@@ -301,6 +301,50 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
                 .ToList();
         }
 
+        public SftpEntry? GetEntry(string remotePath)
+        {
+            try
+            {
+                // SSH_FXP_LSTAT, the call OpenSSH's sftp-server also makes for every entry of a
+                // directory listing, so length and time read here are the ones a listing reports.
+                // SSH.NET resolves the path with REALPATH first: on OpenSSH a symbolic link then
+                // reads as its target, not as the link the listing reported.
+                var attributes = client.GetAttributes(remotePath);
+                return new SftpEntry(remotePath[(remotePath.LastIndexOf('/') + 1)..], remotePath,
+                    attributes.IsDirectory, attributes.Size, attributes.LastWriteTimeUtc);
+            }
+            catch (SftpPathNotFoundException)
+            {
+                return null;
+            }
+        }
+
+        public bool MoveToNewName(string remotePath, string newRemotePath)
+        {
+            try
+            {
+                try
+                {
+                    // posix-rename@openssh.com is one rename(2) on the server. OpenSSH carries a
+                    // plain SSH_FXP_RENAME over with link() and unlink(), and a file that replaces
+                    // the old name between the two would be removed by the unlink.
+                    client.RenameFile(remotePath, newRemotePath, true);
+                }
+                catch (NotSupportedException)
+                {
+                    // SSH.NET raises this before it sends the rename request when the server does
+                    // not offer the extension; the REALPATH lookups before it change nothing.
+                    client.RenameFile(remotePath, newRemotePath, false);
+                }
+
+                return true;
+            }
+            catch (SftpPathNotFoundException)
+            {
+                return false;
+            }
+        }
+
         public byte[] Download(string remotePath, long maxBytes)
         {
             // Ask before reading. A file past the cap is then refused without a byte crossing

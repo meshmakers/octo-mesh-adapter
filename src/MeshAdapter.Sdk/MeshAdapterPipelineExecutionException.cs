@@ -544,6 +544,142 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: Remote path '{remotePath}' ends with '/', which names a directory. This node deletes exactly one file.");
     }
 
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): one half of the expected identity is configured and the other
+    /// is not. Deleting with half a check would look checked and is not.
+    /// </summary>
+    public static Exception SftpDeleteIdentityIncomplete(INodeContext nodeContext, string missingProperty)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The expected identity of the file is its length and its last write time together, and {missingProperty} or {missingProperty}Path is not set. Set both, statically or from the data context, or neither to delete without a check.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): <c>OnIdentityMismatch</c> is <c>Warn</c> and no expected identity
+    /// is configured, so nothing would be compared. Ignored, the setting would delete the file
+    /// unchecked; <c>Fail</c> cannot be told from the default, so only <c>Warn</c> can be refused.
+    /// </summary>
+    public static Exception SftpDeleteWarnWithoutIdentity(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: OnIdentityMismatch is 'Warn', but no expected identity is configured, so the file would be deleted without a check. Set ExpectedLength or ExpectedLengthPath and ExpectedLastWriteTimeUtc or ExpectedLastWriteTimeUtcPath - a key written without a value counts as not set - or remove 'Warn'. Nothing was deleted.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): an identity path is present but blank. Read as "not set" it
+    /// would turn the check off without a word.
+    /// </summary>
+    public static Exception SftpDeleteIdentityPathBlank(INodeContext nodeContext, string property)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {property} is set but blank. Name the path of the value in the data context; a blank path is not read as \"no check\". Nothing was deleted.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): a configured part of the expected identity resolved to a value
+    /// that cannot be compared, so nothing is deleted. A text longer than any valid value (the
+    /// longest, a time with seven fractional digits, has 28 characters) is not shown, only its
+    /// length: a path that points at the wrong node can hand over a whole file content.
+    /// </summary>
+    public static Exception SftpDeleteIdentityValueInvalid(INodeContext nodeContext, string source, object? value,
+        string expectation)
+    {
+        const int shownCharacters = 32;
+        var shown = value switch
+        {
+            null => "no value",
+            string { Length: > shownCharacters } text => $"a text of {text.Length} characters",
+            string text => $"'{text}'",
+            _ => $"{Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)} ({value.GetType().Name})"
+        };
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {source} resolved to {shown}, but the expected identity needs {expectation}. Nothing was deleted, because the file cannot be checked.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): the expected last write time is the one <c>SftpList@1</c> writes
+    /// for a server that reported none. Accepted, it would leave the length as the only check.
+    /// </summary>
+    public static Exception SftpDeleteIdentityTimeNotReported(INodeContext nodeContext, string source, string value)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {source} resolved to '{value}': 0001-01-01T00:00:00Z means the server reported no last write time, and the check needs one. Nothing was deleted, because the file cannot be checked.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284) with <c>OnIdentityMismatch: Fail</c>: the file under the listed
+    /// name is not the one that was listed. Nothing was moved.
+    /// </summary>
+    public static Exception SftpFileIdentityChanged(INodeContext nodeContext, string remotePath, string expected,
+        string found)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote file '{remotePath}' is not the file that was listed: expected {expected}, found {found}. It was not touched and stays under its name. OnIdentityMismatch is 'Fail'; use 'Warn' where a file delivered again under the same name is an expected event.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): moving the matching file aside failed, so nothing was deleted.
+    /// The node cannot tell why, so the text names the likely causes, and it names the temporary
+    /// path and the listed identity for a connection that broke after the server carried out the
+    /// move.
+    /// </summary>
+    public static Exception CannotMoveAsideViaSftp(INodeContext nodeContext, string remotePath, string parkedPath,
+        string expected, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot move file '{remotePath}' aside to '{parkedPath}' via SFTP before deleting it: {WithoutFinalStop(exception.Message)}. Nothing was deleted. Possible causes include a missing right to rename in the file's directory and a file name the server cannot hold with the 45 characters the temporary name adds. If the connection broke after the server carried out the move, the file is under '{parkedPath}': compare it with the listing (expected {expected}) before deleting it, and to have it processed give it a free name - '{remotePath}' only while '{remotePath}' is free.",
+            exception);
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): the file under the temporary name was checked and is the one
+    /// that was listed, but deleting it failed - possibly after the server carried it out. Deleting
+    /// it there is safe; renaming it back would offer it for processing again.
+    /// </summary>
+    public static Exception CannotDeleteMovedAsideViaSftp(INodeContext nodeContext, string remotePath,
+        string parkedPath, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot delete file '{remotePath}' via SFTP: it was moved aside to '{parkedPath}' and checked there - it is the file that was listed - but deleting it failed, and if only the answer was lost it is gone already: {WithoutFinalStop(exception.Message)}. SftpList@1 lists it there only for a pattern that contains '.sftpdelete-'; deleting it there finishes what this node started. Rename it back only if it is to be processed again, and to '{remotePath}' only while '{remotePath}' is free.",
+            exception);
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): the file under the temporary name does not have the identity
+    /// that was listed. The node cannot tell why: it was replaced between the check under the listed
+    /// name and the move (then nobody has read it), or the server's rename changed its length or
+    /// last write time (then it is the listed file). Fails whatever <c>OnIdentityMismatch</c> says,
+    /// because the file needs a person.
+    /// </summary>
+    public static Exception SftpReplacedFileLeftAside(INodeContext nodeContext, string remotePath,
+        string parkedPath, string expected, string found)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Remote file '{remotePath}' was moved aside to '{parkedPath}', and the file there does not have the identity that was listed (expected {expected}, found {found}). Either it was replaced between the check and the move - then it has not been read - or this server changes the length or the last write time of a file it renames - then it is the file that was listed. It stays under '{parkedPath}', where SftpList@1 lists it only for a pattern that contains '.sftpdelete-', and nothing was deleted. Compare it with what this run processed before you delete it; to have it processed, give it a free name - '{remotePath}' only while '{remotePath}' is free.");
+    }
+
+    /// <summary>
+    /// <c>SftpDelete@1</c> (AB#8284): reading the file under the temporary name failed, so whether it
+    /// is the one that was listed is unknown. Nothing was deleted. Names the listed identity to
+    /// compare it with.
+    /// </summary>
+    public static Exception SftpMovedAsideFileUnchecked(INodeContext nodeContext, string remotePath,
+        string parkedPath, string expected, Exception exception)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Cannot delete file '{remotePath}' via SFTP: it was moved aside to '{parkedPath}', and reading it there failed: {WithoutFinalStop(exception.Message)}. Whether '{parkedPath}' holds the file that was listed is unknown, and nothing was deleted. Compare it with the listing (expected {expected}) before deleting it; to have it processed, give it a free name - '{remotePath}' only while '{remotePath}' is free.",
+            exception);
+    }
+
+    /// <summary>
+    /// A server or library message ends with its own full stop more often than not; embedded in
+    /// a sentence that continues, it would read as two.
+    /// </summary>
+    private static string WithoutFinalStop(string message)
+    {
+        return message.TrimEnd().TrimEnd('.');
+    }
+
     public static Exception BlankHostKeyFingerprint(INodeContext nodeContext, string serverConfigurationName)
     {
         return new MeshAdapterPipelineExecutionException(

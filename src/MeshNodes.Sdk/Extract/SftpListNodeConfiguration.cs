@@ -23,7 +23,9 @@ public record SftpListNodeConfiguration : TargetPathNodeConfiguration
 
     /// <summary>
     /// Glob the file name must match: '*' any run of characters, '?' exactly one, anchored at
-    /// both ends, case insensitive, every other character literal
+    /// both ends, case insensitive, every other character literal. A file under the temporary
+    /// name of <c>SftpDelete@1</c> (<c>.&lt;name&gt;.sftpdelete-&lt;32 hex digits&gt;</c>) is
+    /// listed only by a pattern that contains <c>.sftpdelete-</c>, such as <c>.*.sftpdelete-*</c>
     /// </summary>
     [PropertyGroup("Filter", 0)]
     public required string FilePattern { get; set; }

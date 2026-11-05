@@ -168,6 +168,26 @@ public class GetPipelineConfigByCkTypeIdNodeTests : NodeTestBase
         A.CallTo(() => next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
     }
 
+    [Theory]
+    [InlineData("system.communication/secretdefault")]
+    [InlineData("system.communication-4.15.0/secretdefault")]
+    public async Task ProcessObjectAsync_WithSecretDefaultCkTypeIdInAnotherCase_FailsBeforeReadingAnyConfiguration(
+        string ckTypeId)
+    {
+        var config = new GetPipelineConfigByCkTypeIdNodeConfiguration
+        {
+            CkTypeId = ckTypeId,
+            TargetPath = "$.configs"
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<GetPipelineConfigByCkTypeIdNodeConfiguration>(config);
+        var node = new GetPipelineConfigByCkTypeIdNode(next, _etlContext);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId(A<string>._)).MustNotHaveHappened();
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_WithSecretDefaultCkTypeIdFromPath_FailsBeforeReadingAnyConfiguration()
     {

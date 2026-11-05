@@ -44,7 +44,7 @@ public static class PlatformOnlySecrets
                graph.GetBaseTypes(includeSelf: true).Any(baseType => SecretDefaultCkTypeId.Equals(baseType));
     }
 
-    /// <summary>Accepts the type id as text, with or without the model version.</summary>
+    /// <summary>Accepts the type id as text, with or without the model version, in any letter case.</summary>
     public static bool IsPlatformOnlyCkTypeId(string? ckTypeId)
     {
         if (string.IsNullOrWhiteSpace(ckTypeId))
@@ -60,7 +60,9 @@ public static class PlatformOnlySecrets
         }
 
         var model = VersionedModelSuffix.Replace(text[..separator], string.Empty);
-        return IsPlatformOnly(new RtCkId<CkTypeId>(model, new CkTypeId(text[(separator + 1)..])));
+        var typeName = new CkTypeId(text[(separator + 1)..]).Name;
+        return string.Equals(model, SecretDefaultCkTypeId.ModelId, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(typeName, SecretDefaultCkTypeId.ElementId.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>True when the attribute path starts with the SecretDefaults record array of an Application.</summary>

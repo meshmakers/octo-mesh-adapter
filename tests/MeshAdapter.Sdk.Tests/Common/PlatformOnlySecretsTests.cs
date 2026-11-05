@@ -34,6 +34,9 @@ public class PlatformOnlySecretsTests
     [InlineData("System.Communication/SecretDefault")]
     [InlineData("System.Communication-4.15.0/SecretDefault")]
     [InlineData("  System.Communication/SecretDefault ")]
+    [InlineData("system.communication/secretdefault")]
+    [InlineData("system.communication-4.15.0/secretdefault")]
+    [InlineData("SYSTEM.COMMUNICATION/SECRETDEFAULT")]
     public void IsPlatformOnlyCkTypeId_Text_MatchesTheTypeWithOrWithoutModelVersion(string text)
     {
         Assert.True(PlatformOnlySecrets.IsPlatformOnlyCkTypeId(text));

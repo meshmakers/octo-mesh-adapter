@@ -1,5 +1,8 @@
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -42,6 +45,17 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
         return await serializer.DeserializeAsync(yaml);
     }
 
+    private static string AllMessages(Exception exception)
+    {
+        var messages = new List<string>();
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            messages.Add(current.Message);
+        }
+
+        return string.Join(" | ", messages);
+    }
+
     [Fact]
     public async Task TheNodeIsInThePipelineSchema_AndDeserializesFromYaml()
     {
@@ -61,9 +75,12 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     }
 
     [Fact]
-    public async Task AnUnknownProvider_FailsValidation()
+    public async Task AnUnknownProvider_IsRefusedByTheSerializer()
     {
-        await Assert.ThrowsAnyAsync<Exception>(() => Deserialize(Yaml.Replace("provider: Turnstile", "provider: Recaptcha")));
+        var e = await Assert.ThrowsAsync<PipelineSerializationException>(() =>
+            Deserialize(Yaml.Replace("provider: Turnstile", "provider: Recaptcha")));
+
+        Assert.Contains("Recaptcha", AllMessages(e));
     }
 
     [Fact]
@@ -90,28 +107,13 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     }
 
     [Fact]
-    public async Task AnEndpointInTheYaml_DoesNotChangeWhereTheSecretIsSent()
+    public async Task AnEndpointInTheYaml_IsRefusedByTheSerializer()
     {
         var yaml = Yaml + "\n    url: https://attacker.example/collect\n";
-        StubDefaults(DefaultEntity(FakeTurnstileHandler.AlwaysPassSecret));
 
-        NodeDefinitionRoot root;
-        try
-        {
-            root = await Deserialize(yaml);
-        }
-        catch (Exception)
-        {
-            return;
-        }
+        var e = await Assert.ThrowsAsync<PipelineSerializationException>(() => Deserialize(yaml));
 
-        var config = (VerifyCaptchaNodeConfiguration)root.Transformations!.Single() with
-        {
-            TenantSecret = null, Identity = NodeExecutionIdentity.Caller
-        };
-        await Run(config, Input());
-
-        Assert.Equal(VerifyCaptchaNode.TurnstileSiteVerifyEndpoint, Assert.Single(Handler.Requests).Uri);
+        Assert.Contains("url", AllMessages(e));
     }
 
     [Fact]
@@ -141,6 +143,71 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
         Assert.Contains("platform-only", e.Message);
         AssertNoSessionOpened();
         A.CallTo(protector).MustNotHaveHappened();
+    }
+
+    public static TheoryData<string, string, string> SecretDefaultVariants => new()
+    {
+        { "system.communication/secretdefault", "Value", "is unknown in tenant" },
+        { "System.Communication-2.0/SecretDefault", "Value", "is unknown in tenant" },
+        { "System.Communication/SecretDefault-1", "Value", "platform-only" },
+        { "System.Communication/Application", "SecretDefaults[0].Value", "platform-only" }
+    };
+
+    [Theory]
+    [MemberData(nameof(SecretDefaultVariants))]
+    public async Task ASecretDefaultVariantUnknownToTheTenant_IsRefusedBeforeAnythingIsRead(string ckTypeId,
+        string attributeName, string expected)
+    {
+        CkCacheService = A.Fake<ICkCacheService>();
+
+        await AssertRefusedBeforeAnythingIsRead(ckTypeId, attributeName, expected);
+    }
+
+    [Theory]
+    [MemberData(nameof(SecretDefaultVariants))]
+    public async Task ASecretDefaultVariantTheTenantResolves_IsRefusedAsPlatformOnly(string ckTypeId,
+        string attributeName, string _)
+    {
+        CkCacheService = CacheResolvingEveryTypeToSecretDefault();
+
+        await AssertRefusedBeforeAnythingIsRead(ckTypeId, attributeName, "platform-only");
+    }
+
+    private async Task AssertRefusedBeforeAnythingIsRead(string ckTypeId, string attributeName, string expected)
+    {
+        var protector = A.Fake<ISecretAttributeProtector>();
+        var tenantSecret = new VerifyCaptchaTenantSecretConfiguration
+        {
+            CkTypeId = new RtCkId<CkTypeId>(ckTypeId), WellKnownName = DefaultKey, AttributeName = attributeName
+        };
+        var (dc, nc, _) = Context(Config(tenantSecret), Input());
+
+        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() =>
+            Node(protector: protector).ProcessObjectAsync(dc, nc));
+
+        Assert.True(e.Message.Contains(expected), e.Message);
+        AssertNoSessionOpened();
+        A.CallTo(protector).MustNotHaveHappened();
+        Assert.Empty(Handler.Requests);
+    }
+
+    private static ICkCacheService CacheResolvingEveryTypeToSecretDefault()
+    {
+        var self = new CkId<CkTypeId>("System.Communication-2.0.0/SecretDefault");
+        var value = new CkTypeAttributeGraph(ckAttributeId: new CkId<CkAttributeId>("System.Communication", new CkAttributeId("Value")),
+            attributeName: "Value", autoCompleteValues: null, valueType: AttributeValueTypesDto.Secret,
+            valueCkRecordId: null, valueCkEnumId: null, autoIncrementReference: null, metaData: null,
+            defaultValues: null, isOptional: false, description: null);
+        var graph = new CkTypeGraph(self, isAbstract: false, isFinal: false, isCollectionRoot: false, baseTypes: [],
+            derivedFromCkTypeId: null, definingCollectionRootCkTypeId: null, derivedTypes: [], definedAttributes: [],
+            allAttributes: new Dictionary<CkId<CkAttributeId>, CkTypeAttributeGraph> { [value.CkAttributeId] = value },
+            indexes: [], associations: new CkGraphDirectedAssociations([]), description: string.Empty,
+            enableChangeStreamPreAndPostImages: false);
+        var graphOut = (CkTypeGraph?)graph;
+        var cache = A.Fake<ICkCacheService>();
+        A.CallTo(() => cache.TryGetRtCkType(A<string>._, A<RtCkId<CkTypeId>>._, out graphOut)).Returns(true)
+            .AssignsOutAndRefParameters(graph);
+        return cache;
     }
 
     [Fact]

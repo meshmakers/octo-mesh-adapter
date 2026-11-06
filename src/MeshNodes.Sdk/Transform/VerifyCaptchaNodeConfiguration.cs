@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
@@ -59,6 +60,7 @@ public record VerifyCaptchaNodeConfiguration : TargetPathNodeConfiguration
 
     /// <summary>Seconds to wait for the provider before the result is <c>verification-unavailable</c> (1 to 60).</summary>
     [PropertyGroup("Provider", 3)]
+    [Range(1, 60)]
     public int TimeoutSeconds { get; set; } = 10;
 
     /// <summary>Optional tenant override; used when its Secret attribute is set.</summary>

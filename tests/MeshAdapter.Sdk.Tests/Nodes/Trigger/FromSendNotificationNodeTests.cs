@@ -26,8 +26,9 @@ public class FromSendNotificationNodeTests
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>._,
-                A<ExecuteCommandHandler<SendNotificationsRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<SendNotificationsRequest> handler) =>
+                A<ExecuteCommandHandler<SendNotificationsRequest>>._,
+                A<CommandConsumerOptions>._))
+            .Invokes((string _, ExecuteCommandHandler<SendNotificationsRequest> handler, CommandConsumerOptions _) =>
             {
                 _capturedHandler = handler;
             })
@@ -43,8 +44,14 @@ public class FromSendNotificationNodeTests
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>.That.Contains("test-tenant"),
-                A<ExecuteCommandHandler<SendNotificationsRequest>>._))
+                A<ExecuteCommandHandler<SendNotificationsRequest>>._,
+                A<CommandConsumerOptions>.That.Matches(o => o.ExclusiveByDesignReason != null)))
             .MustHaveHappenedOnceExactly();
+        // Never the classic two-argument overload: it logs the AB#6909 deprecation warning.
+        A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
+                A<string>._,
+                A<ExecuteCommandHandler<SendNotificationsRequest>>._))
+            .MustNotHaveHappened();
     }
 
     [Fact]

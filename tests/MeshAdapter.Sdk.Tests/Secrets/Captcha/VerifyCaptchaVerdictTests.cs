@@ -121,6 +121,16 @@ public class VerifyCaptchaVerdictTests : VerifyCaptchaTestBase
     }
 
     [Fact]
+    public async Task ConnectionLostWhileTheAnswerIsRead_IsVerificationUnavailable()
+    {
+        Handler = new FakeTurnstileHandler((_, _) => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new BrokenStream()) }));
+        StubDefaults(DefaultEntity(FakeTurnstileHandler.AlwaysPassSecret));
+
+        AssertResult(await Run(Config()), false, "default", "verification-unavailable");
+    }
+
+    [Fact]
     public async Task ProviderThatDoesNotAnswerInTime_IsVerificationUnavailable()
     {
         var clock = new FakeTimeProvider();
@@ -169,5 +179,17 @@ public class VerifyCaptchaVerdictTests : VerifyCaptchaTestBase
         var result = await Run(Config());
 
         AssertResult(result, false, "default", reason);
+    }
+
+    private sealed class BrokenStream : MemoryStream
+    {
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("The response ended prematurely.");
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            throw new IOException("The response ended prematurely.");
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            throw new IOException("The response ended prematurely.");
     }
 }

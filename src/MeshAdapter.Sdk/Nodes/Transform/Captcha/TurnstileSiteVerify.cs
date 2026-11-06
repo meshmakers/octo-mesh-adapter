@@ -57,6 +57,10 @@ internal static class TurnstileSiteVerify
         {
             return Unavailable(nodeContext, $"the provider could not be reached ({e.HttpRequestError})");
         }
+        catch (IOException e)
+        {
+            return Unavailable(nodeContext, $"the provider's answer could not be read ({e.GetType().Name})");
+        }
     }
 
     private static string? Interpret(byte[]? body, INodeContext nodeContext)

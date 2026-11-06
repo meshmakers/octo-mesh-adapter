@@ -81,6 +81,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             : new MeshAdapterPipelineExecutionException(message, inner);
     }
 
+    public static Exception PlatformOnlySecretRefused(INodeContext nodeContext, string reason)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {reason}; its value is usable only by platform nodes and is never revealed to a pipeline.");
+    }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");

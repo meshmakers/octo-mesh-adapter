@@ -69,6 +69,19 @@ public class RevealSecretNode(
         }
 
         var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
+
+        if (PlatformOnlySecrets.IsPlatformOnly(ckCacheService, etlContext.TenantId, ckTypeId))
+        {
+            throw MeshAdapterPipelineExecutionException.PlatformOnlySecretRefused(nodeContext,
+                $"RevealSecret: CK type '{ckTypeId}' is platform-only");
+        }
+
+        if (PlatformOnlySecrets.IsPlatformOnlyAttribute(ckTypeId, c.AttributeName))
+        {
+            throw MeshAdapterPipelineExecutionException.PlatformOnlySecretRefused(nodeContext,
+                $"RevealSecret: attribute '{PlatformOnlySecrets.SecretDefaultsAttributeName}' of '{ckTypeId}' is platform-only");
+        }
+
         var rtId = ResolveRtId(c, dataContext, nodeContext);
         var segments = ResolveSecretPath(ckTypeId, c.AttributeName.Trim(), nodeContext);
         var attributePath = string.Join('.', segments);

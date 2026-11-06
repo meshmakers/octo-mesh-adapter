@@ -32,6 +32,8 @@ public class RevealSecretNodeTests : SessionNodeTestBase
     // Obviously fake test plaintexts.
     private const string Plaintext = "fake-smtp-password-123";
     private const string RecordPlaintext = "fake-api-key-456";
+    private const string SecretDefaultCkTypeId = "System.Communication/SecretDefault";
+    private const string ApplicationCkTypeId = "System.Communication/Application";
     private static readonly OctoObjectId RtId = new("65d5c447b420da3fb12381bc");
 
     private readonly ICkCacheService _ckCache = SecretTestSupport.CreateCkCache();
@@ -372,6 +374,83 @@ public class RevealSecretNodeTests : SessionNodeTestBase
             .MustNotHaveHappened();
         A.CallTo(() => next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
         Assert.Null(dc.Get<string>("$.p"));
+    }
+
+    [Theory]
+    [InlineData(NodeExecutionIdentity.Caller)]
+    [InlineData(NodeExecutionIdentity.ServiceAccount)]
+    public async Task Reveal_SecretDefault_IsRefusedBeforeAnythingIsReadOrDecrypted(NodeExecutionIdentity identity)
+    {
+        var protector = A.Fake<ISecretAttributeProtector>();
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = SecretDefaultCkTypeId, RtId = RtId, AttributeName = "Value", TargetPath = "$.p",
+            Identity = identity
+        });
+        var next = A.Fake<NodeDelegate>();
+
+        var e = await AssertFails(() => Node(next, protector).ProcessObjectAsync(dc, nc),
+            SecretDefaultCkTypeId, "platform-only");
+
+        Assert.DoesNotContain(RtId.ToString(), e.Message);
+        AssertNoSessionOpened();
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._))
+            .MustNotHaveHappened();
+        A.CallTo(protector).MustNotHaveHappened();
+        A.CallTo(() => next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dc.Exists("$.p"));
+    }
+
+    [Fact]
+    public async Task Reveal_SecretDefaultFromTypePath_IsRefusedBeforeAnythingIsRead()
+    {
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeIdPath = "$.ck", RtId = RtId, AttributeName = "value", TargetPath = "$.p"
+        }, $$"""{"ck":"{{SecretDefaultCkTypeId}}"}""");
+
+        await AssertFails(() => Node(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, nc), "platform-only");
+
+        AssertNoSessionOpened();
+        Assert.False(dc.Exists("$.p"));
+    }
+
+    [Theory]
+    [InlineData("SecretDefaults.SecretValue")]
+    [InlineData("secretDefaults.secretValue")]
+    [InlineData("SecretDefaults[0].SecretValue")]
+    [InlineData("SecretDefaults")]
+    public async Task Reveal_SecretMemberOfTheApplicationSecretDefaultsRecordArray_IsRefusedBeforeAnythingIsRead(
+        string attributeName)
+    {
+        var protector = A.Fake<ISecretAttributeProtector>();
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = ApplicationCkTypeId, RtId = RtId, AttributeName = attributeName, TargetPath = "$.p"
+        });
+
+        await AssertFails(() => Node(A.Fake<NodeDelegate>(), protector).ProcessObjectAsync(dc, nc),
+            "SecretDefaults", ApplicationCkTypeId, "platform-only");
+
+        AssertNoSessionOpened();
+        A.CallTo(protector).MustNotHaveHappened();
+        Assert.False(dc.Exists("$.p"));
+    }
+
+    [Fact]
+    public async Task Reveal_OtherSecretAttributeOfTheApplication_IsNotTreatedAsPlatformOnly()
+    {
+        var (dc, nc, _) = Context(new RevealSecretNodeConfiguration
+        {
+            CkTypeId = ApplicationCkTypeId, RtId = RtId, AttributeName = "Password", TargetPath = "$.p"
+        });
+        StubEntity(null);
+
+        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() =>
+            Node(A.Fake<NodeDelegate>()).ProcessObjectAsync(dc, nc));
+
+        Assert.DoesNotContain("platform-only", e.Message);
+        Assert.Contains("not found", e.Message);
     }
 
     [Fact]

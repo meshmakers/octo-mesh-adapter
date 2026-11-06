@@ -188,6 +188,28 @@ Behaviour:
 - The plaintext is registered with `INodeContext.RegisterSecret` before it is written, so debug
   snapshots, dry-run intents, the execution log and `SetPipelineExecutionResult@1` show `***`.
 
+#### Platform-only secrets (AB#7246)
+
+A secret default declared on an Application (`System.Communication/Application.SecretDefaults[].SecretValue`) and
+projected by the Communication Controller into every served tenant (`System.Communication/SecretDefault.Value`) is
+**platform-only**: it may be used only inside platform building blocks that return a result and never the value. No
+tenant pipeline, user or role, tenant administrators included, can obtain it.
+
+- `RevealSecret@1` fails **before it reads anything** when the resolved CK type is `System.Communication/SecretDefault`
+  (or derives from it) or when `attributeName` starts with the `SecretDefaults` record array of
+  `System.Communication/Application`, for the identities `Caller` and `ServiceAccount` alike. The error names the type or
+  attribute and never a value, and `targetPath` stays unset. Other Secret attributes behave as before.
+  (`RevealSecret@1` cannot address record array members at all - it refuses them with "record arrays are not
+  supported" - so the explicit refusal is a named rule on top of that, not the only line of defence.)
+- `GetPipelineConfigByCkTypeId@1` fails for the type id `System.Communication/SecretDefault` before it reads the
+  configuration. The controller never puts a `SecretDefault` into the configuration list of an adapter either.
+- The rule is one predicate, `Common/PlatformOnlySecrets` (by CK type, in code - no CK or engine change). Every node
+  that decrypts a Secret must call it before it reads.
+- `SecretDecryptionCallSiteArchitectureTests` lists every call of `ISecretAttributeProtector.Unprotect` /
+  `RevealOrNull` in `src/` and fails when one is not on its allow-list (today `RevealSecretNode` and
+  `ServiceAccountTokenService`). **A new decrypting node** is added to that list in the same change, calls
+  `PlatformOnlySecrets` before it reads, and gets a test next to the `SecretDefault` ones in `RevealSecretNodeTests`.
+
 #### Secret attributes in the other nodes (AB#5538)
 
 - **Reads** put only the marker into the data context. Change streams (`FromWatchRtEntity@1`) are not

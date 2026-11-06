@@ -176,6 +176,28 @@ The adapter implements an ETL (Extract-Transform-Load) pipeline system with node
 - **AdapterEventService**: Writes `System.Notification/Event` entries tagged with the `MeshAdapter` source into the tenant's event log, the audit trail Studio shows under Repository → Events. Used to record authorization decisions on secured trigger routes and the notification engine's warnings; failures degrade to a log warning so auditing can never fail a request
 - **Notification events (AB#2585)**: a failed notification run fails the pipeline, and the communication controller records that as an Error event, so the engine writes no error of its own (it would be a duplicate). What the controller cannot see because the run still succeeds goes to Events as a Warning linked to the subscription (the preference for a taken-over lease): rows that could not be read for the mail, a failure that could not be recorded on the recipient, a run whose lease another run took over, an unknown time zone. The recipient is named by e-mail. The unknown time zone is reported once per adapter process and preference, and again only when the value changes, since it would otherwise repeat on every run.
 
+## Platform-only secrets - no pipeline reveals a SecretDefault (AB#7246)
+
+A secret default that an Application declares (`System.Communication/Application.SecretDefaults[].SecretValue`) and
+the controller projects into every served tenant (`System.Communication/SecretDefault.Value`) may be used only inside
+platform building blocks that return a result and never the value. No tenant pipeline, user or role, tenant
+administrators included, may obtain it. It is decided **by CK type in code**, not by ownership (every Secret attribute
+has ownership Secret) and not by data permissions (decryption needs none):
+
+- `Common/PlatformOnlySecrets.cs` is the one rule: `IsPlatformOnly(ckTypeId)` (also with the CK cache, for derived
+  types), `IsPlatformOnlyCkTypeId(text)` and `IsPlatformOnlyAttribute(ckTypeId, attributeName)` for the `SecretDefaults`
+  member of the Application.
+- `RevealSecret@1` consults it right after it resolved the type and **before it reads anything**, for `Caller` and
+  `ServiceAccount` alike (`System` is refused earlier). The error names the type or attribute, never a value; the target
+  path stays unset. `GetPipelineConfigByCkTypeId@1` refuses the type id the same way, before it reads the configuration.
+  A record array is not addressable by `RevealSecret@1` anyway (`record arrays are not supported`); the explicit
+  refusal makes the `SecretDefaults` case a named rule instead of a side effect.
+- `SecretDecryptionCallSiteArchitectureTests` enumerates every `.Unprotect(` / `.RevealOrNull(` call site in `src/`
+  against an allow-list (today `RevealSecretNode`, `ServiceAccountTokenService`) and fails on a new one, and on a stale
+  entry. A new decrypting node is added to the list only together with its use of `PlatformOnlySecrets`, and the
+  platform's own consumer (the CAPTCHA verify node of AB#7251) is the only reader of a SecretDefault, in its own session.
+- The controller keeps the type out of the configuration it ships to adapters (see its CLAUDE.md).
+
 ## Pipeline execution identity — every session is classified (AB#5028)
 
 Pipeline execution runs under a real identity instead of anonymous, parameterless system sessions.

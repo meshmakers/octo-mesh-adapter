@@ -33,8 +33,10 @@ public class FromExecutePipelineCommandNodeTests
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>._,
-                A<ExecuteCommandHandler<ExecutePipelineRequest>>._))
-            .Invokes((string address, ExecuteCommandHandler<ExecutePipelineRequest> handler) =>
+                A<ExecuteCommandHandler<ExecutePipelineRequest>>._,
+                A<CommandConsumerOptions>._))
+            .Invokes((string address, ExecuteCommandHandler<ExecutePipelineRequest> handler,
+                CommandConsumerOptions _) =>
             {
                 _capturedAddress = address;
                 _capturedHandler = handler;
@@ -66,7 +68,8 @@ public class FromExecutePipelineCommandNodeTests
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer(
                 A<string>.That.Contains("test-tenant"),
-                A<ExecuteCommandHandler<ExecutePipelineRequest>>._))
+                A<ExecuteCommandHandler<ExecutePipelineRequest>>._,
+                A<CommandConsumerOptions>._))
             .MustHaveHappenedOnceExactly();
     }
 

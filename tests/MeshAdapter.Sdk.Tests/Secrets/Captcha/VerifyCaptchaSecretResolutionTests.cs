@@ -122,7 +122,7 @@ public class VerifyCaptchaSecretResolutionTests : VerifyCaptchaTestBase
     public async Task SecretDefaultTypeUnknownInTheTenant_IsNotConfigured_WithoutAQuery()
     {
         var inner = SecretTestSupport.CreateCkCache();
-        var cache = A.Fake<ICkCacheService>(o => o.Wrapping(inner));
+        var cache = A.Fake<ICkCacheService>(options => options.Wrapping(inner));
         CkTypeGraph? none = null;
         A.CallTo(() => cache.TryGetRtCkType(SecretTestSupport.TenantId, PlatformOnlySecrets.SecretDefaultCkTypeId,
             out none!)).Returns(false);
@@ -140,7 +140,7 @@ public class VerifyCaptchaSecretResolutionTests : VerifyCaptchaTestBase
         RtEntityQueryOptions? captured = null;
         A.CallTo(() => TenantRepository.GetRtEntitiesByTypeAsync(SystemSession, PlatformOnlySecrets.SecretDefaultCkTypeId,
                 A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
-            .Invokes((IOctoSession _, RtCkId<CkTypeId> _, RtEntityQueryOptions o, int? _, int? _) => captured = o)
+            .Invokes((IOctoSession _, RtCkId<CkTypeId> _, RtEntityQueryOptions queryOptions, int? _, int? _) => captured = queryOptions)
             .Returns(ResultSet(DefaultEntity(FakeTurnstileHandler.AlwaysPassSecret)));
 
         await Run(Config());
@@ -163,17 +163,17 @@ public class VerifyCaptchaSecretResolutionTests : VerifyCaptchaTestBase
         AssertResult(result, true, "default", null);
         AssertSystemSessionOpened();
 
-        var (dc, revealContext, _) = Context(new RevealSecretNodeConfiguration
+        var (dataContext, revealContext, _) = Context(new RevealSecretNodeConfiguration
         {
             CkTypeId = PlatformOnlySecrets.SecretDefaultCkTypeId, RtId = DefaultRtId, AttributeName = "Value",
             TargetPath = "$.p", Identity = identity
         }, "{}", nodeName: "RevealSecret@1");
         var reveal = new RevealSecretNode(A.Fake<NodeDelegate>(), EtlContext, CkCacheService, Protector);
 
-        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => reveal.ProcessObjectAsync(dc, revealContext));
+        var pipelineExecutionException = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => reveal.ProcessObjectAsync(dataContext, revealContext));
 
-        Assert.Contains("platform-only", e.Message);
-        Assert.False(dc.Exists("$.p"));
+        Assert.Contains("platform-only", pipelineExecutionException.Message);
+        Assert.False(dataContext.Exists("$.p"));
     }
 
     private void AssertNoScopedRead()

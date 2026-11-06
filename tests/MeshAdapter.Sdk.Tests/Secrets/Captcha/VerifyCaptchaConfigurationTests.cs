@@ -77,20 +77,20 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     [Fact]
     public async Task AnUnknownProvider_IsRefusedByTheSerializer()
     {
-        var e = await Assert.ThrowsAsync<PipelineSerializationException>(() =>
+        var serializationException = await Assert.ThrowsAsync<PipelineSerializationException>(() =>
             Deserialize(Yaml.Replace("provider: Turnstile", "provider: Recaptcha")));
 
-        Assert.Contains("Recaptcha", AllMessages(e));
+        Assert.Contains("Recaptcha", AllMessages(serializationException));
     }
 
     [Fact]
     public async Task AnUndefinedProviderValue_FailsTheNode()
     {
-        var (dc, nc, _) = Context(Config() with { Provider = (CaptchaProvider)7 }, Input());
+        var (dataContext, nodeContext, _) = Context(Config() with { Provider = (CaptchaProvider)7 }, Input());
 
-        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dc, nc));
+        var pipelineExecutionException = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.Contains("provider", e.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("provider", pipelineExecutionException.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(Handler.Requests);
     }
 
@@ -100,7 +100,7 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
         var forbidden = new[] { "url", "uri", "endpoint", "host", "server", "address", "baseurl" };
         var properties = typeof(VerifyCaptchaNodeConfiguration).GetProperties()
             .Concat(typeof(VerifyCaptchaTenantSecretConfiguration).GetProperties())
-            .Select(p => p.Name.ToLowerInvariant())
+            .Select(property => property.Name.ToLowerInvariant())
             .ToList();
 
         Assert.DoesNotContain(properties, name => forbidden.Any(name.Contains));
@@ -111,19 +111,19 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     {
         var yaml = Yaml + "\n    url: https://attacker.example/collect\n";
 
-        var e = await Assert.ThrowsAsync<PipelineSerializationException>(() => Deserialize(yaml));
+        var serializationException = await Assert.ThrowsAsync<PipelineSerializationException>(() => Deserialize(yaml));
 
-        Assert.Contains("url", AllMessages(e));
+        Assert.Contains("url", AllMessages(serializationException));
     }
 
     [Fact]
     public async Task SystemIdentity_IsRefusedBeforeAnythingIsRead()
     {
-        var (dc, nc, _) = Context(Config(TenantSecretByRtId(), NodeExecutionIdentity.System), Input());
+        var (dataContext, nodeContext, _) = Context(Config(TenantSecretByRtId(), NodeExecutionIdentity.System), Input());
 
-        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dc, nc));
+        var pipelineExecutionException = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.Contains("'System' is not allowed", e.Message);
+        Assert.Contains("'System' is not allowed", pipelineExecutionException.Message);
         AssertNoSessionOpened();
     }
 
@@ -135,12 +135,12 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
         {
             CkTypeId = PlatformOnlySecrets.SecretDefaultCkTypeId, WellKnownName = DefaultKey, AttributeName = "Value"
         };
-        var (dc, nc, _) = Context(Config(tenantSecret), Input());
+        var (dataContext, nodeContext, _) = Context(Config(tenantSecret), Input());
 
-        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() =>
-            Node(protector: protector).ProcessObjectAsync(dc, nc));
+        var pipelineExecutionException = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() =>
+            Node(protector: protector).ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.Contains("platform-only", e.Message);
+        Assert.Contains("platform-only", pipelineExecutionException.Message);
         AssertNoSessionOpened();
         A.CallTo(protector).MustNotHaveHappened();
     }
@@ -180,12 +180,12 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
         {
             CkTypeId = new RtCkId<CkTypeId>(ckTypeId), WellKnownName = DefaultKey, AttributeName = attributeName
         };
-        var (dc, nc, _) = Context(Config(tenantSecret), Input());
+        var (dataContext, nodeContext, _) = Context(Config(tenantSecret), Input());
 
-        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() =>
-            Node(protector: protector).ProcessObjectAsync(dc, nc));
+        var pipelineExecutionException = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() =>
+            Node(protector: protector).ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.True(e.Message.Contains(expected), e.Message);
+        Assert.True(pipelineExecutionException.Message.Contains(expected), pipelineExecutionException.Message);
         AssertNoSessionOpened();
         A.CallTo(protector).MustNotHaveHappened();
         Assert.Empty(Handler.Requests);
@@ -214,11 +214,11 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     public async Task ATenantSecretAttributeThatIsNoSecret_FailsTheNode()
     {
         var tenantSecret = TenantSecretByRtId() with { AttributeName = "Name" };
-        var (dc, nc, _) = Context(Config(tenantSecret), Input());
+        var (dataContext, nodeContext, _) = Context(Config(tenantSecret), Input());
 
-        var e = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dc, nc));
+        var pipelineExecutionException = await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dataContext, nodeContext));
 
-        Assert.Contains("not Secret", e.Message);
+        Assert.Contains("not Secret", pipelineExecutionException.Message);
         A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(A<IOctoSession>._, A<RtEntityId>._)).MustNotHaveHappened();
     }
 
@@ -226,9 +226,9 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     public async Task ATenantSecretWithoutAnEntityReference_FailsTheNode()
     {
         var tenantSecret = TenantSecretByRtId() with { RtId = null };
-        var (dc, nc, _) = Context(Config(tenantSecret), Input());
+        var (dataContext, nodeContext, _) = Context(Config(tenantSecret), Input());
 
-        await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dc, nc));
+        await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dataContext, nodeContext));
     }
 
     [Theory]
@@ -236,9 +236,9 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     [InlineData(61)]
     public async Task ATimeoutOutsideTheRange_FailsTheNode(int seconds)
     {
-        var (dc, nc, _) = Context(Config() with { TimeoutSeconds = seconds }, Input());
+        var (dataContext, nodeContext, _) = Context(Config() with { TimeoutSeconds = seconds }, Input());
 
-        await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dc, nc));
+        await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dataContext, nodeContext));
     }
 
     [Theory]
@@ -247,9 +247,9 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     public async Task ARequiredFieldLeftBlank_FailsTheNode(string field)
     {
         var config = field == "tokenPath" ? Config() with { TokenPath = " " } : Config() with { DefaultKey = "" };
-        var (dc, nc, _) = Context(config, Input());
+        var (dataContext, nodeContext, _) = Context(config, Input());
 
-        await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dc, nc));
+        await Assert.ThrowsAnyAsync<PipelineExecutionException>(() => Node().ProcessObjectAsync(dataContext, nodeContext));
     }
 
     [Fact]
@@ -257,10 +257,10 @@ public class VerifyCaptchaConfigurationTests : VerifyCaptchaTestBase
     {
         StubDefaults(DefaultEntity(FakeTurnstileHandler.AlwaysPassSecret));
         var next = A.Fake<NodeDelegate>();
-        var (dc, nc, _) = Context(Config(), Input());
+        var (dataContext, nodeContext, _) = Context(Config(), Input());
 
-        await Node(next).ProcessObjectAsync(dc, nc);
+        await Node(next).ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => next.Invoke(dc, nc)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => next.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 }

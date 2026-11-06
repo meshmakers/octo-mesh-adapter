@@ -32,7 +32,7 @@ public sealed class FakeTurnstileHandler : HttpMessageHandler
         new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
     public static HttpResponseMessage FailWith(params string[] codes) =>
-        Json($$"""{"success":false,"error-codes":[{{string.Join(",", codes.Select(c => $"\"{c}\""))}}]}""");
+        Json($$"""{"success":false,"error-codes":[{{string.Join(",", codes.Select(code => $"\"{code}\""))}}]}""");
 
     private static HttpResponseMessage TurnstileAnswer(IReadOnlyDictionary<string, string> form)
     {

@@ -46,20 +46,21 @@ public class VerifyCaptchaNode(
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
-        var c = nodeContext.GetNodeConfiguration<VerifyCaptchaNodeConfiguration>();
-        var tenantSecretTarget = Validate(c, nodeContext);
+        var configuration = nodeContext.GetNodeConfiguration<VerifyCaptchaNodeConfiguration>();
+        var tenantSecretTarget = Validate(configuration, nodeContext);
 
-        var secret = await ResolveSecretAsync(c, tenantSecretTarget, dataContext, nodeContext);
-        var verdict = await DecideAsync(c, secret, dataContext, nodeContext);
+        var secret = await ResolveSecretAsync(configuration, tenantSecretTarget, dataContext, nodeContext);
+        var verdict = await DecideAsync(configuration, secret, dataContext, nodeContext);
 
         nodeContext.Debug("CAPTCHA verdict: valid {0}, source {1}, reason {2}", verdict.Valid, verdict.Source,
             verdict.Reason ?? "-");
-        dataContext.Set(c.TargetPath, verdict.ToJson(), c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+        dataContext.Set(configuration.TargetPath, verdict.ToJson(), configuration.DocumentMode,
+            configuration.TargetValueKind, configuration.TargetValueWriteMode);
 
         await next(dataContext, nodeContext);
     }
 
-    private async Task<CaptchaVerdict> DecideAsync(VerifyCaptchaNodeConfiguration c, ResolvedSecret secret,
+    private async Task<CaptchaVerdict> DecideAsync(VerifyCaptchaNodeConfiguration configuration, ResolvedSecret secret,
         IDataContext dataContext, INodeContext nodeContext)
     {
         if (secret.Source == CaptchaVerdict.SourceNone)
@@ -72,47 +73,49 @@ public class VerifyCaptchaNode(
             return CaptchaVerdict.Refused(secret.Source, CaptchaVerdict.VerificationUnavailable);
         }
 
-        var token = ReadText(dataContext, c.TokenPath);
+        var token = ReadText(dataContext, configuration.TokenPath);
         if (string.IsNullOrWhiteSpace(token))
         {
             return CaptchaVerdict.Refused(secret.Source, CaptchaVerdict.InvalidToken);
         }
 
-        var remoteIp = string.IsNullOrWhiteSpace(c.RemoteIpPath) ? null : ReadText(dataContext, c.RemoteIpPath);
+        var remoteIp = string.IsNullOrWhiteSpace(configuration.RemoteIpPath)
+            ? null
+            : ReadText(dataContext, configuration.RemoteIpPath);
         using var httpClient = httpClientFactory.CreateClient(HttpClientName);
         var refusal = await TurnstileSiteVerify.VerifyAsync(httpClient, TurnstileSiteVerifyEndpoint,
-            secret.Plaintext, token, remoteIp, TimeSpan.FromSeconds(c.TimeoutSeconds),
+            secret.Plaintext, token, remoteIp, TimeSpan.FromSeconds(configuration.TimeoutSeconds),
             timeProvider ?? TimeProvider.System, nodeContext);
         return refusal == null
             ? CaptchaVerdict.Accepted(secret.Source)
             : CaptchaVerdict.Refused(secret.Source, refusal);
     }
 
-    private TenantSecretTarget? Validate(VerifyCaptchaNodeConfiguration c, INodeContext nodeContext)
+    private TenantSecretTarget? Validate(VerifyCaptchaNodeConfiguration configuration, INodeContext nodeContext)
     {
-        if (!Enum.IsDefined(c.Provider))
+        if (!Enum.IsDefined(configuration.Provider))
         {
             throw MeshAdapterPipelineExecutionException.VerifyCaptchaMisconfigured(nodeContext,
-                $"provider '{c.Provider}' is not supported; supported: {string.Join(", ", Enum.GetNames<CaptchaProvider>())}.");
+                $"provider '{configuration.Provider}' is not supported; supported: {string.Join(", ", Enum.GetNames<CaptchaProvider>())}.");
         }
 
-        RequireText(c.TokenPath, "tokenPath", nodeContext);
-        RequireText(c.DefaultKey, "defaultKey", nodeContext);
-        RequireText(c.TargetPath, "targetPath", nodeContext);
-        if (c.TimeoutSeconds is < 1 or > 60)
+        RequireText(configuration.TokenPath, "tokenPath", nodeContext);
+        RequireText(configuration.DefaultKey, "defaultKey", nodeContext);
+        RequireText(configuration.TargetPath, "targetPath", nodeContext);
+        if (configuration.TimeoutSeconds is < 1 or > 60)
         {
             throw MeshAdapterPipelineExecutionException.VerifyCaptchaMisconfigured(nodeContext,
                 "timeoutSeconds must be between 1 and 60.");
         }
 
-        if (c.Identity == NodeExecutionIdentity.System)
+        if (configuration.Identity == NodeExecutionIdentity.System)
         {
             throw MeshAdapterPipelineExecutionException.VerifyCaptchaMisconfigured(nodeContext,
                 "identity 'System' is not allowed. Use 'Caller' or 'ServiceAccount'; the identity must be allowed " +
                 "to read the tenant secret's entity.");
         }
 
-        if (c.TenantSecret is not { } tenantSecret)
+        if (configuration.TenantSecret is not { } tenantSecret)
         {
             return null;
         }
@@ -149,12 +152,13 @@ public class VerifyCaptchaNode(
         return new TenantSecretTarget(ckTypeId, attribute.AttributeName);
     }
 
-    private async Task<ResolvedSecret> ResolveSecretAsync(VerifyCaptchaNodeConfiguration c,
+    private async Task<ResolvedSecret> ResolveSecretAsync(VerifyCaptchaNodeConfiguration configuration,
         TenantSecretTarget? tenantSecretTarget, IDataContext dataContext, INodeContext nodeContext)
     {
         if (tenantSecretTarget != null)
         {
-            var tenantEntity = await ReadTenantEntityAsync(c, tenantSecretTarget.CkTypeId, dataContext, nodeContext);
+            var tenantEntity = await ReadTenantEntityAsync(configuration, tenantSecretTarget.CkTypeId, dataContext,
+                nodeContext);
             var tenantSecret = Decrypt(tenantEntity, tenantSecretTarget.CkTypeId, tenantSecretTarget.AttributeName,
                 CaptchaVerdict.SourceTenant, nodeContext);
             if (tenantSecret != NotSet)
@@ -163,24 +167,25 @@ public class VerifyCaptchaNode(
             }
         }
 
-        var defaultEntity = await ReadSecretDefaultAsync(c.DefaultKey.Trim(), nodeContext);
+        var defaultEntity = await ReadSecretDefaultAsync(configuration.DefaultKey.Trim(), nodeContext);
         return Decrypt(defaultEntity, PlatformOnlySecrets.SecretDefaultCkTypeId, SecretDefaultValueAttribute,
             CaptchaVerdict.SourceDefault, nodeContext);
     }
 
-    private async Task<RtEntity?> ReadTenantEntityAsync(VerifyCaptchaNodeConfiguration c, RtCkId<CkTypeId> ckTypeId,
-        IDataContext dataContext, INodeContext nodeContext)
+    private async Task<RtEntity?> ReadTenantEntityAsync(VerifyCaptchaNodeConfiguration configuration,
+        RtCkId<CkTypeId> ckTypeId, IDataContext dataContext, INodeContext nodeContext)
     {
-        var tenantSecret = c.TenantSecret!;
+        var tenantSecret = configuration.TenantSecret!;
         // AB#5127 — config-selected (Caller by default): the tenant's own secret is tenant data, so data
         // permissions decide whether the execution identity may read its entity; System is refused in Validate.
-        var session = await etlContext.GetSessionForAsync(c.Identity);
+        var session = await etlContext.GetSessionForAsync(configuration.Identity);
         session.StartTransaction();
         RtEntity? entity;
         var rtId = tenantSecret.RtId ?? ParseRtId(dataContext, tenantSecret.RtIdPath);
-        if (rtId is { } id)
+        if (rtId is { } resolvedRtId)
         {
-            entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session, new RtEntityId(ckTypeId, id));
+            entity = await etlContext.TenantRepository.GetRtEntityByRtIdAsync(session,
+                new RtEntityId(ckTypeId, resolvedRtId));
         }
         else
         {
@@ -220,7 +225,7 @@ public class VerifyCaptchaNode(
 
         var query = RtEntityQueryOptions.Create().FieldEquals(nameof(RtEntity.RtWellKnownName), wellKnownName);
         var found = (await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, query, 0, 2))
-            .Items.Where(e => e.RtWellKnownName == wellKnownName).ToList();
+            .Items.Where(candidate => candidate.RtWellKnownName == wellKnownName).ToList();
         if (found.Count > 1)
         {
             nodeContext.Error("More than one {0} has the well-known name '{1}'; none is used", ckTypeId, wellKnownName);
@@ -268,11 +273,12 @@ public class VerifyCaptchaNode(
             LogKeyMissing(nodeContext, ckTypeId, attributeName, secret.KeyId);
             return NotSet;
         }
-        catch (Exception e) when (e is SecretEncryptionNotConfiguredException or LegacyPlaintextSecretRejectedException
-                                      or CryptographicException)
+        catch (Exception decryptionException) when (decryptionException is SecretEncryptionNotConfiguredException
+                                                        or LegacyPlaintextSecretRejectedException
+                                                        or CryptographicException)
         {
             nodeContext.Error("Secret attribute {0} of {1} cannot be decrypted ({2}); CAPTCHA verification unavailable",
-                attributeName, ckTypeId, e.GetType().Name);
+                attributeName, ckTypeId, decryptionException.GetType().Name);
             return new ResolvedSecret(source, null, true);
         }
     }

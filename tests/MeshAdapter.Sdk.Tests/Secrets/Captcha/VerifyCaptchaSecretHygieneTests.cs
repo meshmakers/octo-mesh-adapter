@@ -102,35 +102,35 @@ public class VerifyCaptchaSecretHygieneTests : VerifyCaptchaTestBase
     {
         StubDefaults(DefaultEntity(Sentinel));
         var unconfigured = SecretTestSupport.CreateProtector(keys: null);
-        var (dc, nc, _) = Context(Config(), Input());
+        var (dataContext, nodeContext, _) = Context(Config(), Input());
 
-        await Node(protector: unconfigured).ProcessObjectAsync(dc, nc);
+        await Node(protector: unconfigured).ProcessObjectAsync(dataContext, nodeContext);
 
-        AssertResult(dc.Get<JsonNode>("$.captcha")!.AsObject(), false, "default", "verification-unavailable");
+        AssertResult(dataContext.Get<JsonNode>("$.captcha")!.AsObject(), false, "default", "verification-unavailable");
         Assert.Empty(Handler.Requests);
     }
 
     private async Task AssertSentinelAbsentAfterRun(Meshmakers.Octo.MeshAdapter.Nodes.Transform.VerifyCaptchaNodeConfiguration config)
     {
         var logger = A.Fake<IPipelineLogger>();
-        var (dc, nc, debugger) = Context(config, Input(), logger);
+        var (dataContext, nodeContext, debugger) = Context(config, Input(), logger);
 
-        await Node().ProcessObjectAsync(dc, nc);
-        nc.Unregister(dc);
+        await Node().ProcessObjectAsync(dataContext, nodeContext);
+        nodeContext.Unregister(dataContext);
 
         var everything = new StringBuilder()
-            .Append(dc.Get<JsonNode>("$")!.ToJsonString())
+            .Append(dataContext.Get<JsonNode>("$")!.ToJsonString())
             .Append(System.Text.Json.JsonSerializer.Serialize(debugger.GetDebugInformation()))
             .Append(Logged(logger))
             .ToString();
         Assert.NotEmpty(Handler.Requests);
         Assert.DoesNotContain(Sentinel, everything);
         Assert.DoesNotContain(Base64(Sentinel), everything);
-        Assert.False(dc.Get<JsonNode>("$.captcha")!["valid"] is null);
+        Assert.False(dataContext.Get<JsonNode>("$.captcha")!["valid"] is null);
     }
 
     private static string Logged(IPipelineLogger logger) =>
-        string.Join("|", Fake.GetCalls(logger).SelectMany(c => c.Arguments)
-            .SelectMany(a => a is object[] list ? list.Cast<object?>() : new[] { a })
-            .Select(a => a?.ToString()));
+        string.Join("|", Fake.GetCalls(logger).SelectMany(call => call.Arguments)
+            .SelectMany(argument => argument is object[] list ? list.Cast<object?>() : new[] { argument })
+            .Select(argument => argument?.ToString()));
 }

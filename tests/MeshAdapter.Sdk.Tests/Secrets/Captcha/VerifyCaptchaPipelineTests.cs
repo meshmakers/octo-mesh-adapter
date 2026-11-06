@@ -52,7 +52,7 @@ public class VerifyCaptchaPipelineTests : VerifyCaptchaTestBase
         StubDefaults(DefaultEntity(Sentinel));
 
         var services = new ServiceCollection();
-        services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace).AddProvider(_logs));
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(_logs));
         services.AddDataPipeline().RegisterNode<VerifyCaptchaNode>().RegisterEtlContext<IMeshEtlContext>();
         var registry = A.Fake<IPipelineRegistryService>();
         var contextCreator = A.Fake<IContextCreatorService>();
@@ -62,7 +62,7 @@ public class VerifyCaptchaPipelineTests : VerifyCaptchaTestBase
         services.AddSingleton<ICkCacheService>(_ => CkCacheService);
         services.AddSingleton<ISecretAttributeProtector>(_ => Protector);
         services.AddSingleton(_ => HttpClientFactory());
-        services.AddSingleton<IPipelineDebugger>(sp => new DefaultPipelineDebugger(sp.GetRequiredService<ILoggerFactory>()));
+        services.AddSingleton<IPipelineDebugger>(serviceProvider => new DefaultPipelineDebugger(serviceProvider.GetRequiredService<ILoggerFactory>()));
         var provider = services.BuildServiceProvider();
         _debugger = (DefaultPipelineDebugger)provider.GetRequiredService<IPipelineDebugger>();
 
@@ -147,8 +147,8 @@ public class VerifyCaptchaPipelineTests : VerifyCaptchaTestBase
 
     private void AssertSentinelAbsent(string response)
     {
-        var reported = string.Join("|", Fake.GetCalls(_reporter).SelectMany(c => c.Arguments)
-            .Select(a => a is string s ? s : JsonSerializer.Serialize(a)));
+        var reported = string.Join("|", Fake.GetCalls(_reporter).SelectMany(call => call.Arguments)
+            .Select(argument => argument is string text ? text : JsonSerializer.Serialize(argument)));
         var all = new StringBuilder()
             .Append(response)
             .Append(reported)
@@ -159,7 +159,7 @@ public class VerifyCaptchaPipelineTests : VerifyCaptchaTestBase
         var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Sentinel));
 
         Assert.NotEmpty(_debugger.GetDebugInformation().DebugPoints);
-        Assert.Contains(Fake.GetCalls(_reporter), c => c.Method.Name == nameof(IPipelineExecutionReporter.ReportExecutionEndAsync));
+        Assert.Contains(Fake.GetCalls(_reporter), call => call.Method.Name == nameof(IPipelineExecutionReporter.ReportExecutionEndAsync));
         Assert.DoesNotContain(Sentinel, all);
         Assert.DoesNotContain(base64, all);
     }

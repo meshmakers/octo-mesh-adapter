@@ -135,24 +135,24 @@ public class VerifyCaptchaVerdictTests : VerifyCaptchaTestBase
     {
         var clock = new FakeTimeProvider();
         Clock = clock;
-        Handler = new FakeTurnstileHandler(async (_, ct) =>
+        Handler = new FakeTurnstileHandler(async (_, cancellationToken) =>
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             return FakeTurnstileHandler.Json(FakeTurnstileHandler.PassBody);
         });
         StubDefaults(DefaultEntity(FakeTurnstileHandler.AlwaysPassSecret));
         var config = Config() with { TimeoutSeconds = 5 };
-        var (dc, nc, _) = Context(config, Input());
+        var (dataContext, nodeContext, _) = Context(config, Input());
 
-        var run = Node().ProcessObjectAsync(dc, nc);
-        for (var i = 0; i < 200 && !run.IsCompleted; i++)
+        var processing = Node().ProcessObjectAsync(dataContext, nodeContext);
+        for (var secondsAdvanced = 0; secondsAdvanced < 200 && !processing.IsCompleted; secondsAdvanced++)
         {
             clock.Advance(TimeSpan.FromSeconds(1));
             await Task.Delay(5, TestContext.Current.CancellationToken);
         }
 
-        await run;
-        AssertResult(dc.Get<System.Text.Json.Nodes.JsonNode>("$.captcha")!.AsObject(), false, "default",
+        await processing;
+        AssertResult(dataContext.Get<System.Text.Json.Nodes.JsonNode>("$.captcha")!.AsObject(), false, "default",
             "verification-unavailable");
     }
 
@@ -161,10 +161,10 @@ public class VerifyCaptchaVerdictTests : VerifyCaptchaTestBase
     {
         StubDefaults(DefaultEntity(FakeTurnstileHandler.AlwaysPassSecret));
 
-        var (dc, nc, _) = Context(Config(), Input());
-        await Node().ProcessObjectAsync(dc, nc);
+        var (dataContext, nodeContext, _) = Context(Config(), Input());
+        await Node().ProcessObjectAsync(dataContext, nodeContext);
 
-        var whole = dc.Get<System.Text.Json.Nodes.JsonNode>("$")!.ToJsonString();
+        var whole = dataContext.Get<System.Text.Json.Nodes.JsonNode>("$")!.ToJsonString();
         Assert.DoesNotContain("hostname", whole);
         Assert.DoesNotContain("challenge_ts", whole);
         Assert.DoesNotContain("error-codes", whole);

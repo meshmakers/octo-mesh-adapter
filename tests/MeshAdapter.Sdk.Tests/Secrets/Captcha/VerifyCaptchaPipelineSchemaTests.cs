@@ -21,8 +21,8 @@ public class VerifyCaptchaPipelineSchemaTests
         var json = services.BuildServiceProvider().GetRequiredService<IPipelineSchemaGenerator>().GenerateSchema();
 
         return JsonNode.Parse(json)!["$defs"]!["TransformationNode"]!["oneOf"]!.AsArray()
-            .Select(n => n!.AsObject())
-            .SingleOrDefault(n => n["properties"]?["type"]?["const"]?.GetValue<string>() == "VerifyCaptcha@1");
+            .Select(node => node!.AsObject())
+            .SingleOrDefault(node => node["properties"]?["type"]?["const"]?.GetValue<string>() == "VerifyCaptcha@1");
     }
 
     private static JsonObject Node => Generated.Value ?? throw new InvalidOperationException("VerifyCaptcha@1 missing");
@@ -33,14 +33,14 @@ public class VerifyCaptchaPipelineSchemaTests
     public void TheNode_IsListedInTheSchema()
     {
         Assert.NotNull(Generated.Value);
-        Assert.Contains("tokenPath", Properties.Select(p => p.Key));
+        Assert.Contains("tokenPath", Properties.Select(property => property.Key));
     }
 
     [Fact]
     public void TheSchema_HasNoEndpointProperty()
     {
         var forbidden = new[] { "url", "uri", "endpoint", "host", "server", "address", "baseurl" };
-        var names = Properties.Select(p => p.Key.ToLowerInvariant()).ToList();
+        var names = Properties.Select(property => property.Key.ToLowerInvariant()).ToList();
 
         Assert.DoesNotContain(names, name => forbidden.Any(name.Contains));
     }
@@ -48,7 +48,7 @@ public class VerifyCaptchaPipelineSchemaTests
     [Fact]
     public void Provider_IsRequired()
     {
-        var required = Node["required"]!.AsArray().Select(r => r!.GetValue<string>()).ToArray();
+        var required = Node["required"]!.AsArray().Select(requiredName => requiredName!.GetValue<string>()).ToArray();
 
         Assert.Contains("provider", required);
     }

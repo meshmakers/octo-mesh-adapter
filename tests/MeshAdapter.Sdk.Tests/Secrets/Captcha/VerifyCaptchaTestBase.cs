@@ -95,7 +95,7 @@ public abstract class VerifyCaptchaTestBase : SessionNodeTestBase
     protected void StubTenantEntity(RtEntity? entity)
     {
         A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync(Session,
-                A<RtEntityId>.That.Matches(id => id.RtId == TenantRtId)))
+                A<RtEntityId>.That.Matches(entityId => entityId.RtId == TenantRtId)))
             .Returns(Task.FromResult(entity));
     }
 
@@ -147,9 +147,9 @@ public abstract class VerifyCaptchaTestBase : SessionNodeTestBase
     protected async Task<JsonObject> Run(VerifyCaptchaNodeConfiguration config, string? json = null,
         IPipelineLogger? logger = null)
     {
-        var (dc, nc, _) = Context(config, json ?? Input(), logger);
-        await Node().ProcessObjectAsync(dc, nc);
-        return dc.Get<JsonNode>("$.captcha")!.AsObject();
+        var (dataContext, nodeContext, _) = Context(config, json ?? Input(), logger);
+        await Node().ProcessObjectAsync(dataContext, nodeContext);
+        return dataContext.Get<JsonNode>("$.captcha")!.AsObject();
     }
 
     protected static void AssertResult(JsonObject result, bool valid, string source, string? reason)
@@ -159,12 +159,12 @@ public abstract class VerifyCaptchaTestBase : SessionNodeTestBase
         if (reason == null)
         {
             Assert.False(result.ContainsKey("reason"));
-            Assert.Equal(["source", "valid"], result.Select(p => p.Key).Order());
+            Assert.Equal(["source", "valid"], result.Select(property => property.Key).Order());
         }
         else
         {
             Assert.Equal(reason, result["reason"]!.GetValue<string>());
-            Assert.Equal(["reason", "source", "valid"], result.Select(p => p.Key).Order());
+            Assert.Equal(["reason", "source", "valid"], result.Select(property => property.Key).Order());
         }
     }
 

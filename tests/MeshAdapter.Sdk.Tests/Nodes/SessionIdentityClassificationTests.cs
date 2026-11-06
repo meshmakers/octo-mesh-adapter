@@ -150,8 +150,8 @@ public class SessionIdentityClassificationTests
         //
         // 47 now (26 scoped): VerifyCaptcha@1 reads the tenant's own secret config-selected and the platform's
         // secret default as system, because no tenant identity may read a SecretDefault.
-        Assert.Equal(26, actual.Sum(v => v.Scoped));
-        Assert.Equal(21, actual.Sum(v => v.System));
+        Assert.Equal(26, actual.Sum(sessionCounts => sessionCounts.Scoped));
+        Assert.Equal(21, actual.Sum(sessionCounts => sessionCounts.System));
     }
 
     [Fact]

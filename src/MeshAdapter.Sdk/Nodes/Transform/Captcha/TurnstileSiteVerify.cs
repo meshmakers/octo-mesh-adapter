@@ -53,13 +53,14 @@ internal static class TurnstileSiteVerify
         {
             return Unavailable(nodeContext, $"no answer from the provider within {timeout.TotalSeconds:0} s");
         }
-        catch (HttpRequestException e)
+        catch (HttpRequestException httpRequestException)
         {
-            return Unavailable(nodeContext, $"the provider could not be reached ({e.HttpRequestError})");
+            return Unavailable(nodeContext,
+                $"the provider could not be reached ({httpRequestException.HttpRequestError})");
         }
-        catch (IOException e)
+        catch (IOException ioException)
         {
-            return Unavailable(nodeContext, $"the provider's answer could not be read ({e.GetType().Name})");
+            return Unavailable(nodeContext, $"the provider's answer could not be read ({ioException.GetType().Name})");
         }
     }
 
@@ -134,15 +135,15 @@ internal static class TurnstileSiteVerify
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var buffer = new MemoryStream();
         var chunk = new byte[8192];
-        int read;
-        while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(chunk, cancellationToken)) > 0)
         {
-            if (buffer.Length + read > MaxResponseBytes)
+            if (buffer.Length + bytesRead > MaxResponseBytes)
             {
                 return null;
             }
 
-            buffer.Write(chunk, 0, read);
+            buffer.Write(chunk, 0, bytesRead);
         }
 
         return buffer.ToArray();

@@ -73,6 +73,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<PlaceholderReplaceNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<GenerateAndStoreReportNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MakeHttpRequestNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<VerifyCaptchaNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<RenderDelimitedTextNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ConvertToCsvNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MinMaxNodeConfiguration>();

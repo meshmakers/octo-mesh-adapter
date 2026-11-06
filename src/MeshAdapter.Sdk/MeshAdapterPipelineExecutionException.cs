@@ -81,6 +81,11 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             : new MeshAdapterPipelineExecutionException(message, inner);
     }
 
+    public static Exception VerifyCaptchaMisconfigured(INodeContext nodeContext, string reason)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: VerifyCaptcha: {reason}");
+    }
+
     public static Exception PlatformOnlySecretRefused(INodeContext nodeContext, string reason)
     {
         return new MeshAdapterPipelineExecutionException(

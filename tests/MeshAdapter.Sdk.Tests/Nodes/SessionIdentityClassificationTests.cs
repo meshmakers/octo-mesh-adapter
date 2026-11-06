@@ -90,6 +90,7 @@ public class SessionIdentityClassificationTests
             ["Transform/SimulateEnergyMeasurementsNode.cs"] = (1, 0),
             ["Transform/SimulateEnergyMeasurementsV2Node.cs"] = (1, 0),
             ["Transform/ValidateDataPointCoverageNode.cs"] = (1, 0),
+            ["Transform/VerifyCaptchaNode.cs"] = (1, 1),
             ["Transform/ExcelImport/WellKnownNameLoader.cs"] = (0, 1),
 
             // --- Shared ------------------------------------------------------------------------
@@ -146,8 +147,11 @@ public class SessionIdentityClassificationTests
         // then the new rows in full) run scoped, its configuration reads and delivery-state writes are system.
         //
         // 45 now (25 scoped): AB#2585's atomic lease re-reads the delivery state to learn who won, as system.
-        Assert.Equal(25, actual.Sum(v => v.Scoped));
-        Assert.Equal(20, actual.Sum(v => v.System));
+        //
+        // 47 now (26 scoped): VerifyCaptcha@1 reads the tenant's own secret config-selected and the platform's
+        // secret default as system, because no tenant identity may read a SecretDefault.
+        Assert.Equal(26, actual.Sum(v => v.Scoped));
+        Assert.Equal(21, actual.Sum(v => v.System));
     }
 
     [Fact]

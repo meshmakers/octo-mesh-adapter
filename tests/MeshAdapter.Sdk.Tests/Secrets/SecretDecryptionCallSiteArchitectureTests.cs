@@ -9,7 +9,8 @@ public class SecretDecryptionCallSiteArchitectureTests
     private static readonly IReadOnlyDictionary<string, int> AllowList = new Dictionary<string, int>
     {
         ["src/MeshAdapter.Sdk/Nodes/Extract/RevealSecretNode.cs"] = 1,
-        ["src/MeshAdapter.Sdk/Services/ServiceAccountTokenService.cs"] = 1
+        ["src/MeshAdapter.Sdk/Services/ServiceAccountTokenService.cs"] = 1,
+        ["src/MeshAdapter.Sdk/Nodes/Transform/VerifyCaptchaNode.cs"] = 1
     };
 
     private static string RepositoryRoot()
@@ -95,5 +96,18 @@ public class SecretDecryptionCallSiteArchitectureTests
 
         Assert.True(ruleIndex >= 0, "RevealSecretNode does not use PlatformOnlySecrets.");
         Assert.True(ruleIndex < decryptIndex, "RevealSecretNode decrypts before it consults PlatformOnlySecrets.");
+    }
+
+    [Fact]
+    public void VerifyCaptchaNode_ConsultsThePlatformOnlyRuleBeforeItDecrypts()
+    {
+        var source = File.ReadAllText(Path.Combine(RepositoryRoot(),
+            "src/MeshAdapter.Sdk/Nodes/Transform/VerifyCaptchaNode.cs"));
+
+        var ruleIndex = source.IndexOf("PlatformOnlySecrets.", StringComparison.Ordinal);
+        var decryptIndex = source.IndexOf("secretAttributeProtector.Unprotect(", StringComparison.Ordinal);
+
+        Assert.True(ruleIndex >= 0, "VerifyCaptchaNode does not use PlatformOnlySecrets.");
+        Assert.True(ruleIndex < decryptIndex, "VerifyCaptchaNode decrypts before it consults PlatformOnlySecrets.");
     }
 }

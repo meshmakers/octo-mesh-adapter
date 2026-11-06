@@ -105,6 +105,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()
+            .RegisterNode<VerifyCaptchaNode>()
             .RegisterNode<RenderDelimitedTextNode>()
             .RegisterNode<ConvertToCsvNode>()
             .RegisterNode<GenerateAndStoreReportNode>()
@@ -233,6 +234,7 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient();
         services.AddHttpClient("Discord");
         services.AddHttpClient("Signal");
+        services.AddHttpClient(VerifyCaptchaNode.HttpClientName).RemoveAllLoggers();
 
         // Named HttpClient for OctoMesh MCP server calls — uses a long timeout because
         // some MCP tool calls (e.g. tree queries) can take a while.

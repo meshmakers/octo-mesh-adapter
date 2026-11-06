@@ -201,13 +201,16 @@ tenant pipeline, user or role, tenant administrators included, can obtain it.
   attribute and never a value, and `targetPath` stays unset. Other Secret attributes behave as before.
   (`RevealSecret@1` cannot address record array members at all - it refuses them with "record arrays are not
   supported" - so the explicit refusal is a named rule on top of that, not the only line of defence.)
+- `VerifyCaptcha@1` (AB#7251) is the platform building block that **uses** a secret default: it reads the
+  `SecretDefault` itself, in the executing tenant only and only by its well-known name, and returns only a verdict
+  (see the node below).
 - `GetPipelineConfigByCkTypeId@1` fails for the type id `System.Communication/SecretDefault` before it reads the
   configuration. The controller never puts a `SecretDefault` into the configuration list of an adapter either.
 - The rule is one predicate, `Common/PlatformOnlySecrets` (by CK type, in code - no CK or engine change). Every node
   that decrypts a Secret must call it before it reads.
 - `SecretDecryptionCallSiteArchitectureTests` lists every call of `ISecretAttributeProtector.Unprotect` /
-  `RevealOrNull` in `src/` and fails when one is not on its allow-list (today `RevealSecretNode` and
-  `ServiceAccountTokenService`). **A new decrypting node** is added to that list in the same change, calls
+  `RevealOrNull` in `src/` and fails when one is not on its allow-list (today `RevealSecretNode`,
+  `ServiceAccountTokenService` and `VerifyCaptchaNode`). **A new decrypting node** is added to that list in the same change, calls
   `PlatformOnlySecrets` before it reads, and gets a test next to the `SecretDefault` ones in `RevealSecretNodeTests`.
 
 #### Secret attributes in the other nodes (AB#5538)
@@ -915,6 +918,67 @@ Executes HTTP requests to external services.
 > **Explicit nulls:** every optional number and string of the new sections is nullable with a
 > documented default. A pipeline definition that carries `pageSize: null` overwrites the property
 > initializer, so the defaults are resolved where the values are read, not where they are declared.
+
+#### VerifyCaptchaNode
+
+`VerifyCaptcha@1` (AB#7251, Feature AB#7219, decisions E1 = A and E3 = A) verifies a CAPTCHA token with the tenant's
+own secret, else with the platform's secret default, and writes **only the verdict**. The secret never enters the data
+context, a node output, a variable or the execution result.
+
+```yaml
+- type: VerifyCaptcha@1
+  provider: Turnstile
+  tokenPath: $.body.captchaToken
+  remoteIpPath: $.request.remoteIp          # optional
+  tenantSecret:                             # optional: the tenant's own override
+    ckTypeId: EnergyCommunity.Registration/RegistrationConfiguration
+    wellKnownName: RegistrationConfiguration  # or rtId / rtIdPath
+    attributeName: CaptchaSecret
+  defaultKey: ec-captcha-secret             # well-known name of the System.Communication/SecretDefault
+  targetPath: $.captcha
+  identity: ServiceAccount                  # reads the tenant secret; Caller (default) or ServiceAccount
+  timeoutSeconds: 10                        # 1 to 60
+```
+
+**Output** at `targetPath`, exactly these keys:
+
+| Key | Values |
+|-----|--------|
+| `valid` | `true` / `false` |
+| `source` | `tenant` / `default` / `none` - which key was used, never its value |
+| `reason` | only when `valid` is `false`: `not-configured`, `invalid-token` or `verification-unavailable` |
+
+**Resolution.** The tenant secret is read with the execution identity (`Caller` or `ServiceAccount`; `System` is
+refused). When it is set it is used, and a damaged value does **not** fall back to the default
+(`verification-unavailable`). When it is not set - no `tenantSecret`, no entity, an empty attribute, or a value
+encrypted with a key id this adapter's ring does not hold (logged as an error naming the key id) - the node reads the
+`System.Communication/SecretDefault` named `defaultKey` with an internal system session, in the executing tenant's
+repository and by that well-known name only, because no tenant identity may read it. Neither set gives
+`valid: false, source: none, reason: not-configured` without an HTTP call. A tenant without the `SecretDefault` type
+(System.Communication before 4.15.0) has no default.
+
+**Verdict.** An empty or missing token gives `invalid-token` without an HTTP call. Otherwise the node posts
+`secret`, `response` and (optionally) `remoteip` to the siteverify endpoint. Cloudflare's error codes are mapped and
+never passed on: `missing-input-response`, `invalid-input-response`, `timeout-or-duplicate` give `invalid-token`;
+`missing-input-secret`, `invalid-input-secret`, `bad-request`, `internal-error`, any unknown code, a failure without
+codes, an HTTP error status, a network error, no answer within `timeoutSeconds` and an unusable body give
+`verification-unavailable`. A mix of a token code and any other code is `verification-unavailable`. `hostname`,
+`challenge_ts` and the rest of the siteverify body are not output; the reason for `verification-unavailable` goes to
+the execution log as a warning (status, error codes or failure kind, never the secret).
+
+**Platform-only rule.** The endpoint is a constant in code (`VerifyCaptchaNode.TurnstileSiteVerifyEndpoint`); the
+configuration has no field for it, so a pipeline cannot send the secret to its own server. `tenantSecret` naming
+`System.Communication/SecretDefault` (or the Application's `SecretDefaults`) is refused as platform-only before
+anything is read, so the default is reachable only through `defaultKey`, while `RevealSecret@1` on the same entity stays
+refused. The decrypted secret is registered with `RegisterSecret` before it is used, so every snapshot masks it, and
+the HTTP client `VerifyCaptcha` is registered without loggers. Configuration mistakes (undefined provider, blank
+`tokenPath` / `defaultKey` / `targetPath`, `timeoutSeconds` outside 1-60, `tenantSecret` without `rtId`, `rtIdPath` or
+`wellKnownName`, an attribute that is not a Secret) fail the node.
+
+Tests: `tests/MeshAdapter.Sdk.Tests/Secrets/Captcha/` (fake siteverify handler with Cloudflare's public Turnstile test
+secrets, never a real key or a network call), including a sentinel secret run through `FromHttpRequest@2` →
+`VerifyCaptcha@1` → `SetPipelineExecutionResult@1` and a dry run, asserting the sentinel (also Base64) is in no
+response, result, debug point, log line or event.
 
 #### ImportFromExcelNode
 

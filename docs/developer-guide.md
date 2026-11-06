@@ -613,7 +613,7 @@ Lists a remote directory over SFTP and emits one element per matching file. Meta
 |-----------|------|-------------|
 | `ServerConfiguration` | string | Global config reference for SFTP server |
 | `RemoteDirectory` | string | Directory to list |
-| `FilePattern` | string | Glob: `*` any run of characters, `?` exactly one, anchored, case insensitive, everything else literal |
+| `FilePattern` | string | Glob: `*` any run of characters, `?` exactly one, anchored, case insensitive, everything else literal. A file under the temporary name of `SftpDelete@1` is listed only by a pattern that contains `.sftpdelete-` |
 | `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0) |
 | `TargetPath` | string | Where the array is written |
 
@@ -624,6 +624,7 @@ Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nest
 - Empty result still writes an empty array, so a downstream `ForEach@1` does not abort with `PathMustBeArray`
 - `lastWriteTimeUtc` is written with an explicit UTC format rather than the round-trip specifier, so the same instant reads identically regardless of the value's `Kind` and a consumer can build a stable file identity from it
 - `source` stamp lets a consumer scope its bookkeeping without repeating the connection values
+- A file under the temporary name `SftpDelete@1` moves a file to before deleting it - exactly `.<name>.sftpdelete-<32 lower-case hex digits>` - is skipped unless the pattern contains `.sftpdelete-` (any case), so a pattern with a wildcard in front (`*`, `*TXT*`) does not offer it as a new delivery. One warning per listing gives their number, the directory and the pattern that lists them. A pattern that contains `.sftpdelete-`, such as `.*.sftpdelete-*`, lists them and does not warn
 
 #### ListMailFoldersNode
 
@@ -1590,13 +1591,70 @@ Deletes exactly one file from an SFTP server: it removes the file `SftpDownload@
 | `RemotePath` | string | Static remote path (set this or `RemotePathPath`) |
 | `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
 | `OnMissingFile` | enum | `Fail` (default): a file that is not there any more fails the node. `Ignore`: log a warning and continue |
+| `ExpectedLength` / `ExpectedLengthPath` | long / string | Length of the file as it was listed - the `length` of an `SftpList@1` element - statically or from the data context (the path takes precedence). Not set by default |
+| `ExpectedLastWriteTimeUtc` / `ExpectedLastWriteTimeUtcPath` | string / string | Last write time of the file as it was listed - the `lastWriteTimeUtc` of an `SftpList@1` element, in the form that node writes: `yyyy-MM-ddTHH:mm:ss`, seven fractional digits and `Z` (zero to seven are accepted). Not set by default |
+| `OnIdentityMismatch` | enum | `Fail` (default): a file under the listed name that is no longer the listed one fails the node. `Warn`: log a warning and continue. The file stays under its name, untouched, in both cases. `Warn` without an expected identity is refused |
 
 **Features**:
 - One session per file, meant to run inside a `ForEach@1` over an `SftpList@1` result, the same wiring `SftpDownload@1` uses - `remotePathPath` names the loop's `keyPath`, which defaults to `$.key`
-- Honours dry run: the intent is recorded with host, port, user, path and the missing-file mode, and nothing is deleted
+- Honours dry run: the intent is recorded with host, port, user, path and the missing-file mode, and nothing is deleted. With an expected identity the intent also carries `expectedLength`, `expectedLastWriteTimeUtc` and `onIdentityMismatch`
 - `OnMissingFile: Ignore` is what a repeated run wants: the goal state is that the file is gone, and whether this node removed it or someone else already did makes no difference to that. The default is the strict reading, so a pipeline states the tolerance rather than inheriting it. The tolerance covers what the server reports as a missing path; a server that answers with a generic failure instead is not distinguishable here and surfaces as a delete failure
 - A path ending in `/` is refused before connecting: this node deletes a file, not a directory
 - Deletion goes through the same session factory as the other SFTP nodes, so the per-server concurrency limit and the host key check apply here as well
+
+##### Deleting only the file that was listed (AB#8284)
+
+Between the listing and the delete, a sender can deliver a new file under the same name. Without an expected identity the node deletes whatever carries the name at that moment, including a file nobody has processed. With `ExpectedLength` and `ExpectedLastWriteTimeUtc` (each statically or through its `...Path` property) the node deletes the file only while it is still the file that was listed:
+
+1. Read length and last write time under the listed name. Missing: `OnMissingFile`, as without the identity. Different, or a directory: nothing is moved, the file stays under its name and `OnIdentityMismatch` decides.
+2. Only when they match: move the file to `<directory>/.<name>.sftpdelete-<32 hex digits>`, a name no other writer uses - with `posix-rename@openssh.com` where the server offers it (one atomic `rename(2)`), otherwise with the plain SFTP rename.
+3. Read length and last write time of the moved file again and delete it there when they still match.
+
+Nothing is ever renamed back. Whatever arrives under the listed name after step 2 is a different file and is never touched, and no step writes to the listed name, so a newer file there cannot be replaced on any server. A file that arrives in the few requests between step 1 and step 2 is moved with the name (SSH.NET resolves both paths with `REALPATH` before it sends the rename, and once more for the plain rename where the server does not offer the POSIX one); step 3 sees that it does not match and leaves it under the temporary name, unread.
+
+| Case | Left on the server | Node |
+|------|--------------------|------|
+| Identity matches | Nothing | Deletes, continues |
+| Different length or time (delivered again before the run), or a directory | The file, under its name, untouched | `Fail`: fails naming both identities. `Warn`: warns, continues |
+| Delivered again after the move | The new file, under its name | Deletes the listed file, continues |
+| Replaced between the check and the move, or a server whose rename changes length or time | Under the temporary name: the replacement, unread, or the listed file | Fails naming both paths and both identities, whatever `OnIdentityMismatch` says; it says to compare the file with what the run processed before deleting it |
+| Reading the identity under the listed name fails | Unchanged | Fails as a delete failure |
+| The move is refused (no permission to rename, a name the server cannot hold with the temporary suffix, any other refusal) | Unchanged | Fails, nothing deleted; names the likely causes, the temporary path and the listed identity |
+| The move was carried out, but its answer was lost | The file, under the temporary name | Fails as above, which names the temporary path for this case |
+| Reading the moved file fails, or the connection breaks there | The file, under the temporary name | Fails naming both paths and the listed identity: whether it is the listed file is unknown |
+| Deleting the moved file fails, or the connection breaks there | The file, under the temporary name, unless the server deleted it before the answer was lost | Fails naming both paths: it is the listed file, and deleting it there finishes the step |
+| The file is missing, or disappears after the check | Nothing | `OnMissingFile`, unchanged |
+
+`Warn` is meant for a file that stays under its own name: the next listing offers it again. A file under the temporary name needs a person, which is why those cases fail regardless. `SftpList@1` does not offer it as a delivery - `*` and `*TXT*` included - unless the pattern contains `.sftpdelete-`; every other listing of the directory warns about it (see `SftpListNode`). `filePattern: .*.sftpdelete-*` lists such files; the original name sits between the leading dot and `.sftpdelete-`. The failed run says what is under the temporary name and what is safe to do with it; a file goes back under the listed name only while that name is free.
+
+**Requirement on the server**: the account needs the right to rename and to delete files in the file's directory, a rename has to keep a file's length and last write time, and the listing and the read of a single file (`SSH_FXP_LSTAT`) have to report the same length and last write time. Without the right to rename, every run with an expected identity fails at the move and deletes nothing. A server whose rename changes either value fails every run in step 3 and leaves every file under the temporary name; one whose listing and single-file read disagree finds a mismatch in step 1 on every run and deletes nothing. Both measured servers meet all three. Check them with one file on the target server before the first live delete.
+
+**Values are checked before connecting**, in a dry run as well: length and time go together (one without the other is refused), a path that is set decides alone (an empty or blank text, or a path that resolves to nothing, is refused, never read as "no check" or replaced by the static value; a key written without a value - `expectedLengthPath:` - or as `~` or `null` is YAML null, the same as leaving the key out, so write both keys with a value or neither), `onIdentityMismatch: Warn` needs an identity (without one nothing would be compared and the file would be deleted without a check, so it is refused, also when both keys are YAML null; `Fail` cannot be told from the default and stays accepted), the length is a JSON integer or a string of digits and at least zero (reals, signs and spaces are refused), and the time has exactly the shape above (no time without `Z`, no lower-case `z`, no offset such as `+00:00`, no eighth fractional digit) and is not `0001-01-01T00:00:00Z`: `SftpList@1` writes that time for every file of a server that reports no last write time, so it would leave the length as the only check. The time is read from the data context as text, so it reaches the node as `SftpList@1` wrote it. A refused value is shown in the message; a text longer than 32 characters - longer than any valid value - is named by its length only. A misspelled option name fails when the pipeline loads, so a typo cannot switch the check off.
+
+**Measured against OpenSSH 8.4p1 and SFTPGo 2.7.5** (integration tests `SftpDeleteIdentityIntegrationTests`): on both, the listing and the check report the same length and last write time to the tick, in whole seconds, and the move keeps both. OpenSSH offers `posix-rename@openssh.com`; SFTPGo does not, so there the move uses the plain rename. A symbolic link under the listed name: on OpenSSH every request resolves the link first (SSH.NET sends `REALPATH`), so the check, the move and the delete address the link's target. The target normally differs from what the listing reported for the link, whose length is the length of the link text, so nothing is moved; where it has the same length and second, the target is moved and deleted and the link stays behind, as the plain delete without an identity removes the target too. On SFTPGo the check, the move and the delete address the link, so the link is deleted and its target stays.
+
+**Limits** (AB#8284):
+- The identity is length and last write time; the content is not compared. A file replaced by one of the same length with the same last write time - SFTP version 3 reports whole seconds - reads as the file that was listed and is deleted.
+- A file under the temporary name is not recovered by a later run: listings whose pattern does not contain `.sftpdelete-` skip it and warn about it, the failed run names it, and a person deals with it.
+- The temporary name adds 45 ASCII characters to the file name. A file whose name the server cannot hold with that addition fails at the move on every run and is not deleted. Both measured servers hold 255 bytes in a name, so the limit there is a file name of 210 bytes in UTF-8: 210 characters of ASCII, fewer with characters beyond it.
+- Where a server offers no `posix-rename@openssh.com`, the move is the plain rename, and whether that is one atomic step depends on the server. OpenSSH, for one, implements the plain request with `link()` and `unlink()`, where a file that replaced the listed name exactly between the two would be removed; that is why the node uses the POSIX request wherever it is offered, as OpenSSH does.
+- With `Warn` the chain continues, and the nodes after this one cannot tell a file that was kept from one that was deleted.
+
+```yaml
+  - type: ForEach@1
+    iterationPath: $.files
+    keyPath: $.current
+    targetPath: $.loopResult
+    maxDegreeOfParallelism: 1
+    transformations:
+      # ... process the file ...
+      - type: SftpDelete@1
+        serverConfiguration: sftp-server-1
+        remotePathPath: $.current.fullPath
+        expectedLengthPath: $.current.length
+        expectedLastWriteTimeUtcPath: $.current.lastWriteTimeUtc
+        onMissingFile: Ignore
+```
 
 
 ### Trigger Nodes

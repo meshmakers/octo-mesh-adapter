@@ -50,6 +50,24 @@ public interface ISftpSession : IDisposable
     IReadOnlyList<SftpEntry> List(string remoteDirectory);
 
     /// <summary>
+    /// Reads one remote entry with the same attributes a listing reports for it - length and
+    /// last write time - so a caller can compare the two, except for a symbolic link, which on
+    /// OpenSSH reads as its target while the listing reports the link. Returns null when nothing
+    /// exists at the path; every other failure is raised.
+    /// </summary>
+    SftpEntry? GetEntry(string remotePath);
+
+    /// <summary>
+    /// Moves a remote file to a name nothing uses yet, such as one with a fresh GUID in it. Not a
+    /// general rename: where the server offers <c>posix-rename@openssh.com</c> the move uses it,
+    /// because it is one atomic <c>rename(2)</c> on the server, and that request replaces a file
+    /// already under the new name. Without the offer it falls back to the plain SFTP rename.
+    /// Returns false when <paramref name="remotePath" /> does not exist; every other failure is
+    /// raised.
+    /// </summary>
+    bool MoveToNewName(string remotePath, string newRemotePath);
+
+    /// <summary>
     /// Reads a remote file completely into memory. The file size decides how much memory the
     /// adapter allocates, so the caller states an upper bound: a file past it is refused with
     /// <see cref="SftpFileTooLargeException" /> instead of being read.

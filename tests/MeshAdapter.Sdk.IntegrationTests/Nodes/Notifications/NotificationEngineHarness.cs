@@ -236,6 +236,19 @@ internal sealed class NotificationEngineHarness
         await ApplyAsync([EntityUpdateInfo<RtEntity>.CreateUpdate(new RtEntityId(ckTypeId, rtId), entity)], []);
     }
 
+    /// <summary>Deletes the subscription's query with the default strategy (archive), as the GraphQL delete does.</summary>
+    public async Task DeleteQueryAsync() =>
+        await ApplyAsync(
+            [EntityUpdateInfo<RtEntity>.CreateDelete(new RtEntityId(await SimpleQueryTypeIdAsync(), QueryRtId))],
+            []);
+
+    /// <summary>Reads the query with the plain lookup by id, which returns archived entities too.</summary>
+    public async Task<RtSimpleRtQuery?> ReadQueryIncludingArchivedAsync()
+    {
+        using var session = await Repository.GetSessionAsync();
+        return await Repository.GetRtEntityByRtIdAsync<RtSimpleRtQuery>(session, QueryRtId);
+    }
+
     public async Task DeleteTemplateAsync() =>
         await ApplyAsync(
             [EntityUpdateInfo<RtEntity>.CreateDelete(new RtEntityId(SystemNotificationCkIds.RtCkNotificationTemplateTypeId, TemplateRtId))],

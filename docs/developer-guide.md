@@ -1770,7 +1770,25 @@ correctness, would also drop ticks of pipelines that opted out, and must be comb
 
 #### FromSendNotificationNode
 
-Triggers on notification events for notification processing workflows.
+Triggers on notification events for notification processing workflows (e.g. the identity mailer pipeline that
+delivers OTP, welcome and password-reset mails).
+
+**Command consumer: exclusive by design (AB#8405).** The node registers one endpoint per data flow,
+`{prefix}-octo::com-controller::send-notification-pipeline-{tenant}-data-flow-{dataFlowRtId}`, with
+`CommandConsumerOptions.ExclusiveByDesign(FromSendNotificationNode.ExclusiveByDesignReason)` (event hub option from
+AB#8363, same pattern as the SDK trigger nodes in AB#8105), so registering the pipeline logs no AB#6909 deprecation
+warning; the reason is logged at Debug. Topology and queue are unchanged (classic exclusive, non-durable, auto-delete).
+
+Why exclusive and not shared: no sender addresses this endpoint by name. identity-services
+(`NotificationEmailOtpDeliveryChannel`) and common-services (`NotificationService`) **publish**
+`SendNotificationsRequest`, and the classic queue receives it through the message-type binding that MassTransit's
+default consume topology creates. Exclusive by design keeps that binding; the plain shared options switch the consume
+topology off (and exclusive by design refuses `ConfigureConsumeTopology`), so a move to shared belongs with a change
+of the publishers, not here. A second adapter replica stays a hot standby, as before.
+
+Tests: `tests/MeshAdapter.Sdk.Tests/Nodes/Trigger/FromSendNotificationCommandConsumerTopologyTests.cs` (options handed
+to `IEventHubControl`; the node against the event hub's real `IEventHubControl` with a fake bus: no deprecation
+warning, reason logged, classic queue name, consume topology not switched off; control: a classic registration warns).
 
 #### FromEmailNode
 

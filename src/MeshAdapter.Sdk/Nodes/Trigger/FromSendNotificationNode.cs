@@ -15,6 +15,17 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 internal class FromSendNotificationNode(IEventHubControl eventHubControl)
     : ITriggerPipelineNode
 {
+    /// <summary>
+    /// Why the send-notification command consumer stays exclusive (AB#8405, option from AB#8363). Logged by the
+    /// event hub at registration (Debug) and listed in the octo-distributedEventHub CLAUDE.md audit table.
+    /// </summary>
+    internal const string ExclusiveByDesignReason =
+        "one endpoint per data flow (send-notification-pipeline-{tenant}-data-flow-{dataFlowRtId}); no sender " +
+        "addresses it: identity-services and common-services NotificationService publish SendNotificationsRequest and " +
+        "the classic queue receives it through its message-type binding (MassTransit default consume topology), so a " +
+        "further adapter replica is a hot standby; the shared topology turns that binding off and belongs with a " +
+        "migration of the publishers (AB#8405)";
+
     private EndpointHandle? _endpointHandle;
 
     public Task StartAsync(ITriggerContext context)
@@ -22,6 +33,11 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
         var address =
             $"{QueueNames.SendNotificationCommand.ToLower()}-{context.TenantId.ToLower()}-data-flow-{context.DataFlowRtId.ToString()?.ToLower()}";
 
+        // Exclusive by design (AB#8405): exactly one process owns this data flow's notification endpoint. The
+        // notifications arrive by publish (DistributionEventHubService.PublishAsync) through the message-type binding
+        // of the classic queue, which exclusive-by-design keeps; the plain shared options would drop that binding and
+        // the endpoint would receive nothing. Same queue and wire behaviour as before; the declaration only replaces
+        // the AB#6909 deprecation warning with a stated decision.
         _endpointHandle = eventHubControl.RegisterCommandConsumer<SendNotificationsRequest>(address,
             async (message, responseFunc) =>
             {
@@ -47,7 +63,8 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
                         message.TenantId, context.PipelineRtEntityId);
                     throw;
                 }
-            });
+            },
+            CommandConsumerOptions.ExclusiveByDesign(ExclusiveByDesignReason));
 
         return Task.CompletedTask;
     }

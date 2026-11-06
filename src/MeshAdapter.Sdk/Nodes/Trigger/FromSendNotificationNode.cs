@@ -41,6 +41,18 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
         _endpointHandle = eventHubControl.RegisterCommandConsumer<SendNotificationsRequest>(address,
             async (message, responseFunc) =>
             {
+                // Tenant guard (AB#8409): the request is published to the message-type exchange, so this queue receives
+                // the notifications of every tenant on the broker (OTP codes, reset links). Drop foreign ones before
+                // anything else: no pipeline start, no response; returning normally acknowledges the message. The log
+                // names the two tenant ids only, never recipients, subject or body. Routing per tenant: AB#8410.
+                if (!IsOwnTenant(message, context))
+                {
+                    context.NodeContext.Warning(
+                        "Dropped send-notification request of tenant '{MessageTenantId}' received by the pipeline of tenant '{PipelineTenantId}'",
+                        message.TenantId, context.TenantId);
+                    return;
+                }
+
                 try
                 {
                     context.NodeContext.Info("Received command send notification");
@@ -68,6 +80,13 @@ internal class FromSendNotificationNode(IEventHubControl eventHubControl)
 
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// True when the request belongs to the tenant of this pipeline (case-insensitive, tenant ids are compared the way
+    /// the endpoint address lower-cases them).
+    /// </summary>
+    internal static bool IsOwnTenant(SendNotificationsRequest message, ITriggerContext context) =>
+        string.Equals(message.TenantId, context.TenantId, StringComparison.OrdinalIgnoreCase);
 
     public async Task StopAsync(ITriggerContext context)
     {

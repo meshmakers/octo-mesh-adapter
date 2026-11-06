@@ -201,6 +201,71 @@ public class GetQueryByIdNodeTests : SessionNodeTestBase
             () => node.ProcessObjectAsync(dataContext, nodeContext));
     }
 
+    /// <summary>
+    ///     AB#8355: the default delete archives a query (rtState = Archived) and the lookup by id still returns the
+    ///     document. The node must report it as not found and must not execute it.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_WithDeletedQuery_ThrowsQueryNotFound_AndDoesNotExecuteIt()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        var deletedQuery = new RtSimpleRtQuery
+        {
+            RtId = TestQueryRtId,
+            RtState = RtState.Archived,
+            QueryCkTypeId = "TestModel/TestType",
+            Columns = new AttributeStringValueList(["col1"])
+        };
+        SetupSimpleQuery(deletedQuery);
+        SetupGraphByTypeResult(CreateEmptyGraphResultSet());
+
+        var node = CreateNode(next);
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains($"Query with RtId '{TestQueryRtId}' not found", ex.Message);
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+        A.CallTo(() => TenantRepository.GetRtEntitiesGraphByTypeAsync(
+                A<IOctoSession>._,
+                A<RtCkId<CkTypeId>>._,
+                A<RtEntityQueryOptions>._,
+                A<ICollection<NavigationPair>>._,
+                A<int?>._,
+                A<int?>._))
+            .MustNotHaveHappened();
+    }
+
+    /// <summary>
+    ///     AB#8355: a deleted stream-data query is not found either; the archive is never read.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_WithDeletedStreamDataQuery_ThrowsQueryNotFound()
+    {
+        var config = CreateConfig();
+        var (dataContext, nodeContext, next) = PrepareTest<GetQueryByIdNodeConfiguration>(config);
+
+        var deletedQuery = new RtSimpleSdQuery
+        {
+            RtId = TestQueryRtId,
+            RtState = RtState.Archived,
+            QueryCkTypeId = "TestModel/TestType",
+            ArchiveRtId = TestArchiveRtId.ToString(),
+            Columns = new AttributeStringValueList(["col1"])
+        };
+        A.CallTo(() => TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+                A<IOctoSession>._, A<OctoObjectId>._))
+            .Returns(Task.FromResult<RtPersistentQuery?>(deletedQuery));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        VerifyNextNotCalled(next, dataContext, nodeContext);
+        A.CallTo(() => _archiveStore.GetAsync(A<OctoObjectId>._)).MustNotHaveHappened();
+    }
+
     #endregion
 
     #region Simple Query Tests

@@ -50,8 +50,10 @@ public class GetQueryByIdNode(
         using var session = await context.GetSessionForAsync(c.Identity);
         session.StartTransaction();
 
+        // AB#8355: a deleted query is archived (rtState = Archived) and stays in its collection; the plain lookup by id
+        // returns it whatever its state, so it is treated as not found here.
         var rtQuery =
-            await context.TenantRepository.GetRtEntityByRtIdAsync<RtPersistentQuery>(
+            await context.TenantRepository.GetActiveRtEntityByRtIdAsync<RtPersistentQuery>(
                 session, c.QueryRtId);
 
         if (rtQuery == null)

@@ -175,6 +175,15 @@ The node provides detailed logging at different levels:
 ## Performance Considerations
 
 1. **Memory Usage**: Large PDF files will consume significant memory during processing.
+   - **One OCR call at a time, native memory returned after each call (AB#8407).** IronOCR frees its page
+     buffers on dispose, but glibc keeps the freed pages, so without help the adapter's native memory grew
+     with every OCR batch until the pod was OOM-killed. The node therefore runs every IronOCR call through
+     `OcrNativeMemoryCoordinator`: at most one OCR call per adapter process at a time (further calls wait),
+     and glibc `malloc_trim(0)` after each call. Measured in a Linux container with 50 runs on scanned
+     documents: native memory 1.4-1.5 GB before, about 0.5 GB after; with four concurrent callers 2.0 GB
+     before, 0.5 GB after (peak 2.0 GB before, 0.8 GB after).
+   - Concurrent OCR documents in one adapter are processed one after the other, so a burst of OCR work
+     takes longer instead of using more memory.
 2. **Processing Time**: OCR is computationally intensive. Processing time increases with:
    - Number of pages
    - Image resolution

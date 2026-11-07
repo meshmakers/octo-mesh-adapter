@@ -175,32 +175,13 @@ internal partial class PdfOcrExtractionNode(
             }
 
             License.LicenseKey = licenseKey;
-            var ocr = new IronTesseract();
-            
-            if (!string.IsNullOrEmpty(config.Language))
-            {
-                ocr.Language = GetOcrLanguage(config.Language);
-            }
-            
-            if (config.PageNumbers is { Length: > 0 })
-            {
-                ocr.Configuration.PageSegmentationMode = TesseractPageSegmentationMode.AutoOsd;
-            }
 
-            using OcrInputBase ocrInput = isPdf
-                ? new OcrPdfInput(fileData)
-                : new OcrImageInput(fileData);
-
-            // A photographed document benefits from geometric + noise correction
-            // before OCR (deskew straightens tilt, denoise removes sensor grain).
-            // Skipped for PDFs (already page-rendered) and when EnhanceImage is off.
-            if (!isPdf && config.EnhanceImage)
-            {
-                ocrInput.Deskew(config.MaxDeskewAngle);
-                ocrInput.DeNoise(false);
-            }
-
-            var result = ocr.Read(ocrInput);
+            // One OCR call per process at a time, and glibc malloc_trim after each one: IronOCR's page
+            // buffers are freed but stay in glibc's arenas, which made the adapter's native memory grow
+            // with every OCR batch until the pod was OOM-killed (AB#8407). The input is created and
+            // disposed INSIDE the coordinated call so its buffers are free before the trim runs.
+            var result = await OcrNativeMemoryCoordinator.Shared.RunAsync(
+                () => ReadWithIronOcr(fileData, isPdf, config));
 
             var extractedText = result.Text;
 
@@ -300,6 +281,41 @@ internal partial class PdfOcrExtractionNode(
         await next(dataContext, nodeContext);
     }
     
+    /// <summary>
+    /// The IronOCR read itself. A new <see cref="IronTesseract"/> per call is deliberate: it is not
+    /// <see cref="IDisposable"/>, holds no native state between calls, and reusing one engine did not lower
+    /// the retained memory in the AB#8407 measurement.
+    /// </summary>
+    private static OcrResult ReadWithIronOcr(byte[] fileData, bool isPdf, PdfOcrExtractionNodeConfiguration config)
+    {
+        var ocr = new IronTesseract();
+
+        if (!string.IsNullOrEmpty(config.Language))
+        {
+            ocr.Language = GetOcrLanguage(config.Language);
+        }
+
+        if (config.PageNumbers is { Length: > 0 })
+        {
+            ocr.Configuration.PageSegmentationMode = TesseractPageSegmentationMode.AutoOsd;
+        }
+
+        using OcrInputBase ocrInput = isPdf
+            ? new OcrPdfInput(fileData)
+            : new OcrImageInput(fileData);
+
+        // A photographed document benefits from geometric + noise correction
+        // before OCR (deskew straightens tilt, denoise removes sensor grain).
+        // Skipped for PDFs (already page-rendered) and when EnhanceImage is off.
+        if (!isPdf && config.EnhanceImage)
+        {
+            ocrInput.Deskew(config.MaxDeskewAngle);
+            ocrInput.DeNoise(false);
+        }
+
+        return ocr.Read(ocrInput);
+    }
+
     /// <summary>
     /// Writes the text layer of a hybrid-looking PDF to the target path after the OCR half of the
     /// AB#5259 merge failed, so the result degrades to the pre-merge behaviour instead of

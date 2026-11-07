@@ -1786,6 +1786,18 @@ default consume topology creates. Exclusive by design keeps that binding; the pl
 topology off (and exclusive by design refuses `ConfigureConsumeTopology`), so a move to shared belongs with a change
 of the publishers, not here. A second adapter replica stays a hot standby, as before.
 
+**Tenant guard (AB#8409).** Because the publishers publish to the `SendNotificationsRequest` message-type exchange,
+every FromSendNotification queue on the broker receives the requests of **all** tenants — the tenant in the queue name
+has no routing effect. The handler therefore compares `message.TenantId` with the pipeline's tenant
+(`ITriggerContext.TenantId`, case-insensitive) first. A foreign request is dropped: the pipeline is not started, no
+response is sent, the handler returns normally so the message is acknowledged, and one WARN is logged with the two
+tenant ids only (never recipients, subject or body). Consequence for operators: the mailer pipeline must run in the
+same tenant whose identity/common services issue the mail; a central mailer in another tenant no longer delivers
+foreign tenants' mails. Residual: the payloads still *reach* every adapter process that runs such a pipeline (fan-out
+by type); per-tenant routing (tenant-routed exchange, routing key = tenant id) is AB#8410. Tests:
+`FromSendNotificationNodeTests` (foreign tenant → no pipeline start, WARN without payload; own tenant in any casing →
+pipeline starts).
+
 Tests: `tests/MeshAdapter.Sdk.Tests/Nodes/Trigger/FromSendNotificationCommandConsumerTopologyTests.cs` (options handed
 to `IEventHubControl`; the node against the event hub's real `IEventHubControl` with a fake bus: no deprecation
 warning, reason logged, classic queue name, consume topology not switched off; control: a classic registration warns).

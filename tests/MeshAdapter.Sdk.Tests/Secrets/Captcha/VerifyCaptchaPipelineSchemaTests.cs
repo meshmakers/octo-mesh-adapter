@@ -1,8 +1,5 @@
 using System.Text.Json.Nodes;
-using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection;
+using MeshAdapter.Sdk.Tests.Helpers;
 
 namespace MeshAdapter.Sdk.Tests.Secrets.Captcha;
 
@@ -10,29 +7,19 @@ namespace MeshAdapter.Sdk.Tests.Secrets.Captcha;
 ///     The pipeline JSON schema of <c>VerifyCaptcha@1</c>, generated from the real node registrations like the build
 ///     target does: listed, no endpoint property, <c>provider</c> required and <c>timeoutSeconds</c> limited to 1-60.
 /// </summary>
-public class VerifyCaptchaPipelineSchemaTests
+[Collection(PipelineSchemaCollection.Name)]
+public class VerifyCaptchaPipelineSchemaTests(PipelineSchemaFixture schema)
 {
-    private static readonly Lazy<JsonObject?> Generated = new(Generate);
+    private JsonObject? Generated => schema.NodeSchemaOrNull("VerifyCaptcha@1");
 
-    private static JsonObject? Generate()
-    {
-        var services = new ServiceCollection();
-        services.AddDataPipelineSerializer().AddMeshDataPipelineNodes();
-        var json = services.BuildServiceProvider().GetRequiredService<IPipelineSchemaGenerator>().GenerateSchema();
+    private JsonObject Node => Generated ?? throw new InvalidOperationException("VerifyCaptcha@1 missing");
 
-        return JsonNode.Parse(json)!["$defs"]!["TransformationNode"]!["oneOf"]!.AsArray()
-            .Select(node => node!.AsObject())
-            .SingleOrDefault(node => node["properties"]?["type"]?["const"]?.GetValue<string>() == "VerifyCaptcha@1");
-    }
-
-    private static JsonObject Node => Generated.Value ?? throw new InvalidOperationException("VerifyCaptcha@1 missing");
-
-    private static JsonObject Properties => Node["properties"]!.AsObject();
+    private JsonObject Properties => Node["properties"]!.AsObject();
 
     [Fact]
     public void TheNode_IsListedInTheSchema()
     {
-        Assert.NotNull(Generated.Value);
+        Assert.NotNull(Generated);
         Assert.Contains("tokenPath", Properties.Select(property => property.Key));
     }
 

@@ -1,38 +1,20 @@
-using System.Text.Json.Nodes;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
-// Not parallel to any other class: generating the pipeline schema while another class does the
-// same can spin forever in the process-wide XML documentation cache of Namotion.Reflection, which
-// replaces inheritdoc elements without a lock.
-[CollectionDefinition(nameof(SftpDeleteNodeIdentityConfigurationTests), DisableParallelization = true)]
-public sealed class SftpDeleteNodeIdentityConfigurationCollection;
-
 /// <summary>
 /// AB#8284 compatibility: the expected identity of <c>SftpDelete@1</c> is five new optional
 /// properties. A definition that does not use them loads and behaves as before, and one that
 /// does loads with the values exactly as written.
 /// </summary>
-[Collection(nameof(SftpDeleteNodeIdentityConfigurationTests))]
-public class SftpDeleteNodeIdentityConfigurationTests
+[Collection(PipelineSchemaCollection.Name)]
+public class SftpDeleteNodeIdentityConfigurationTests(PipelineSchemaFixture schema)
 {
-    private static readonly Lazy<JsonObject> GeneratedNodeSchema = new(() =>
-    {
-        var services = new ServiceCollection();
-        services.AddDataPipelineSerializer().AddMeshDataPipelineNodes();
-        var json = services.BuildServiceProvider().GetRequiredService<IPipelineSchemaGenerator>().GenerateSchema();
-
-        return JsonNode.Parse(json)!["$defs"]!["TransformationNode"]!["oneOf"]!.AsArray()
-            .Select(n => n!.AsObject())
-            .Single(n => n["properties"]?["type"]?["const"]?.GetValue<string>() == "SftpDelete@1");
-    });
-
     [Fact]
     public void OnIdentityMismatch_DefaultsToFail_TheZeroMember()
     {
@@ -66,7 +48,7 @@ public class SftpDeleteNodeIdentityConfigurationTests
     [Fact]
     public void Schema_NewPropertiesAreOptional_AndTheExistingOnesAreStillThere()
     {
-        var node = GeneratedNodeSchema.Value;
+        var node = schema.NodeSchema("SftpDelete@1");
         var properties = node["properties"]!.AsObject().Select(p => p.Key).ToHashSet();
 
         foreach (var added in new[]

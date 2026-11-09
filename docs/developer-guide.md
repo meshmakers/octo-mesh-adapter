@@ -1357,6 +1357,35 @@ reason without `Origin: Manual` fails the node. An archive that ranks by the res
   manualReasonAttributePath: Reason
 ```
 
+#### Partial delivery: a missing column keeps its value, an explicit null clears it (all three archive load nodes, AB#8622)
+
+The archive treats a column a row does not name differently from a column named with null: a column
+that is **not named keeps its stored value**, a column **named with null is cleared**, and a new row
+stores NULL for every column it does not name (engine rule, octo-construction-kit-engine-mongodb
+`docs/streamdata-archive-concept.md`, "Partial delivery"). The load nodes hand that distinction on
+unchanged, so a pipeline decides by the shape of its data:
+
+| In the document | What reaches the archive | Effect on a stored row |
+|-----------------|--------------------------|------------------------|
+| property with a value | the column with that value | replaced |
+| property with JSON `null` | the column, named, with `null` | cleared |
+| property missing | the column is not named | kept |
+
+- `SaveStreamDataInArchive@1` / `SaveTimeRangeStreamDataInArchive@1`: `CreateUpdateInfo@1` writes a
+  JSON null as an attribute with a null value and skips a value path that matches nothing; the update
+  info keeps both through the data context, and the save node passes the attribute dictionary on.
+- `SaveTimeRangeSeriesInArchive@1`: a series or value property holding JSON `null` becomes a named
+  column with null; a missing property, an object or array, and a value the enum conversion cannot map
+  stay unnamed (`TimeRangeSeriesShaper.TryReadColumn`).
+- A JSON null on an **Enum** attribute fails `CreateUpdateInfo@1` (`RtPathEvaluator` refuses a null
+  enum value), so an enum column cannot be cleared through that route yet; `SaveTimeRangeSeriesInArchive@1`
+  does clear it, because it skips the conversion for a null.
+- The anchor entity of `SaveTimeRangeSeriesInArchive@1` (a runtime entity, not an archive row) still
+  ignores a null column value: it keeps the attribute it had.
+
+Tests: `TimeRangeSeriesShaperTests` (null, missing, value per scope), `ArchiveNullVersusMissingChainTests`
+(document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node).
+
 #### SaveStreamDataInArchiveNode
 
 Persists entity data to CrateDB time-series database.

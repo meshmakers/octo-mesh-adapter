@@ -40,6 +40,10 @@ internal class AnthropicAiQueryNode(
     {
         var config = nodeContext.GetNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
 
+        // AB#8658: usage of every API call of this execution (tool rounds and repair calls included).
+        var usage = new AiUsageAccumulator();
+        string? usageModel = null;
+
         try
         {
             // Resolve API key: prefer ApiKeyConfigurationName over direct ApiKey
@@ -77,6 +81,7 @@ internal class AnthropicAiQueryNode(
 
             // Resolve the model: template (AB#8498) -> AiConfiguration (aiModel) -> node config
             var model = ResolveModel(config, etlContext, nodeContext, template);
+            usageModel = model;
 
             // Resolve max tokens and temperature: template -> AiConfiguration -> node config
             var maxTokens = ResolveMaxTokens(config, etlContext, nodeContext, template);
@@ -102,6 +107,11 @@ internal class AnthropicAiQueryNode(
                 contextBuilder.AppendLine(mainContent);
                 contextBuilder.AppendLine();
             }
+
+            // AB#8658: with cacheSource only the main content is cached — dataPaths and the caller below
+            // change from call to call (e.g. the draft a verification call checks) and would turn every
+            // call into a cache miss if they were inside the cached block.
+            var cacheableContextLength = contextBuilder.Length;
 
             if (config.DataPaths is { Length: > 0 })
             {
@@ -187,10 +197,14 @@ internal class AnthropicAiQueryNode(
             var fullContext = contextBuilder.ToString();
             nodeContext.Debug($"Querying Claude with {fullContext.Length} characters of context");
 
-            // Build the prompt
-            var userPrompt =
-                BuildUserPrompt(question, fullContext, config.ResponseFormat, config.JsonFormatSample,
-                    jsonSchemaMode ? config.JsonSchema : null);
+            // Build the prompt. With cacheSource (AB#8658) the source part becomes its own content
+            // block carrying a cache breakpoint; the text the model reads is the same either way.
+            var (sourcePart, instructionPart) =
+                BuildUserPromptParts(question, fullContext, config.ResponseFormat, config.JsonFormatSample,
+                    jsonSchemaMode ? config.JsonSchema : null, cacheableContextLength);
+            object userPrompt = config.CacheSource
+                ? BuildCachedSourceContent(sourcePart, instructionPart)
+                : sourcePart + instructionPart;
 
             // Load MCP tools if configured
             List<JsonElement>? mcpTools = null;
@@ -261,7 +275,7 @@ internal class AnthropicAiQueryNode(
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages, apiSchema);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, usage, historyMessages, apiSchema);
 
             // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
             // as API content blocks, never as text. Its "results" are invented, so the answer is
@@ -284,7 +298,7 @@ internal class AnthropicAiQueryNode(
             object processedResponse = jsonSchemaMode
                 ? await AiJsonSchemaResponseProcessor.ProcessAsync(aiResponse, config.JsonSchema!, schema!,
                     config.MaxJsonRepairAttempts,
-                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, repairPrompt, apiSchema!),
+                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, repairPrompt, apiSchema!, usage),
                     nodeContext)
                 : ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
 
@@ -309,6 +323,7 @@ internal class AnthropicAiQueryNode(
                 );
             }
 
+            WriteUsage(config, dataContext, nodeContext, usage, usageModel);
             nodeContext.Info("AI query completed successfully");
         }
         catch (Exception ex)
@@ -319,9 +334,56 @@ internal class AnthropicAiQueryNode(
             }
 
             nodeContext.Error($"Error during AI query: {ex.Message}");
+            // The calls that were made are paid even though the query failed.
+            WriteUsage(config, dataContext, nodeContext, usage, usageModel);
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    ///     Writes the summed usage to <c>usageOutputPath</c> (AB#8658). Nothing without the path or before
+    ///     the first API call.
+    /// </summary>
+    private static void WriteUsage(AnthropicAiQueryNodeConfiguration config, IDataContext dataContext,
+        INodeContext nodeContext, AiUsageAccumulator usage, string? model)
+    {
+        if (string.IsNullOrWhiteSpace(config.UsageOutputPath) || usage.Calls == 0)
+        {
+            return;
+        }
+
+        var usageJson = usage.ToJson(model);
+        if (usageJson["estimatedCostUsd"] == null)
+        {
+            nodeContext.Warning(
+                $"No cost estimate for model '{model}': it is not in the adapter's price table. Token counts are written.");
+        }
+
+        dataContext.Set(config.UsageOutputPath, usageJson, DocumentModes.Extend, ValueKinds.Simple,
+            TargetValueWriteModes.Overwrite);
+        nodeContext.Info(
+            $"AI usage: {usage.Calls} call(s), input {usage.InputTokens}, output {usage.OutputTokens}, " +
+            $"cache read {usage.CacheReadInputTokens}, cache write {usage.CacheCreationInputTokens} tokens");
+    }
+
+    /// <summary>
+    ///     The user message content with a cached source block (AB#8658): the source part carries an
+    ///     <c>ephemeral</c> breakpoint, the question follows in a second block. The concatenated text is
+    ///     exactly the single-string prompt, so the model reads the same thing.
+    /// </summary>
+    internal static object[] BuildCachedSourceContent(string sourcePart, string instructionPart)
+    {
+        return
+        [
+            new Dictionary<string, object>
+            {
+                ["type"] = "text",
+                ["text"] = sourcePart,
+                ["cache_control"] = new Dictionary<string, string> { ["type"] = "ephemeral" }
+            },
+            new Dictionary<string, object> { ["type"] = "text", ["text"] = instructionPart }
+        ];
     }
 
     /// <summary>
@@ -738,9 +800,9 @@ internal class AnthropicAiQueryNode(
     }
 
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
-        string model, int maxTokens, double temperature, string systemPrompt, string? mcpServerUrl, string userPrompt,
-        List<JsonElement>? mcpTools, INodeContext nodeContext, List<object>? historyMessages = null,
-        JsonNode? outputSchema = null)
+        string model, int maxTokens, double temperature, string systemPrompt, string? mcpServerUrl, object userPrompt,
+        List<JsonElement>? mcpTools, INodeContext nodeContext, AiUsageAccumulator usage,
+        List<object>? historyMessages = null, JsonNode? outputSchema = null)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
 
@@ -783,6 +845,7 @@ internal class AnthropicAiQueryNode(
 
             var responseContent = await response.Content.ReadAsStringAsync();
             var apiResponse = JsonSerializer.Deserialize<JsonElement>(responseContent);
+            usage.Add(apiResponse);
 
             // Check stop reason
             var stopReason = apiResponse.TryGetProperty("stop_reason", out var sr) ? sr.GetString() : null;
@@ -892,7 +955,7 @@ internal class AnthropicAiQueryNode(
     ///     content — at temperature 0 and with the same constrained-decoding schema.
     /// </summary>
     private async Task<string> ExecuteJsonRepairCallAsync(string apiKey, string model, int maxTokens,
-        string repairPrompt, JsonNode apiSchema)
+        string repairPrompt, JsonNode apiSchema, AiUsageAccumulator usage)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
         var messages = new List<object> { new { role = "user", content = repairPrompt } };
@@ -915,6 +978,7 @@ internal class AnthropicAiQueryNode(
         }
 
         var apiResponse = JsonSerializer.Deserialize<JsonElement>(responseContent);
+        usage.Add(apiResponse);
         if (apiResponse.TryGetProperty("stop_reason", out var stopReason) && stopReason.GetString() == "max_tokens")
         {
             throw new InvalidOperationException(BuildTruncationMessage(maxTokens));
@@ -1374,13 +1438,33 @@ internal class AnthropicAiQueryNode(
     internal static string BuildUserPrompt(string question, string context, string responseFormat,
         string jsonExample, string? jsonSchema = null)
     {
-        var promptBuilder = new StringBuilder();
+        var (sourcePart, instructionPart) =
+            BuildUserPromptParts(question, context, responseFormat, jsonExample, jsonSchema);
+        return sourcePart + instructionPart;
+    }
 
-        promptBuilder.AppendLine("Please analyze the following content and answer the question provided.");
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine("CONTENT:");
-        promptBuilder.AppendLine("---");
-        promptBuilder.AppendLine(context);
+    /// <summary>
+    ///     The user prompt in two parts (AB#8658): the source part (preamble and the first
+    ///     <paramref name="cacheableContextLength" /> characters of the context — the main content) and the
+    ///     instruction part (the rest of the context, the question and the answer format). Their
+    ///     concatenation is exactly the prompt this node has always sent; the split lets <c>cacheSource</c>
+    ///     put the cache breakpoint after the stable source. Without a length the whole context is the source.
+    /// </summary>
+    internal static (string SourcePart, string InstructionPart) BuildUserPromptParts(string question,
+        string context, string responseFormat, string jsonExample, string? jsonSchema = null,
+        int? cacheableContextLength = null)
+    {
+        var split = Math.Clamp(cacheableContextLength ?? context.Length, 0, context.Length);
+
+        var sourceBuilder = new StringBuilder();
+        sourceBuilder.AppendLine("Please analyze the following content and answer the question provided.");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("CONTENT:");
+        sourceBuilder.AppendLine("---");
+        sourceBuilder.Append(context, 0, split);
+
+        var promptBuilder = new StringBuilder();
+        promptBuilder.AppendLine(context[split..]);
         promptBuilder.AppendLine("---");
         promptBuilder.AppendLine();
         promptBuilder.AppendLine("QUESTION:");
@@ -1413,7 +1497,7 @@ internal class AnthropicAiQueryNode(
             }
         }
 
-        return promptBuilder.ToString();
+        return (sourceBuilder.ToString(), promptBuilder.ToString());
     }
 
     /// <summary>

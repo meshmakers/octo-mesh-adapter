@@ -87,6 +87,26 @@ public interface IServiceAccountTokenService
     /// </remarks>
     Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(ServiceAccountCredentials credentials,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Acquires the service account's <b>own</b> access token (client credentials, or the
+    ///     impersonation grant when the configuration has no secret, AB#5114) and <b>returns</b> it
+    ///     (AB#8658). Used by nodes that act as a dedicated service identity — <c>McpToolCall@1</c>
+    ///     calls MCP tools as e.g. <c>knowledge-curator</c>.
+    /// </summary>
+    /// <param name="tenantRepository">The tenant repository to read the configuration from</param>
+    /// <param name="wellKnownName">Well-known name of the ServiceAccountConfiguration entity</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The access token, or <c>null</c> when it could not be acquired (the cause is logged).</returns>
+    /// <remarks>
+    ///     🔴 <b>Never written into <see cref="IServiceClientAccessToken" /></b> — that process-wide
+    ///     singleton is the adapter's own identity and is shared by every concurrent pipeline, so reading
+    ///     a token back from it after <see cref="EnsureTokenAsync" /> can hand one pipeline another
+    ///     pipeline's account. Tokens are cached per <c>(TenantId, ClientId)</c> until shortly before they
+    ///     expire, so a busy pipeline does not pay a token round trip per execution.
+    /// </remarks>
+    Task<string?> AcquireServiceAccountTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -156,6 +176,15 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         ServiceAccountIdentity> _identityCache = new();
 
     private DateTime _tokenExpiresAt = DateTime.MinValue;
+
+    /// <summary>
+    ///     Service-account tokens handed out by <see cref="AcquireServiceAccountTokenAsync" />, keyed by
+    ///     <c>(TenantId, ClientId)</c> (AB#8658). Separate from <see cref="_identityCache" /> because that
+    ///     one deliberately never holds a credential, and from the <see cref="_serviceClientAccessToken" />
+    ///     singleton because that is the adapter's own identity.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId),
+        (string AccessToken, DateTime ExpiresAtUtc)> _accountTokenCache = new();
 
     public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
         ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
@@ -660,6 +689,94 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     }
 
     /// <summary>How the token for a service account is obtained (AB#5114).</summary>
+    /// <inheritdoc />
+    public async Task<string?> AcquireServiceAccountTokenAsync(ITenantRepository tenantRepository,
+        string wellKnownName, CancellationToken cancellationToken = default)
+    {
+        var configuration = await ReadConfigurationAsync(tenantRepository, wellKnownName);
+        if (configuration == null)
+        {
+            return null;
+        }
+
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        var cacheKey = (tenantId ?? string.Empty, configuration.ClientId);
+        if (_accountTokenCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
+        {
+            return cached.AccessToken;
+        }
+
+        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
+        if (issuerUri == null)
+        {
+            return null;
+        }
+
+        var mode = SelectAcquisitionMode(configuration, wellKnownName);
+        if (mode == null)
+        {
+            return null;
+        }
+
+        DiscoveryDocumentResponse disco;
+        try
+        {
+            disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri),
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A placeholder IssuerUri makes discovery THROW ("Malformed URL") — the AB#4541 shape.
+            _logger.LogError(ex,
+                "OIDC discovery at {IssuerUri} failed for ServiceAccountConfiguration '{WellKnownName}'",
+                issuerUri, wellKnownName);
+            return null;
+        }
+
+        if (disco.IsError)
+        {
+            _logger.LogError(
+                "Failed to discover token endpoint at {IssuerUri} for ServiceAccountConfiguration '{WellKnownName}': {Error}",
+                issuerUri, wellKnownName, disco.Error);
+            return null;
+        }
+
+        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
+
+        TokenResponse response;
+        try
+        {
+            response = await _tokenHttpClient.RequestTokenAsync(tokenRequest, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex,
+                "Token request to {IssuerUri} failed for ServiceAccountConfiguration '{WellKnownName}'",
+                issuerUri, wellKnownName);
+            return null;
+        }
+
+        if (response.IsError || string.IsNullOrEmpty(response.AccessToken))
+        {
+            _logger.LogError(
+                "Identity service {IssuerUri} refused a token for ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}) in tenant '{TenantId}': {Error} ({ErrorDescription})",
+                issuerUri, wellKnownName, configuration.ClientId, tenantId,
+                response.Error ?? "no token", response.ErrorDescription ?? "no description");
+            return null;
+        }
+
+        // The token's own exp is the truth; expires_in is the fallback. Never logged — only the fact.
+        var expiresAt = (JwtPayloadReader.TryRead(response.AccessToken, out var claims) && claims.ExpiresAtUtc.HasValue
+            ? claims.ExpiresAtUtc.Value
+            : DateTime.UtcNow.AddSeconds(response.ExpiresIn)) - IdentityCacheSkew;
+        _accountTokenCache[cacheKey] = (response.AccessToken, expiresAt);
+
+        _logger.LogInformation(
+            "Service account token acquired via ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}, {Mode}) in tenant '{TenantId}'",
+            wellKnownName, configuration.ClientId, mode.Value, tenantId);
+        return response.AccessToken;
+    }
+
     internal enum AcquisitionMode
     {
         /// <summary>The account authenticates itself with the secret stored on the configuration.</summary>

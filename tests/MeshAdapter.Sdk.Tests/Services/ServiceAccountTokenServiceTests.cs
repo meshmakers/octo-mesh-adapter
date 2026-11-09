@@ -274,6 +274,88 @@ public class ServiceAccountTokenServiceTests
     }
 
     // ---------------------------------------------------------------------------------------------
+    // AcquireServiceAccountTokenAsync (AB#8658): the account's own token, RETURNED — never written into
+    // the process-wide IServiceClientAccessToken, which is the adapter's identity.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AcquireServiceAccountTokenAsync_ReturnsTheTokenAndLeavesTheAdapterIdentityAlone()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["KnowledgeCurator"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.False(string.IsNullOrEmpty(token));
+        Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
+        Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm["acr_values"]);
+        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountTokenAsync_IsCachedUntilShortlyBeforeExpiry()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var first = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+        var callsAfterFirst = handler.CallCount;
+        var second = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(first, second);
+        Assert.Equal(callsAfterFirst, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountTokenAsync_AnAlmostExpiredTokenIsNotReused()
+    {
+        // expires within the 60 s skew: the next call must ask again.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 30), expiresIn: 30));
+        var service = CreateService(handler);
+
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+        var callsAfterFirst = handler.CallCount;
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(handler.CallCount > callsAfterFirst);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountTokenAsync_ARefusedRequestReturnsNull()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenError(
+            HttpStatusCode.BadRequest, """{"error":"invalid_client"}"""));
+
+        var token = await CreateService(handler).AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+    }
+
+    [Fact]
+    public async Task AcquireServiceAccountTokenAsync_AMissingConfigurationReturnsNullWithoutARequest()
+    {
+        SetupNoConfiguration();
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+
+        var token = await CreateService(handler).AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // AcquireServiceAccountIdentityAsync (AB#5028): who the service account IS. Roles are not on the
     // ServiceAccountConfiguration entity — the only place they exist is the issued token's claims.
     // ---------------------------------------------------------------------------------------------

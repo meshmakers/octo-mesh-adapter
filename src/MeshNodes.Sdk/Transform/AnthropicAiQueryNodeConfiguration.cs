@@ -272,4 +272,41 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// </summary>
     [PropertyGroup("Output", 5)]
     public int MaxJsonRepairAttempts { get; set; } = 1;
+
+    /// <summary>
+    ///     Optional JSONPath where the node writes what its API calls used (AB#8658): <c>model</c>,
+    ///     <c>calls</c>, <c>inputTokens</c>, <c>outputTokens</c>, <c>cacheReadInputTokens</c>,
+    ///     <c>cacheCreationInputTokens</c> and <c>estimatedCostUsd</c> (with <c>priceListDate</c>), summed
+    ///     over every call of the execution — tool rounds and JSON repair calls included. Not set = nothing
+    ///     is written (the behaviour before AB#8658).
+    /// </summary>
+    /// <remarks>
+    ///     <c>inputTokens</c> is the uncached remainder; the full prompt size is the sum of the three input
+    ///     fields. <c>estimatedCostUsd</c> uses the adapter's built-in Anthropic list prices
+    ///     (first-party API, 5-minute cache writes) and is <c>null</c> for a model the table does not know.
+    ///     It is an estimate, not the invoice. With <c>continueOnError</c> the usage is written for a failed
+    ///     query too, since the calls were made and paid.
+    /// </remarks>
+    [PropertyGroup("Output", 6, "jsonpath")]
+    public string? UsageOutputPath { get; set; }
+
+    /// <summary>
+    ///     When <c>true</c>, the main content of the user message (the value at <c>path</c>) is sent as its
+    ///     own text block with an <c>ephemeral</c> prompt-cache breakpoint, followed by a second block with
+    ///     the <c>dataPaths</c> context, the caller and the question (AB#8658). Calls whose request is
+    ///     identical up to the end of that block (same tools, same system prompt, same source) read it from
+    ///     the cache (<c>cacheReadInputTokens</c>) within its 5-minute lifetime: every MCP tool round of one
+    ///     execution, and repeated runs of the same node over the same source (e.g. reviewer rounds that only
+    ///     change the draft in <c>dataPaths</c>). Default <c>false</c>: the user message is a single string,
+    ///     as before; the text the model reads is the same either way.
+    /// </summary>
+    /// <remarks>
+    ///     A cache write costs 1.25× input once; a hit costs about 0.1× (less on newer models). It pays off
+    ///     from the second call over the same source. Prefixes below the model's minimum cacheable length
+    ///     (512–4096 tokens) are silently not cached. The cache is a prefix match (tools, then system prompt,
+    ///     then messages): two nodes with different system prompts never share the cached source. The system
+    ///     prompt and the tool list are cached regardless of this setting.
+    /// </remarks>
+    [PropertyGroup("AI Configuration", 7)]
+    public bool CacheSource { get; set; }
 }

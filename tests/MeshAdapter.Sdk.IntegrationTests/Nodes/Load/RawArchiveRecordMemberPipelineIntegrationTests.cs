@@ -24,7 +24,8 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Load;
 ///     and CrateDB (the chain tests in <c>MeshAdapter.Sdk.Tests</c> hand the points to a fake repository). The archive
 ///     has columns on the sub-paths of the record <c>SensorReading.Amount</c> (<c>Amount.Value</c>, <c>Amount.Unit</c>).
 ///     The row is seeded in the shape of the asset repository's REST <c>insert</c> (dotted keys); then the pipeline
-///     writes a member value, an explicit null and leaves a member out. Before the fix every pipeline write left the
+///     writes a member value, an explicit null and leaves a member out; an explicit null on a member of a record the
+///     update does not hold yet reaches the archive only with the node option <c>explicitNullCreatesRecords</c>. Before the fix every pipeline write left the
 ///     REST values in the row: the record arrived as one <c>Amount</c> key, which is no column.
 /// </summary>
 [Trait("Category", "Integration")]
@@ -40,6 +41,7 @@ public class RawArchiveRecordMemberPipelineIntegrationTests(StreamDataPipelineFi
             updateKind: Update
             rtIdPath: $.rtId
             ckTypeId: MeshAdapterIntegrationTest/SensorReading
+            explicitNullCreatesRecords: {explicitNullCreatesRecords}
             timestampPath: $.timestamp
             targetPath: $.updateInfos
             targetValueKind: Array
@@ -93,6 +95,22 @@ public class RawArchiveRecordMemberPipelineIntegrationTests(StreamDataPipelineFi
             ["rtId"] = meter.ToString(), ["timestamp"] = Timestamp.ToString("O"), ["temperature"] = 3.0
         });
         (await ReadRowAsync(archiveRtId, meter)).Should().Be((3.0, 20.0, "MW"));
+
+        // Only an explicit null for one member: the update holds no Amount yet. Without the node's opt-in the null
+        // is dropped and the stored member stays.
+        await RunAsync(archiveRtId, new JsonObject
+        {
+            ["rtId"] = meter.ToString(), ["timestamp"] = Timestamp.ToString("O"), ["amountUnit"] = null
+        }, explicitNullCreatesRecords: false);
+        (await ReadRowAsync(archiveRtId, meter)).Should().Be((3.0, 20.0, "MW"));
+
+        // With explicitNullCreatesRecords the record is created with that member null: the member is cleared, the
+        // member left out keeps its stored value.
+        await RunAsync(archiveRtId, new JsonObject
+        {
+            ["rtId"] = meter.ToString(), ["timestamp"] = Timestamp.ToString("O"), ["amountUnit"] = null
+        });
+        (await ReadRowAsync(archiveRtId, meter)).Should().Be((3.0, 20.0, null));
     }
 
     private async Task<OctoObjectId> CreateAndActivateArchiveAsync()
@@ -148,7 +166,8 @@ public class RawArchiveRecordMemberPipelineIntegrationTests(StreamDataPipelineFi
         await fixture.RefreshArchiveAsync(archiveRtId);
     }
 
-    private async Task<JsonObject> RunAsync(OctoObjectId archiveRtId, JsonObject input)
+    private async Task<JsonObject> RunAsync(OctoObjectId archiveRtId, JsonObject input,
+        bool explicitNullCreatesRecords = true)
     {
         var repository = fixture.GetSystemContext().GetSystemTenantRepository();
         await repository.LoadCacheForTenantAsync(fixture.GetService<ICkCacheService>());
@@ -162,7 +181,9 @@ public class RawArchiveRecordMemberPipelineIntegrationTests(StreamDataPipelineFi
             new Dictionary<string, object?>());
 
         var serializer = fixture.GetService<IPipelineConfigurationSerializer>();
-        var definition = await serializer.DeserializeAsync(PipelineYaml.Replace("{archiveRtId}", archiveRtId.ToString()));
+        var definition = await serializer.DeserializeAsync(PipelineYaml
+            .Replace("{archiveRtId}", archiveRtId.ToString())
+            .Replace("{explicitNullCreatesRecords}", explicitNullCreatesRecords ? "true" : "false"));
         var orchestrator = fixture.GetService<IEtlDataOrchestrator>();
 
         var result = await orchestrator.ExecutePipelineAsync(definition, etlContext, value: input);

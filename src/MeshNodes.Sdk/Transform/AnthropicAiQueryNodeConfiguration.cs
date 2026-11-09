@@ -25,18 +25,45 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
 
     /// <summary>
     /// The Claude model to use (e.g., "claude-sonnet-4-6", "claude-opus-4-1").
-    /// Optional on the node when the referenced AiConfiguration supplies <c>aiModel</c>; that
-    /// value takes precedence. There is deliberately no hard-coded default model — a pinned model
+    /// Optional on the node when the <c>promptTemplateName</c> template supplies
+    /// <c>DefaultModelId</c> or the referenced AiConfiguration supplies <c>aiModel</c>; those values
+    /// take precedence, in that order. There is deliberately no hard-coded default model — a pinned model
     /// id goes out of date, so the model must be provided explicitly (node or AiConfiguration).
     /// </summary>
     [PropertyGroup("AI Configuration", 0)]
     public string? Model { get; set; }
 
     /// <summary>
-    /// The question/prompt to ask the AI about the data
+    ///     Optional well-known name of a <c>System.Ai/AiPromptTemplate</c> entity with
+    ///     <c>PromptPurpose</c> <c>KnowledgeGeneration</c> (AB#8498). The node loads its system prompt
+    ///     (<c>SystemPromptFragment</c>, plus <c>FewShotExamples</c>), its question (<c>UserTemplate</c>)
+    ///     and its model settings (<c>DefaultModelId</c>, <c>Temperature</c>, <c>MaxTokens</c>) from it.
     /// </summary>
-    [PropertyGroup("AI Configuration", 1, "textarea")]
-    public required string Question { get; set; }
+    /// <remarks>
+    ///     <para>
+    ///         The template is handed over like the AiConfiguration of <c>apiKeyConfigurationName</c>:
+    ///         the pipeline needs a <c>Uses</c> association to the template entity. The adapter caches
+    ///         the configuration when the pipeline is registered, so a changed prompt takes effect after
+    ///         the pipeline is redeployed.
+    ///     </para>
+    ///     <para>
+    ///         Precedence: an inline <c>question</c> or <c>systemPrompt</c> overrides the
+    ///         template's text. Model, temperature and max tokens come from the template first, then
+    ///         from the AiConfiguration, then from the node properties. A named template that is not
+    ///         handed over, is not an AiPromptTemplate or is not a KnowledgeGeneration template fails
+    ///         the node with an error naming the template.
+    ///     </para>
+    /// </remarks>
+    [PropertyGroup("AI Configuration", 1)]
+    public string? PromptTemplateName { get; set; }
+
+    /// <summary>
+    ///     The question/prompt to ask the AI about the data. Required unless
+    ///     <c>promptTemplateName</c> names a template with a <c>UserTemplate</c>; when set, it
+    ///     overrides the template's <c>UserTemplate</c>.
+    /// </summary>
+    [PropertyGroup("AI Configuration", 2, "textarea")]
+    public string? Question { get; set; }
 
     /// <summary>
     /// Optional context data paths to include in the query (e.g., ["$.ExtractedText", "$.DocumentMetadata"])
@@ -45,23 +72,34 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public string[]? DataPaths { get; set; }
 
     /// <summary>
-    /// System prompt to set the context for the AI
+    ///     The system prompt used when neither the node nor a prompt template sets one — the text
+    ///     this node has always defaulted to.
     /// </summary>
-    [PropertyGroup("AI Configuration", 2, "textarea")]
-    public string SystemPrompt { get; set; } = "You are a helpful AI assistant that extracts specific information from documents. Always provide accurate, structured responses based only on the information provided.";
+    public const string DefaultSystemPrompt =
+        "You are a helpful AI assistant that extracts specific information from documents. Always provide accurate, structured responses based only on the information provided.";
 
     /// <summary>
-    /// Maximum tokens for the response. A maxTokens value on the referenced
-    /// AiConfiguration entity takes precedence; this property is the fallback.
+    ///     System prompt to set the context for the AI. When set, it overrides the
+    ///     <c>SystemPromptFragment</c> of the <c>promptTemplateName</c> template; when neither
+    ///     is set, the old default text applies (the behaviour before AB#8498).
     /// </summary>
-    [PropertyGroup("AI Configuration", 3)]
+    [PropertyGroup("AI Configuration", 3, "textarea")]
+    public string? SystemPrompt { get; set; }
+
+    /// <summary>
+    /// Maximum tokens for the response. A MaxTokens value on the <c>promptTemplateName</c>
+    /// template, then a maxTokens value on the referenced AiConfiguration entity take precedence;
+    /// this property is the fallback.
+    /// </summary>
+    [PropertyGroup("AI Configuration", 4)]
     public int MaxTokens { get; set; } = 1000;
 
     /// <summary>
-    /// Temperature for response generation (0.0 to 1.0). A temperature value on the
-    /// referenced AiConfiguration entity takes precedence; this property is the fallback.
+    /// Temperature for response generation (0.0 to 1.0). A Temperature value on the
+    /// <c>promptTemplateName</c> template, then a temperature value on the referenced
+    /// AiConfiguration entity take precedence; this property is the fallback.
     /// </summary>
-    [PropertyGroup("AI Configuration", 4)]
+    [PropertyGroup("AI Configuration", 5)]
     public double Temperature { get; set; } = 0.1;
 
     /// <summary>
@@ -99,7 +137,7 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// <summary>
     /// Maximum number of tool use rounds to prevent infinite loops (default: 10)
     /// </summary>
-    [PropertyGroup("AI Configuration", 5)]
+    [PropertyGroup("AI Configuration", 6)]
     public int MaxToolRounds { get; set; } = 10;
 
     /// <summary>

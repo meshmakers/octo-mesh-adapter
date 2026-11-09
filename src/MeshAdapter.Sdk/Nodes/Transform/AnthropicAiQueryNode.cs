@@ -53,10 +53,18 @@ internal class AnthropicAiQueryNode(
                     nameof(config.ApiKey));
             }
 
-            if (string.IsNullOrEmpty(config.Question))
+            // AB#8498: prompt by name. The template is part of the pipeline's configuration
+            // hand-over (Uses association), so a missing one fails before any paid call.
+            var template = AiPromptTemplateResolver.Resolve(etlContext.GlobalConfiguration, config.PromptTemplateName);
+            if (template != null)
             {
-                throw new ArgumentException("Question is required", nameof(config.Question));
+                nodeContext.Info(template.TemplateVersion.HasValue
+                    ? $"Using AiPromptTemplate '{template.Name}' (version {template.TemplateVersion})"
+                    : $"Using AiPromptTemplate '{template.Name}'");
             }
+
+            var question = ResolveQuestion(config, template);
+            var baseSystemPrompt = ResolveSystemPrompt(config, template);
 
             // AB#8498: guaranteed JSON. The schema is parsed before any API call so a malformed
             // jsonSchema fails the node at once instead of after a paid request.
@@ -67,12 +75,12 @@ internal class AnthropicAiQueryNode(
             // Resolve MCP server URL from AiConfiguration if available
             var mcpServerUrl = ResolveMcpServerUrl(config, etlContext, nodeContext);
 
-            // Resolve the model from AiConfiguration (aiModel) with fallback to the node config
-            var model = ResolveModel(config, etlContext, nodeContext);
+            // Resolve the model: template (AB#8498) -> AiConfiguration (aiModel) -> node config
+            var model = ResolveModel(config, etlContext, nodeContext, template);
 
-            // Resolve max tokens and temperature from AiConfiguration with fallback to the node config
-            var maxTokens = ResolveMaxTokens(config, etlContext, nodeContext);
-            var temperature = ResolveTemperature(config, etlContext, nodeContext);
+            // Resolve max tokens and temperature: template -> AiConfiguration -> node config
+            var maxTokens = ResolveMaxTokens(config, etlContext, nodeContext, template);
+            var temperature = ResolveTemperature(config, etlContext, nodeContext, template);
 
             nodeContext.Debug("Starting Anthropic AI query");
 
@@ -181,7 +189,7 @@ internal class AnthropicAiQueryNode(
 
             // Build the prompt
             var userPrompt =
-                BuildUserPrompt(config.Question, fullContext, config.ResponseFormat, config.JsonFormatSample,
+                BuildUserPrompt(question, fullContext, config.ResponseFormat, config.JsonFormatSample,
                     jsonSchemaMode ? config.JsonSchema : null);
 
             // Load MCP tools if configured
@@ -219,9 +227,9 @@ internal class AnthropicAiQueryNode(
             // That case skipped the suffix entirely, and the accounting chat answered "which
             // invoices are open" with invented tool calls and invented invoices.
             var mcpExpected = ExpectsMcpTools(config);
-            var systemPrompt = BuildEffectiveSystemPrompt(config.SystemPrompt,
+            var systemPrompt = BuildEffectiveSystemPrompt(baseSystemPrompt,
                 mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl) || mcpExpected, mcpToolCount: mcpTools?.Count ?? 0);
-            if (!ReferenceEquals(systemPrompt, config.SystemPrompt))
+            if (!ReferenceEquals(systemPrompt, baseSystemPrompt))
             {
                 nodeContext.Warning(string.IsNullOrEmpty(mcpServerUrl)
                     ? "The pipeline expects MCP tools but no MCP server URL is configured (AiConfiguration." +
@@ -314,6 +322,55 @@ internal class AnthropicAiQueryNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    ///     The question of this run (AB#8498): the inline <c>question</c> wins, otherwise the
+    ///     template's <c>UserTemplate</c>. Neither is an error, as before the template option.
+    /// </summary>
+    internal static string ResolveQuestion(AnthropicAiQueryNodeConfiguration config,
+        AiPromptTemplateSettings? template)
+    {
+        if (!string.IsNullOrEmpty(config.Question))
+        {
+            return config.Question;
+        }
+
+        if (!string.IsNullOrEmpty(template?.UserTemplate))
+        {
+            return template.UserTemplate;
+        }
+
+        throw new ArgumentException(template == null
+                ? "Question is required. Set 'question' or 'promptTemplateName' on the node."
+                : $"Question is required: AiPromptTemplate '{template.Name}' has no UserTemplate and the node sets no 'question'.",
+            nameof(config.Question));
+    }
+
+    /// <summary>
+    ///     The system prompt of this run before the no-tools correction (AB#8498): an inline
+    ///     <c>systemPrompt</c> wins (even an empty one, which sends no system prompt, as before);
+    ///     otherwise the template's <c>SystemPromptFragment</c> with its <c>FewShotExamples</c>;
+    ///     otherwise <see cref="AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt" />. A node
+    ///     without template and without <c>systemPrompt</c> therefore sends exactly the old default.
+    /// </summary>
+    internal static string ResolveSystemPrompt(AnthropicAiQueryNodeConfiguration config,
+        AiPromptTemplateSettings? template)
+    {
+        if (config.SystemPrompt != null)
+        {
+            return config.SystemPrompt;
+        }
+
+        if (template == null)
+        {
+            return AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt;
+        }
+
+        var systemPrompt = template.SystemPrompt ?? AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt;
+        return string.IsNullOrEmpty(template.FewShotExamples)
+            ? systemPrompt
+            : $"{systemPrompt}\n\n<examples>\n{template.FewShotExamples}\n</examples>";
     }
 
     /// <summary>
@@ -491,9 +548,16 @@ internal class AnthropicAiQueryNode(
         return config.McpServerUrl;
     }
 
-    private static string ResolveModel(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext)
+    internal static string ResolveModel(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
     {
+        // AB#8498: a prompt template is tuned for its model, so its DefaultModelId wins.
+        if (!string.IsNullOrEmpty(template?.ModelId))
+        {
+            nodeContext.Debug($"AI model '{template.ModelId}' loaded from AiPromptTemplate '{template.Name}'");
+            return template.ModelId;
+        }
+
         // Prefer the model configured on the AiConfiguration entity (aiModel), mirroring how the
         // API key and MCP server URL are resolved from it. Falls back to the node's own Model
         // property (and thus its default) when the AiConfiguration has no aiModel.
@@ -527,8 +591,15 @@ internal class AnthropicAiQueryNode(
     }
 
     internal static int ResolveMaxTokens(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext)
+        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
     {
+        // AB#8498: the prompt template's MaxTokens wins over the AiConfiguration.
+        if (template?.MaxTokens is { } templateMaxTokens)
+        {
+            nodeContext.Debug($"Max tokens {templateMaxTokens} loaded from AiPromptTemplate '{template.Name}'");
+            return templateMaxTokens;
+        }
+
         // Prefer the max tokens configured on the AiConfiguration entity (maxTokens), mirroring
         // how the model is resolved from it. Falls back to the node's own MaxTokens property
         // (and thus its default) when the AiConfiguration has no usable maxTokens. int.TryParse
@@ -554,8 +625,15 @@ internal class AnthropicAiQueryNode(
     }
 
     internal static double ResolveTemperature(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext)
+        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
     {
+        // AB#8498: the prompt template's Temperature (already range-checked) wins over the AiConfiguration.
+        if (template?.Temperature is { } templateTemperature)
+        {
+            nodeContext.Debug($"Temperature {templateTemperature} loaded from AiPromptTemplate '{template.Name}'");
+            return templateTemperature;
+        }
+
         // Prefer the temperature configured on the AiConfiguration entity (temperature),
         // mirroring the maxTokens/aiModel resolution. 0.0 is a meaningful value, so the only
         // rejection criteria are absence and the API's valid range (0.0 to 1.0). Parsed with

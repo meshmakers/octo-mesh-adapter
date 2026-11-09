@@ -46,7 +46,7 @@ public sealed class PipelineSchemaFixture
         services.AddDataPipelineSerializer().AddMeshDataPipelineNodes();
         var json = services.BuildServiceProvider().GetRequiredService<IPipelineSchemaGenerator>().GenerateSchema();
 
-        _nodeSchemas = JsonNode.Parse(json)!["$defs"]!["TransformationNode"]!["oneOf"]!.AsArray();
+        _nodeSchemas = PipelineSchemaNodeList.From(json);
     }
 
     /// <summary>
@@ -64,4 +64,27 @@ public sealed class PipelineSchemaFixture
     private IEnumerable<JsonObject> NodeSchemasOf(string type) =>
         _nodeSchemas.Select(node => node!.AsObject())
             .Where(node => node["properties"]?["type"]?["const"]?.GetValue<string>() == type);
+}
+
+/// <summary>
+///     Reads the list of node schemas out of the pipeline JSON schema. A schema without that list fails every test
+///     of <see cref="PipelineSchemaCollection" />, so the message names the path, whichever part of it is missing or
+///     of another type.
+/// </summary>
+internal static class PipelineSchemaNodeList
+{
+    /// <summary>The array at <c>$defs/TransformationNode/oneOf</c> of <paramref name="schemaJson" />.</summary>
+    /// <exception cref="InvalidOperationException">The schema has no array at that path.</exception>
+    public static JsonArray From(string schemaJson)
+    {
+        if (JsonNode.Parse(schemaJson) is JsonObject root &&
+            root["$defs"] is JsonObject definitions &&
+            definitions["TransformationNode"] is JsonObject transformationNode &&
+            transformationNode["oneOf"] is JsonArray nodeSchemas)
+        {
+            return nodeSchemas;
+        }
+
+        throw new InvalidOperationException("The pipeline schema has no $defs/TransformationNode/oneOf array.");
+    }
 }

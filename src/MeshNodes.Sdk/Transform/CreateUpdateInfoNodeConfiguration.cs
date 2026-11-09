@@ -22,6 +22,19 @@ public record CreateUpdateInfoNodeConfiguration : SourceTargetPathNodeConfigurat
     public string? UpdateKindPath { get; set; }
 
     /// <summary>
+    /// What a JSON null on a member of a record that the update does not hold yet does, for example
+    /// <c>Amount.Value</c> while no <c>Amount</c> is sent (AB#8625). <c>false</c> (default): the null is dropped
+    /// and the record stays missing, so an update never replaces a stored record with one that holds only
+    /// nulls. <c>true</c>: the record is created with that member as an explicit null, so the null reaches an
+    /// archive as a named null and clears the stored column (AB#8622); members not sent stay missing. Turn it
+    /// on only where the update is written to an archive (<c>SaveStreamDataInArchive@1</c>,
+    /// <c>SaveTimeRangeStreamDataInArchive@1</c>): for a runtime entity the created record replaces the stored one
+    /// and loses its other members, and a create fails on a required record member that was not sent.
+    /// </summary>
+    [PropertyGroup("Options", 2)]
+    public bool ExplicitNullCreatesRecords { get; set; } = false;
+
+    /// <summary>
     /// The path to the RtEntityId
     /// </summary>
     [PropertyGroup("Entity", 0, "jsonpath")]

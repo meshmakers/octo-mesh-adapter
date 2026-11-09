@@ -94,6 +94,9 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
         };
 
         var hasUpdate = updateKind == UpdateKind.Delete; // if we are deleting, we have an update for sure
+        var nullHandling = c.ExplicitNullCreatesRecords
+            ? RtPathNullHandling.CreateMissingRecords
+            : RtPathNullHandling.KeepMissingRecords;
         foreach (var au in c.AttributeUpdates ?? [])
         {
             if (string.IsNullOrWhiteSpace(au.AttributeName))
@@ -131,7 +134,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     foreach (var m in matches)
                     {
                         var jsonString = m.Get<JsonNode>("$")!.ToJsonString(CompactLiteralOptions);
-                        if (SetAttributeValueSingle(nodeContext, au.AttributeName, jsonString, rtEntity))
+                        if (SetAttributeValueSingle(nodeContext, au.AttributeName, jsonString, rtEntity, nullHandling))
                         {
                             hasUpdate = true;
                         }
@@ -139,11 +142,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     continue;
                 }
 
-                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, matches, rtEntity);
+                hasUpdate |= SetAttributeValue(nodeContext, au.AttributeName, matches, rtEntity, nullHandling);
             }
             else if (au.Value != null)
             {
-                if (!SetAttributeValueSingle(nodeContext, au.AttributeName, au.Value, rtEntity))
+                if (!SetAttributeValueSingle(nodeContext, au.AttributeName, au.Value, rtEntity, nullHandling))
                 {
                     return;
                 }
@@ -314,7 +317,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     }
 
     private bool SetAttributeValue(INodeContext nodeContext, string attributeName,
-        IEnumerable<IDataContext> matches, RtTypeWithAttributes rtTypeWithAttributes)
+        IEnumerable<IDataContext> matches, RtTypeWithAttributes rtTypeWithAttributes, RtPathNullHandling nullHandling)
     {
         bool hasUpdate = false;
         foreach (var match in matches)
@@ -327,7 +330,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     // GetAttributeValue needs the JsonObject, so read it via Get<JsonNode>.
                     var jObject = (JsonObject?)match.Get<JsonNode>("$");
                     if (jObject is not null &&
-                        SetAttributeValueSingle(nodeContext, attributeName, jObject, rtTypeWithAttributes))
+                        SetAttributeValueSingle(nodeContext, attributeName, jObject, rtTypeWithAttributes, nullHandling))
                     {
                         hasUpdate = true;
                     }
@@ -345,7 +348,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                         JsonValue v => JsonScalar.ToClr(v),
                         _ => GetAttributeValue(nodeContext, item)
                     }).ToList();
-                    if (SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes))
+                    if (SetAttributeValueSingle(nodeContext, attributeName, list, rtTypeWithAttributes, nullHandling))
                     {
                         hasUpdate = true;
                     }
@@ -354,7 +357,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                 }
                 case DataKind.Null:
                 {
-                    if (SetAttributeValueSingle(nodeContext, attributeName, null, rtTypeWithAttributes))
+                    if (SetAttributeValueSingle(nodeContext, attributeName, null, rtTypeWithAttributes, nullHandling))
                     {
                         hasUpdate = true;
                     }
@@ -367,7 +370,7 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
                     // JsonScalar rules exposed through GetValue — same parity as the former
                     // ExtractPrimitive ladder.
                     var raw = match.GetValue("$");
-                    if (SetAttributeValueSingle(nodeContext, attributeName, raw, rtTypeWithAttributes))
+                    if (SetAttributeValueSingle(nodeContext, attributeName, raw, rtTypeWithAttributes, nullHandling))
                     {
                         hasUpdate = true;
                     }
@@ -463,15 +466,17 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     }
 
     private bool SetAttributeValueSingle(INodeContext nodeContext, string attributeName, object? value,
-        RtTypeWithAttributes rtTypeWithAttributes)
+        RtTypeWithAttributes rtTypeWithAttributes, RtPathNullHandling nullHandling)
     {
         var convertedValue = GetAttributeValue(nodeContext, value);
 
         // AB#8625: a JSON null is an explicit null. On a sub-path of a record that does not exist yet
-        // (Amount.Value without Amount) the record is created with that member null, so the null reaches
-        // an archive as a named null column instead of as "not sent" (AB#8622).
+        // (Amount.Value without Amount) the record is created with that member null only when the node opts in
+        // (ExplicitNullCreatesRecords), so the null reaches an archive as a named null column instead of as
+        // "not sent" (AB#8622). The default drops it: an entity update must not replace a stored record with
+        // one that holds only nulls.
         RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, rtTypeWithAttributes, attributeName,
-            convertedValue, RtPathNullHandling.CreateMissingRecords);
+            convertedValue, nullHandling);
         if (convertedValue is string plaintext)
         {
             PreserveSecretPlaintext(nodeContext, attributeName, plaintext, rtTypeWithAttributes);

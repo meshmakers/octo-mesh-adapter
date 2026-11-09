@@ -169,7 +169,8 @@ public class ArchiveNullVersusMissingChainTests : SessionNodeTestBase
     public async Task RawSave_ExplicitNullOnEnumAndRecordSubPath_ReachesTheArchiveAsNull()
     {
         var dataContext = new DataContextImpl(JsonDocument.Parse(EnumAndRecordDocument));
-        await RunCreateUpdateInfoAsync(dataContext, withWindow: false, EnumAndRecordUpdates);
+        await RunCreateUpdateInfoAsync(dataContext, withWindow: false, EnumAndRecordUpdates,
+            explicitNullCreatesRecords: true);
 
         List<StreamDataPoint>? captured = null;
         A.CallTo(() => _streamDataRepository.InsertAsync(ArchiveRtId, A<IEnumerable<StreamDataPoint>>._))
@@ -194,7 +195,8 @@ public class ArchiveNullVersusMissingChainTests : SessionNodeTestBase
         SetupExistingSource();
 
         var dataContext = new DataContextImpl(JsonDocument.Parse(EnumAndRecordDocument));
-        await RunCreateUpdateInfoAsync(dataContext, withWindow: true, EnumAndRecordUpdates);
+        await RunCreateUpdateInfoAsync(dataContext, withWindow: true, EnumAndRecordUpdates,
+            explicitNullCreatesRecords: true);
 
         List<TimeRangeStreamDataPoint>? captured = null;
         A.CallTo(() => _streamDataRepository.InsertTimeRangeAsync(
@@ -224,7 +226,7 @@ public class ArchiveNullVersusMissingChainTests : SessionNodeTestBase
             new() { AttributeName = "Measured", AttributeValueType = AttributeValueTypesDto.Double, ValuePath = "$.measured" },
             new() { AttributeName = "Amount.Value", AttributeValueType = AttributeValueTypesDto.Double, ValuePath = "$.amountValue" },
             new() { AttributeName = "Quality", AttributeValueType = AttributeValueTypesDto.Enum, ValuePath = "$.quality" }
-        ]);
+        ], explicitNullCreatesRecords: true);
 
         List<StreamDataPoint>? captured = null;
         A.CallTo(() => _streamDataRepository.InsertAsync(ArchiveRtId, A<IEnumerable<StreamDataPoint>>._))
@@ -242,6 +244,67 @@ public class ArchiveNullVersusMissingChainTests : SessionNodeTestBase
         Assert.Equal(1.5, Convert.ToDouble(point.Attributes["Measured"]));
         Assert.False(point.Attributes.ContainsKey("Amount"), "a record whose members are not sent must stay missing");
         Assert.False(point.Attributes.ContainsKey("Quality"), "an enum that is not sent must stay missing");
+    }
+
+    [Fact]
+    public async Task RawSave_ExplicitNullOnRecordSubPath_Default_DropsTheNullAndKeepsTheRecordMissing()
+    {
+        // ExplicitNullCreatesRecords is off by default: a null on a member of a record the update does not hold
+        // is dropped as before AB#8625; an explicit null on an optional enum is still a named null.
+        var dataContext = new DataContextImpl(JsonDocument.Parse(EnumAndRecordDocument));
+        await RunCreateUpdateInfoAsync(dataContext, withWindow: false, EnumAndRecordUpdates);
+
+        List<StreamDataPoint>? captured = null;
+        A.CallTo(() => _streamDataRepository.InsertAsync(ArchiveRtId, A<IEnumerable<StreamDataPoint>>._))
+            .Invokes((OctoObjectId _, IEnumerable<StreamDataPoint> points) => captured = points.ToList());
+
+        var config = new SaveStreamDataInArchiveNodeConfiguration
+        {
+            Path = UpdateInfosPath,
+            ArchiveRtId = ArchiveRtIdString
+        };
+        var node = new SaveStreamDataInArchiveNode(A.Fake<NodeDelegate>(), EtlContext, _systemContext);
+        await node.ProcessObjectAsync(dataContext, NodeContextFor("SaveStreamDataInArchive", config, dataContext));
+
+        var point = Assert.Single(captured!);
+        Assert.False(point.Attributes.ContainsKey("Amount"), "without the opt-in the null must not create the record");
+        Assert.True(point.Attributes.ContainsKey("Quality"));
+        Assert.Null(point.Attributes["Quality"]);
+        Assert.False(point.Attributes.ContainsKey("NotSent"));
+    }
+
+    [Fact]
+    public async Task EntityUpdate_ExplicitNullOnRecordSubPath_Default_LeavesTheStoredRecordAlone()
+    {
+        // An UPDATE of a runtime entity replaces every record it names. With the default the null on Amount.Value
+        // does not put an Amount into the update, so the stored record keeps all its members.
+        var dataContext = new DataContextImpl(JsonDocument.Parse("""{ "measured": 2.5, "amountValue": null }"""));
+        await RunCreateUpdateInfoAsync(dataContext, withWindow: false,
+        [
+            new() { AttributeName = "Measured", AttributeValueType = AttributeValueTypesDto.Double, ValuePath = "$.measured" },
+            new() { AttributeName = "Amount.Value", AttributeValueType = AttributeValueTypesDto.Double, ValuePath = "$.amountValue" }
+        ], updateKind: UpdateKind.Update);
+
+        var update = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(UpdateInfosPath)!);
+        Assert.NotNull(update.RtEntity);
+        Assert.Equal(2.5, Convert.ToDouble(update.RtEntity.Attributes["Measured"]));
+        Assert.False(update.RtEntity.Attributes.ContainsKey("Amount"),
+            "without the opt-in an entity update must not carry a record that holds only the null");
+    }
+
+    [Fact]
+    public async Task EntityUpdate_ExplicitNullOnRecordSubPath_OptIn_CarriesTheRecordWithTheNull()
+    {
+        var dataContext = new DataContextImpl(JsonDocument.Parse("""{ "amountValue": null }"""));
+        await RunCreateUpdateInfoAsync(dataContext, withWindow: false,
+        [
+            new() { AttributeName = "Amount.Value", AttributeValueType = AttributeValueTypesDto.Double, ValuePath = "$.amountValue" }
+        ], updateKind: UpdateKind.Update, explicitNullCreatesRecords: true);
+
+        var update = Assert.Single(dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(UpdateInfosPath)!);
+        var amount = Assert.IsType<RtRecord>(update.RtEntity!.Attributes["Amount"]);
+        Assert.True(amount.Attributes.ContainsKey("Value"));
+        Assert.Null(amount.Attributes["Value"]);
     }
 
     [Fact]
@@ -282,7 +345,8 @@ public class ArchiveNullVersusMissingChainTests : SessionNodeTestBase
     }
 
     private async Task RunCreateUpdateInfoAsync(IDataContext dataContext, bool withWindow,
-        List<AttributeUpdateConfiguration>? attributeUpdates = null)
+        List<AttributeUpdateConfiguration>? attributeUpdates = null, UpdateKind updateKind = UpdateKind.Insert,
+        bool explicitNullCreatesRecords = false)
     {
         var updates = attributeUpdates?.ToList() ?? new List<AttributeUpdateConfiguration>
         {
@@ -304,8 +368,9 @@ public class ArchiveNullVersusMissingChainTests : SessionNodeTestBase
 
         var config = new CreateUpdateInfoNodeConfiguration
         {
-            UpdateKind = UpdateKind.Insert,
+            UpdateKind = updateKind,
             RtId = SourceRtId,
+            ExplicitNullCreatesRecords = explicitNullCreatesRecords,
             CkTypeId = CkType,
             TargetPath = UpdateInfosPath,
             // How the shipped pipelines collect update infos for a save node.

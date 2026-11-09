@@ -779,6 +779,7 @@ Constructs update information objects for entity persistence.
 | `RecordArrayItemUpdates` | ICollection | Atomic updates of single RecordArray items, without reading the entity (AB#7442, below) |
 | `RtWellKnownName` / `RtWellKnownNamePath` | string | Semantic name |
 | `TimestampPath` | string | Optional timestamp override |
+| `ExplicitNullCreatesRecords` | bool | Default `false`. `true`: a JSON null on a member of a record the update does not hold yet (`Amount.Value` without `Amount`) creates the record with that member null, so the null reaches an archive (AB#8625, "Partial delivery" below). Only for updates that go to an archive |
 
 **Output**: `EntityUpdateInfo` object for persistence operations.
 
@@ -1382,13 +1383,17 @@ unchanged, so a pipeline decides by the shape of its data:
   **required** enum the node fails with `Path '<path>' cannot be set to null: the enum attribute '<name>'
   ... is not optional.` (an `InvalidPathException` of the engine, thrown before the update is built).
   `SaveTimeRangeSeriesInArchive@1` skips the conversion for a null and clears either kind.
-- **Record members (AB#8625):** a JSON null on a record member such as `Amount.Value` while the update
-  holds no `Amount` yet creates the record with that member as a named null, so the null reaches the
-  archive; members of the record that are not sent stay unnamed. A record none of whose members are sent
-  stays missing. `CreateUpdateInfo@1` opts into this with `RtPathNullHandling.CreateMissingRecords`
-  (engine `docs/rt-path-evaluator-set-value.md`); other callers of the path evaluator keep dropping such a
-  null. For a runtime entity (not an archive) the record created this way holds only the members that were
-  sent, exactly as it does for a value; the rule engine reports a required member that is missing.
+- **Record members (AB#8625), opt-in per node:** with `explicitNullCreatesRecords: true` on
+  `CreateUpdateInfo@1`, a JSON null on a record member such as `Amount.Value` while the update holds no
+  `Amount` yet creates the record with that member as a named null, so the null reaches the archive;
+  members of the record that are not sent stay unnamed. A record none of whose members are sent stays
+  missing. The node then calls the path evaluator with `RtPathNullHandling.CreateMissingRecords` (engine
+  `docs/rt-path-evaluator-set-value.md`). **The default (`false`) drops such a null** and the record stays
+  missing, as before AB#8625. Keep it off for runtime entities: an update replaces a stored record with the
+  one it carries, so a record holding only the null would lose the other stored members, an insert or
+  replace fails on a required record member that was not sent, and a null on a required enum member would
+  fail the node. A null on a member of a record the update already holds (because another member carries a
+  value) is a named null in both modes.
 - The anchor entity of `SaveTimeRangeSeriesInArchive@1` (a runtime entity, not an archive row) still
   ignores a null column value: it keeps the attribute it had.
 
@@ -1399,10 +1404,11 @@ unchanged, so a pipeline decides by the shape of its data:
 
 Tests: `TimeRangeSeriesShaperTests` (null, missing, value per scope), `ArchiveNullVersusMissingChainTests`
 (document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node; enum and record
-member cases of AB#8625; the repository is a fake), and `RawArchiveRecordMemberPipelineIntegrationTests`
+member cases of AB#8625 with and without `ExplicitNullCreatesRecords`; the repository is a fake), and `RawArchiveRecordMemberPipelineIntegrationTests`
 (integration, `StreamDataPipelineFixture`: real orchestrator, `CreateUpdateInfo@1` ->
 `SaveStreamDataInArchive@1` -> the real `CrateDbStreamDataRepository` on CrateDB; a row seeded in the
-REST shape, then a member value, an explicit null and a member left out; needs the engine-mongodb
+REST shape, then a member value, an explicit null, a member left out, and a null on a member of a record
+the update does not hold yet with the option off and on; needs the engine-mongodb
 package with AB#8666).
 
 #### SaveStreamDataInArchiveNode

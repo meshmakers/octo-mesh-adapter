@@ -192,4 +192,46 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
       "taxAmount": 200.00
     }
     """;
+
+    /// <summary>
+    ///     Optional JSON Schema (as a JSON string) the answer must satisfy; only used with
+    ///     <c>responseFormat: json</c> (AB#8498). The node requests constrained decoding with the schema,
+    ///     validates the parsed answer against it and, if invalid, runs at most
+    ///     <c>maxJsonRepairAttempts</c> repair calls that resend only the broken answer, the errors and
+    ///     the schema. An answer that stays invalid fails the node with an error naming the violated
+    ///     path(s). Without <c>jsonSchema</c> the node behaves as before.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         When set, the node (1) asks the API for constrained decoding with the schema
+    ///         (<c>output_config.format</c>, structured outputs), (2) validates the parsed answer
+    ///         against the full schema after the deterministic repairs (JSON extraction from prose,
+    ///         mechanical repair of naked quotes, trailing commas and unclosed brackets, repeated
+    ///         keys), and (3) when the answer still does not parse or violates the schema, runs at
+    ///         most <see cref="MaxJsonRepairAttempts" /> repair calls that send only the broken answer,
+    ///         the errors and the schema back — never the original prompt or context. If the answer
+    ///         is still invalid the node fails with an error that names the violated path(s);
+    ///         <see cref="ContinueOnError" /> applies as usual.
+    ///     </para>
+    ///     <para>
+    ///         Schema keywords the API does not support for constrained decoding (numeric and string
+    ///         length constraints, <c>pattern</c>, array size constraints) are removed from the copy
+    ///         sent to the API and enforced by the client-side validation only.
+    ///     </para>
+    ///     <para>
+    ///         Without <c>jsonSchema</c> the node behaves exactly as before: no constrained decoding,
+    ///         no validation, no repair calls.
+    ///     </para>
+    /// </remarks>
+    [PropertyGroup("Output", 4, "code")]
+    public string? JsonSchema { get; set; }
+
+    /// <summary>
+    ///     Upper bound of repair calls when a <c>jsonSchema</c> answer does not parse or does not
+    ///     validate (default 1, hard-capped at 2, 0 = no repair call). Each call resends only the
+    ///     broken answer, the parser or validation errors and the schema. Ignored without
+    ///     <c>jsonSchema</c>.
+    /// </summary>
+    [PropertyGroup("Output", 5)]
+    public int MaxJsonRepairAttempts { get; set; } = 1;
 }

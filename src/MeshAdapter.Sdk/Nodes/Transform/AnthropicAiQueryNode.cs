@@ -9,6 +9,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
 
@@ -56,6 +57,12 @@ internal class AnthropicAiQueryNode(
             {
                 throw new ArgumentException("Question is required", nameof(config.Question));
             }
+
+            // AB#8498: guaranteed JSON. The schema is parsed before any API call so a malformed
+            // jsonSchema fails the node at once instead of after a paid request.
+            var jsonSchemaMode = UsesJsonSchema(config, nodeContext);
+            var schema = jsonSchemaMode ? AiJsonSchemaResponseProcessor.ParseSchema(config.JsonSchema!) : null;
+            var apiSchema = jsonSchemaMode ? AiJsonSchemaResponseProcessor.BuildApiSchema(config.JsonSchema!) : null;
 
             // Resolve MCP server URL from AiConfiguration if available
             var mcpServerUrl = ResolveMcpServerUrl(config, etlContext, nodeContext);
@@ -174,7 +181,8 @@ internal class AnthropicAiQueryNode(
 
             // Build the prompt
             var userPrompt =
-                BuildUserPrompt(config.Question, fullContext, config.ResponseFormat, config.JsonFormatSample);
+                BuildUserPrompt(config.Question, fullContext, config.ResponseFormat, config.JsonFormatSample,
+                    jsonSchemaMode ? config.JsonSchema : null);
 
             // Load MCP tools if configured
             List<JsonElement>? mcpTools = null;
@@ -245,7 +253,7 @@ internal class AnthropicAiQueryNode(
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, historyMessages, apiSchema);
 
             // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
             // as API content blocks, never as text. Its "results" are invented, so the answer is
@@ -263,7 +271,14 @@ internal class AnthropicAiQueryNode(
             nodeContext.Info($"Received AI response with {aiResponse.Length} characters");
 
             // Process the response based on format
-            object processedResponse = ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
+            // With a jsonSchema the answer is validated and, if needed, repaired by bounded repair
+            // calls that never resend the original context (AB#8498); without one, unchanged.
+            object processedResponse = jsonSchemaMode
+                ? await AiJsonSchemaResponseProcessor.ProcessAsync(aiResponse, config.JsonSchema!, schema!,
+                    config.MaxJsonRepairAttempts,
+                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, repairPrompt, apiSchema!),
+                    nodeContext)
+                : ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
 
             // Store the processed response
             dataContext.Set(
@@ -299,6 +314,28 @@ internal class AnthropicAiQueryNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    ///     True when the node runs in guaranteed-JSON mode (AB#8498): a non-empty <c>jsonSchema</c> with
+    ///     <c>responseFormat: json</c>. A schema on a text-format node is ignored with a warning rather
+    ///     than failing pipelines that only switched the format.
+    /// </summary>
+    internal static bool UsesJsonSchema(AnthropicAiQueryNodeConfiguration config, INodeContext nodeContext)
+    {
+        if (string.IsNullOrWhiteSpace(config.JsonSchema))
+        {
+            return false;
+        }
+
+        if (config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        nodeContext.Warning(
+            $"jsonSchema is ignored because responseFormat is '{config.ResponseFormat}', not 'json'.");
+        return false;
     }
 
     /// <summary>
@@ -557,7 +594,7 @@ internal class AnthropicAiQueryNode(
     ///     system prompt sends none; without tools, no <c>tools</c> key.
     /// </summary>
     internal static Dictionary<string, object> BuildRequestBody(string model, int maxTokens, double temperature,
-        string? systemPrompt, List<object> messages, List<JsonElement>? mcpTools)
+        string? systemPrompt, List<object> messages, List<JsonElement>? mcpTools, JsonNode? outputSchema = null)
     {
         var requestObj = new Dictionary<string, object>
         {
@@ -566,6 +603,20 @@ internal class AnthropicAiQueryNode(
             ["temperature"] = temperature,
             ["messages"] = messages
         };
+
+        // AB#8498: constrained decoding (structured outputs) for a jsonSchema node. The schema is
+        // the API copy (unsupported keywords removed); the client validates the authored schema.
+        if (outputSchema != null)
+        {
+            requestObj["output_config"] = new Dictionary<string, object>
+            {
+                ["format"] = new Dictionary<string, object>
+                {
+                    ["type"] = "json_schema",
+                    ["schema"] = outputSchema.DeepClone()
+                }
+            };
+        }
 
         if (!string.IsNullOrEmpty(systemPrompt))
         {
@@ -610,7 +661,8 @@ internal class AnthropicAiQueryNode(
 
     private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
         string model, int maxTokens, double temperature, string systemPrompt, string? mcpServerUrl, string userPrompt,
-        List<JsonElement>? mcpTools, INodeContext nodeContext, List<object>? historyMessages = null)
+        List<JsonElement>? mcpTools, INodeContext nodeContext, List<object>? historyMessages = null,
+        JsonNode? outputSchema = null)
     {
         using var client = httpClientFactory.CreateClient("Anthropic");
 
@@ -627,7 +679,8 @@ internal class AnthropicAiQueryNode(
         for (var round = 0; round < (config.MaxToolRounds + 1); round++)
         {
             // Build request — system prompt and tool list carry prompt-cache breakpoints.
-            var requestObj = BuildRequestBody(model, maxTokens, temperature, systemPrompt, messages, mcpTools);
+            var requestObj = BuildRequestBody(model, maxTokens, temperature, systemPrompt, messages, mcpTools,
+                outputSchema);
 
             var jsonRequest = JsonSerializer.Serialize(requestObj, JsonOptions);
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
@@ -753,6 +806,55 @@ internal class AnthropicAiQueryNode(
 
         throw new InvalidOperationException(
             $"Claude exceeded maximum tool rounds ({config.MaxToolRounds})");
+    }
+
+    /// <summary>
+    ///     One repair call of the jsonSchema mode (AB#8498): a fresh single-turn request with the
+    ///     repair system prompt and the repair prompt only — no history, no tools, no original
+    ///     content — at temperature 0 and with the same constrained-decoding schema.
+    /// </summary>
+    private async Task<string> ExecuteJsonRepairCallAsync(string apiKey, string model, int maxTokens,
+        string repairPrompt, JsonNode apiSchema)
+    {
+        using var client = httpClientFactory.CreateClient("Anthropic");
+        var messages = new List<object> { new { role = "user", content = repairPrompt } };
+        var requestObj = BuildRequestBody(model, maxTokens, 0.0, AiJsonSchemaResponseProcessor.RepairSystemPrompt,
+            messages, null, apiSchema);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(requestObj, JsonOptions), Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Add("x-api-key", apiKey);
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        using var response = await client.SendAsync(request);
+        var responseContent = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(BuildAnthropicApiErrorMessage(response.StatusCode, responseContent));
+        }
+
+        var apiResponse = JsonSerializer.Deserialize<JsonElement>(responseContent);
+        if (apiResponse.TryGetProperty("stop_reason", out var stopReason) && stopReason.GetString() == "max_tokens")
+        {
+            throw new InvalidOperationException(BuildTruncationMessage(maxTokens));
+        }
+
+        if (apiResponse.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.TryGetProperty("type", out var type) && type.GetString() == "text" &&
+                    block.TryGetProperty("text", out var text))
+                {
+                    return text.GetString() ?? string.Empty;
+                }
+            }
+        }
+
+        return string.Empty;
     }
 
     /// <summary>
@@ -1191,8 +1293,8 @@ internal class AnthropicAiQueryNode(
         return null;
     }
 
-    private static string BuildUserPrompt(string question, string context, string responseFormat,
-        string jsonExample)
+    internal static string BuildUserPrompt(string question, string context, string responseFormat,
+        string jsonExample, string? jsonSchema = null)
     {
         var promptBuilder = new StringBuilder();
 
@@ -1207,7 +1309,14 @@ internal class AnthropicAiQueryNode(
         promptBuilder.AppendLine(question);
         promptBuilder.AppendLine();
 
-        if (responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
+        if (jsonSchema != null)
+        {
+            // AB#8498: the schema is the contract; the (invoice-shaped) default sample would only
+            // contradict it.
+            promptBuilder.AppendLine("Please provide your response as JSON that satisfies this JSON Schema:");
+            promptBuilder.AppendLine(jsonSchema);
+        }
+        else if (responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             promptBuilder.AppendLine("Please provide your response in valid JSON format. For example:");
             if (string.IsNullOrWhiteSpace(jsonExample))

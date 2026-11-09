@@ -313,6 +313,25 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
+    public async Task AcquireServiceAccountTokenAsync_AnotherIssuerWithTheSameClientIsNotServedFromTheCache()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+        var callsAfterFirst = handler.CallCount;
+
+        // Same tenant and client id, but a foreign identity target: must ask that issuer, not reuse.
+        SetupConfiguration(tenantId: TenantId, issuer: "https://other-identity.example.com");
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(handler.CallCount > callsAfterFirst);
+    }
+
+    [Fact]
     public async Task AcquireServiceAccountTokenAsync_AnAlmostExpiredTokenIsNotReused()
     {
         // expires within the 60 s skew: the next call must ask again.

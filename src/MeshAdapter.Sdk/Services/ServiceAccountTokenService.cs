@@ -102,7 +102,7 @@ public interface IServiceAccountTokenService
     ///     🔴 <b>Never written into <see cref="IServiceClientAccessToken" /></b> — that process-wide
     ///     singleton is the adapter's own identity and is shared by every concurrent pipeline, so reading
     ///     a token back from it after <see cref="EnsureTokenAsync" /> can hand one pipeline another
-    ///     pipeline's account. Tokens are cached per <c>(TenantId, ClientId)</c> until shortly before they
+    ///     pipeline's account. Tokens are cached per <c>(TenantId, ClientId, IssuerUri)</c> until shortly before they
     ///     expire, so a busy pipeline does not pay a token round trip per execution.
     /// </remarks>
     Task<string?> AcquireServiceAccountTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
@@ -179,12 +179,13 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     /// <summary>
     ///     Service-account tokens handed out by <see cref="AcquireServiceAccountTokenAsync" />, keyed by
-    ///     <c>(TenantId, ClientId)</c> (AB#8658). Separate from <see cref="_identityCache" /> because that
+    ///     <c>(TenantId, ClientId, IssuerUri)</c> (AB#8658) — the issuer is part of the key because a
+    ///     configuration may name a foreign identity target with the same tenant and client id. Separate from <see cref="_identityCache" /> because that
     ///     one deliberately never holds a credential, and from the <see cref="_serviceClientAccessToken" />
     ///     singleton because that is the adapter's own identity.
     /// </summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId),
-        (string AccessToken, DateTime ExpiresAtUtc)> _accountTokenCache = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId,
+        string IssuerUri), (string AccessToken, DateTime ExpiresAtUtc)> _accountTokenCache = new();
 
     public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
         ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
@@ -699,17 +700,19 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
-        var cacheKey = (tenantId ?? string.Empty, configuration.ClientId);
-        if (_accountTokenCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
-        {
-            return cached.AccessToken;
-        }
-
+        // The issuer resolves without network access; it is part of the cache key so two configurations
+        // with the same tenant and client id but different issuers never share a token.
         var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
         if (issuerUri == null)
         {
             return null;
+        }
+
+        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        var cacheKey = (tenantId ?? string.Empty, configuration.ClientId, issuerUri);
+        if (_accountTokenCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
+        {
+            return cached.AccessToken;
         }
 
         var mode = SelectAcquisitionMode(configuration, wellKnownName);

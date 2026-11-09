@@ -13,6 +13,9 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
+using Microsoft.Extensions.DependencyInjection;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 
@@ -116,6 +119,32 @@ public class AnthropicAiQueryNodeUsageTests : NodeTestBase
         // 1200*3 + 300*15 + 5000*0.30 + 800*3.75 = 3600 + 4500 + 1500 + 3000 = 12600 µ$ = 0.0126 $.
         Assert.Equal(0.0126m, usage["estimatedCostUsd"]!.GetValue<decimal>());
         Assert.Equal(AnthropicPricing.PriceListDate, usage["priceListDate"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Usage_IsReadableFromARealDataContext()
+    {
+        using var document = JsonDocument.Parse($$$"""{"text":"{{{Source}}}"}""");
+        using var dataContext = new DataContextImpl(document.RootElement);
+        var config = Config();
+        var nodeContext = NodeContext.CreateRootNodeContext(new ServiceCollection().BuildServiceProvider(),
+                A.Fake<IPipelineLogger>(), dataContext)
+            .RegisterChildNode("AnthropicAiQueryNode", 0, config, dataContext);
+
+        var api = new ScriptedAnthropic(Answer("""{"a":1}""", input: 1200, output: 300, cacheRead: 5000));
+        var factory = A.Fake<IHttpClientFactory>();
+        A.CallTo(() => factory.CreateClient(A<string>._)).ReturnsLazily(() => new HttpClient(api, false));
+        var etlContext = A.Fake<IMeshEtlContext>();
+        A.CallTo(() => etlContext.VerifiedPrincipal).Returns(null);
+        A.CallTo(() => etlContext.GlobalConfiguration).Returns(A.Fake<IGlobalConfiguration>());
+        var node = new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory,
+            A.Fake<IServiceAccountTokenService>(), A.Fake<IServiceClientAccessToken>());
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(1200, dataContext.Get<long>("$.usage.inputTokens"));
+        Assert.Equal(5000, dataContext.Get<long>("$.usage.cacheReadInputTokens"));
+        Assert.Equal(1, dataContext.Get<int>("$.out.a"));
     }
 
     [Fact]

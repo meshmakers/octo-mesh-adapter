@@ -1392,9 +1392,18 @@ unchanged, so a pipeline decides by the shape of its data:
 - The anchor entity of `SaveTimeRangeSeriesInArchive@1` (a runtime entity, not an archive row) still
   ignores a null column value: it keeps the attribute it had.
 
+- **Record members reach their columns on raw archives too (AB#8666, engine-mongodb):** the save node
+  hands the record on as one attribute (`Amount` -> record); the repository expands it into the member
+  columns (`Amount.Value`, `Amount.Unit`) on both paths. Before that engine fix the raw path dropped the
+  record, so a pipeline write left every member column as it was, values and nulls alike.
+
 Tests: `TimeRangeSeriesShaperTests` (null, missing, value per scope), `ArchiveNullVersusMissingChainTests`
 (document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node; enum and record
-member cases of AB#8625).
+member cases of AB#8625; the repository is a fake), and `RawArchiveRecordMemberPipelineIntegrationTests`
+(integration, `StreamDataPipelineFixture`: real orchestrator, `CreateUpdateInfo@1` ->
+`SaveStreamDataInArchive@1` -> the real `CrateDbStreamDataRepository` on CrateDB; a row seeded in the
+REST shape, then a member value, an explicit null and a member left out; needs the engine-mongodb
+package with AB#8666).
 
 #### SaveStreamDataInArchiveNode
 

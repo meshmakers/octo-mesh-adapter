@@ -22,6 +22,8 @@
         <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.13" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.13" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+        <!-- AB#8658: a real in-process MCP server for the McpToolCall@1 conformance test (same SDK as octo-mcp-service). -->
+        <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
         <PackageReference Include="Testcontainers" Version="4.14.0" />
         <PackageReference Include="Testcontainers.MongoDb" Version="4.14.0" />
         <PackageReference Include="xunit.v3.mtp-off" Version="4.0.0" />

@@ -1,6 +1,5 @@
-using System.Text.Json.Nodes;
+using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,26 +11,13 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 ///     pipeline JSON schema (generated from the real node registrations, exactly like the build target does) changes
 ///     nothing for pipelines that do not use it, and pipelines that do are valid.
 /// </summary>
-public class GetRtEntitiesByTypePipelineSchemaTests
+[Collection(PipelineSchemaCollection.Name)]
+public class GetRtEntitiesByTypePipelineSchemaTests(PipelineSchemaFixture schema)
 {
-    private static readonly Lazy<JsonObject> Generated = new(Generate);
-
-    private static JsonObject Generate()
-    {
-        var services = new ServiceCollection();
-        services.AddDataPipelineSerializer().AddMeshDataPipelineNodes();
-        var json = services.BuildServiceProvider().GetRequiredService<IPipelineSchemaGenerator>().GenerateSchema();
-
-        var nodeSchema = JsonNode.Parse(json)!["$defs"]!["TransformationNode"]!["oneOf"]!.AsArray()
-            .Select(n => n!.AsObject())
-            .Single(n => n["properties"]?["type"]?["const"]?.GetValue<string>() == "GetRtEntitiesByType@1");
-        return nodeSchema;
-    }
-
     [Fact]
     public void CkInterfaceId_IsOneNewOptionalStringProperty_NothingElseOfTheNodeChanged()
     {
-        var node = Generated.Value;
+        var node = schema.NodeSchema("GetRtEntitiesByType@1");
         var properties = node["properties"]!.AsObject().Select(p => p.Key).ToHashSet();
 
         Assert.Contains("ckInterfaceId", properties);

@@ -467,8 +467,11 @@ public class CreateUpdateInfoNode(NodeDelegate next, IMeshEtlContext etlContext,
     {
         var convertedValue = GetAttributeValue(nodeContext, value);
 
+        // AB#8625: a JSON null is an explicit null. On a sub-path of a record that does not exist yet
+        // (Amount.Value without Amount) the record is created with that member null, so the null reaches
+        // an archive as a named null column instead of as "not sent" (AB#8622).
         RtPathEvaluator.SetValue(ckCacheService, etlContext.TenantId, rtTypeWithAttributes, attributeName,
-            convertedValue);
+            convertedValue, RtPathNullHandling.CreateMissingRecords);
         if (convertedValue is string plaintext)
         {
             PreserveSecretPlaintext(nodeContext, attributeName, plaintext, rtTypeWithAttributes);

@@ -1377,14 +1377,24 @@ unchanged, so a pipeline decides by the shape of its data:
 - `SaveTimeRangeSeriesInArchive@1`: a series or value property holding JSON `null` becomes a named
   column with null; a missing property, an object or array, and a value the enum conversion cannot map
   stay unnamed (`TimeRangeSeriesShaper.TryReadColumn`).
-- A JSON null on an **Enum** attribute fails `CreateUpdateInfo@1` (`RtPathEvaluator` refuses a null
-  enum value), so an enum column cannot be cleared through that route yet; `SaveTimeRangeSeriesInArchive@1`
-  does clear it, because it skips the conversion for a null.
+- **Enum columns (AB#8625):** a JSON null on an **optional** enum attribute (`isOptional: true`) reaches
+  the archive as a named null, so `CreateUpdateInfo@1` clears an enum column such as a quality code. On a
+  **required** enum the node fails with `Path '<path>' cannot be set to null: the enum attribute '<name>'
+  ... is not optional.` (an `InvalidPathException` of the engine, thrown before the update is built).
+  `SaveTimeRangeSeriesInArchive@1` skips the conversion for a null and clears either kind.
+- **Record members (AB#8625):** a JSON null on a record member such as `Amount.Value` while the update
+  holds no `Amount` yet creates the record with that member as a named null, so the null reaches the
+  archive; members of the record that are not sent stay unnamed. A record none of whose members are sent
+  stays missing. `CreateUpdateInfo@1` opts into this with `RtPathNullHandling.CreateMissingRecords`
+  (engine `docs/rt-path-evaluator-set-value.md`); other callers of the path evaluator keep dropping such a
+  null. For a runtime entity (not an archive) the record created this way holds only the members that were
+  sent, exactly as it does for a value; the rule engine reports a required member that is missing.
 - The anchor entity of `SaveTimeRangeSeriesInArchive@1` (a runtime entity, not an archive row) still
   ignores a null column value: it keeps the attribute it had.
 
 Tests: `TimeRangeSeriesShaperTests` (null, missing, value per scope), `ArchiveNullVersusMissingChainTests`
-(document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node).
+(document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node; enum and record
+member cases of AB#8625).
 
 #### SaveStreamDataInArchiveNode
 

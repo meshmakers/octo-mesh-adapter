@@ -179,6 +179,37 @@ internal static class ConfigurationSettingsReader
     }
 
     /// <summary>
+    /// Case-insensitive read of a floating-point attribute (numeric or numeric string, invariant
+    /// culture), INCLUDING zero; null when absent, null or not a number. Range checks are the
+    /// caller's job (AB#8498: a template temperature of <c>0.0</c> is a meaningful value).
+    /// </summary>
+    internal static double? ReadDouble(JsonElement attributes, string? attributeName)
+    {
+        if (string.IsNullOrWhiteSpace(attributeName) || attributes.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var property in attributes.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, attributeName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return property.Value.ValueKind switch
+            {
+                JsonValueKind.Number when property.Value.TryGetDouble(out var d) => d,
+                JsonValueKind.String when double.TryParse(property.Value.GetString(),
+                    NumberStyles.Float, CultureInfo.InvariantCulture, out var d) => d,
+                _ => null,
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Case-insensitive read of a boolean attribute; null when absent, null or not a boolean.
     /// </summary>
     /// <remarks>

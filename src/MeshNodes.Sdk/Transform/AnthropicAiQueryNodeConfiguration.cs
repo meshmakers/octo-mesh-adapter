@@ -130,6 +130,9 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// Optional URL of the OctoMesh MCP server (e.g. "https://localhost:5017").
     /// When set, Claude can use MCP tools to query live OctoMesh data instead of relying on static context.
     /// The tenant ID is appended automatically: {McpServerUrl}/{tenantId}/mcp
+    /// The AiConfiguration's McpServerUrl (via apiKeyConfigurationName) takes precedence.
+    /// MCP is only called with an identity — <see cref="McpServiceAccountConfigName" /> or delegation to the
+    /// caller. Without one the node skips MCP with one warning and runs the query without tools (AB#8685).
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public string? McpServerUrl { get; set; }
@@ -151,8 +154,9 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// Optional well-known name of a <c>System.Communication/ServiceAccountConfiguration</c> entity
     /// used to authenticate the MCP tool calls. When set, the node acquires an OAuth2
     /// client-credentials token and sends it as a <c>Authorization: Bearer</c> header on the
-    /// <c>{McpServerUrl}/{tenantId}/mcp</c> requests. Required once the MCP server enforces
-    /// authentication (see AB#4315).
+    /// <c>{McpServerUrl}/{tenantId}/mcp</c> requests. Required for MCP tools: the MCP server enforces
+    /// authentication (AB#4315), so without this setting (or delegation to the caller) the node does not
+    /// call MCP at all — it warns once and runs the query without tools (AB#8685).
     /// </summary>
     [PropertyGroup("Connection", 3)]
     public string? McpServiceAccountConfigName { get; set; }

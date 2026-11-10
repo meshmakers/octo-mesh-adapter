@@ -28,7 +28,6 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
     private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
     private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
     private readonly IServiceAccountTokenService _tokenService = A.Fake<IServiceAccountTokenService>();
-    private readonly IServiceClientAccessToken _serviceClientAccessToken = A.Fake<IServiceClientAccessToken>();
 
     public AnthropicAiQueryNodeDelegationTests()
     {
@@ -38,8 +37,7 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
 
     private AnthropicAiQueryNode CreateNode(NodeDelegate next)
     {
-        return new AnthropicAiQueryNode(next, _etlContext, A.Fake<IHttpClientFactory>(), _tokenService,
-            _serviceClientAccessToken);
+        return new AnthropicAiQueryNode(next, _etlContext, A.Fake<IHttpClientFactory>(), _tokenService);
     }
 
     private (AnthropicAiQueryNode Node, INodeContext NodeContext, AnthropicAiQueryNodeConfiguration Config)
@@ -68,7 +66,9 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
             .Returns(Task.FromResult<string?>("delegated-token"));
 
         // Would be picked up by the service-account path; must NOT be used in delegation mode.
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("service-account-token"));
 
         var (node, nodeContext, config) = Prepare(delegateToCaller: true);
 
@@ -81,7 +81,8 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         Assert.Equal("delegated-token", BearerOf(request));
 
         // The service-account grant must not run at all in delegation mode.
-        A.CallTo(() => _tokenService.EnsureTokenAsync(A<ITenantRepository>._, A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(A<ITenantRepository>._, A<string>._,
+            A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -99,7 +100,8 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         // No unauthenticated attempt: nothing was requested and no header would be produced.
         A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(A<ITenantRepository>._, A<string>._,
             A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
-        A.CallTo(() => _tokenService.EnsureTokenAsync(A<ITenantRepository>._, A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(A<ITenantRepository>._, A<string>._,
+            A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -109,7 +111,9 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(_tenantRepository, ServiceAccountConfig,
                 CallerToken, A<CancellationToken>._))
             .Returns(Task.FromResult<string?>(null));
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("service-account-token"));
 
         var (node, nodeContext, config) = Prepare(delegateToCaller: true);
 
@@ -141,10 +145,12 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
     public async Task FlagOff_KeepsTheServiceAccountPathUnchanged()
     {
         // The channel assistants (Teams/Signal/e-mail) must not change behaviour: the service
-        // account grant runs, its token is taken from the process-wide access token, and the caller
+        // account grant runs, its token is RETURNED for exactly that account (AB#8699), and the caller
         // token — if one exists at all — is never used.
         A.CallTo(() => _etlContext.CallerAccessToken).Returns(CallerToken);
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("service-account-token"));
 
         var (node, nodeContext, config) = Prepare(delegateToCaller: false);
 
@@ -154,29 +160,43 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         node.AddMcpAuthHeader(request);
 
         Assert.Equal("service-account-token", BearerOf(request));
-        A.CallTo(() => _tokenService.EnsureTokenAsync(_tenantRepository, ServiceAccountConfig))
-            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+            A<CancellationToken>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(A<ITenantRepository>._, A<string>._,
             A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
-    public async Task FlagOff_ServiceAccountGrantThrows_StillDegradesToUnauthenticated()
+    public async Task FlagOff_ServiceAccountGrantThrows_DoesNotFailThePipeline_AndMakesNoMcpCall()
     {
-        // AB#4541: a broken ServiceAccountConfiguration must keep the (tool-less) chat working in
-        // the non-delegating mode. Pinned here so the fail-closed delegation branch above cannot be
-        // widened into this path by accident.
-        A.CallTo(() => _tokenService.EnsureTokenAsync(_tenantRepository, ServiceAccountConfig))
+        // AB#4541: a broken ServiceAccountConfiguration keeps the (tool-less) chat working in the
+        // non-delegating mode — the node does not throw. AB#8699: it no longer degrades to an
+        // unauthenticated MCP attempt either; MCP is not called at all.
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
             .Throws(new InvalidOperationException("Malformed URL"));
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns(null);
 
         var (node, nodeContext, config) = Prepare(delegateToCaller: false);
 
-        await node.EnsureMcpAccessTokenAsync(config, nodeContext);
+        var mcpAuthorized = await node.EnsureMcpAccessTokenAsync(config, nodeContext);
 
+        Assert.False(mcpAuthorized);
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://mcp.example.com/testTenant/mcp");
         node.AddMcpAuthHeader(request);
         Assert.Null(request.Headers.Authorization);
+    }
+
+    [Fact]
+    public async Task FlagOff_ServiceAccountYieldsNoToken_MakesNoMcpCall()
+    {
+        // AB#8699: fail-closed when the configured account yields no token (refused, missing config).
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>(null));
+
+        var (node, nodeContext, config) = Prepare(delegateToCaller: false);
+
+        Assert.False(await node.EnsureMcpAccessTokenAsync(config, nodeContext));
     }
 
     // ------------------------------------------------------ AB#5127: identity alias, both directions
@@ -221,7 +241,9 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(_tenantRepository, ServiceAccountConfig,
                 CallerToken, A<CancellationToken>._))
             .Returns(Task.FromResult<string?>("delegated-token"));
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("service-account-token"));
 
         var (node, nodeContext, config) =
             PrepareWithIdentity(NodeExecutionIdentity.Caller, mcpDelegateToCaller: false);
@@ -232,7 +254,8 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         node.AddMcpAuthHeader(request);
 
         Assert.Equal("delegated-token", BearerOf(request));
-        A.CallTo(() => _tokenService.EnsureTokenAsync(A<ITenantRepository>._, A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(A<ITenantRepository>._, A<string>._,
+            A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -241,7 +264,9 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         // identity: ServiceAccount (the AI node's default) is the general spelling of the flag being
         // absent — the service account's own token, never the caller's.
         A.CallTo(() => _etlContext.CallerAccessToken).Returns(CallerToken);
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("service-account-token"));
 
         var (node, nodeContext, config) = PrepareWithIdentity(NodeExecutionIdentity.ServiceAccount);
 
@@ -251,8 +276,8 @@ public class AnthropicAiQueryNodeDelegationTests : NodeTestBase
         node.AddMcpAuthHeader(request);
 
         Assert.Equal("service-account-token", BearerOf(request));
-        A.CallTo(() => _tokenService.EnsureTokenAsync(_tenantRepository, ServiceAccountConfig))
-            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+            A<CancellationToken>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(A<ITenantRepository>._, A<string>._,
             A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }

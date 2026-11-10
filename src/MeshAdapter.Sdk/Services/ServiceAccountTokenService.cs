@@ -23,13 +23,6 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 public interface IServiceAccountTokenService
 {
     /// <summary>
-    /// Ensures a valid access token is available. Acquires a new token if needed.
-    /// </summary>
-    /// <param name="tenantRepository">The tenant repository to read the configuration from</param>
-    /// <param name="wellKnownName">Well-known name of the ServiceAccountConfiguration entity</param>
-    Task EnsureTokenAsync(ITenantRepository tenantRepository, string wellKnownName);
-
-    /// <summary>
     ///     Acquires a <b>delegated</b> access token that runs on the end user's <c>sub</c> — the
     ///     service account of <paramref name="wellKnownName" /> acting on behalf of the caller who
     ///     presented <paramref name="subjectToken" /> (OctoMesh delegation grant, AB#5026/AB#5031).
@@ -51,16 +44,15 @@ public interface IServiceAccountTokenService
     ///     <c>ICommunicationServiceClientAccessToken</c> — as the adapter's own service identity
     ///     towards the communication controller. Storing a user-bound token there would leak one
     ///     caller's identity into every concurrent request and into the adapter's own service calls.
-    ///     <see cref="EnsureTokenAsync" /> keeps writing there because its token IS the service
-    ///     identity; this one never may.
+    ///     No method of this service writes there (AB#8699).
     /// </remarks>
     Task<string?> AcquireDelegatedTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
         string subjectToken, CancellationToken cancellationToken = default);
 
     /// <summary>
     ///     Answers <b>who the service account is</b>: the subject and the roles its own
-    ///     client-credentials token carries (AB#5028). Third grant path next to
-    ///     <see cref="EnsureTokenAsync" /> (which stores the token as the adapter's service identity)
+    ///     client-credentials token carries (AB#5028). Grant path next to
+    ///     <see cref="AcquireServiceAccountTokenAsync" /> (which returns the account's own token)
     ///     and <see cref="AcquireDelegatedTokenAsync" /> (which returns a user-bound token).
     /// </summary>
     /// <param name="credentials">
@@ -79,10 +71,8 @@ public interface IServiceAccountTokenService
     ///     not hand out a credential.
     ///     <para>
     ///         Results are cached per <c>(TenantId, ClientId)</c> until shortly before the token's own
-    ///         <c>exp</c>. The cache is deliberately NOT the <c>_tokenExpiresAt</c> field
-    ///         <see cref="EnsureTokenAsync" /> uses: that one is not keyed by configuration and belongs
-    ///         to the adapter's service identity, so sharing it would let one path suppress the other's
-    ///         refresh.
+    ///         <c>exp</c>. It never holds a credential, so it is separate from the token cache of
+    ///         <see cref="AcquireServiceAccountTokenAsync" />.
     ///     </para>
     /// </remarks>
     Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(ServiceAccountCredentials credentials,
@@ -100,9 +90,9 @@ public interface IServiceAccountTokenService
     /// <returns>The access token, or <c>null</c> when it could not be acquired (the cause is logged).</returns>
     /// <remarks>
     ///     🔴 <b>Never written into <see cref="IServiceClientAccessToken" /></b> — that process-wide
-    ///     singleton is the adapter's own identity and is shared by every concurrent pipeline, so reading
-    ///     a token back from it after <see cref="EnsureTokenAsync" /> can hand one pipeline another
-    ///     pipeline's account. Tokens are cached per <c>(TenantId, ClientId, IssuerUri)</c> until shortly before they
+    ///     singleton is the adapter's own identity and is shared by every concurrent pipeline, so a
+    ///     service-account token stored there could be handed to another pipeline's account, or replace the
+    ///     adapter's own identity (AB#8699). Tokens are cached per <c>(TenantId, ClientId, IssuerUri)</c> until shortly before they
     ///     expire, so a busy pipeline does not pay a token round trip per execution.
     /// </remarks>
     Task<string?> AcquireServiceAccountTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
@@ -159,7 +149,6 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     private readonly HttpClient _tokenHttpClient;
     private readonly ILogger<ServiceAccountTokenService> _logger;
-    private readonly IServiceClientAccessToken _serviceClientAccessToken;
     private readonly AdapterOptions _adapterOptions;
     private readonly MeshAdapterConfiguration _meshAdapterConfiguration;
     private readonly ISecretAttributeProtector? _secretAttributeProtector;
@@ -175,35 +164,30 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId),
         ServiceAccountIdentity> _identityCache = new();
 
-    private DateTime _tokenExpiresAt = DateTime.MinValue;
-
     /// <summary>
     ///     Service-account tokens handed out by <see cref="AcquireServiceAccountTokenAsync" />, keyed by
     ///     <c>(TenantId, ClientId, IssuerUri)</c> (AB#8658) — the issuer is part of the key because a
     ///     configuration may name a foreign identity target with the same tenant and client id. Separate from <see cref="_identityCache" /> because that
-    ///     one deliberately never holds a credential, and from the <see cref="_serviceClientAccessToken" />
+    ///     one deliberately never holds a credential, and from the process-wide <c>IServiceClientAccessToken</c>
     ///     singleton because that is the adapter's own identity.
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId,
         string IssuerUri), (string AccessToken, DateTime ExpiresAtUtc)> _accountTokenCache = new();
 
-    public ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
-        ILogger<ServiceAccountTokenService> logger, IOptions<AdapterOptions> adapterOptions,
-        IOptions<MeshAdapterConfiguration> meshAdapterConfiguration,
+    public ServiceAccountTokenService(ILogger<ServiceAccountTokenService> logger,
+        IOptions<AdapterOptions> adapterOptions, IOptions<MeshAdapterConfiguration> meshAdapterConfiguration,
         ISecretAttributeProtector secretAttributeProtector)
-        : this(serviceClientAccessToken, logger, SharedTokenHttpClient, adapterOptions.Value,
+        : this(logger, SharedTokenHttpClient, adapterOptions.Value,
             meshAdapterConfiguration.Value, secretAttributeProtector)
     {
     }
 
     /// <summary>Test seam: lets a unit test script the token endpoint without a server.</summary>
-    internal ServiceAccountTokenService(IServiceClientAccessToken serviceClientAccessToken,
-        ILogger<ServiceAccountTokenService> logger, HttpClient tokenHttpClient,
+    internal ServiceAccountTokenService(ILogger<ServiceAccountTokenService> logger, HttpClient tokenHttpClient,
         AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshAdapterConfiguration = null,
         ISecretAttributeProtector? secretAttributeProtector = null)
     {
         _secretAttributeProtector = secretAttributeProtector;
-        _serviceClientAccessToken = serviceClientAccessToken;
         _logger = logger;
         _tokenHttpClient = tokenHttpClient;
         _adapterOptions = adapterOptions ?? new AdapterOptions();
@@ -232,62 +216,6 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         !string.IsNullOrWhiteSpace(_adapterOptions.ClientId)
         && !string.IsNullOrWhiteSpace(_adapterOptions.ClientSecret);
 
-    public async Task EnsureTokenAsync(ITenantRepository tenantRepository, string wellKnownName)
-    {
-        // Skip if token is still valid (with 60s buffer)
-        if (!string.IsNullOrEmpty(_serviceClientAccessToken.AccessToken)
-            && _tokenExpiresAt > DateTime.UtcNow.AddSeconds(60))
-        {
-            return;
-        }
-
-        var configuration = await ReadConfigurationAsync(tenantRepository, wellKnownName);
-        if (configuration == null)
-        {
-            return;
-        }
-
-        var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
-        if (issuerUri == null)
-        {
-            return;
-        }
-
-        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
-
-        // Decide the path BEFORE discovery so a hopeless configuration fails without a network call.
-        var mode = SelectAcquisitionMode(configuration, wellKnownName);
-        if (mode == null)
-        {
-            return;
-        }
-
-        // Discover token endpoint
-        var disco = await _tokenHttpClient.GetDiscoveryDocumentAsync(CreateDiscoveryRequest(issuerUri));
-        if (disco.IsError)
-        {
-            _logger.LogError("Failed to discover token endpoint at {IssuerUri}: {Error}",
-                issuerUri, disco.Error);
-            return;
-        }
-
-        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
-
-        var response = await _tokenHttpClient.RequestTokenAsync(tokenRequest);
-
-        if (response.IsError)
-        {
-            _logger.LogError("Failed to acquire token from {IssuerUri}: {Error}", issuerUri,
-                response.Error);
-            return;
-        }
-
-        _serviceClientAccessToken.AccessToken = response.AccessToken;
-        _tokenExpiresAt = DateTime.UtcNow.AddSeconds(response.ExpiresIn);
-        _logger.LogInformation("Service account token acquired for client {ClientId} ({Mode}), expires at {ExpiresAt}",
-            configuration.ClientId, mode.Value, _tokenExpiresAt);
-    }
-
     /// <inheritdoc />
     public async Task<string?> AcquireDelegatedTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
         string subjectToken, CancellationToken cancellationToken = default)
@@ -295,9 +223,9 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         // Not cached, deliberately. A delegated token is bound to ONE user, so any cache would have
         // to be keyed by (subject, configuration) — and the only key material available here is the
         // subject token itself, which must not be held in a process-wide dictionary any longer than
-        // the request that carried it. The existing _tokenExpiresAt field is not reused either: it
-        // is not even keyed by configuration name and belongs to the service identity, so sharing it
-        // would let a delegated acquisition suppress a service-token refresh (and vice versa).
+        // the request that carried it. The account token cache is not reused either: it is keyed by
+        // (tenant, client, issuer) and holds the service account's OWN token, which is a different
+        // identity from the delegated one.
         // The cost is one token round trip per AI query, against an LLM call that takes seconds.
         if (string.IsNullOrWhiteSpace(subjectToken))
         {
@@ -434,7 +362,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        // 🔴 NOT written to _serviceClientAccessToken — see the interface remarks. The token is
+        // 🔴 NOT written to the process-wide IServiceClientAccessToken — see the interface remarks. The token is
         // never logged either; only the fact that one was issued.
         _logger.LogInformation(
             "Delegated token acquired via ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}, {Mode}) in tenant '{TenantId}', expires in {ExpiresIn}s",
@@ -821,7 +749,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     }
 
     /// <summary>
-    ///     Builds the token request of the two AMBIENT paths (<see cref="EnsureTokenAsync" /> and
+    ///     Builds the token request of the two AMBIENT paths (<see cref="AcquireServiceAccountTokenAsync" /> and
     ///     <see cref="AcquireServiceAccountIdentityAsync" />): plain client credentials when the
     ///     configuration carries a usable secret, the impersonation grant (AB#5114) when the
     ///     adapter's own identity carries the request. Both responses are CC-shaped tokens for the

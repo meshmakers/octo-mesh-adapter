@@ -81,7 +81,7 @@ public class AnthropicAiQueryNodeUsageTests : NodeTestBase
         var writes = new DataContextWrites(dataContext);
 
         var node = new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory,
-            A.Fake<IServiceAccountTokenService>(), A.Fake<IServiceClientAccessToken>());
+            A.Fake<IServiceAccountTokenService>());
         return (node, dataContext, nodeContext, api, writes);
     }
 
@@ -138,7 +138,7 @@ public class AnthropicAiQueryNodeUsageTests : NodeTestBase
         A.CallTo(() => etlContext.VerifiedPrincipal).Returns(null);
         A.CallTo(() => etlContext.GlobalConfiguration).Returns(A.Fake<IGlobalConfiguration>());
         var node = new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory,
-            A.Fake<IServiceAccountTokenService>(), A.Fake<IServiceClientAccessToken>());
+            A.Fake<IServiceAccountTokenService>());
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 

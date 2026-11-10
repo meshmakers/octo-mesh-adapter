@@ -22,9 +22,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 internal class DeployPipelineNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
-    ICommunicationServicesClient communicationServicesClient,
+    IServiceAccountCommunicationClientFactory communicationClientFactory,
     IServiceAccountTokenService serviceAccountTokenService) : IPipelineNode
-{    private static readonly RtCkId<CkTypeId> PipelineCkTypeId = new("System.Communication/Pipeline");
+{
+    private static readonly RtCkId<CkTypeId> PipelineCkTypeId = new("System.Communication/Pipeline");
     private static readonly RtCkId<CkAssociationRoleId> ExecutesRoleId = new("System.Communication/Executes");
     private static readonly RtCkId<CkAssociationRoleId> ParentChildRoleId = new("System/ParentChild");
     private static readonly RtCkId<CkTypeId> AdapterCkTypeId = new("System.Communication/Adapter");
@@ -139,12 +140,27 @@ internal class DeployPipelineNode(
             return;
         }
 
-        // Ensure we have a valid access token for the Communication Controller REST API
-        await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository, c.ServiceAccountConfigName);
+        // AB#8699: the controller call runs as exactly the configured service account. Its token is
+        // RETURNED and handed to a client of its own — never written into the process-wide
+        // IServiceClientAccessToken, which is the adapter's own identity and shared by every pipeline.
+        // Fail-closed: without the account's token nothing is deployed (before AB#8699 the call went
+        // out with whatever token the shared holder carried, often the adapter's own).
+        var accessToken = await serviceAccountTokenService.AcquireServiceAccountTokenAsync(
+            etlContext.TenantRepository, c.ServiceAccountConfigName);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            nodeContext.Error(
+                $"ServiceAccountConfiguration '{c.ServiceAccountConfigName}' did not yield an access token " +
+                $"(see the adapter log for the reason); pipeline {targetPipelineRtId} is not deployed.");
+            return;
+        }
+
+        nodeContext.RegisterSecret(accessToken);
 
         // Deploy the pipeline
         nodeContext.Debug($"Deploying pipeline {targetPipelineRtId} to adapter {adapterEntity.RtId}");
 
+        var communicationServicesClient = communicationClientFactory.Create(accessToken);
         await communicationServicesClient.DeployPipelineAsync(
             adapterEntity.RtId.ToString(),
             targetPipelineRtId.Value.ToString(),

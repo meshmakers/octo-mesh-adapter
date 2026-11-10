@@ -42,7 +42,13 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
     private static readonly OctoObjectId DataFlowRtId = new("67d4a2f0b2e4d8c3a1f051b0");
     private static readonly OctoObjectId AdapterRtId = new("670000000000000000000002");
 
+    private const string ServiceAccountConfigName = "DeployServiceAccount";
+    private const string ServiceAccountToken = "deploy-service-account-token";
+
     private readonly ICommunicationServicesClient _client = A.Fake<ICommunicationServicesClient>();
+    private readonly IServiceAccountCommunicationClientFactory _clientFactory =
+        A.Fake<IServiceAccountCommunicationClientFactory>();
+    private readonly IServiceAccountTokenService _tokenService = A.Fake<IServiceAccountTokenService>();
 
     public DeployPipelineNodeEnabledGuardTests()
     {
@@ -53,6 +59,11 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
         A.CallTo(() => EtlContext.PipelineRtEntityId)
             .Returns(new RtEntityId(PipelineCkTypeId, CallerPipelineRtId));
         A.CallTo(() => EtlContext.DataFlowRtId).Returns(DataFlowRtId);
+
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(TenantRepository, ServiceAccountConfigName,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>(ServiceAccountToken));
+        A.CallTo(() => _clientFactory.Create(ServiceAccountToken)).Returns(_client);
     }
 
     /// <summary>Puts one pipeline entity behind the by-id read, carrying the given Enabled value.</summary>
@@ -98,11 +109,14 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
 
     private async Task RunAsync()
     {
-        var config = new DeployPipelineNodeConfiguration { PipelineRtId = TargetPipelineRtId };
+        var config = new DeployPipelineNodeConfiguration
+        {
+            PipelineRtId = TargetPipelineRtId,
+            ServiceAccountConfigName = ServiceAccountConfigName
+        };
         (_dataContext, _nodeContext, _next) = PrepareTest(config);
 
-        var node = new DeployPipelineNode(_next, EtlContext, _client,
-            A.Fake<IServiceAccountTokenService>());
+        var node = new DeployPipelineNode(_next, EtlContext, _clientFactory, _tokenService);
 
         await node.ProcessObjectAsync(_dataContext, _nodeContext);
     }
@@ -148,5 +162,48 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
 
         A.CallTo(() => _client.DeployPipelineAsync(A<string>._, A<string>._, A<string>._))
             .MustHaveHappenedOnceExactly();
+    }
+
+    // ------------------------------------------------------------------ AB#8699: service-account token
+
+    [Fact]
+    public async Task TheDeployRunsWithTheConfiguredServiceAccountsOwnToken_OnAClientOfItsOwn()
+    {
+        GivenTargetPipeline(enabled: true);
+
+        await RunAsync();
+
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(TenantRepository, ServiceAccountConfigName,
+            A<CancellationToken>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => _clientFactory.Create(ServiceAccountToken)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => _client.DeployPipelineAsync(
+                AdapterRtId.ToString(), TargetPipelineRtId.ToString(), A<string>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task WithoutAServiceAccountToken_NothingIsDeployed_AndTheChainStops()
+    {
+        // Fail-closed: before AB#8699 the call went out with whatever the shared holder carried.
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(TenantRepository, ServiceAccountConfigName,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>(null));
+        GivenTargetPipeline(enabled: true);
+
+        await RunAsync();
+
+        A.CallTo(() => _clientFactory.Create(A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _client.DeployPipelineAsync(A<string>._, A<string>._, A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public void TheNodeCannotReachTheAdaptersProcessWideTokenHolder()
+    {
+        // AB#8699: neither the holder nor the shared client (which reads the holder) is a dependency.
+        var parameters = typeof(DeployPipelineNode).GetConstructors().Single().GetParameters();
+        Assert.DoesNotContain(parameters,
+            p => typeof(Meshmakers.Octo.Sdk.ServiceClient.IServiceClientAccessToken).IsAssignableFrom(p.ParameterType)
+                 || p.ParameterType == typeof(ICommunicationServicesClient));
     }
 }

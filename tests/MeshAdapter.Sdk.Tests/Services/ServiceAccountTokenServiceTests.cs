@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using FakeItEasy;
 using Meshmakers.Octo.Runtime.Contracts.Secrets;
@@ -41,7 +42,6 @@ public class ServiceAccountTokenServiceTests
         new("System.Communication/ServiceAccountConfiguration");
 
     private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
-    private readonly IServiceClientAccessToken _serviceClientAccessToken = A.Fake<IServiceClientAccessToken>();
 
     public ServiceAccountTokenServiceTests()
     {
@@ -87,8 +87,7 @@ public class ServiceAccountTokenServiceTests
         AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshConfiguration = null,
         ILogger<ServiceAccountTokenService>? logger = null, ISecretAttributeProtector? protector = null)
     {
-        return new ServiceAccountTokenService(_serviceClientAccessToken,
-            logger ?? NullLogger<ServiceAccountTokenService>.Instance,
+        return new ServiceAccountTokenService(logger ?? NullLogger<ServiceAccountTokenService>.Instance,
             new HttpClient(handler, disposeHandler: false), adapterOptions, meshConfiguration, protector);
     }
 
@@ -148,7 +147,6 @@ public class ServiceAccountTokenServiceTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal("delegated-access-token", token);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
     }
 
     [Fact]
@@ -163,7 +161,6 @@ public class ServiceAccountTokenServiceTests
             TestContext.Current.CancellationToken);
 
         Assert.Null(token);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
     }
 
     [Fact]
@@ -257,20 +254,18 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_StillWritesTheServiceIdentity()
+    public void TheServiceCannotReachTheAdaptersProcessWideTokenHolder()
     {
-        // Regression guard for the additive change: DeployPipelineNode and the non-delegating MCP
-        // path depend on EnsureTokenAsync writing the process-wide access token.
-        var handler = new IdentityEndpointHandler(
-            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
-        var service = CreateService(handler);
-
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
-
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("service-account-token")
-            .MustHaveHappenedOnceExactly();
-        Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
-        Assert.False(handler.LastTokenForm.ContainsKey("requested_client_id"));
+        // AB#8699: the process-wide IServiceClientAccessToken is the adapter's own identity, shared by every
+        // pipeline. No constructor takes it and no field holds it, so no grant path of this service can write a
+        // service-account token into it (the former EnsureTokenAsync did, keyed by nothing).
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var type = typeof(ServiceAccountTokenService);
+        Assert.All(type.GetConstructors(all), ctor => Assert.DoesNotContain(ctor.GetParameters(),
+            p => typeof(IServiceClientAccessToken).IsAssignableFrom(p.ParameterType)));
+        Assert.DoesNotContain(type.GetFields(all),
+            f => typeof(IServiceClientAccessToken).IsAssignableFrom(f.FieldType));
+        Assert.Null(typeof(IServiceAccountTokenService).GetMethod("EnsureTokenAsync"));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -292,7 +287,6 @@ public class ServiceAccountTokenServiceTests
         Assert.False(string.IsNullOrEmpty(token));
         Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
         Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm["acr_values"]);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
     }
 
     [Fact]
@@ -518,7 +512,6 @@ public class ServiceAccountTokenServiceTests
         await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
             TestContext.Current.CancellationToken);
 
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -600,7 +593,7 @@ public class ServiceAccountTokenServiceTests
     // ---------------------------------------------------------------------------------------------
     // AB#5115: empty issuer/tenant on a ServiceAccountConfiguration mean "the adapter's own
     // installation and tenant". The resolution chain is shared by all three acquisition paths; it is
-    // exercised here through EnsureTokenAsync and AcquireServiceAccountIdentityAsync, and the host of
+    // exercised here through AcquireServiceAccountTokenAsync and AcquireServiceAccountIdentityAsync, and the host of
     // the token request names the issuer that won.
     // ---------------------------------------------------------------------------------------------
 
@@ -613,7 +606,8 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("identity.example.com", handler.LastTokenRequestUri!.Host);
     }
@@ -626,11 +620,11 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("service-account-token")
-            .MustHaveHappenedOnceExactly();
+        Assert.Equal("service-account-token", token);
     }
 
     [Fact]
@@ -644,7 +638,8 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
     }
@@ -661,7 +656,8 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler, OwnIdentity(issuerUri: null),
             new MeshAdapterConfiguration { AuthorityUrl = "https://authority.example.com" });
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("authority.example.com", handler.LastTokenRequestUri!.Host);
     }
@@ -676,10 +672,11 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = null },
             new MeshAdapterConfiguration { AuthorityUrl = "" }, logger);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, handler.CallCount);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+        Assert.Null(token);
 
         // The operator must learn every place that could have answered, not just "no issuer".
         var error = Assert.Single(logger.Messages, m => m.Contains("No issuer"));
@@ -703,10 +700,10 @@ public class ServiceAccountTokenServiceTests
         };
         var service = CreateService(handler);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("service-account-token")
-            .MustHaveHappenedOnceExactly();
+        Assert.Equal("service-account-token", token);
     }
 
     [Fact]
@@ -716,7 +713,8 @@ public class ServiceAccountTokenServiceTests
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
 
-        await CreateService(handler).EnsureTokenAsync(_tenantRepository, WellKnownName);
+        await CreateService(handler).AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm!["acr_values"]);
     }
@@ -729,7 +727,8 @@ public class ServiceAccountTokenServiceTests
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
 
-        await CreateService(handler).EnsureTokenAsync(_tenantRepository, WellKnownName);
+        await CreateService(handler).AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("tenant:adapter-tenant", handler.LastTokenForm!["acr_values"]);
     }
@@ -754,7 +753,7 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_AUsableSecretKeepsTheLegacyGrant_EvenWhenTheAdapterHasOwnCredentials()
+    public async Task AcquireServiceAccountTokenAsync_AUsableSecretKeepsTheLegacyGrant_EvenWhenTheAdapterHasOwnCredentials()
     {
         // Regression guard: a configuration that carries its own secret is an explicit statement and
         // must keep working exactly as before AB#5114 — the adapter's identity stays out of it.
@@ -762,7 +761,8 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity());
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         var form = handler.LastTokenForm!;
         Assert.Equal("client_credentials", form["grant_type"]);
@@ -771,14 +771,15 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_APlaceholderSecretWithOwnCredentials_ImpersonatesTheServiceAccount()
+    public async Task AcquireServiceAccountTokenAsync_APlaceholderSecretWithOwnCredentials_ImpersonatesTheServiceAccount()
     {
         SetupConfiguration(tenantId: TenantId, secret: "<insert client secret here>");
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("impersonated-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity());
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         // The exact wire contract of the identity-side impersonation validator (AB#5114): the
         // ADAPTER authenticates, the target account is named, the tenant is pinned via acr_values.
@@ -790,12 +791,11 @@ public class ServiceAccountTokenServiceTests
         AssertClientAuthentication(handler, form, OwnClientId, OwnClientSecret);
 
         // The response is CC-shaped for the service account, so it IS the service identity.
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).To("impersonated-token")
-            .MustHaveHappenedOnceExactly();
+        Assert.Equal("impersonated-token", token);
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_ASecretTypedClientSecret_IsDecryptedInProcess()
+    public async Task AcquireServiceAccountTokenAsync_ASecretTypedClientSecret_IsDecryptedInProcess()
     {
         // AB#5538: after System.Communication 3.40 ClientSecret reads as an RtSecretValue. Read with
         // "as string" it was null - and an empty secret silently selects impersonation (AB#5114).
@@ -805,7 +805,8 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity(), protector: protector);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         var form = handler.LastTokenForm!;
         Assert.Equal("client_credentials", form["grant_type"]);
@@ -814,7 +815,7 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_ASecretWithAnUnknownKeyId_NeverFallsBackToImpersonation()
+    public async Task AcquireServiceAccountTokenAsync_ASecretWithAnUnknownKeyId_NeverFallsBackToImpersonation()
     {
         // Decisions 2026-10-06, item 2: KeyMissing is "stored but unusable" - no token, and no
         // impersonation either (that would silently change the identity the pipeline runs as).
@@ -826,16 +827,17 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler, OwnIdentity(), logger: logger,
             protector: Secrets.SecretTestSupport.CreateProtector());
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, handler.CallCount);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+        Assert.Null(token);
         Assert.Contains(logger.Messages, m => m.Contains("'k9'") && m.Contains("not in the key ring"));
         Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret));
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_ATamperedSecret_NeverFallsBackToImpersonation()
+    public async Task AcquireServiceAccountTokenAsync_ATamperedSecret_NeverFallsBackToImpersonation()
     {
         var protector = Secrets.SecretTestSupport.CreateProtector();
         var envelope = protector.Protect(ClientSecret).Envelope!;
@@ -846,16 +848,17 @@ public class ServiceAccountTokenServiceTests
         var logger = new CapturingLogger();
         var service = CreateService(handler, OwnIdentity(), logger: logger, protector: protector);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, handler.CallCount);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+        Assert.Null(token);
         Assert.Contains(logger.Messages, m => m.Contains("cannot be decrypted"));
         Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret));
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_APlaceholderLookingProtectedSecret_IsAnOrdinarySecret()
+    public async Task AcquireServiceAccountTokenAsync_APlaceholderLookingProtectedSecret_IsAnOrdinarySecret()
     {
         // Decisions 2026-10-06, item 1: a "<...>" value entered through an API is a real secret.
         var protector = Secrets.SecretTestSupport.CreateProtector();
@@ -864,7 +867,8 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity(), protector: protector);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         var form = handler.LastTokenForm!;
         Assert.Equal("client_credentials", form["grant_type"]);
@@ -872,7 +876,7 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_StrictModeRejectingALegacySecret_NeverFallsBackToImpersonation()
+    public async Task AcquireServiceAccountTokenAsync_StrictModeRejectingALegacySecret_NeverFallsBackToImpersonation()
     {
         SetupConfigurationWithSecretValue(TenantId, RtSecretValue.LegacyPlaintext(ClientSecret));
         var strict = A.Fake<ISecretAttributeProtector>();
@@ -886,7 +890,8 @@ public class ServiceAccountTokenServiceTests
         var logger = new CapturingLogger();
         var service = CreateService(handler, OwnIdentity(), logger: logger, protector: strict);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, handler.CallCount);
         Assert.Contains(logger.Messages, m => m.Contains("cannot be decrypted"));
@@ -894,7 +899,7 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_AnUnsetSecretTypedClientSecret_SelectsImpersonation()
+    public async Task AcquireServiceAccountTokenAsync_AnUnsetSecretTypedClientSecret_SelectsImpersonation()
     {
         // A legacy clear-text seed placeholder in a Secret slot reads as "not set" until the migration
         // converts it - the AB#5114 path, as for an empty string.
@@ -903,13 +908,14 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.TokenResponse("impersonated-token", expiresIn: 300));
         var service = CreateService(handler, OwnIdentity(), protector: Secrets.SecretTestSupport.CreateProtector());
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("urn:meshmakers:params:oauth:grant-type:impersonate", handler.LastTokenForm!["grant_type"]);
     }
 
     [Fact]
-    public async Task EnsureTokenAsync_NoSecretAndNoOwnCredentials_FailsNamingBothWaysOut()
+    public async Task AcquireServiceAccountTokenAsync_NoSecretAndNoOwnCredentials_FailsNamingBothWaysOut()
     {
         SetupConfiguration(tenantId: TenantId, secret: null);
         var handler = new IdentityEndpointHandler(
@@ -917,10 +923,11 @@ public class ServiceAccountTokenServiceTests
         var logger = new CapturingLogger();
         var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = null }, logger: logger);
 
-        await service.EnsureTokenAsync(_tenantRepository, WellKnownName);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, handler.CallCount);
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
+        Assert.Null(token);
 
         // Both repairs must be named: store a secret on the configuration, or give the adapter its
         // own identity plus a MayActAs grant.
@@ -1001,7 +1008,6 @@ public class ServiceAccountTokenServiceTests
         AssertClientAuthentication(handler, form, OwnClientId, OwnClientSecret);
 
         // Still user-bound, still never the process-wide service identity (AB#5031).
-        A.CallToSet(() => _serviceClientAccessToken.AccessToken).MustNotHaveHappened();
     }
 
     [Fact]

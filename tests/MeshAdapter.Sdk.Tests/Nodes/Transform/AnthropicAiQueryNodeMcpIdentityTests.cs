@@ -33,7 +33,6 @@ public class AnthropicAiQueryNodeMcpIdentityTests : NodeTestBase
     private readonly IGlobalConfiguration _globalConfiguration = A.Fake<IGlobalConfiguration>();
     private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
     private readonly IServiceAccountTokenService _tokenService = A.Fake<IServiceAccountTokenService>();
-    private readonly IServiceClientAccessToken _serviceClientAccessToken = A.Fake<IServiceClientAccessToken>();
     private readonly RecordingHandler _http = new();
 
     public AnthropicAiQueryNodeMcpIdentityTests()
@@ -89,7 +88,7 @@ public class AnthropicAiQueryNodeMcpIdentityTests : NodeTestBase
         A.CallTo(() => dataContext.GetKind("$.text")).Returns(DataKind.String);
         A.CallTo(() => dataContext.Get<string>("$.text")).Returns("some content");
 
-        var node = new AnthropicAiQueryNode(next, _etlContext, factory, _tokenService, _serviceClientAccessToken);
+        var node = new AnthropicAiQueryNode(next, _etlContext, factory, _tokenService);
         return (node, dataContext, nodeContext, logger);
     }
 
@@ -128,7 +127,8 @@ public class AnthropicAiQueryNodeMcpIdentityTests : NodeTestBase
         Assert.Contains("mcpDelegateToCaller", warning);
         Assert.Contains("without tools", warning);
 
-        A.CallTo(() => _tokenService.EnsureTokenAsync(A<ITenantRepository>._, A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(A<ITenantRepository>._, A<string>._,
+            A<CancellationToken>._)).MustNotHaveHappened();
         Assert.Single(new DataContextWrites(dataContext).All, w => w.Path == "$.out");
     }
 
@@ -166,15 +166,17 @@ public class AnthropicAiQueryNodeMcpIdentityTests : NodeTestBase
     [Fact]
     public async Task ServiceAccountIdentity_CallsMcpWithTheServiceAccountToken()
     {
-        A.CallTo(() => _serviceClientAccessToken.AccessToken).Returns("service-account-token");
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>("service-account-token"));
         var config = Config();
         config.McpServiceAccountConfigName = ServiceAccountConfig;
         var (node, dataContext, nodeContext, logger) = Prepare(config);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => _tokenService.EnsureTokenAsync(_tenantRepository, ServiceAccountConfig))
-            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+            A<CancellationToken>._)).MustHaveHappenedOnceExactly();
         Assert.NotEmpty(_http.McpRequests);
         Assert.All(_http.Requests.Where(r => r.Uri.Host != AnthropicHost),
             r => Assert.Equal("service-account-token", r.Bearer));

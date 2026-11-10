@@ -21,8 +21,7 @@ internal class AnthropicAiQueryNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
     IHttpClientFactory httpClientFactory,
-    IServiceAccountTokenService serviceAccountTokenService,
-    IServiceClientAccessToken serviceClientAccessToken)
+    IServiceAccountTokenService serviceAccountTokenService)
     : IPipelineNode
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -218,26 +217,37 @@ internal class AnthropicAiQueryNode(
 
             // Load MCP tools if configured
             List<JsonElement>? mcpTools = null;
+            var mcpAuthorized = false;
             if (!string.IsNullOrEmpty(mcpServerUrl) && !mcpSkippedForMissingIdentity)
             {
                 // Authenticate to the MCP server via a ServiceAccountConfiguration (AB#4315).
                 // With mcpDelegateToCaller the token instead runs on the calling user's identity and
                 // any failure is fatal rather than degrading (AB#5031).
-                await EnsureMcpAccessTokenAsync(config, nodeContext);
+                // AB#8699: a configured service account that yields no token is fail-closed — no MCP
+                // call; EnsureMcpAccessTokenAsync has warned and the query runs without tools.
+                mcpAuthorized = await EnsureMcpAccessTokenAsync(config, nodeContext);
 
-                mcpTools = await LoadMcpToolsAsync(mcpServerUrl, etlContext.TenantId, nodeContext);
-
-                // Filter tools if mcpToolNames is specified
-                if (mcpTools != null && config.McpToolNames is { Length: > 0 })
+                if (mcpAuthorized)
                 {
-                    var allowedNames = new HashSet<string>(config.McpToolNames, StringComparer.OrdinalIgnoreCase);
-                    mcpTools = mcpTools.Where(t =>
-                        t.TryGetProperty("name", out var name) && allowedNames.Contains(name.GetString() ?? "")
-                    ).ToList();
-                }
+                    mcpTools = await LoadMcpToolsAsync(mcpServerUrl, etlContext.TenantId, nodeContext);
 
-                nodeContext.Info($"Loaded {mcpTools?.Count ?? 0} MCP tools from OctoMesh");
+                    // Filter tools if mcpToolNames is specified
+                    if (mcpTools != null && config.McpToolNames is { Length: > 0 })
+                    {
+                        var allowedNames =
+                            new HashSet<string>(config.McpToolNames, StringComparer.OrdinalIgnoreCase);
+                        mcpTools = mcpTools.Where(t =>
+                            t.TryGetProperty("name", out var name) && allowedNames.Contains(name.GetString() ?? "")
+                        ).ToList();
+                    }
+
+                    nodeContext.Info($"Loaded {mcpTools?.Count ?? 0} MCP tools from OctoMesh");
+                }
             }
+
+            // AB#8685 / AB#8699: MCP was configured but is not called — no identity configured, or the
+            // configured service account yielded no token. Either case has already been warned about once.
+            var mcpNotCalled = !string.IsNullOrEmpty(mcpServerUrl) && !mcpAuthorized;
 
             // AB#4562 follow-up: when MCP was configured but no tools could be loaded (server
             // unreachable, auth rejected, name filter matched nothing), the pipeline's static
@@ -253,7 +263,7 @@ internal class AnthropicAiQueryNode(
             var systemPrompt = BuildEffectiveSystemPrompt(baseSystemPrompt,
                 mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl) || mcpExpected, mcpToolCount: mcpTools?.Count ?? 0);
             // AB#8685: a skipped MCP has already been reported with its own warning — one per execution.
-            if (!ReferenceEquals(systemPrompt, baseSystemPrompt) && !mcpSkippedForMissingIdentity)
+            if (!ReferenceEquals(systemPrompt, baseSystemPrompt) && !mcpNotCalled)
             {
                 nodeContext.Warning(string.IsNullOrEmpty(mcpServerUrl)
                     ? "The pipeline expects MCP tools but no MCP server URL is configured (AiConfiguration." +
@@ -286,7 +296,7 @@ internal class AnthropicAiQueryNode(
 
             // Execute Claude API call (with optional tool use loop)
             var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt,
-                mcpSkippedForMissingIdentity ? null : mcpServerUrl, userPrompt, mcpTools, nodeContext, usage, historyMessages, apiSchema);
+                mcpNotCalled ? null : mcpServerUrl, userPrompt, mcpTools, nodeContext, usage, historyMessages, apiSchema);
 
             // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
             // as API content blocks, never as text. Its "results" are invented, so the answer is
@@ -1096,23 +1106,38 @@ internal class AnthropicAiQueryNode(
     private string? _mcpSessionId;
 
     /// <summary>
-    /// Service-account bearer token for the MCP server, acquired once per execution when a
-    /// <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> is configured.
-    /// Null when no service-account config is set; the node then does not call MCP at all (AB#8685).
+    /// Bearer token for the MCP server, acquired once per execution: the token of exactly the service
+    /// account <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> names, or the
+    /// delegated token of the caller. Null when there is none; the node then does not call MCP at all
+    /// (AB#8685, AB#8699).
     /// </summary>
     private string? _mcpAccessToken;
 
     /// <summary>
-    /// Acquires an OAuth2 client-credentials token from the configured ServiceAccountConfiguration
-    /// and caches it in <see cref="_mcpAccessToken" /> for the MCP requests. No-op (clears the token)
-    /// when no service-account config name is set.
+    /// Acquires the MCP token into <see cref="_mcpAccessToken" /> and returns whether MCP may be called.
     ///
-    /// With <see cref="AnthropicAiQueryNodeConfiguration.McpDelegateToCaller" /> set, a
-    /// <b>delegated</b> token for the calling user is acquired instead (AB#5031) and every
-    /// degrade-to-unauthenticated path below is bypassed — see
+    /// <para>
+    /// Service-account mode: the token comes from
+    /// <see cref="IServiceAccountTokenService.AcquireServiceAccountTokenAsync" />, which RETURNS the token of
+    /// exactly the named account (cached per tenant, client and issuer) and never touches the process-wide
+    /// <c>IServiceClientAccessToken</c> — that singleton is the adapter's own identity, shared by every
+    /// pipeline of the process, so reading a token back from it could hand this node another account's token
+    /// or the adapter's own (AB#8699).
+    /// </para>
+    /// <para>
+    /// 🔴 <b>Fail-closed when the configured account yields no token (AB#8699):</b> a missing or broken
+    /// <c>ServiceAccountConfiguration</c>, a refused token request or an exception all end in one warning and
+    /// <c>false</c> — no MCP call, the query runs without tools. Until AB#8699 that case sent the MCP calls
+    /// unauthenticated (the AB#4541 degrade); the chat still keeps working, only the unauthenticated attempt
+    /// is gone.
+    /// </para>
+    /// <para>
+    /// With <see cref="AnthropicAiQueryNodeConfiguration.McpDelegateToCaller" /> a <b>delegated</b> token for
+    /// the calling user is acquired instead (AB#5031), and every failure throws — see
     /// <see cref="AcquireDelegatedMcpAccessTokenAsync" />.
+    /// </para>
     /// </summary>
-    internal async Task EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
+    internal async Task<bool> EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
         INodeContext nodeContext)
     {
         // AB#5127: mcpDelegateToCaller is the AI-node alias of the general `identity` property.
@@ -1122,46 +1147,55 @@ internal class AnthropicAiQueryNode(
         if (config.DelegatesToCaller)
         {
             _mcpAccessToken = await AcquireDelegatedMcpAccessTokenAsync(config, nodeContext);
-            return;
+            return true;
         }
 
+        _mcpAccessToken = null;
         if (string.IsNullOrEmpty(config.McpServiceAccountConfigName))
         {
-            _mcpAccessToken = null;
-            return;
+            return false;
         }
 
+        string? token;
+        string? failure = null;
         try
         {
-            await serviceAccountTokenService.EnsureTokenAsync(etlContext.TenantRepository,
+            token = await serviceAccountTokenService.AcquireServiceAccountTokenAsync(etlContext.TenantRepository,
                 config.McpServiceAccountConfigName);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // AB#4541: a broken ServiceAccountConfiguration (e.g. a placeholder
-            // IssuerUri left by a blueprint re-apply makes the OIDC discovery throw
-            // "Malformed URL") must degrade to an unauthenticated MCP attempt — the
-            // same path as a missing token — instead of failing the whole pipeline.
-            // An auth-enforcing MCP server then rejects the handshake, the node
-            // answers without tools, and the chat keeps working.
-            nodeContext.Warning(
-                $"Token acquisition via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}' " +
-                $"failed: {ex.Message}. MCP calls will be sent unauthenticated.");
+            // AB#4541 shape (e.g. a repository error while reading the configuration): never fail the
+            // whole pipeline for it — the chat keeps working without tools.
+            token = null;
+            failure = ex.Message;
         }
 
-        _mcpAccessToken = serviceClientAccessToken.AccessToken;
+        if (string.IsNullOrEmpty(token))
+        {
+            nodeContext.Warning(BuildMcpServiceAccountWithoutTokenWarning(config.McpServiceAccountConfigName, failure));
+            return false;
+        }
 
-        if (string.IsNullOrEmpty(_mcpAccessToken))
-        {
-            nodeContext.Warning(
-                $"MCP ServiceAccountConfiguration '{config.McpServiceAccountConfigName}' did not yield an " +
-                "access token; MCP calls will be sent unauthenticated.");
-        }
-        else
-        {
-            nodeContext.Debug(
-                $"MCP access token acquired via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}'");
-        }
+        // AB#5538: the token is masked in every diagnostic output of this execution.
+        nodeContext.RegisterSecret(token);
+        _mcpAccessToken = token;
+        nodeContext.Debug(
+            $"MCP access token acquired via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}'");
+        return true;
+    }
+
+    /// <summary>
+    ///     The warning written when the configured MCP service account yields no token, so MCP is not called
+    ///     (AB#8699). Names the configuration, never a credential.
+    /// </summary>
+    internal static string BuildMcpServiceAccountWithoutTokenWarning(string configName, string? failure)
+    {
+        var reason = string.IsNullOrEmpty(failure)
+            ? "see the adapter log for the reason"
+            : $"acquisition failed: {failure}";
+        return $"MCP ServiceAccountConfiguration '{configName}' did not yield an access token ({reason}); " +
+               "no MCP call is made and the query runs without tools.";
     }
 
     /// <summary>

@@ -241,8 +241,7 @@ internal static class TimeRangeSeriesShaper
                     seriesValues = [];
                     foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Series))
                     {
-                        var scalar = convert(column.Name, ColumnScalar(source[column.ValueProperty]));
-                        if (scalar is not null)
+                        if (TryReadColumn(source, column, convert, out var scalar))
                         {
                             seriesValues.Add(new KeyValuePair<string, object?>(column.Name, scalar));
                         }
@@ -268,8 +267,7 @@ internal static class TimeRangeSeriesShaper
 
                 foreach (var column in c.Columns.Where(x => x.Scope == TimeRangeSeriesColumnScope.Value))
                 {
-                    var scalar = convert(column.Name, ColumnScalar(value[column.ValueProperty]));
-                    if (scalar is not null)
+                    if (TryReadColumn(value, column, convert, out var scalar))
                     {
                         attributes[column.Name] = scalar;
                     }
@@ -316,6 +314,39 @@ internal static class TimeRangeSeriesShaper
     /// </summary>
     public static object? ToScalar(JsonNode? node, bool parseDateStrings = true)
         => node is JsonValue value ? JsonScalar.ToClr(value, parseDateStrings) : null;
+
+    /// <summary>
+    /// Reads one column of a row, keeping a missing property apart from an explicit JSON null
+    /// (AB#8622). The archive keeps the stored value of a column a row does not name and clears a
+    /// column named with null, so the two must not collapse here.
+    /// </summary>
+    /// <returns>
+    /// False when the column is not named: the property is missing, holds an object or array (no
+    /// scalar form), or holds a scalar the conversion cannot map. True with a null value when the
+    /// property is an explicit JSON null; true with the converted value otherwise.
+    /// </returns>
+    private static bool TryReadColumn(
+        JsonObject source,
+        TimeRangeSeriesColumn column,
+        Func<string, object?, object?> convert,
+        out object? scalar)
+    {
+        scalar = null;
+        if (!source.TryGetPropertyValue(column.ValueProperty, out var node))
+        {
+            return false;
+        }
+
+        if (node is null)
+        {
+            // An explicit null is a value: it clears the stored column. It bypasses the conversion,
+            // which maps names onto stored values and has nothing to map here.
+            return true;
+        }
+
+        scalar = convert(column.Name, ColumnScalar(node));
+        return scalar is not null;
+    }
 
     /// <summary>
     /// A column value as the archive stores it: a date in UTC, like the window boundaries. A date

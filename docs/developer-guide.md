@@ -779,6 +779,7 @@ Constructs update information objects for entity persistence.
 | `RecordArrayItemUpdates` | ICollection | Atomic updates of single RecordArray items, without reading the entity (AB#7442, below) |
 | `RtWellKnownName` / `RtWellKnownNamePath` | string | Semantic name |
 | `TimestampPath` | string | Optional timestamp override |
+| `ExplicitNullCreatesRecords` | bool | Default `false`. `true`: a JSON null on a member of a record the update does not hold yet (`Amount.Value` without `Amount`) creates the record with that member null, so the null reaches an archive (AB#8625, "Partial delivery" below). Only for updates that go to an archive |
 
 **Output**: `EntityUpdateInfo` object for persistence operations.
 
@@ -1409,6 +1410,59 @@ reason without `Origin: Manual` fails the node. An archive that ranks by the res
   origin: Manual
   manualReasonAttributePath: Reason
 ```
+
+#### Partial delivery: a missing column keeps its value, an explicit null clears it (all three archive load nodes, AB#8622)
+
+The archive treats a column a row does not name differently from a column named with null: a column
+that is **not named keeps its stored value**, a column **named with null is cleared**, and a new row
+stores NULL for every column it does not name (engine rule, octo-construction-kit-engine-mongodb
+`docs/streamdata-archive-concept.md`, "Partial delivery"). The load nodes hand that distinction on
+unchanged, so a pipeline decides by the shape of its data:
+
+| In the document | What reaches the archive | Effect on a stored row |
+|-----------------|--------------------------|------------------------|
+| property with a value | the column with that value | replaced |
+| property with JSON `null` | the column, named, with `null` | cleared |
+| property missing | the column is not named | kept |
+
+- `SaveStreamDataInArchive@1` / `SaveTimeRangeStreamDataInArchive@1`: `CreateUpdateInfo@1` writes a
+  JSON null as an attribute with a null value and skips a value path that matches nothing; the update
+  info keeps both through the data context, and the save node passes the attribute dictionary on.
+- `SaveTimeRangeSeriesInArchive@1`: a series or value property holding JSON `null` becomes a named
+  column with null; a missing property, an object or array, and a value the enum conversion cannot map
+  stay unnamed (`TimeRangeSeriesShaper.TryReadColumn`).
+- **Enum columns (AB#8625):** a JSON null on an **optional** enum attribute (`isOptional: true`) reaches
+  the archive as a named null, so `CreateUpdateInfo@1` clears an enum column such as a quality code. On a
+  **required** enum the node fails with `Path '<path>' cannot be set to null: the enum attribute '<name>'
+  ... is not optional.` (an `InvalidPathException` of the engine, thrown before the update is built).
+  `SaveTimeRangeSeriesInArchive@1` skips the conversion for a null and clears either kind.
+- **Record members (AB#8625), opt-in per node:** with `explicitNullCreatesRecords: true` on
+  `CreateUpdateInfo@1`, a JSON null on a record member such as `Amount.Value` while the update holds no
+  `Amount` yet creates the record with that member as a named null, so the null reaches the archive;
+  members of the record that are not sent stay unnamed. A record none of whose members are sent stays
+  missing. The node then calls the path evaluator with `RtPathNullHandling.CreateMissingRecords` (engine
+  `docs/rt-path-evaluator-set-value.md`). **The default (`false`) drops such a null** and the record stays
+  missing, as before AB#8625. Keep it off for runtime entities: an update replaces a stored record with the
+  one it carries, so a record holding only the null would lose the other stored members, an insert or
+  replace fails on a required record member that was not sent, and a null on a required enum member would
+  fail the node. A null on a member of a record the update already holds (because another member carries a
+  value) is a named null in both modes.
+- The anchor entity of `SaveTimeRangeSeriesInArchive@1` (a runtime entity, not an archive row) still
+  ignores a null column value: it keeps the attribute it had.
+
+- **Record members reach their columns on raw archives too (AB#8666, engine-mongodb):** the save node
+  hands the record on as one attribute (`Amount` -> record); the repository expands it into the member
+  columns (`Amount.Value`, `Amount.Unit`) on both paths. Before that engine fix the raw path dropped the
+  record, so a pipeline write left every member column as it was, values and nulls alike.
+
+Tests: `TimeRangeSeriesShaperTests` (null, missing, value per scope), `ArchiveNullVersusMissingChainTests`
+(document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node; enum and record
+member cases of AB#8625 with and without `ExplicitNullCreatesRecords`; the repository is a fake), and `RawArchiveRecordMemberPipelineIntegrationTests`
+(integration, `StreamDataPipelineFixture`: real orchestrator, `CreateUpdateInfo@1` ->
+`SaveStreamDataInArchive@1` -> the real `CrateDbStreamDataRepository` on CrateDB; a row seeded in the
+REST shape, then a member value, an explicit null, a member left out, and a null on a member of a record
+the update does not hold yet with the option off and on; needs the engine-mongodb
+package with AB#8666).
 
 #### SaveStreamDataInArchiveNode
 

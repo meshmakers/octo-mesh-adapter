@@ -409,4 +409,100 @@ public class TimeRangeSeriesShaperTests
             Thread.CurrentThread.CurrentCulture = previous;
         }
     }
+    // AB#8622: the archive keeps the stored value of a column a row does not name and clears a column
+    // named with null. A JSON null therefore has to reach the row as an explicit null, and a missing
+    // property has to stay missing — the shaper must not collapse the two.
+
+    private static List<Meshmakers.Octo.Runtime.Contracts.StreamData.TimeRangeStreamDataPoint> RowsFor(
+        string valueJson, string seriesExtraJson = "")
+    {
+        var json = Parse(
+            $$"""
+              [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03"{{seriesExtraJson}},
+                  "EnergyQuantities": [ { "From": "2026-01-01T00:00:00Z", "To": "2026-01-01T00:15:00Z"{{valueJson}} } ] } ]
+              """);
+        var series = TimeRangeSeriesShaper.Shape(json, Config(), out _);
+        series[0].RtId = OctoObjectId.GenerateNewId();
+        return TimeRangeSeriesShaper.BuildRows(series, CkType, Config(), PassThrough, out _);
+    }
+
+    [Fact]
+    public void AValueScopedNullReachesTheRowAsAnExplicitNull()
+    {
+        var row = Assert.Single(RowsFor(""", "Quantity": null""", """, "QuantityUnit": "kWh" """));
+
+        Assert.True(row.Attributes.ContainsKey("Amount.Value"));
+        Assert.Null(row.Attributes["Amount.Value"]);
+    }
+
+    [Fact]
+    public void AMissingValueScopedPropertyStaysMissingOnTheRow()
+    {
+        var row = Assert.Single(RowsFor("", """, "QuantityUnit": "kWh" """));
+
+        Assert.False(row.Attributes.ContainsKey("Amount.Value"));
+        Assert.Equal("kWh", row.Attributes["Amount.Unit"]);
+    }
+
+    [Fact]
+    public void AValueScopedValueStaysAValue()
+    {
+        var row = Assert.Single(RowsFor(""", "Quantity": 1.5""", """, "QuantityUnit": "kWh" """));
+
+        Assert.Equal(1.5, row.Attributes["Amount.Value"]);
+    }
+
+    [Fact]
+    public void ASeriesScopedNullReachesTheRowAsAnExplicitNull()
+    {
+        var row = Assert.Single(RowsFor(""", "Quantity": 1.5""", """, "QuantityUnit": null"""));
+
+        Assert.True(row.Attributes.ContainsKey("Amount.Unit"));
+        Assert.Null(row.Attributes["Amount.Unit"]);
+    }
+
+    [Fact]
+    public void AMissingSeriesScopedPropertyStaysMissingOnTheRow()
+    {
+        var row = Assert.Single(RowsFor(""", "Quantity": 1.5"""));
+
+        Assert.False(row.Attributes.ContainsKey("Amount.Unit"));
+    }
+
+    [Fact]
+    public void AnExplicitNullBypassesTheConversion_AndANullConversionStaysMissing()
+    {
+        // The conversion maps names onto stored values (an Enum name onto its key); a null has nothing
+        // to map. A non-null raw value the conversion cannot map is not a value the producer sent as
+        // null, so it must not clear the stored column either.
+        var json = Parse(
+            $$"""
+              [ { "MeteringPointRtId": "{{ParentRtId}}", "MeterCode": "G.03", "QuantityUnit": "unknown-unit",
+                  "EnergyQuantities": [ { "From": "2026-01-01T00:00:00Z", "To": "2026-01-01T00:15:00Z", "Quantity": null } ] } ]
+              """);
+        var series = TimeRangeSeriesShaper.Shape(json, Config(), out _);
+        series[0].RtId = OctoObjectId.GenerateNewId();
+        var converted = new List<(string Column, object? Raw)>();
+
+        var row = Assert.Single(TimeRangeSeriesShaper.BuildRows(series, CkType, Config(),
+            (column, raw) =>
+            {
+                converted.Add((column, raw));
+                return null;
+            }, out _));
+
+        Assert.True(row.Attributes.ContainsKey("Amount.Value"));
+        Assert.Null(row.Attributes["Amount.Value"]);
+        Assert.False(row.Attributes.ContainsKey("Amount.Unit"));
+        Assert.Equal([("Amount.Unit", (object?)"unknown-unit")], converted);
+    }
+
+    [Fact]
+    public void AnObjectWhereAScalarIsExpectedStaysMissingOnTheRow()
+    {
+        // Unchanged rule: an object or array has no scalar form and is not a column value.
+        var row = Assert.Single(RowsFor(""", "Quantity": { "v": 1 }""", """, "QuantityUnit": "kWh" """));
+
+        Assert.False(row.Attributes.ContainsKey("Amount.Value"));
+    }
 }

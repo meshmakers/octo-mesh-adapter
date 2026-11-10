@@ -206,12 +206,21 @@ internal class AnthropicAiQueryNode(
                 ? BuildCachedSourceContent(sourcePart, instructionPart)
                 : sourcePart + instructionPart;
 
+            // AB#8685: an MCP URL (often inherited from the AiConfiguration's McpServerUrl) without an
+            // identity to call it with is skipped instead of called unauthenticated — the MCP service
+            // enforces authentication (AB#4315) and only answers 401. One warning names the node and
+            // the missing setting; the query runs without tools.
+            var mcpSkippedForMissingIdentity = !string.IsNullOrEmpty(mcpServerUrl) && !HasMcpIdentity(config);
+            if (mcpSkippedForMissingIdentity)
+            {
+                nodeContext.Warning(BuildMissingMcpIdentityWarning(nodeContext.NodePath.ToString()));
+            }
+
             // Load MCP tools if configured
             List<JsonElement>? mcpTools = null;
-            if (!string.IsNullOrEmpty(mcpServerUrl))
+            if (!string.IsNullOrEmpty(mcpServerUrl) && !mcpSkippedForMissingIdentity)
             {
-                // Authenticate to the MCP server via a ServiceAccountConfiguration when configured
-                // (AB#4315). No config name → calls stay unauthenticated (local/dev only).
+                // Authenticate to the MCP server via a ServiceAccountConfiguration (AB#4315).
                 // With mcpDelegateToCaller the token instead runs on the calling user's identity and
                 // any failure is fatal rather than degrading (AB#5031).
                 await EnsureMcpAccessTokenAsync(config, nodeContext);
@@ -243,7 +252,8 @@ internal class AnthropicAiQueryNode(
             var mcpExpected = ExpectsMcpTools(config);
             var systemPrompt = BuildEffectiveSystemPrompt(baseSystemPrompt,
                 mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl) || mcpExpected, mcpToolCount: mcpTools?.Count ?? 0);
-            if (!ReferenceEquals(systemPrompt, baseSystemPrompt))
+            // AB#8685: a skipped MCP has already been reported with its own warning — one per execution.
+            if (!ReferenceEquals(systemPrompt, baseSystemPrompt) && !mcpSkippedForMissingIdentity)
             {
                 nodeContext.Warning(string.IsNullOrEmpty(mcpServerUrl)
                     ? "The pipeline expects MCP tools but no MCP server URL is configured (AiConfiguration." +
@@ -275,7 +285,8 @@ internal class AnthropicAiQueryNode(
             }
 
             // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt, mcpServerUrl, userPrompt, mcpTools, nodeContext, usage, historyMessages, apiSchema);
+            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt,
+                mcpSkippedForMissingIdentity ? null : mcpServerUrl, userPrompt, mcpTools, nodeContext, usage, historyMessages, apiSchema);
 
             // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
             // as API content blocks, never as text. Its "results" are invented, so the answer is
@@ -468,6 +479,29 @@ internal class AnthropicAiQueryNode(
         return config.McpDelegateToCaller ||
                !string.IsNullOrEmpty(config.McpServiceAccountConfigName) ||
                config.McpToolNames is { Length: > 0 };
+    }
+
+    /// <summary>
+    ///     True when the node has an identity to call the MCP server with: a
+    ///     <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> (service account,
+    ///     AB#4315) or delegation to the caller (<c>mcpDelegateToCaller: true</c> / <c>identity: Caller</c>,
+    ///     AB#5031/AB#5127). Without one the node never calls MCP (AB#8685).
+    /// </summary>
+    internal static bool HasMcpIdentity(AnthropicAiQueryNodeConfiguration config)
+    {
+        return config.DelegatesToCaller || !string.IsNullOrEmpty(config.McpServiceAccountConfigName);
+    }
+
+    /// <summary>
+    ///     The warning written once per execution when an MCP server URL resolved but no identity is
+    ///     configured, so MCP is skipped (AB#8685). Names the node and the missing setting.
+    /// </summary>
+    internal static string BuildMissingMcpIdentityWarning(string nodePath)
+    {
+        return $"[{nodePath}]: AnthropicAiQuery@1 skips MCP: an MCP server URL is configured (node " +
+               "mcpServerUrl or AiConfiguration.McpServerUrl) but no identity to call it with — set " +
+               "'mcpServiceAccountConfigName' (service account) or 'mcpDelegateToCaller: true' / " +
+               "'identity: Caller' together with 'mcpServiceAccountConfigName'. The query runs without tools.";
     }
 
     /// <summary>Thrown when the model answered with tool-call markup as text (see <see cref="ContainsSimulatedToolCalls" />).</summary>
@@ -1064,7 +1098,7 @@ internal class AnthropicAiQueryNode(
     /// <summary>
     /// Service-account bearer token for the MCP server, acquired once per execution when a
     /// <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> is configured.
-    /// Null when no service-account config is set (MCP calls are then unauthenticated — local/dev).
+    /// Null when no service-account config is set; the node then does not call MCP at all (AB#8685).
     /// </summary>
     private string? _mcpAccessToken;
 

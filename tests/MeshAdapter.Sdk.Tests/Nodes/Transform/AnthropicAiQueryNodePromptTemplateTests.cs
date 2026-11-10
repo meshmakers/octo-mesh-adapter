@@ -113,8 +113,7 @@ public class AnthropicAiQueryNodePromptTemplateTests : NodeTestBase
         A.CallTo(() => dataContext.GetKind("$.text")).Returns(DataKind.String);
         A.CallTo(() => dataContext.Get<string>("$.text")).Returns("SOURCE TEXT");
 
-        var node = new AnthropicAiQueryNode(next, etlContext, factory, A.Fake<IServiceAccountTokenService>(),
-            A.Fake<IServiceClientAccessToken>());
+        var node = new AnthropicAiQueryNode(next, etlContext, factory, A.Fake<IServiceAccountTokenService>());
         return (node, dataContext, nodeContext, handler);
     }
 

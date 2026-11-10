@@ -187,6 +187,9 @@ public static class ServiceCollectionExtensions
                 options.TenantId = adapterOptions.Value.DedicatedTenantId;
             });
         services.AddSingleton<ICommunicationServicesClient, CommunicationServicesClient>();
+        // AB#8699: DeployPipeline@1 calls the controller as its service account with a client of its own,
+        // so the account's token never enters the process-wide holder below.
+        services.AddSingleton<IServiceAccountCommunicationClientFactory, ServiceAccountCommunicationClientFactory>();
         services.AddSingleton<ICommunicationServiceClientAccessToken>(provider =>
             (ICommunicationServiceClientAccessToken)provider.GetRequiredService<IServiceClientAccessToken>());
         services.AddCkModelSystemNotificationV2();

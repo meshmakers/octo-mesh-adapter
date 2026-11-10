@@ -121,7 +121,7 @@ public class SessionIdentityBehaviourTests : SessionNodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest(config);
 
         var node = new DeployPipelineNode(next, EtlContext,
-            A.Fake<ICommunicationServicesClient>(), A.Fake<IServiceAccountTokenService>());
+            A.Fake<IServiceAccountCommunicationClientFactory>(), A.Fake<IServiceAccountTokenService>());
         await Record.ExceptionAsync(() => node.ProcessObjectAsync(dataContext, nodeContext));
 
         AssertSystemSessionOpened();

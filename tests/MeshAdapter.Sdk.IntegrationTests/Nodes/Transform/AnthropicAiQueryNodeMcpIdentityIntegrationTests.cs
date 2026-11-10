@@ -112,8 +112,10 @@ public sealed class AnthropicAiQueryNodeMcpIdentityIntegrationTests : IAsyncLife
         A.CallTo(() => etlContext.VerifiedPrincipal).Returns(null);
         A.CallTo(() => etlContext.GlobalConfiguration).Returns(A.Fake<IGlobalConfiguration>());
 
-        var accessToken = A.Fake<IServiceClientAccessToken>();
-        A.CallTo(() => accessToken.AccessToken).Returns(Token);
+        var tokenService = A.Fake<IServiceAccountTokenService>();
+        A.CallTo(() => tokenService.AcquireServiceAccountTokenAsync(A<ITenantRepository>._, A<string>._,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>(Token));
 
         var dataContext = A.Fake<IDataContext>();
         A.CallTo(() => dataContext.GetKind("$.text")).Returns(DataKind.String);
@@ -124,7 +126,7 @@ public sealed class AnthropicAiQueryNodeMcpIdentityIntegrationTests : IAsyncLife
         A.CallTo(() => nodeContext.NodePath).Returns("/AnthropicAiQuery@1");
 
         var node = new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory,
-            A.Fake<IServiceAccountTokenService>(), accessToken);
+            tokenService);
         return (node, dataContext, nodeContext, http);
     }
 

@@ -156,7 +156,9 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     /// client-credentials token and sends it as a <c>Authorization: Bearer</c> header on the
     /// <c>{McpServerUrl}/{tenantId}/mcp</c> requests. Required for MCP tools: the MCP server enforces
     /// authentication (AB#4315), so without this setting (or delegation to the caller) the node does not
-    /// call MCP at all — it warns once and runs the query without tools (AB#8685).
+    /// call MCP at all — it warns once and runs the query without tools (AB#8685). The token is that of
+    /// exactly this account (AB#8699); when the configuration yields no token (missing, broken, refused)
+    /// the node likewise makes no MCP call, warns once and runs the query without tools.
     /// </summary>
     [PropertyGroup("Connection", 3)]
     public string? McpServiceAccountConfigName { get; set; }
@@ -177,8 +179,8 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     ///         Signal, e-mail) have no caller and must leave this off.
     ///     </para>
     ///     <para>
-    ///         Default <c>false</c> keeps the existing service-account behaviour byte for byte,
-    ///         including its degrade-to-unauthenticated paths.
+    ///         Default <c>false</c> keeps the service-account behaviour: a service account that yields
+    ///         no token means no MCP call and a query without tools, never a failed pipeline (AB#8699).
     ///     </para>
     /// </remarks>
     [PropertyGroup("Connection", 4)]

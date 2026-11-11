@@ -61,6 +61,15 @@ public record McpToolCallNodeConfiguration : TargetPathNodeConfiguration
     public string? ArgumentsPath { get; set; }
 
     /// <summary>
+    ///     Name of a top-level tool argument that receives the id of the current pipeline execution (a GUID
+    ///     string), e.g. <c>runRef</c> for <c>knowledge_upsert_page</c>, so the written page version references
+    ///     the exact run (AB#8703). The value replaces an argument of the same name from <c>argumentsPath</c>.
+    ///     Not set = the arguments are sent unchanged.
+    /// </summary>
+    [PropertyGroup("Tool", 4)]
+    public string? ExecutionIdArgument { get; set; }
+
+    /// <summary>
     ///     Well-known name of the <c>System.Communication/AiConfiguration</c> whose <c>McpServerUrl</c> is
     ///     used (recommended; the pipeline needs a <c>Uses</c> association to it). Takes precedence over
     ///     <c>mcpServerUrl</c>.

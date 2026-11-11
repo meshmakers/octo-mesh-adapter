@@ -16,7 +16,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// </summary>
 /// <remarks>
 ///     Order of the checks is part of the contract (tests <c>McpToolCallNodeTests</c>): configuration and
-///     allowlist are validated first, then the arguments, then the endpoint — all before a token is
+///     allowlist are validated first, then the arguments (plus the execution id, AB#8703), then the endpoint — all before a token is
 ///     requested or any request is sent. Only the call itself is subject to <c>continueOnError</c>.
 /// </remarks>
 [NodeConfiguration(typeof(McpToolCallNodeConfiguration))]
@@ -37,6 +37,7 @@ internal class McpToolCallNode(
         var toolName = ResolveToolName(config, dataContext, nodeContext);
         EnsureAllowed(config, toolName, nodeContext);
         var arguments = ResolveArguments(config, dataContext, nodeContext);
+        ApplyExecutionId(config, arguments, etlContext.PipelineExecutionId, nodeContext);
         var endpoint = ResolveEndpoint(config, etlContext, nodeContext);
 
         string? accessToken = null;
@@ -113,6 +114,38 @@ internal class McpToolCallNode(
         {
             throw ConfigurationError(nodeContext, "'timeoutSeconds' must be positive.");
         }
+
+        if (config.ExecutionIdArgument != null &&
+            (string.IsNullOrWhiteSpace(config.ExecutionIdArgument) ||
+             config.ExecutionIdArgument.Trim() != config.ExecutionIdArgument))
+        {
+            throw ConfigurationError(nodeContext,
+                "'executionIdArgument' must name a tool argument (no empty name, no leading or trailing spaces).");
+        }
+    }
+
+    /// <summary>
+    ///     AB#8703: writes the id of the current pipeline execution into the argument named by
+    ///     <c>executionIdArgument</c> (replacing a value from <c>argumentsPath</c>), so the tool can record the
+    ///     exact run. Without an execution id (empty GUID) nothing is written and a warning is logged — a zero id
+    ///     would reference no run.
+    /// </summary>
+    internal static void ApplyExecutionId(McpToolCallNodeConfiguration config, JsonObject arguments,
+        Guid pipelineExecutionId, INodeContext nodeContext)
+    {
+        if (string.IsNullOrEmpty(config.ExecutionIdArgument))
+        {
+            return;
+        }
+
+        if (pipelineExecutionId == Guid.Empty)
+        {
+            nodeContext.Warning(
+                $"No pipeline execution id is available; the argument '{config.ExecutionIdArgument}' is sent unchanged.");
+            return;
+        }
+
+        arguments[config.ExecutionIdArgument] = pipelineExecutionId.ToString("D");
     }
 
     internal static string ResolveToolName(McpToolCallNodeConfiguration config, IDataContext dataContext,

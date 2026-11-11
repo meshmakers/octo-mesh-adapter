@@ -84,10 +84,13 @@ public class McpToolCallNodeTests : NodeTestBase
         NodeDelegate Next,
         FakeMcpServer Server,
         IServiceAccountTokenService TokenService,
-        IGlobalConfiguration GlobalConfiguration);
+        IGlobalConfiguration GlobalConfiguration,
+        IPipelineLogger Logger);
+
+    private static readonly Guid ExecutionId = Guid.Parse("4f0c2a8e-7d1b-4c3a-9e5f-1a2b3c4d5e6f");
 
     private Harness Prepare(McpToolCallNodeConfiguration config, string? token = Token,
-        JsonObject? arguments = null)
+        JsonObject? arguments = null, Guid? executionId = null)
     {
         var server = new FakeMcpServer();
         var factory = A.Fake<IHttpClientFactory>();
@@ -105,15 +108,16 @@ public class McpToolCallNodeTests : NodeTestBase
         var etlContext = A.Fake<IMeshEtlContext>();
         A.CallTo(() => etlContext.TenantId).Returns("tenant1");
         A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => etlContext.PipelineExecutionId).Returns(executionId ?? ExecutionId);
 
-        var (dataContext, nodeContext, next) = PrepareTest(config);
+        var (dataContext, nodeContext, next, logger) = PrepareTestWithLogger(config);
         A.CallTo(() => dataContext.GetKind("$.args")).Returns(arguments == null ? DataKind.Undefined : DataKind.Object);
         A.CallTo(() => dataContext.Get<JsonNode>("$.args")).Returns(arguments);
         A.CallTo(() => dataContext.GetKind("$.toolChoice")).Returns(DataKind.String);
         A.CallTo(() => dataContext.Get<string>("$.toolChoice")).Returns("knowledge_delete_everything");
 
         var node = new McpToolCallNode(next, etlContext, factory, tokenService);
-        return new Harness(node, dataContext, nodeContext, next, server, tokenService, globalConfiguration);
+        return new Harness(node, dataContext, nodeContext, next, server, tokenService, globalConfiguration, logger);
     }
 
     private static McpToolCallNodeConfiguration Config() => new()
@@ -225,6 +229,86 @@ public class McpToolCallNodeTests : NodeTestBase
         Assert.True(Matches(written), "unexpected result written: " + written);
 
         static bool Matches(object? o) => o is JsonValue && ((JsonValue)o!).GetValue<string>() == "Page saved.";
+    }
+
+    // ---- AB#8703: the pipeline execution id as a tool argument ----
+
+    [Fact]
+    public async Task ExecutionIdArgument_WritesTheCurrentExecutionIdIntoTheNamedArgument()
+    {
+        var h = Prepare(Config() with { ExecutionIdArgument = "runRef" }, arguments: PageArgs());
+
+        await h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext);
+
+        var arguments = h.Server.Requests.Single(r => r.Method == "tools/call").Body!["params"]!["arguments"]!;
+        Assert.Equal("4f0c2a8e-7d1b-4c3a-9e5f-1a2b3c4d5e6f", arguments["runRef"]!.GetValue<string>());
+        Assert.Equal("Netzlaufwerk", arguments["title"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ExecutionIdArgument_ReplacesAValueFromArgumentsPath_AndLeavesTheDataContextUnchanged()
+    {
+        var args = PageArgs();
+        args["runRef"] = "knowledge-generate-agentic/interim";
+        var h = Prepare(Config() with { ExecutionIdArgument = "runRef" }, arguments: args);
+
+        await h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext);
+
+        var sent = h.Server.Requests.Single(r => r.Method == "tools/call").Body!["params"]!["arguments"]!;
+        Assert.Equal(ExecutionId.ToString(), sent["runRef"]!.GetValue<string>());
+        // The arguments are a detached copy: the data context keeps its own value.
+        Assert.Equal("knowledge-generate-agentic/interim", args["runRef"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ExecutionIdArgument_WorksWithoutArgumentsPath()
+    {
+        var h = Prepare(Config() with { ArgumentsPath = null, ExecutionIdArgument = "runRef" });
+
+        await h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext);
+
+        var sent = h.Server.Requests.Single(r => r.Method == "tools/call").Body!["params"]!["arguments"]!.AsObject();
+        Assert.Equal(ExecutionId.ToString(), Assert.Single(sent).Value!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task WithoutExecutionIdArgument_TheArgumentsAreSentUnchanged()
+    {
+        var h = Prepare(Config(), arguments: PageArgs());
+
+        await h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext);
+
+        var sent = h.Server.Requests.Single(r => r.Method == "tools/call").Body!["params"]!["arguments"]!.AsObject();
+        Assert.Equal(["title", "markdown"], sent.Select(p => p.Key));
+    }
+
+    [Fact]
+    public async Task ExecutionIdArgument_WithoutAnExecutionId_SendsTheArgumentUnchanged_AndWarns()
+    {
+        var args = PageArgs();
+        args["runRef"] = "interim";
+        var h = Prepare(Config() with { ExecutionIdArgument = "runRef" }, arguments: args, executionId: Guid.Empty);
+
+        await h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext);
+
+        var sent = h.Server.Requests.Single(r => r.Method == "tools/call").Body!["params"]!["arguments"]!;
+        Assert.Equal("interim", sent["runRef"]!.GetValue<string>());
+        A.CallTo(() => h.Logger.Warning(A<string>._, A<string>._, A<string>.That.Contains("No pipeline execution id"),
+            A<object[]>._)).MustHaveHappenedOnceExactly();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData(" runRef")]
+    public async Task ExecutionIdArgument_ThatNamesNoArgument_IsAConfigurationError_BeforeAnyCall(string name)
+    {
+        var h = Prepare(Config() with { ExecutionIdArgument = name, ContinueOnError = true }, arguments: PageArgs());
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext));
+
+        Assert.Contains("'executionIdArgument' must name a tool argument", ex.Message);
+        Assert.Empty(h.Server.Requests);
     }
 
     // ---- AC2: allowlist before any call ----

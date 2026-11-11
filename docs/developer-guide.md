@@ -1062,6 +1062,7 @@ Processes content using Claude AI API.
 | `ToolName` | string? | The tool to call. Exactly one of `toolName` / `toolNamePath`. |
 | `ToolNamePath` | string? | JSONPath to a string naming the tool (e.g. chosen by an earlier step). Still checked against `allowedTools`. |
 | `ArgumentsPath` | string? | JSONPath to a JSON **object** sent as the tool arguments. Not set = `{}`. Anything other than an object fails the node before any call. |
+| `ExecutionIdArgument` | string? | Name of a top-level tool argument that receives the **id of the current pipeline execution** (GUID string, AB#8703), e.g. `runRef` for `knowledge_upsert_page`, so the page version references the exact run. Replaces an argument of the same name from `argumentsPath`; not set = arguments unchanged. An empty name or one with leading/trailing spaces is a configuration error. |
 | `AiConfigurationName` | string? | Well-known name of the `System.Communication/AiConfiguration` whose `McpServerUrl` is used (recommended; the per-cluster value, handed over via the pipeline's `Uses` association). |
 | `McpServerUrl` | string? | Fallback URL (e.g. `https://localhost:5017` locally). The tenant is appended: `{url}/{tenantId}/mcp`. |
 | `McpServiceAccountConfigName` | string | **Required.** Well-known name of the `System.Communication/ServiceAccountConfiguration` the call runs as. |
@@ -1077,12 +1078,17 @@ Processes content using Claude AI API.
   argumentsPath: $.page            # built by earlier nodes from the AI answer
   aiConfigurationName: AiConfig    # McpServerUrl; pipeline needs a Uses association
   mcpServiceAccountConfigName: knowledge-curator
+  executionIdArgument: runRef      # AB#8703: the page version records this execution's id
   targetPath: $.write
 ```
 
+The execution id is the one of the pipeline that runs the `McpToolCall@1` node. When the node sits in a pipeline that is
+called through `ToPipelineDataEvent@1` (e.g. a dedicated write pipeline), that is the id of the called pipeline's
+execution, not of the caller. Without an execution id (empty GUID) the argument is sent unchanged and a warning is logged.
+
 Behaviour and order of checks (tests `McpToolCallNodeTests`, `McpToolCallNodeIntegrationTests` against an in-process ModelContextProtocol 2.2.0 server — the SDK of octo-mcp-service):
 
-1. Configuration (allowlist present, one tool-name source, service account, timeout), tool name, **allowlist** (exact, case-sensitive), arguments and endpoint are resolved **before** a token is requested or any request is sent. A violation fails the node with *"MCP tool 'x' is not in this node's allowedTools [...]. The tool was not called."*
+1. Configuration (allowlist present, one tool-name source, service account, timeout, `executionIdArgument` name), tool name, **allowlist** (exact, case-sensitive), arguments (plus the execution id) and endpoint are resolved **before** a token is requested or any request is sent. A violation fails the node with *"MCP tool 'x' is not in this node's allowedTools [...]. The tool was not called."*
 2. **Identity, fail-closed:** the token comes from `IServiceAccountTokenService.AcquireServiceAccountTokenAsync` — client credentials (or the AB#5114 impersonation grant for a secret-less configuration), **returned** and cached per `(TenantId, ClientId)` until 60 s before expiry, **never** written into the process-wide `IServiceClientAccessToken` (the adapter's own identity, shared by concurrent pipelines — reading a token back from it after `EnsureTokenAsync` could hand one pipeline another pipeline's account). No token → the node fails; it never sends an unauthenticated request (unlike `AnthropicAiQuery@1`'s degrade path). The token is registered as a secret (masked in diagnostics) and redacted from every error message.
 3. **MCP Streamable HTTP** (`Internal/McpToolClient`): `initialize` → `notifications/initialized` → `tools/call`, with `Authorization: Bearer` and the `Mcp-Session-Id` the server hands out; JSON and SSE answers (notifications before the answer are skipped).
 4. **Result:** `structuredContent` when present, else a single text content parsed as JSON, else the text.

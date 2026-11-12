@@ -181,6 +181,9 @@ clusterDependencies:
   # clusterDependencies.streamDataSchemaInstancePrefix when running a second instance.
   systemDatabaseName: ""
   streamDataSchemaInstancePrefix: ""
+  # MongoDB tenant-database prefix of the instance (AB#8797), projected by the communication
+  # operator; mirror the core services' clusterDependencies.tenantDatabasePrefix. Empty: unchanged.
+  tenantDatabasePrefix: ""
 
 image:
   repository: meshmakers/octo-mesh-adapter

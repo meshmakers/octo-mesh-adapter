@@ -22,6 +22,15 @@
 - name: OCTO_SYSTEM__SYSTEMDATABASENAME
   value: {{ .Values.clusterDependencies.systemDatabaseName | quote }}
 {{- end }}
+{{- if .Values.clusterDependencies.tenantDatabasePrefix }}
+{{/*
+  AB#8797 / Epic AB#4944: the instance's MongoDB tenant-database prefix, projected by the
+  communication operator. Must match the core services' clusterDependencies.tenantDatabasePrefix.
+  Omitted when unset, so tenant database names stay as before.
+*/}}
+- name: OCTO_SYSTEM__TENANTDATABASEPREFIX
+  value: {{ .Values.clusterDependencies.tenantDatabasePrefix | quote }}
+{{- end }}
 {{- if .Values.clusterDependencies.mongodbReplicaSet }}
 - name: OCTO_SYSTEM__REPLICASETNAME
   value: {{ .Values.clusterDependencies.mongodbReplicaSet | quote }}

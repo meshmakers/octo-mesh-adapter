@@ -157,6 +157,34 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
             ["TenantHierarchyReader"] =
                 "Caches (child, ancestor) pairs of the tenant TREE, not tenant data - the same answer "
                 + "for every process, with its own bounded eviction. Nothing a lease owns.",
+            ["TenantOwnershipConflictTracker"] =
+                "AB#8883 (engine-mongodb AB#8796). DOES retain per-tenant state: the ownership "
+                + "conflicts seen on resolve (tenant id, database name, owning system database, "
+                + "detection time), keyed by normalized tenant id, read only by the health check. "
+                + "Keyed, so tenant B never reads tenant A's entry; no credential and no tenant data. "
+                + "What must not survive a release is the entry itself - otherwise the member stays "
+                + "Degraded for a tenant it no longer serves and its recheck keeps stamping into the "
+                + "released tenant's database. It is CLEARED on every release: "
+                + "CkModelCacheLeaseParticipant.LeaveLeaseAsync calls "
+                + "ISystemContext.InvalidateTenantResolveImportGuards(lease tenant), which removes the "
+                + "tenant's conflict. CkModelCacheLeaseParticipantTests pins that call. Its "
+                + "system-database marker problem is about the instance's own system database, not "
+                + "a tenant.",
+            ["TenantDatabaseRegistrationLookup"] =
+                "AB#8883 (engine-mongodb AB#8796). Stateless: its fields are the admin repository "
+                + "access, the system options and a logger. Every call takes a fresh snapshot of the "
+                + "tenant registries on the server and returns it; nothing is kept between calls. Used "
+                + "on admin paths (attach, restore, delete, ownership review), not on a lease.",
+            ["TenantOwnershipReview"] =
+                "AB#8883 (engine-mongodb AB#8796). Stateless: holds the ownership store, the "
+                + "registration lookup (cleared above) and a logger; the tenant list is a method "
+                + "argument and the result is returned, not kept. Admin operation "
+                + "(ISystemContext.ReviewTenantOwnershipAsync), not reached by a lease.",
+            ["SystemDatabaseMarkerStore"] =
+                "AB#8883 (engine-mongodb AB#8672). Stateless: its only field is the admin repository "
+                + "access; the database name is a method argument. It reads and writes the marker in "
+                + "the instance's SYSTEM database, which is not tenant data. The sweep flags it only "
+                + "for the field-name constant SystemTenantIdField.",
         };
 
     /// <summary>

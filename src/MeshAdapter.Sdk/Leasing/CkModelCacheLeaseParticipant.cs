@@ -57,7 +57,9 @@ internal sealed class CkModelCacheLeaseParticipant(
         // stamp, stream-data auto-import) are likewise keyed by tenant and would otherwise grow
         // without bound across leases. Dropping them costs one extra resolve on the next lease of the
         // same tenant and keeps the member's footprint a function of concurrency rather than of how
-        // many tenants it has ever served.
+        // many tenants it has ever served. The same call forgets the tenant's recorded ownership
+        // conflict (engine-mongodb AB#8796), so the member's health check and conflict recheck never
+        // keep reporting on, or stamping into, a tenant it no longer serves (AB#8883).
         systemContext.InvalidateTenantResolveImportGuards(lease.TenantId);
 
         logger.LogDebug("CK model cache unloaded for released tenant '{TenantId}'", lease.TenantId);

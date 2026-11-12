@@ -643,6 +643,15 @@ candidate for a lease participant if a member ever leases stream-data tenants at
 `CrateDbStreamDataRepositoryFactory` (AB#7009) is cleared too: its only process state is a table-keyed
 `RecomputeProcessState`, no credential, no tenant field; `DeleteTenantStateAsync` forgets that state.
 
+The tenant-database ownership singletons of engine-mongodb (AB#8796/AB#8672, cleared in AB#8883):
+`TenantDatabaseRegistrationLookup`, `TenantOwnershipReview` and `SystemDatabaseMarkerStore` are stateless
+(fresh server snapshot per call, admin paths only). `TenantOwnershipConflictTracker` **does** keep
+per-tenant state — the ownership conflicts seen on resolve, keyed by tenant, feeding the health check —
+and is cleared on every release: `CkModelCacheLeaseParticipant.LeaveLeaseAsync` calls
+`InvalidateTenantResolveImportGuards(tenant)`, which also drops the tenant's conflict
+(`CkModelCacheLeaseParticipantTests` pins the call). A new engine singleton that keeps per-tenant
+state needs such a release hook, not just an entry in the cleared list.
+
 ## Adapter pool membership (AB#4924, increment 6)
 
 `AddOctoMeshAdapterPoolMember()` (`src/MeshAdapter.Sdk/Leasing/`) makes this adapter a **pool
@@ -657,7 +666,7 @@ reverse is the order they are left**:
 | Participant | Enter | Leave |
 |---|---|---|
 | `BorrowerIdentityLeaseParticipant` | exchanges the lease's credential for a token and publishes it as the process identity | empties `IServiceClientAccessToken` |
-| `CkModelCacheLeaseParticipant` | warms the borrower's CK model | `ICkCacheService.Unload` + `InvalidateTenantResolveImportGuards` |
+| `CkModelCacheLeaseParticipant` | warms the borrower's CK model | `ICkCacheService.Unload` + `InvalidateTenantResolveImportGuards` (resolve attempt guards and the tenant's ownership conflict, AB#8883) |
 | `PipelineRegistryLeaseParticipant` | — | `UnregisterAllPipelinesAsync` |
 
 Identity first, because a member that cannot become the borrower must not touch its data at all; the

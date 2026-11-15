@@ -228,6 +228,7 @@ public class BorrowerDatabaseLeaseParticipantTests
 
         Assert.Equal(
         [
+            nameof(TenantGenerationLeaseParticipant),
             nameof(BorrowerIdentityLeaseParticipant),
             nameof(BorrowerDatabaseLeaseParticipant),
             nameof(CkModelCacheLeaseParticipant),

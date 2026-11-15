@@ -652,6 +652,14 @@ and is cleared on every release: `CkModelCacheLeaseParticipant.LeaveLeaseAsync` 
 (`CkModelCacheLeaseParticipantTests` pins the call). A new engine singleton that keeps per-tenant
 state needs such a release hook, not just an entry in the cleared list.
 
+The tenant generation cache of octo-common-services (AB#8999, cleared in AB#9022): `TenantGenerationReader`
+**does** keep per-tenant state — the current generation (creation time of the tenant's lifecycle record) of every
+tenant id it was asked for, keyed by tenant, at most 60 s and 1024 tenants — and is cleared on every release by
+`TenantGenerationLeaseParticipant`, which calls `ITenantGenerationReader.Invalidate(tenant)`
+(`TenantGenerationLeaseParticipantTests`). `TenantGenerationCheck` is flagged only for its reader field; its log
+throttle has no tenant in its key. A new common-services singleton with per-tenant state needs the same: a release
+hook here, not just an entry in the cleared list.
+
 ## Adapter pool membership (AB#4924, increment 6)
 
 `AddOctoMeshAdapterPoolMember()` (`src/MeshAdapter.Sdk/Leasing/`) makes this adapter a **pool
@@ -660,12 +668,14 @@ member**: a process handed one borrowing tenant per lease. 🔴 **Call it before
 pool member the winner must be the lease-aware scope. Getting that order wrong fails nowhere; it
 simply never enforces the lease.
 
-It registers three `IAdapterLeaseParticipant`s, and **the order is the order they are entered; its
+It registers five `IAdapterLeaseParticipant`s, and **the order is the order they are entered; its
 reverse is the order they are left**:
 
 | Participant | Enter | Leave |
 |---|---|---|
+| `TenantGenerationLeaseParticipant` | — | `ITenantGenerationReader.Invalidate` for the released tenant, as the last step (AB#9022) |
 | `BorrowerIdentityLeaseParticipant` | exchanges the lease's credential for a token and publishes it as the process identity | empties `IServiceClientAccessToken` |
+| `BorrowerDatabaseLeaseParticipant` | hands the lease's database credential to `LeasedDatabaseCredentialSource` | drops the credential and evicts the released tenant's cached repository clients |
 | `CkModelCacheLeaseParticipant` | warms the borrower's CK model | `ICkCacheService.Unload` + `InvalidateTenantResolveImportGuards` (resolve attempt guards and the tenant's ownership conflict, AB#8883) |
 | `PipelineRegistryLeaseParticipant` | — | `UnregisterAllPipelinesAsync` |
 

@@ -180,6 +180,21 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 + "registration lookup (cleared above) and a logger; the tenant list is a method "
                 + "argument and the result is returned, not kept. Admin operation "
                 + "(ISystemContext.ReviewTenantOwnershipAsync), not reached by a lease.",
+            ["TenantGenerationReader"] =
+                "AB#9022 (common-services AB#8999). DOES retain per-tenant state: the current generation "
+                + "of each tenant id it was asked for (the creation time of the tenant's lifecycle record), "
+                + "keyed by normalized tenant id, at most 60 s and 1024 tenants, invalidated by the tenant "
+                + "events. Keyed, so tenant B never reads tenant A's entry; no credential and no tenant "
+                + "data. It is CLEARED on every release: TenantGenerationLeaseParticipant.LeaveLeaseAsync "
+                + "calls Invalidate(lease tenant). TenantGenerationLeaseParticipantTests pins that call.",
+            ["TenantGenerationCheck"] =
+                "AB#9022 (common-services AB#8999). Flagged only for its field of type "
+                + "ITenantGenerationReader (cleared above). Its own state is a log throttle keyed by "
+                + "transport, client id, outcome and decision - no tenant in the key, no credential, no "
+                + "tenant data; the tenant is a property of the request argument on every call.",
+            ["TenantGenerationLeaseParticipant"] =
+                "AB#9022. Exists precisely to drop the released tenant's cached generation from "
+                + "TenantGenerationReader; it holds no state of its own.",
             ["SystemDatabaseMarkerStore"] =
                 "AB#8883 (engine-mongodb AB#8672). Stateless: its only field is the admin repository "
                 + "access; the database name is a method argument. It reads and writes the marker in "

@@ -655,9 +655,11 @@ state needs such a release hook, not just an entry in the cleared list.
 The tenant generation cache of octo-common-services (AB#8999, cleared in AB#9022): `TenantGenerationReader`
 **does** keep per-tenant state — the current generation (creation time of the tenant's lifecycle record) of every
 tenant id it was asked for, keyed by tenant, at most 60 s and 1024 tenants — and is cleared on every release by
-`TenantGenerationLeaseParticipant`, which calls `ITenantGenerationReader.Invalidate(tenant)`
-(`TenantGenerationLeaseParticipantTests`). `TenantGenerationCheck` is flagged only for its reader field; its log
-throttle has no tenant in its key. A new common-services singleton with per-tenant state needs the same: a release
+`TenantGenerationLeaseParticipant`, which calls `ITenantGenerationReader.Invalidate(tenant)` as the last leave step
+(`TenantGenerationLeaseParticipantTests`); a request still in flight for the released tenant can refill the entry,
+bounded by the TTL. `TenantGenerationCheck` is flagged only for its reader field; its log throttle has no tenant in
+its key (transport, client id, outcome, decision) and outlives a lease, which can only suppress a repeated warning
+line, never expose data. A new common-services singleton with per-tenant state needs the same: a release
 hook here, not just an entry in the cleared list.
 
 ## Adapter pool membership (AB#4924, increment 6)

@@ -58,11 +58,12 @@ public class TenantGenerationLeaseParticipantTests
     }
 
     /// <summary>
-    ///     The pool-member composition registers the participant, and it is built with the reader of the container,
-    ///     so the release reaches the same instance the tenant generation check reads from.
+    ///     The mesh adapter composition registers the participant and the reader as singletons, and the container
+    ///     hands the participant its registered reader through the optional constructor parameter, so the release
+    ///     reaches the instance the tenant generation check reads from.
     /// </summary>
     [Fact]
-    public async Task ThePoolMemberCompositionRegistersItAgainstTheSharedReader()
+    public async Task TheCompositionRegistersItAndTheContainerHandsItTheRegisteredReader()
     {
         var services = new ServiceCollection();
         services.AddOctoMeshAdapterPoolMember();

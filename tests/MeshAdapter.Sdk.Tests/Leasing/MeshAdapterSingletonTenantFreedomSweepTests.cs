@@ -186,12 +186,16 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 + "keyed by normalized tenant id, at most 60 s and 1024 tenants, invalidated by the tenant "
                 + "events. Keyed, so tenant B never reads tenant A's entry; no credential and no tenant "
                 + "data. It is CLEARED on every release: TenantGenerationLeaseParticipant.LeaveLeaseAsync "
-                + "calls Invalidate(lease tenant). TenantGenerationLeaseParticipantTests pins that call.",
+                + "calls Invalidate(lease tenant) as the last leave step; a request still in flight for the "
+                + "released tenant can refill the entry, and the TTL bounds that. "
+                + "TenantGenerationLeaseParticipantTests pins the call.",
             ["TenantGenerationCheck"] =
                 "AB#9022 (common-services AB#8999). Flagged only for its field of type "
                 + "ITenantGenerationReader (cleared above). Its own state is a log throttle keyed by "
                 + "transport, client id, outcome and decision - no tenant in the key, no credential, no "
-                + "tenant data; the tenant is a property of the request argument on every call.",
+                + "tenant data; the tenant is a property of the request argument on every call. The "
+                + "throttle outlives a lease, so a warning for another tenant with the same client, outcome "
+                + "and decision within a minute is not logged again - a suppressed log line, no data.",
             ["TenantGenerationLeaseParticipant"] =
                 "AB#9022. Exists precisely to drop the released tenant's cached generation from "
                 + "TenantGenerationReader; it holds no state of its own.",

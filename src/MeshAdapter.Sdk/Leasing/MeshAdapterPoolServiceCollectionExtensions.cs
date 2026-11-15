@@ -55,6 +55,11 @@ public static class MeshAdapterPoolServiceCollectionExtensions
     ///         token is cleared, which is the last moment anything could still legitimately need the
     ///         borrower's database.
     ///     </para>
+    ///     <para>
+    ///         <c>TenantGenerationLeaseParticipant</c> (AB#9022) stands before all of them: it does nothing on enter
+    ///         and on leave drops the released tenant's cached tenant generation, as the very last step, after
+    ///         every other participant that could still lead to a read of it has left.
+    ///     </para>
     /// </remarks>
     public static IServiceCollection AddOctoMeshAdapterPoolMember(this IServiceCollection services)
     {
@@ -86,6 +91,10 @@ public static class MeshAdapterPoolServiceCollectionExtensions
         services.AddSingleton<ITenantLocationSource>(sp =>
             sp.GetRequiredService<LeasedDatabaseCredentialSource>());
 
+        // AB#9022 — registered FIRST so it is left LAST: it drops the released tenant's cached tenant
+        // generation (common-services AB#8999) after everything that could still read it is gone. Its
+        // enter does nothing, so the position changes nothing on the way in.
+        services.AddSingleton<IAdapterLeaseParticipant, TenantGenerationLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, BorrowerIdentityLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, BorrowerDatabaseLeaseParticipant>();
         services.AddSingleton<IAdapterLeaseParticipant, CkModelCacheLeaseParticipant>();

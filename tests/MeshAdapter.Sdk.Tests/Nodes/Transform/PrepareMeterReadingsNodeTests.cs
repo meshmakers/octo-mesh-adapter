@@ -285,6 +285,51 @@ public class PrepareMeterReadingsNodeTests : CommunityNodeTestBase
         Assert.Equal(PrepareMeterReadingsNode.NotParticipating, output.Code(0));
     }
 
+    private const string S2 = "0000000000000000000000b2";
+    private const string NS2 = "AT0099980000000000000000000000S02";
+
+    /// <summary>One reading for NS2 with a value for each slot start.</summary>
+    private static JsonArray Ns2Readings(IEnumerable<DateTime> starts)
+        => new(Reading(NS2, "consumption", starts.Select(t => Value(t, 0.1m)).ToArray()));
+
+    [Theory]
+    [MemberData(nameof(ParticipationDayForms.Days), MemberType = typeof(ParticipationDayForms))]
+    public async Task LastParticipatingDay_AcceptsEverySlot_TheNextDayIsNotParticipating(string day, int slots,
+        bool viennaForm)
+    {
+        // AB#8375: To = last participating Vienna day, inclusive, in both stored forms.
+        var d = DateOnly.Parse(day);
+        AddConsumer(S2, NS2, dataSource: 2, from: Open, to: ParticipationDayForms.Stored(d, viennaForm));
+        var nextDay = ParticipationDayForms.LocalMidnightUtc(d.AddDays(1));
+
+        var output = await RunAsync(Ns2Readings(ParticipationDayForms.SlotStarts(d).Append(nextDay)),
+            now: nextDay.AddMinutes(30));
+
+        Assert.Equal("partial", output.Status);
+        Assert.Equal(slots, output.Accepted);
+        var rejected = Assert.Single(output.Rejected);
+        Assert.Equal(PrepareMeterReadingsNode.NotParticipating, rejected!["code"]!.GetValue<string>());
+        Assert.Equal(slots, rejected["value"]!.GetValue<int>()); // the value of the next day, after every slot of D
+    }
+
+    [Theory]
+    [MemberData(nameof(ParticipationDayForms.Days), MemberType = typeof(ParticipationDayForms))]
+    public async Task FirstParticipatingDay_StartsAtViennaMidnight(string day, int slots, bool viennaForm)
+    {
+        var d = DateOnly.Parse(day);
+        AddConsumer(S2, NS2, dataSource: 2, from: ParticipationDayForms.Stored(d, viennaForm));
+        var start = ParticipationDayForms.LocalMidnightUtc(d);
+
+        var output = await RunAsync(
+            Ns2Readings(ParticipationDayForms.SlotStarts(d).Prepend(start.AddMinutes(-15))),
+            now: ParticipationDayForms.LocalMidnightUtc(d.AddDays(1)).AddMinutes(30));
+
+        Assert.Equal(slots, output.Accepted);
+        var rejected = Assert.Single(output.Rejected);
+        Assert.Equal(PrepareMeterReadingsNode.NotParticipating, rejected!["code"]!.GetValue<string>());
+        Assert.Equal(0, rejected["value"]!.GetValue<int>()); // the last slot of the day before
+    }
+
     [Fact]
     public async Task ClosedDay_IsDayFrozenWithItsCutOff()
     {

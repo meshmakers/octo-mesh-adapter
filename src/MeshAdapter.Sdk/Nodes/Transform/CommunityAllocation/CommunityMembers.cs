@@ -20,7 +20,9 @@ internal enum CommunityMemberKind
 /// One metering point of the community as the allocation sees it: kind, partition factor, data
 /// source, participation periods and the raw input anchor. Shared by <c>AllocateCommunityEnergy@1</c>,
 /// <c>CommunityEnergyBalance@1</c> and <c>PrepareMeterReadings@1</c>, so all three answer
-/// "who participates in this slot" with the same rule.
+/// "who participates in this slot" with the same rule. <c>Periods</c> are the participation periods
+/// as calendar days in <c>TimeZone</c>, the node's configured time zone (default Europe/Vienna), in
+/// which the slots are dated too (AB#8375).
 /// </summary>
 internal sealed record CommunityMember(
     string RtId,
@@ -28,15 +30,50 @@ internal sealed record CommunityMember(
     string? MeteringPointNumber,
     int PartitionFactor,
     int DataSource,
-    List<(DateTime? From, DateTime? To)> Periods)
+    List<ParticipationDays> Periods,
+    TimeZoneInfo TimeZone)
 {
     /// <summary>The raw input anchor (consumption resp. generation register), if one exists.</summary>
     public string? InputAnchorRtId { get; set; }
 
-    /// <summary>True when one participation period covers the whole slot.</summary>
+    /// <summary>
+    /// True when one participation period covers the calendar day of the slot (AB#8375): the local
+    /// date of the slot start in <see cref="TimeZone"/> lies between the period's first and last day,
+    /// both inclusive. Slots lie on whole quarter hours and never cross local midnight, so the start
+    /// dates the whole slot.
+    /// </summary>
     public bool Participates(AllocationSlot slot)
-        => Periods.Any(p => (p.From is null || p.From.Value <= slot.From)
-                            && (p.To is null || slot.To <= p.To.Value));
+    {
+        var day = ParticipationDays.LocalDay(slot.From, TimeZone);
+        return Periods.Any(p => p.Contains(day));
+    }
+}
+
+/// <summary>
+/// A participation period as calendar days (AB#8375). <c>ParticipationPeriod.TimeRange.To</c> names
+/// the <b>last participating day, inclusive</b> (EDA <c>DateDeactivate</c>, "versorgt bis"), and
+/// <c>From</c> the first one. Both stored forms of a day D mean the same day: <c>D 00:00Z</c> and
+/// 00:00 local time (<c>D-1 22:00Z</c> in summer, <c>D-1 23:00Z</c> in winter for Europe/Vienna),
+/// because the day is the local date of the stored instant. An open end (null) has no limit.
+/// </summary>
+internal readonly record struct ParticipationDays(DateOnly? FirstDay, DateOnly? LastDay)
+{
+    /// <summary>Converts the stored <c>From</c>/<c>To</c> instants into local calendar days.</summary>
+    public static ParticipationDays From(DateTime? from, DateTime? to, TimeZoneInfo timeZone)
+        => new(from is { } f ? LocalDay(f, timeZone) : null, to is { } t ? LocalDay(t, timeZone) : null);
+
+    /// <summary>True when <paramref name="day"/> lies between the first and the last day, inclusive.</summary>
+    public bool Contains(DateOnly day)
+        => (FirstDay is null || FirstDay.Value <= day) && (LastDay is null || day <= LastDay.Value);
+
+    /// <summary>The calendar date of an instant in <paramref name="timeZone"/>; an unspecified kind is read as UTC.</summary>
+    public static DateOnly LocalDay(DateTime instant, TimeZoneInfo timeZone)
+    {
+        var utc = instant.Kind == DateTimeKind.Local
+            ? instant.ToUniversalTime()
+            : DateTime.SpecifyKind(instant, DateTimeKind.Utc);
+        return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone));
+    }
 }
 
 /// <summary>A raw slot value read from the archive.</summary>
@@ -138,6 +175,10 @@ internal static class CommunityMemberLoader
     /// <param name="repository">The tenant repository.</param>
     /// <param name="session">An open session with a started transaction; the caller commits it.</param>
     /// <param name="s">The model coordinates.</param>
+    /// <param name="timeZone">
+    /// The node's configured time zone; participation periods are turned into calendar days in it
+    /// (AB#8375).
+    /// </param>
     /// <param name="nodeContext">Receives the warnings.</param>
     /// <param name="nodeName">Node name prefixed to every warning.</param>
     /// <param name="loadAnchors">False skips the input anchors (InputAnchorRtId stays null).</param>
@@ -149,6 +190,7 @@ internal static class CommunityMemberLoader
         ITenantRepository repository,
         IOctoSession session,
         CommunityModelSchema s,
+        TimeZoneInfo timeZone,
         INodeContext nodeContext,
         string nodeName,
         bool loadAnchors = true,
@@ -206,7 +248,7 @@ internal static class CommunityMemberLoader
 
         // ---- participation periods by metering point
         var periodById = periods.ToDictionary(p => p.RtId.ToString(), StringComparer.Ordinal);
-        var periodsByPoint = new Dictionary<string, List<(DateTime?, DateTime?)>>(StringComparer.Ordinal);
+        var periodsByPoint = new Dictionary<string, List<ParticipationDays>>(StringComparer.Ordinal);
         var periodsWithoutRange = 0;
         foreach (var (origin, targets) in Pairs(periodTargets))
         {
@@ -223,6 +265,7 @@ internal static class CommunityMemberLoader
 
             var from = CommunityValues.AsUtc(range.GetAttributeValueOrDefault("From"));
             var to = CommunityValues.AsUtc(range.GetAttributeValueOrDefault("To"));
+            var days = ParticipationDays.From(from, to, timeZone);
             foreach (var target in targets)
             {
                 var key = target.RtId.ToString();
@@ -231,7 +274,7 @@ internal static class CommunityMemberLoader
                     periodsByPoint[key] = list = [];
                 }
 
-                list.Add((from, to));
+                list.Add(days);
             }
         }
 
@@ -270,7 +313,7 @@ internal static class CommunityMemberLoader
                 members[rtId] = new CommunityMember(rtId, kind,
                     e.GetAttributeStringValueOrDefault(s.MeteringPointNumberAttribute),
                     pf, dataSource,
-                    periodsByPoint.TryGetValue(rtId, out var list) ? list : []);
+                    periodsByPoint.TryGetValue(rtId, out var list) ? list : [], timeZone);
             }
         }
 

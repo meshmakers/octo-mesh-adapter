@@ -86,7 +86,7 @@ internal class AllocateCommunityEnergyNode(
         var allocator = new CommunityAllocator(c.Resolution, c.MissingQuality);
 
         // ---------------------------------------------------------------- runtime model
-        var members = await LoadMembersAsync(c, nodeContext);
+        var members = await LoadMembersAsync(c, timeZone, nodeContext);
 
         // ---------------------------------------------------------------- per-day decision (ALC-05, ALC-08)
         var summaries = new List<AllocationDaySummary>();
@@ -293,7 +293,7 @@ internal class AllocateCommunityEnergyNode(
     // ==================================================================== loading
 
     private async Task<List<CommunityMember>> LoadMembersAsync(AllocateCommunityEnergyNodeConfiguration c,
-        INodeContext nodeContext)
+        TimeZoneInfo timeZone, INodeContext nodeContext)
     {
         // AB#5028 / AB#5127 — scoped by default (config-selected identity): reads tenant business data
         // (metering points, participation periods, measurement anchors) only, like
@@ -301,7 +301,7 @@ internal class AllocateCommunityEnergyNode(
         var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         var members = await CommunityMemberLoader.LoadAsync(etlContext.TenantRepository, session,
-            CommunityModelSchema.From(c), nodeContext, NodeName);
+            CommunityModelSchema.From(c), timeZone, nodeContext, NodeName);
         await session.CommitTransactionAsync();
         return members;
     }

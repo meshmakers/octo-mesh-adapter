@@ -220,6 +220,21 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
         }
     }
 
+    /// <summary>Default rows for every quarter hour of <paramref name="days"/> Vienna days from <paramref name="first"/>.</summary>
+    private void FillRange(DateOnly first, int days)
+    {
+        var start = ParticipationDayForms.LocalMidnightUtc(first);
+        var end = ParticipationDayForms.LocalMidnightUtc(first.AddDays(days));
+        foreach (var (mp, obis, value) in new[] { (C1, ConsumerIn, 0.1), (C2, ConsumerIn, 0.1), (P1, ProducerIn, 0.15) })
+        {
+            var anchor = AnchorOf(mp, obis);
+            for (var t = start; t < end; t = t.AddMinutes(15))
+            {
+                _rows.Add((anchor, t, t.AddMinutes(15), value, 1));
+            }
+        }
+    }
+
     /// <summary>The faked archive: honours rtIds, time window overlap, sort (fixed) and paging.</summary>
     private StreamDataQueryResult Query(StreamDataQueryOptions options)
     {
@@ -258,6 +273,15 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
     {
         ArchiveRtId = ArchiveRtId.ToString(),
         StartDay = Day.ToDateTime(TimeOnly.MinValue),
+        NumDays = numDays,
+        TargetPath = TargetPath,
+        SummaryTargetPath = SummaryPath
+    };
+
+    private static AllocateCommunityEnergyNodeConfiguration DayConfig(DateOnly startDay, int numDays) => new()
+    {
+        ArchiveRtId = ArchiveRtId.ToString(),
+        StartDay = startDay.ToDateTime(TimeOnly.MinValue),
         NumDays = numDays,
         TargetPath = TargetPath,
         SummaryTargetPath = SummaryPath
@@ -420,8 +444,9 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
     }
 
     [Fact]
-    public async Task PointJoiningMidDay_HasNoQuantitiesBeforeItsStart()
+    public async Task PointJoiningMidDay_ParticipatesFromLocalMidnightOfItsFirstDay()
     {
+        // AB#8375: From names the first participating day; an instant within the day is read as its date.
         _consumers.Clear();
         _periods.RemoveAll(p => p.MeteringPoint is C1 or C2);
         _anchors.RemoveAll(a => a.MeteringPoint is C1 or C2);
@@ -433,16 +458,14 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
         var output = await RunAsync(Config());
 
         var c2 = output.Records!.Single(r => r.MeteringPointRtId == C2);
-        Assert.Equal(48, c2.EnergyQuantities.Count);
-        Assert.Equal(joins, c2.EnergyQuantities[0].From);
+        Assert.Equal(96, c2.EnergyQuantities.Count);
+        Assert.Equal(DayStartUtc, c2.EnergyQuantities[0].From);
 
-        // Before C2 joins C1 is alone: W = 0.1 <= E = 0.15 -> 0.1; afterwards 0.075.
+        // C1 and C2 share every slot of the day: W = 0.2 > E = 0.15 -> 0.075 each, no surplus.
         var c1 = output.Records!.Single(r => r.MeteringPointRtId == C1);
-        Assert.Equal(0.1m, c1.EnergyQuantities[0].Quantity);
-        Assert.Equal(0.075m, c1.EnergyQuantities[^1].Quantity);
+        Assert.All(c1.EnergyQuantities, q => Assert.Equal(0.075m, q.Quantity));
         var surplus = output.Records!.Single(r => r.MeterCode == SurplusObis);
-        Assert.Equal(0.05m, surplus.EnergyQuantities[0].Quantity);
-        Assert.Equal(0m, surplus.EnergyQuantities[^1].Quantity);
+        Assert.All(surplus.EnergyQuantities, q => Assert.Equal(0m, q.Quantity));
     }
 
     [Fact]
@@ -464,8 +487,9 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
     }
 
     [Fact]
-    public async Task PeriodEndingMidDay_StopsAtItsEnd()
+    public async Task PeriodEndingMidDay_StillCoversItsWholeLastDay()
     {
+        // AB#8375: To names the last participating day; an instant within the day is read as its date.
         _periods.RemoveAll(p => p.MeteringPoint == C2);
         AddPeriod(C2, Open, DayStartUtc.AddHours(6));
         FillDefault();
@@ -473,8 +497,45 @@ public class AllocateCommunityEnergyNodeTests : SessionNodeTestBase
         var output = await RunAsync(Config());
 
         var c2 = output.Records!.Single(r => r.MeteringPointRtId == C2);
-        Assert.Equal(24, c2.EnergyQuantities.Count);
-        Assert.Equal(DayStartUtc.AddHours(6), c2.EnergyQuantities[^1].To);
+        Assert.Equal(96, c2.EnergyQuantities.Count);
+        Assert.Equal(DayStartUtc.AddDays(1), c2.EnergyQuantities[^1].To);
+    }
+
+    [Theory]
+    [MemberData(nameof(ParticipationDayForms.Days), MemberType = typeof(ParticipationDayForms))]
+    public async Task LastParticipatingDay_IsAllocatedInFull_TheNextDayIsNot(string day, int slots, bool viennaForm)
+    {
+        // AB#8375: To = last participating Vienna day, inclusive, in both stored forms.
+        var d = DateOnly.Parse(day);
+        _periods.RemoveAll(p => p.MeteringPoint == C2);
+        AddPeriod(C2, Open, ParticipationDayForms.Stored(d, viennaForm));
+        FillRange(d, 2);
+
+        var output = await RunAsync(DayConfig(d, 2));
+
+        var c2 = Assert.Single(output.Records!, r => r.MeteringPointRtId == C2);
+        Assert.Equal(ParticipationDayForms.LocalMidnightUtc(d), c2.PeriodStart);
+        Assert.Equal(slots, c2.EnergyQuantities.Count);
+        Assert.Equal(ParticipationDayForms.SlotStarts(d), c2.EnergyQuantities.Select(q => q.From));
+        Assert.Equal([2, 1], output.Summary!.Select(s => s.Consumers));
+    }
+
+    [Theory]
+    [MemberData(nameof(ParticipationDayForms.Days), MemberType = typeof(ParticipationDayForms))]
+    public async Task FirstParticipatingDay_StartsAtViennaMidnight(string day, int slots, bool viennaForm)
+    {
+        var d = DateOnly.Parse(day);
+        _periods.RemoveAll(p => p.MeteringPoint == C2);
+        AddPeriod(C2, ParticipationDayForms.Stored(d, viennaForm), null);
+        FillRange(d.AddDays(-1), 2);
+
+        var output = await RunAsync(DayConfig(d.AddDays(-1), 2));
+
+        var c2 = Assert.Single(output.Records!, r => r.MeteringPointRtId == C2);
+        Assert.Equal(ParticipationDayForms.LocalMidnightUtc(d), c2.PeriodStart);
+        Assert.Equal(slots, c2.EnergyQuantities.Count);
+        Assert.Equal(ParticipationDayForms.LocalMidnightUtc(d), c2.EnergyQuantities[0].From);
+        Assert.Equal([1, 2], output.Summary!.Select(s => s.Consumers));
     }
 
     [Fact]

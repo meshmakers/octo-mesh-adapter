@@ -17,6 +17,11 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// <see cref="CommunityInputReader"/>, <see cref="CommunitySlotAllocation"/>), so a slot whose inputs
 /// are complete shows the numbers the final run will write. Writes nothing.
 /// </summary>
+/// <remarks>
+/// Participation is decided by calendar day in the configured <c>TimeZone</c> (AB#8375): a metering
+/// point takes part in every slot from the first day of its participation period up to and
+/// including its last day (<c>TimeRange.To</c>), see <see cref="ParticipationDays"/>.
+/// </remarks>
 [NodeConfiguration(typeof(CommunityEnergyBalanceNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class CommunityEnergyBalanceNode(
@@ -36,7 +41,7 @@ internal class CommunityEnergyBalanceNode(
     {
         var c = nodeContext.GetNodeConfiguration<CommunityEnergyBalanceNodeConfiguration>();
         var now = Clock.GetUtcNow().UtcDateTime;
-        CommunityValues.ResolveTimeZone(c.TimeZone, nodeContext, NodeName);
+        var timeZone = CommunityValues.ResolveTimeZone(c.TimeZone, nodeContext, NodeName);
         if (c.SlotLength <= TimeSpan.Zero)
         {
             throw new PipelineNodeExecutionException(
@@ -61,7 +66,7 @@ internal class CommunityEnergyBalanceNode(
         var session = await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         var members = await CommunityMemberLoader.LoadAsync(etlContext.TenantRepository, session,
-            CommunityModelSchema.From(c), nodeContext, NodeName);
+            CommunityModelSchema.From(c), timeZone, nodeContext, NodeName);
         await session.CommitTransactionAsync();
 
         // Same deterministic member order as the final run (rtId ordinal).

@@ -80,7 +80,7 @@ public class CommunityEnergyBalanceNodeTests : CommunityNodeTestBase
     {
         AddConsumer(C1, NC1, pf: 80);
         AddConsumer(C2, NC2, pf: 100, dataSource: 2);
-        // Joins at 06:00 local time of the day under test.
+        // From stored at 06:00 local time of the day under test: since AB#8375 the whole day counts.
         AddConsumer(C3, NC3, pf: 50, from: DayStartUtc.AddHours(6));
         AddProducer(P1, NP1, pf: 100);
         AddProducer(P2, NP2, pf: 70, dataSource: 2);
@@ -160,11 +160,71 @@ public class CommunityEnergyBalanceNodeTests : CommunityNodeTestBase
                 }
             }
 
-            // C3 only participates from 06:00 local (slot 24 on).
-            Assert.Equal(i >= 24, slot["meteringPoints"]!.AsArray().Any(m => m!["meteringPointNumber"]!.GetValue<string>() == NC3));
+            // C3's first day is the day under test, so it participates from Vienna midnight (AB#8375).
+            Assert.Contains(slot["meteringPoints"]!.AsArray(), m => m!["meteringPointNumber"]!.GetValue<string>() == NC3);
         }
 
         Assert.True(nonTrivial > 0, "the fixture should contain slots with both a share and a surplus");
+    }
+
+    // ==================================================================== participation days (AB#8375)
+
+    /// <summary>The balance of the <paramref name="count"/> slots ending at <paramref name="endUtc"/>, detail for NC2 only.</summary>
+    private async Task<JsonArray> WindowAsync(DateTime endUtc, int count)
+    {
+        var filter = new JsonArray(NC2);
+        var balance = await RunAsync(Config("$.slots", "$.mps"), endUtc, dc =>
+        {
+            A.CallTo(() => dc.GetValue("$.slots", A<bool>._)).Returns(count);
+            A.CallTo(() => dc.Get<JsonNode>("$.mps")).Returns(filter);
+        });
+        Assert.Equal("ok", balance["status"]!.GetValue<string>());
+        var slots = balance["slots"]!.AsArray();
+        Assert.Equal(count, slots.Count);
+        return slots;
+    }
+
+    private static bool HasNc2(JsonNode? slot)
+        => slot!["meteringPoints"]!.AsArray().Any(m => m!["meteringPointNumber"]!.GetValue<string>() == NC2);
+
+    [Theory]
+    [MemberData(nameof(ParticipationDayForms.Days), MemberType = typeof(ParticipationDayForms))]
+    public async Task LastParticipatingDay_IsInTheBalanceInFull_TheNextDayIsNot(string day, int slots, bool viennaForm)
+    {
+        var d = DateOnly.Parse(day);
+        AddConsumer(C1, NC1);
+        AddProducer(P1, NP1);
+        AddConsumer(C2, NC2, from: Open, to: ParticipationDayForms.Stored(d, viennaForm));
+
+        // At most 96 slots per call, so the day is read in two halves.
+        var start = ParticipationDayForms.LocalMidnightUtc(d);
+        var half = slots / 2;
+        var first = await WindowAsync(start.AddMinutes(15 * half), half);
+        var second = await WindowAsync(ParticipationDayForms.LocalMidnightUtc(d.AddDays(1)), slots - half);
+        Assert.All(first.Concat(second), slot => Assert.True(HasNc2(slot)));
+        Assert.Equal(CommunityEnergyBalanceNode.Iso(start), first[0]!["from"]!.GetValue<string>());
+
+        var next = await WindowAsync(ParticipationDayForms.LocalMidnightUtc(d.AddDays(1)).AddHours(1), 4);
+        Assert.All(next, slot => Assert.False(HasNc2(slot)));
+    }
+
+    [Theory]
+    [MemberData(nameof(ParticipationDayForms.Days), MemberType = typeof(ParticipationDayForms))]
+    public async Task FirstParticipatingDay_StartsAtViennaMidnight(string day, int slots, bool viennaForm)
+    {
+        var d = DateOnly.Parse(day);
+        AddConsumer(C1, NC1);
+        AddProducer(P1, NP1);
+        AddConsumer(C2, NC2, from: ParticipationDayForms.Stored(d, viennaForm));
+
+        var start = ParticipationDayForms.LocalMidnightUtc(d);
+        var before = await WindowAsync(start, 4);
+        Assert.All(before, slot => Assert.False(HasNc2(slot)));
+
+        var half = slots / 2;
+        var first = await WindowAsync(start.AddMinutes(15 * half), half);
+        var second = await WindowAsync(ParticipationDayForms.LocalMidnightUtc(d.AddDays(1)), slots - half);
+        Assert.All(first.Concat(second), slot => Assert.True(HasNc2(slot)));
     }
 
     // ==================================================================== window

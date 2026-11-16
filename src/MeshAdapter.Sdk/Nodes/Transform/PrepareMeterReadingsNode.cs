@@ -19,6 +19,11 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 /// The reporting cut-off is computed by <see cref="AllocationDayPlanner"/> with the same settings
 /// semantics as <c>AllocateCommunityEnergy@1</c>, so a day is closed for reporting exactly when the
 /// final allocation may run for it. Neither the request nor any value is logged.
+/// <para>
+/// <c>NOT_PARTICIPATING</c> is decided by calendar day in the configured <c>TimeZone</c> (AB#8375):
+/// every slot from the first day of a participation period up to and including its last day
+/// (<c>TimeRange.To</c>) is accepted, see <see cref="ParticipationDays"/>.
+/// </para>
 /// </remarks>
 [NodeConfiguration(typeof(PrepareMeterReadingsNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -100,7 +105,7 @@ internal class PrepareMeterReadingsNode(
             var session = await etlContext.GetSessionForAsync(c.Identity);
             session.StartTransaction();
             var loaded = await CommunityMemberLoader.LoadAsync(etlContext.TenantRepository, session,
-                CommunityModelSchema.From(c), nodeContext, NodeName, loadAnchors: false,
+                CommunityModelSchema.From(c), timeZone, nodeContext, NodeName, loadAnchors: false,
                 meteringPointNumbers: numbers);
             await session.CommitTransactionAsync();
 

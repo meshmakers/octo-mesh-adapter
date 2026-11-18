@@ -1235,6 +1235,11 @@ internal class AnthropicAiQueryNode(
                 "pipeline. Refusing to fall back to the service account's identity.");
         }
 
+        // The caller's own token is a credential like the token it is exchanged for: registered before the
+        // exchange, so a refusal of the identity service that quotes the subject token is masked in the
+        // execution log and in the error of the execution.
+        nodeContext.RegisterSecret(callerAccessToken);
+
         var delegatedToken = await serviceAccountTokenService.AcquireDelegatedTokenAsync(
             etlContext.TenantRepository, config.McpServiceAccountConfigName, callerAccessToken);
 
@@ -1246,6 +1251,10 @@ internal class AnthropicAiQueryNode(
                 "reason reported by the identity service). Refusing to send MCP calls under another " +
                 "identity or unauthenticated.");
         }
+
+        // Registered before the first log line and before any MCP call: an MCP server or gateway that
+        // echoes the bearer in an error body would otherwise put the delegated token into the log.
+        nodeContext.RegisterSecret(delegatedToken);
 
         nodeContext.Debug(
             "MCP access token acquired by delegation (on-behalf-of the calling user) via " +

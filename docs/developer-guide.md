@@ -1015,6 +1015,8 @@ Extracts text from PDF files using IronOCR.
 
 Processes content using Claude AI API.
 
+> **Shared engine:** `AnthropicAiQuery@1` is a thin shim. The node maps its configuration to `Internal/LlmQueryOptions` and supplies `Internal/AnthropicMessagesChatClient` (the Anthropic Messages API as an `IChatClient` of Microsoft.Extensions.AI.Abstractions, no Anthropic SDK); `Internal/LlmQueryEngine` does the work: settings, prompt (`LlmPromptBuilder`), MCP (`LlmMcpSession`), tool loop, answer processing (`LlmResponseProcessor`, `AiJsonSchemaResponseProcessor`) and usage. The engine reads no node configuration type and knows no provider wire format. What the node sends is pinned byte for byte by `AnthropicAiQueryNodeGoldenRequestTests` (three pipeline shapes, headers and MCP handshake included); record the files again only for a deliberate wire change (`OCTO_UPDATE_GOLDEN_REQUESTS=1`). Edge rules the engine adds: an empty or malformed AiConfiguration payload falls back to the node's own settings with a warning that shows nothing of the payload; conversation history accepts `content` as a string or as a content-parts array (text parts are joined) and leaves out entries whose role or content is not text; a tool result longer than 50 000 UTF-16 code units is cut without splitting a surrogate pair and marked as truncated; the execution log names the arguments of a tool call, never their values.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `Path` | string | Main content path. Optional — read only when it resolves to a string value; a non-string value at an explicit path is rendered as JSON. The default `"$"` (root object) is treated as "no main content" so **MCP-only** pipelines (no `path` set) work without error (AB#4313). |

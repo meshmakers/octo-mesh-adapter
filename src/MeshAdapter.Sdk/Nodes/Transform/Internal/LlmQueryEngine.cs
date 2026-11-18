@@ -22,6 +22,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///     The provider is behind <see cref="IChatClient" />: the engine sends chat messages and options and
 ///     reads answer, finish reason, tool calls and usage; it knows no provider wire format. The tool
 ///     loop is the engine's own, so tool calls, their cap and their log are the same for every provider.
+///     Guarded configuration read, history with content parts, the cut that never splits a surrogate
+///     pair and the tool-call log without argument values are lifted from the LlmQuery prototype
+///     (<c>philipp/AB#4861_llmquery-guaranteed-json</c>, Philipp Schwaab).
 /// </remarks>
 internal sealed class LlmQueryEngine(
     IMeshEtlContext etlContext,
@@ -29,8 +32,8 @@ internal sealed class LlmQueryEngine(
     IServiceAccountTokenService serviceAccountTokenService,
     Func<string, IChatClient> chatClientFactory)
 {
-    /// <summary>The longest tool result, in UTF-16 code units, that enters the conversation uncut.</summary>
-    private const int MaxToolResultChars = 50_000;
+    /// <summary>The cap of <see cref="LlmQueryOptions.MaxToolResultChars" /> a node does not set.</summary>
+    internal const int DefaultMaxToolResultChars = 50_000;
 
     /// <summary>
     ///     Key in <see cref="AIContent.AdditionalProperties" /> of a text part of the user message:
@@ -454,7 +457,7 @@ internal sealed class LlmQueryEngine(
     {
         if (!string.IsNullOrEmpty(options.ApiKeyConfigurationName))
         {
-            var key = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "apiKey", etlContext)
+            var key = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext)
                 ?.GetValue<string>();
             if (!string.IsNullOrEmpty(key))
             {
@@ -475,8 +478,8 @@ internal sealed class LlmQueryEngine(
         IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         // Try loading from AiConfiguration first
-        var url = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "mcpServerUrl", etlContext)
-            ?.GetValue<string>();
+        var url = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "mcpServerUrl", etlContext,
+            nodeContext)?.GetValue<string>();
         if (!string.IsNullOrEmpty(url))
         {
             nodeContext.Debug(
@@ -500,7 +503,7 @@ internal sealed class LlmQueryEngine(
         // Prefer the model configured on the AiConfiguration entity (aiModel), mirroring how the
         // API key and MCP server URL are resolved from it. Falls back to the node's own Model
         // property (and thus its default) when the AiConfiguration has no aiModel.
-        var model = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "aiModel", etlContext)
+        var model = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "aiModel", etlContext, nodeContext)
             ?.GetValue<string>();
         if (!string.IsNullOrEmpty(model))
         {
@@ -535,7 +538,8 @@ internal sealed class LlmQueryEngine(
         // how the model is resolved from it. Falls back to the node's own MaxTokens property
         // (and thus its default) when the AiConfiguration has no usable maxTokens. int.TryParse
         // on JsonNode.ToString() accepts the value both as JSON number and as string.
-        var value = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "maxTokens", etlContext);
+        var value = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "maxTokens", etlContext,
+            nodeContext);
         if (value != null && int.TryParse(value.ToString(), out var maxTokens) && maxTokens > 0)
         {
             nodeContext.Debug(
@@ -560,7 +564,8 @@ internal sealed class LlmQueryEngine(
         // mirroring the maxTokens/aiModel resolution. 0.0 is a meaningful value, so the only
         // rejection criteria are absence and the API's valid range (0.0 to 1.0). Parsed with
         // the invariant culture; accepts the value both as JSON number and as string.
-        var value = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "temperature", etlContext);
+        var value = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "temperature", etlContext,
+            nodeContext);
         if (value != null &&
             double.TryParse(value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture,
                 out var temperature) &&
@@ -574,9 +579,14 @@ internal sealed class LlmQueryEngine(
         return options.Temperature;
     }
 
-    /// <summary>One read for every AiConfiguration lookup: the named property of the stored payload.</summary>
+    /// <summary>
+    ///     One guarded read for every AiConfiguration lookup: <c>IsDefined</c> only proves the name is
+    ///     known, the stored payload can still be empty or malformed, and that must end in the callers'
+    ///     documented fallback (warning, node default) rather than a parse exception. The warning names
+    ///     the position of the defect, never a part of the payload: the payload holds the API key.
+    /// </summary>
     private static JsonNode? ReadAiConfigurationProperty(string? configurationName, string property,
-        IMeshEtlContext etlContext)
+        IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         if (string.IsNullOrEmpty(configurationName) ||
             !etlContext.GlobalConfiguration.IsDefined(configurationName))
@@ -585,7 +595,22 @@ internal sealed class LlmQueryEngine(
         }
 
         var rawJson = etlContext.GlobalConfiguration.GetRawJson(configurationName);
-        return rawJson == null ? null : JsonNode.Parse(rawJson)?[property];
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonNode.Parse(rawJson)?[property];
+        }
+        catch (JsonException ex)
+        {
+            nodeContext.Warning(
+                $"AiConfiguration '{configurationName}' is not valid JSON (line {ex.LineNumber}, " +
+                $"byte {ex.BytePositionInLine}).");
+            return null;
+        }
     }
 
     /// <summary>
@@ -634,9 +659,7 @@ internal sealed class LlmQueryEngine(
                 var toolResults = new List<AIContent>();
                 foreach (var call in response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>())
                 {
-                    var toolInput = JsonSerializer.Serialize(call.Arguments);
-                    nodeContext.Debug(
-                        $"Executing MCP tool: {call.Name}, input: {toolInput[..Math.Min(200, toolInput.Length)]}");
+                    nodeContext.Debug($"Executing MCP tool: {DescribeToolCall(call)}");
 
                     try
                     {
@@ -644,7 +667,7 @@ internal sealed class LlmQueryEngine(
                             call.Name, call.Arguments);
 
                         toolResults.Add(new FunctionResultContent(call.CallId,
-                            CapToolResult(toolResult, call.Name, nodeContext)));
+                            CapToolResult(toolResult, call.Name, options.MaxToolResultChars, nodeContext)));
                     }
                     catch (Exception ex)
                     {
@@ -724,20 +747,60 @@ internal sealed class LlmQueryEngine(
     }
 
     /// <summary>
-    ///     Caps a tool result before it enters the conversation, to prevent exceeding the context window.
-    ///     An oversized result is cut and marked as truncated so the model knows data is missing.
+    ///     A tool call for the log: the tool and the names of its arguments. Names only: argument values
+    ///     are document text, queries or ids and belong in the tool result, not in the execution log.
     /// </summary>
-    private static string CapToolResult(string toolResult, string toolName, INodeContext nodeContext)
+    internal static string DescribeToolCall(FunctionCallContent call)
     {
-        if (toolResult.Length <= MaxToolResultChars)
+        var argumentNames = call.Arguments is { Count: > 0 }
+            ? string.Join(", ", call.Arguments.Keys)
+            : string.Empty;
+        return $"{call.Name}({argumentNames})";
+    }
+
+    /// <summary>
+    ///     Caps a tool result before it enters the conversation, to prevent exceeding the context window.
+    ///     An oversized result is cut at <paramref name="maxChars" /> and marked as truncated so the model
+    ///     knows data is missing.
+    /// </summary>
+    internal static string CapToolResult(string toolResult, string toolName, int maxChars,
+        INodeContext nodeContext)
+    {
+        if (toolResult.Length <= maxChars)
         {
             return toolResult;
         }
 
         nodeContext.Warning(
-            $"MCP tool '{toolName}' result truncated from {toolResult.Length} to {MaxToolResultChars} chars. " +
+            $"MCP tool '{toolName}' result truncated from {toolResult.Length} to {maxChars} chars. " +
             "Use attributePaths parameter to reduce response size.");
-        return toolResult[..MaxToolResultChars] +
+        return TruncateSurrogateSafe(toolResult, maxChars) +
                "\n\n[TRUNCATED - result too large. Use attributePaths parameter to request only needed fields.]";
+    }
+
+    /// <summary>
+    ///     Cuts <paramref name="text" /> to at most <paramref name="maxChars" /> UTF-16 code units without
+    ///     splitting a surrogate pair: a lone high surrogate would be replaced by U+FFFD when the tool
+    ///     result is serialized for the follow-up request, changing the content the model sees.
+    /// </summary>
+    internal static string TruncateSurrogateSafe(string text, int maxChars)
+    {
+        if (maxChars <= 0)
+        {
+            return string.Empty;
+        }
+
+        if (text.Length <= maxChars)
+        {
+            return text;
+        }
+
+        var cut = maxChars;
+        if (char.IsHighSurrogate(text[cut - 1]) && char.IsLowSurrogate(text[cut]))
+        {
+            cut--;
+        }
+
+        return text[..cut];
     }
 }

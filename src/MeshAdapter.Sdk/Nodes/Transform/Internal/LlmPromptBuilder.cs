@@ -8,7 +8,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 
 /// <summary>
 ///     The texts an LLM query sends: question, system prompt, user prompt and conversation history.
-///     Moved unchanged out of <c>AnthropicAiQueryNode</c> so every LLM query node builds the same prompt.
+///     Moved unchanged out of <c>AnthropicAiQueryNode</c> so every LLM query node builds the same prompt;
+///     the history reader is lifted from the LlmQuery prototype
+///     (<c>philipp/AB#4861_llmquery-guaranteed-json</c>, Philipp Schwaab).
 /// </summary>
 internal static class LlmPromptBuilder
 {
@@ -196,8 +198,9 @@ internal static class LlmPromptBuilder
 
     /// <summary>
     ///     The earlier turns of the conversation at <paramref name="historyPath" />: entries with a
-    ///     <c>role</c> and a <c>content</c>, both text. An entry without one of them is left out; a role is
-    ///     passed on as written. Not an array at the path: no history and no log line.
+    ///     <c>role</c> and a <c>content</c>. The content is a string or a content-parts array, whose text
+    ///     parts are joined. An entry without a role or without text is left out; a role is passed on as
+    ///     written. Not an array at the path: no history and no log line.
     /// </summary>
     internal static List<ChatMessage>? LoadHistory(string? historyPath, IDataContext dataContext,
         INodeContext nodeContext)
@@ -210,15 +213,57 @@ internal static class LlmPromptBuilder
         var result = new List<ChatMessage>();
         foreach (var entry in dataContext.SelectMatches($"{historyPath}[*]"))
         {
-            var role = entry.Get<string>("$.role");
-            var content = entry.Get<string>("$.content");
-            if (!string.IsNullOrEmpty(role) && !string.IsNullOrEmpty(content))
+            var role = entry.GetKind("$.role") is DataKind.String
+                ? entry.Get<string>("$.role")
+                : null;
+            var content = entry.GetKind("$.content") switch
             {
-                result.Add(new ChatMessage(new ChatRole(role), content));
+                DataKind.String => entry.Get<string>("$.content"),
+                DataKind.Array => ExtractTextFromContentParts(entry),
+                _ => null
+            };
+            if (string.IsNullOrEmpty(role) || string.IsNullOrEmpty(content))
+            {
+                continue;
             }
+
+            result.Add(new ChatMessage(new ChatRole(role), content));
         }
 
         nodeContext.Debug($"Loaded {result.Count} messages from conversation history");
         return result;
+    }
+
+    /// <summary>
+    ///     Flattens a content-parts array (<c>[{ "type": "text", "text": "…" }, …]</c>) into one string:
+    ///     the text parts, one per line. Parts of another type are left out.
+    /// </summary>
+    private static string? ExtractTextFromContentParts(IDataContext entry)
+    {
+        var sb = new StringBuilder();
+        foreach (var part in entry.SelectMatches("$.content[*]"))
+        {
+            if (part.GetKind("$.type") is not DataKind.String ||
+                !string.Equals(part.Get<string>("$.type"), "text", StringComparison.OrdinalIgnoreCase) ||
+                part.GetKind("$.text") is not DataKind.String)
+            {
+                continue;
+            }
+
+            var text = part.Get<string>("$.text");
+            if (string.IsNullOrEmpty(text))
+            {
+                continue;
+            }
+
+            if (sb.Length > 0)
+            {
+                sb.AppendLine();
+            }
+
+            sb.Append(text);
+        }
+
+        return sb.Length > 0 ? sb.ToString() : null;
     }
 }

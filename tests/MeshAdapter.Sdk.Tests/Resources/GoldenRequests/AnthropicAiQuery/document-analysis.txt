@@ -1,0 +1,9 @@
+=== request 1: POST https://api.anthropic.com/v1/messages ===
+anthropic-version: 2023-06-01
+content-length: 1195
+content-type: application/json; charset=utf-8
+x-api-key: <the api key of the AiConfiguration>
+{"model":"claude-sonnet-4-6","max_tokens":2000,"temperature":0.1,"messages":[{"role":"user","content":"Please analyze the following content and answer the question provided.\n\nCONTENT:\n---\nMain Content:\nRECHNUNG Nr. RE-2026-0815\nM\u00FCller \u0026 S\u00F6hne GmbH \u2014 \u201EQualit\u00E4t seit 1950\u201C\n\u003CBetrag\u003E 1.190,00 \u20AC \uD83D\uDE00\n\nAdditional Context:\nData from $.document.fileName:\nRechnung M\u00FCller \u0026 S\u00F6hne.pdf\n\nData from $.document.meta:\n{\n  \u0022source\u0022: \u0022e-mail\u0022,\n  \u0022tags\u0022: [\n    \u0022eingang\u0022,\n    \u00222026\u0022\n  ],\n  \u0022amount\u0022: 1190.00\n}\n\nData from $.document.pageCount:\n2\n\n\n---\n\nQUESTION:\nExtract the invoice header. Use null for values the document does not state.\n\nPlease provide your response in valid JSON format. For example:\n{\n  \u0022invoiceNumber\u0022: \u0022RE-2026-0815\u0022,\n  \u0022grossTotal\u0022: 1190.00\n}\n"}],"system":[{"type":"text","text":"You are a helpful AI assistant that extracts specific information from documents. Always provide accurate, structured responses based only on the information provided.","cache_control":{"type":"ephemeral"}}]}
+
+=== data context after the node ===
+{"document":{"fileName":"Rechnung M\u00FCller \u0026 S\u00F6hne.pdf","pageCount":2,"meta":{"source":"e-mail","tags":["eingang","2026"],"amount":1190.00},"text":"RECHNUNG Nr. RE-2026-0815\nM\u00FCller \u0026 S\u00F6hne GmbH \u2014 \u201EQualit\u00E4t seit 1950\u201C\n\u003CBetrag\u003E 1.190,00 \u20AC \uD83D\uDE00"},"ai":{"result":{"invoiceNumber":"RE-2026-0815","grossTotal":1190.00}}}

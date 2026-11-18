@@ -1,9 +1,6 @@
-using System.Globalization;
 using System.Net;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.Json.Serialization;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -11,10 +8,16 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
-using Meshmakers.Octo.Sdk.ServiceClient;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
+/// <summary>
+///     <c>AnthropicAiQuery@1</c>: a thin shim over the shared <see cref="LlmQueryEngine" />. The node maps
+///     its configuration to <see cref="LlmQueryOptions" /> and supplies the chat client of the Anthropic
+///     Messages API (<see cref="AnthropicMessagesChatClient" />); everything the node does happens in the
+///     engine. The requests on the wire are pinned byte for byte by
+///     <c>AnthropicAiQueryNodeGoldenRequestTests</c>.
+/// </summary>
 [NodeConfiguration(typeof(AnthropicAiQueryNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 internal class AnthropicAiQueryNode(
@@ -24,1745 +27,198 @@ internal class AnthropicAiQueryNode(
     IServiceAccountTokenService serviceAccountTokenService)
     : IPipelineNode
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
+    /// <summary>The node as pipeline authors write it; part of the node's warnings.</summary>
+    internal const string NodeDisplayName = "AnthropicAiQuery@1";
 
-    // Indented rendering for non-string DataPaths values in the AI prompt context (mirrors the
-    // former JsonNode.ToJsonString(WriteIndented:true)). Prompt text only — not a wire format.
-    private static readonly JsonSerializerOptions IndentedPromptOptions = new() { WriteIndented = true };
+    /// <summary>The client name the node has always announced to the MCP server.</summary>
+    internal const string McpClientName = "OctoMesh-AnthropicAiQueryNode";
+
+    private readonly LlmQueryEngine _engine = new(etlContext, httpClientFactory, serviceAccountTokenService,
+        apiKey => new AnthropicMessagesChatClient(httpClientFactory, apiKey));
 
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
-
-        // AB#8658: usage of every API call of this execution (tool rounds and repair calls included).
-        var usage = new AiUsageAccumulator();
-        string? usageModel = null;
-
-        try
-        {
-            // Resolve API key: prefer ApiKeyConfigurationName over direct ApiKey
-            var apiKey = ResolveApiKey(config, etlContext, nodeContext);
-            // AB#5538: the API key is masked in every diagnostic output of this execution.
-            nodeContext.RegisterSecret(apiKey);
-            if (string.IsNullOrEmpty(apiKey))
-            {
-                throw new ArgumentException(
-                    "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node.",
-                    nameof(config.ApiKey));
-            }
-
-            // AB#8498: prompt by name. The template is part of the pipeline's configuration
-            // hand-over (Uses association), so a missing one fails before any paid call.
-            var template = AiPromptTemplateResolver.Resolve(etlContext.GlobalConfiguration, config.PromptTemplateName);
-            if (template != null)
-            {
-                nodeContext.Info(template.TemplateVersion.HasValue
-                    ? $"Using AiPromptTemplate '{template.Name}' (version {template.TemplateVersion})"
-                    : $"Using AiPromptTemplate '{template.Name}'");
-            }
-
-            var question = ResolveQuestion(config, template);
-            var baseSystemPrompt = ResolveSystemPrompt(config, template);
-
-            // AB#8498: guaranteed JSON. The schema is parsed before any API call so a malformed
-            // jsonSchema fails the node at once instead of after a paid request.
-            var jsonSchemaMode = UsesJsonSchema(config, nodeContext);
-            var schema = jsonSchemaMode ? AiJsonSchemaResponseProcessor.ParseSchema(config.JsonSchema!) : null;
-            var apiSchema = jsonSchemaMode ? AiJsonSchemaResponseProcessor.BuildApiSchema(config.JsonSchema!) : null;
-
-            // Resolve MCP server URL from AiConfiguration if available
-            var mcpServerUrl = ResolveMcpServerUrl(config, etlContext, nodeContext);
-
-            // Resolve the model: template (AB#8498) -> AiConfiguration (aiModel) -> node config
-            var model = ResolveModel(config, etlContext, nodeContext, template);
-            usageModel = model;
-
-            // Resolve max tokens and temperature: template -> AiConfiguration -> node config
-            var maxTokens = ResolveMaxTokens(config, etlContext, nodeContext, template);
-            var temperature = ResolveTemperature(config, etlContext, nodeContext, template);
-
-            nodeContext.Debug("Starting Anthropic AI query");
-
-            // Get the main content from the configured path (optional when using MCP tools).
-            var mainContent = ResolveMainContent(dataContext, config.Path);
-
-            if (string.IsNullOrEmpty(mainContent) && string.IsNullOrEmpty(mcpServerUrl))
-            {
-                nodeContext.Warning($"No content found at path: {config.Path}");
-                await next(dataContext, nodeContext);
-                return;
-            }
-
-            // Build the context from additional data paths
-            var contextBuilder = new StringBuilder();
-            if (!string.IsNullOrEmpty(mainContent))
-            {
-                contextBuilder.AppendLine("Main Content:");
-                contextBuilder.AppendLine(mainContent);
-                contextBuilder.AppendLine();
-            }
-
-            // AB#8658: with cacheSource only the main content is cached — dataPaths and the caller below
-            // change from call to call (e.g. the draft a verification call checks) and would turn every
-            // call into a cache miss if they were inside the cached block.
-            var cacheableContextLength = contextBuilder.Length;
-
-            if (config.DataPaths is { Length: > 0 })
-            {
-                contextBuilder.AppendLine("Additional Context:");
-
-                foreach (var dataPath in config.DataPaths)
-                {
-                    try
-                    {
-                        var kind = dataContext.GetKind(dataPath);
-                        if (kind is DataKind.Undefined)
-                        {
-                            continue;
-                        }
-
-                        contextBuilder.AppendLine($"Data from {dataPath}:");
-
-                        if (kind == DataKind.String)
-                        {
-                            contextBuilder.AppendLine(dataContext.Get<string>(dataPath));
-                        }
-                        else
-                        {
-                            // Non-string scalars and structured values are rendered as indented
-                            // JSON for the AI prompt. Get<object?> materializes objects/arrays to
-                            // a JsonElement which re-serializes equivalently to the former node's
-                            // JsonNode.ToJsonString(WriteIndented).
-                            var value = dataContext.Get<object?>(dataPath);
-                            contextBuilder.AppendLine(
-                                JsonSerializer.Serialize(value, IndentedPromptOptions));
-                        }
-
-                        contextBuilder.AppendLine();
-                    }
-                    catch (Exception ex)
-                    {
-                        nodeContext.Warning($"Could not retrieve data from path {dataPath}: {ex.Message}");
-                    }
-                }
-            }
-
-            // AB#5136 (Strang B): when the trigger resolved a verified caller — the bearer of
-            // FromHttpRequest@2, or a channel sender bound via CallerBinding on FromSignal/FromEmail/
-            // FromMicrosoftGraph(Email) — surface that identity to the model uniformly, independent
-            // of any DataPaths. The channel triggers only carry the caller on the execution
-            // (ExecutePipelineOptions.VerifiedPrincipal, for data authorization); unlike
-            // FromHttpRequest@2 they never write $.principal into the data root, so without this the
-            // assistant cannot tell the user who they are over Signal/e-mail/Teams. This is the single
-            // source of "who am I talking to". Absent when the pipeline runs anonymous / as the
-            // service account, in which case nothing is added.
-            // Only surface a caller that carries a human identity (name or e-mail). A principal with
-            // just a SubjectId and roles is a service account — e.g. the shared answerer pipeline's
-            // own identity (AB#5045), which must NOT be shown as "the calling user". For that
-            // stager→answerer topology the real caller travels as data instead (WriteVerifiedCaller@1
-            // in the stager → $.input.caller here), read via DataPaths.
-            if (etlContext.VerifiedPrincipal is { } caller
-                && (caller.Name is not null || caller.Email is not null))
-            {
-                contextBuilder.AppendLine(
-                    "Calling user (the verified identity of the person you are talking to — address them " +
-                    "personally, treat \"ich\"/\"meine\" as this user, and answer any question about who they " +
-                    "are, their name, username or e-mail directly from here, never via tools. The data you " +
-                    "can query is already scoped to what this user may see):");
-                if (caller.Name is not null)
-                {
-                    contextBuilder.AppendLine($"  name: {caller.Name}");
-                }
-
-                if (caller.Email is not null)
-                {
-                    contextBuilder.AppendLine($"  email: {caller.Email}");
-                }
-
-                if (caller.Roles is { Count: > 0 })
-                {
-                    contextBuilder.AppendLine($"  roles: {string.Join(", ", caller.Roles)}");
-                }
-
-                contextBuilder.AppendLine($"  tenant: {caller.TenantId ?? etlContext.TenantId}");
-                contextBuilder.AppendLine();
-            }
-
-            var fullContext = contextBuilder.ToString();
-            nodeContext.Debug($"Querying Claude with {fullContext.Length} characters of context");
-
-            // Build the prompt. With cacheSource (AB#8658) the source part becomes its own content
-            // block carrying a cache breakpoint; the text the model reads is the same either way.
-            var (sourcePart, instructionPart) =
-                BuildUserPromptParts(question, fullContext, config.ResponseFormat, config.JsonFormatSample,
-                    jsonSchemaMode ? config.JsonSchema : null, cacheableContextLength);
-            object userPrompt = config.CacheSource
-                ? BuildCachedSourceContent(sourcePart, instructionPart)
-                : sourcePart + instructionPart;
-
-            // AB#8685: an MCP URL (often inherited from the AiConfiguration's McpServerUrl) without an
-            // identity to call it with is skipped instead of called unauthenticated — the MCP service
-            // enforces authentication (AB#4315) and only answers 401. One warning names the node and
-            // the missing setting; the query runs without tools.
-            var mcpSkippedForMissingIdentity = !string.IsNullOrEmpty(mcpServerUrl) && !HasMcpIdentity(config);
-            if (mcpSkippedForMissingIdentity)
-            {
-                nodeContext.Warning(BuildMissingMcpIdentityWarning(nodeContext.NodePath.ToString()));
-            }
-
-            // Load MCP tools if configured
-            List<JsonElement>? mcpTools = null;
-            var mcpAuthorized = false;
-            if (!string.IsNullOrEmpty(mcpServerUrl) && !mcpSkippedForMissingIdentity)
-            {
-                // Authenticate to the MCP server via a ServiceAccountConfiguration (AB#4315).
-                // With mcpDelegateToCaller the token instead runs on the calling user's identity and
-                // any failure is fatal rather than degrading (AB#5031).
-                // AB#8699: a configured service account that yields no token is fail-closed — no MCP
-                // call; EnsureMcpAccessTokenAsync has warned and the query runs without tools.
-                mcpAuthorized = await EnsureMcpAccessTokenAsync(config, nodeContext);
-
-                if (mcpAuthorized)
-                {
-                    mcpTools = await LoadMcpToolsAsync(mcpServerUrl, etlContext.TenantId, nodeContext);
-
-                    // Filter tools if mcpToolNames is specified
-                    if (mcpTools != null && config.McpToolNames is { Length: > 0 })
-                    {
-                        var allowedNames =
-                            new HashSet<string>(config.McpToolNames, StringComparer.OrdinalIgnoreCase);
-                        mcpTools = mcpTools.Where(t =>
-                            t.TryGetProperty("name", out var name) && allowedNames.Contains(name.GetString() ?? "")
-                        ).ToList();
-                    }
-
-                    nodeContext.Info($"Loaded {mcpTools?.Count ?? 0} MCP tools from OctoMesh");
-                }
-            }
-
-            // AB#8685 / AB#8699: MCP was configured but is not called — no identity configured, or the
-            // configured service account yielded no token. Either case has already been warned about once.
-            var mcpNotCalled = !string.IsNullOrEmpty(mcpServerUrl) && !mcpAuthorized;
-
-            // AB#4562 follow-up: when MCP was configured but no tools could be loaded (server
-            // unreachable, auth rejected, name filter matched nothing), the pipeline's static
-            // system prompt still promises tools. Without a correction the model imitates tool
-            // calls as text and fabricates their results (observed on prod-1: invented invoice
-            // data in the accounting chat). Append an explicit no-tools instruction instead.
-            // 5.10.2026: the same correction when the pipeline EXPECTS tools (it delegates to the
-            // caller, names a service account or a tool list) but no MCP server URL resolved at
-            // all — the AiConfiguration entity of a fresh or local tenant carries no McpServerUrl.
-            // That case skipped the suffix entirely, and the accounting chat answered "which
-            // invoices are open" with invented tool calls and invented invoices.
-            var mcpExpected = ExpectsMcpTools(config);
-            var systemPrompt = BuildEffectiveSystemPrompt(baseSystemPrompt,
-                mcpConfigured: !string.IsNullOrEmpty(mcpServerUrl) || mcpExpected, mcpToolCount: mcpTools?.Count ?? 0);
-            // AB#8685: a skipped MCP has already been reported with its own warning — one per execution.
-            if (!ReferenceEquals(systemPrompt, baseSystemPrompt) && !mcpNotCalled)
-            {
-                nodeContext.Warning(string.IsNullOrEmpty(mcpServerUrl)
-                    ? "The pipeline expects MCP tools but no MCP server URL is configured (AiConfiguration." +
-                      "McpServerUrl / node mcpServerUrl) — appending a no-tools instruction to the system " +
-                      "prompt so the model does not simulate tool calls."
-                    : "MCP is configured but no tools are available — appending a no-tools instruction " +
-                      "to the system prompt so the model does not simulate tool calls.");
-            }
-
-            // Load conversation history if configured
-            List<object>? historyMessages = null;
-            if (!string.IsNullOrEmpty(config.ConversationHistoryPath))
-            {
-                if (dataContext.GetKind(config.ConversationHistoryPath) == DataKind.Array)
-                {
-                    historyMessages = new List<object>();
-                    foreach (var entry in dataContext.SelectMatches($"{config.ConversationHistoryPath}[*]"))
-                    {
-                        var role = entry.Get<string>("$.role");
-                        var content = entry.Get<string>("$.content");
-                        if (!string.IsNullOrEmpty(role) && !string.IsNullOrEmpty(content))
-                        {
-                            historyMessages.Add(new { role, content });
-                        }
-                    }
-
-                    nodeContext.Debug($"Loaded {historyMessages.Count} messages from conversation history");
-                }
-            }
-
-            // Execute Claude API call (with optional tool use loop)
-            var aiResponse = await ExecuteClaudeApiAsync(config, apiKey, model, maxTokens, temperature, systemPrompt,
-                mcpNotCalled ? null : mcpServerUrl, userPrompt, mcpTools, nodeContext, usage, historyMessages, apiSchema);
-
-            // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
-            // as API content blocks, never as text. Its "results" are invented, so the answer is
-            // refused rather than shown (the accounting chat would render invented invoices).
-            if (config.ResponseFormat != "json" && ContainsSimulatedToolCalls(aiResponse))
-            {
-                throw new InvalidOperationException(SimulatedToolCallsMessage);
-            }
-
-            if (string.IsNullOrEmpty(aiResponse))
-            {
-                throw new InvalidOperationException("Empty response from Claude");
-            }
-
-            nodeContext.Info($"Received AI response with {aiResponse.Length} characters");
-
-            // Process the response based on format
-            // With a jsonSchema the answer is validated and, if needed, repaired by bounded repair
-            // calls that never resend the original context (AB#8498); without one, unchanged.
-            object processedResponse = jsonSchemaMode
-                ? await AiJsonSchemaResponseProcessor.ProcessAsync(aiResponse, config.JsonSchema!, schema!,
-                    config.MaxJsonRepairAttempts,
-                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, repairPrompt, apiSchema!, usage),
-                    nodeContext)
-                : ProcessResponse(aiResponse, config.ResponseFormat, nodeContext);
-
-            // Store the processed response
-            dataContext.Set(
-                config.TargetPath,
-                processedResponse,
-                config.DocumentMode,
-                config.TargetValueKind,
-                config.TargetValueWriteMode
-            );
-
-            // Store raw response if requested
-            if (config.IncludeRawResponse)
-            {
-                dataContext.Set(
-                    config.RawResponseOutputPath ?? "$.RawAiResponse",
-                    aiResponse,
-                    config.DocumentMode,
-                    config.TargetValueKind,
-                    config.TargetValueWriteMode
-                );
-            }
-
-            WriteUsage(config, dataContext, nodeContext, usage, usageModel);
-            nodeContext.Info("AI query completed successfully");
-        }
-        catch (Exception ex)
-        {
-            if (!config.ContinueOnError)
-            {
-                throw MeshAdapterPipelineExecutionException.ProcessingError(nodeContext, ex);
-            }
-
-            nodeContext.Error($"Error during AI query: {ex.Message}");
-            // The calls that were made are paid even though the query failed.
-            WriteUsage(config, dataContext, nodeContext, usage, usageModel);
-        }
-
-        await next(dataContext, nodeContext);
+        await _engine.RunAsync(ToOptions(config), dataContext, nodeContext, next);
     }
 
-    /// <summary>
-    ///     Writes the summed usage to <c>usageOutputPath</c> (AB#8658). Nothing without the path or before
-    ///     the first API call.
-    /// </summary>
-    private static void WriteUsage(AnthropicAiQueryNodeConfiguration config, IDataContext dataContext,
-        INodeContext nodeContext, AiUsageAccumulator usage, string? model)
+    /// <summary>The node's configuration as the engine reads it: every value as configured.</summary>
+    internal static LlmQueryOptions ToOptions(AnthropicAiQueryNodeConfiguration config)
     {
-        if (string.IsNullOrWhiteSpace(config.UsageOutputPath) || usage.Calls == 0)
+        return new LlmQueryOptions
         {
-            return;
-        }
-
-        var usageJson = usage.ToJson(model);
-        if (usageJson["estimatedCostUsd"] == null)
-        {
-            nodeContext.Warning(
-                $"No cost estimate for model '{model}': it is not in the adapter's price table. Token counts are written.");
-        }
-
-        dataContext.Set(config.UsageOutputPath, usageJson, DocumentModes.Extend, ValueKinds.Simple,
-            TargetValueWriteModes.Overwrite);
-        nodeContext.Info(
-            $"AI usage: {usage.Calls} call(s), input {usage.InputTokens}, output {usage.OutputTokens}, " +
-            $"cache read {usage.CacheReadInputTokens}, cache write {usage.CacheCreationInputTokens} tokens");
+            NodeDisplayName = NodeDisplayName,
+            McpClientName = McpClientName,
+            DefaultSystemPrompt = AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt,
+            Path = config.Path,
+            TargetPath = config.TargetPath,
+            TargetValueWriteMode = config.TargetValueWriteMode,
+            TargetValueKind = config.TargetValueKind,
+            DocumentMode = config.DocumentMode,
+            ApiKeyConfigurationName = config.ApiKeyConfigurationName,
+            ApiKey = config.ApiKey,
+            Model = config.Model,
+            PromptTemplateName = config.PromptTemplateName,
+            Question = config.Question,
+            DataPaths = config.DataPaths,
+            SystemPrompt = config.SystemPrompt,
+            MaxTokens = config.MaxTokens,
+            Temperature = config.Temperature,
+            ResponseFormat = config.ResponseFormat,
+            IncludeRawResponse = config.IncludeRawResponse,
+            RawResponseOutputPath = config.RawResponseOutputPath,
+            ContinueOnError = config.ContinueOnError,
+            McpServerUrl = config.McpServerUrl,
+            MaxToolRounds = config.MaxToolRounds,
+            McpToolNames = config.McpToolNames,
+            McpServiceAccountConfigName = config.McpServiceAccountConfigName,
+            McpDelegateToCaller = config.McpDelegateToCaller,
+            DelegatesToCaller = config.DelegatesToCaller,
+            ConversationHistoryPath = config.ConversationHistoryPath,
+            JsonFormatSample = config.JsonFormatSample,
+            JsonSchema = config.JsonSchema,
+            MaxJsonRepairAttempts = config.MaxJsonRepairAttempts,
+            UsageOutputPath = config.UsageOutputPath,
+            CacheSource = config.CacheSource
+        };
     }
 
-    /// <summary>
-    ///     The user message content with a cached source block (AB#8658): the source part carries an
-    ///     <c>ephemeral</c> breakpoint, the question follows in a second block. The concatenated text is
-    ///     exactly the single-string prompt, so the model reads the same thing.
-    /// </summary>
-    internal static object[] BuildCachedSourceContent(string sourcePart, string instructionPart)
+    // The members below are what the node's tests call. They hold no logic: each forwards to the
+    // engine or to one of its helpers, so the tests of this node keep testing the code that runs.
+
+    /// <inheritdoc cref="LlmMcpSession.EnsureAccessTokenAsync" />
+    internal Task<bool> EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
+        INodeContext nodeContext)
     {
-        return
-        [
-            new Dictionary<string, object>
-            {
-                ["type"] = "text",
-                ["text"] = sourcePart,
-                ["cache_control"] = new Dictionary<string, string> { ["type"] = "ephemeral" }
-            },
-            new Dictionary<string, object> { ["type"] = "text", ["text"] = instructionPart }
-        ];
+        return _engine.McpSession.EnsureAccessTokenAsync(config.McpServiceAccountConfigName,
+            config.DelegatesToCaller, nodeContext);
     }
 
-    /// <summary>
-    ///     The question of this run (AB#8498): the inline <c>question</c> wins, otherwise the
-    ///     template's <c>UserTemplate</c>. Neither is an error, as before the template option.
-    /// </summary>
+    /// <inheritdoc cref="LlmMcpSession.AddAuthHeader" />
+    internal void AddMcpAuthHeader(HttpRequestMessage request)
+    {
+        _engine.McpSession.AddAuthHeader(request);
+    }
+
+    /// <inheritdoc cref="LlmPromptBuilder.NoToolsSystemPromptSuffix" />
+    internal const string NoToolsSystemPromptSuffix = LlmPromptBuilder.NoToolsSystemPromptSuffix;
+
+    /// <inheritdoc cref="LlmPromptBuilder.ResolveQuestion" />
     internal static string ResolveQuestion(AnthropicAiQueryNodeConfiguration config,
         AiPromptTemplateSettings? template)
     {
-        if (!string.IsNullOrEmpty(config.Question))
-        {
-            return config.Question;
-        }
-
-        if (!string.IsNullOrEmpty(template?.UserTemplate))
-        {
-            return template.UserTemplate;
-        }
-
-        throw new ArgumentException(template == null
-                ? "Question is required. Set 'question' or 'promptTemplateName' on the node."
-                : $"Question is required: AiPromptTemplate '{template.Name}' has no UserTemplate and the node sets no 'question'.",
-            nameof(config.Question));
+        return LlmPromptBuilder.ResolveQuestion(ToOptions(config), template);
     }
 
-    /// <summary>
-    ///     The system prompt of this run before the no-tools correction (AB#8498): an inline
-    ///     <c>systemPrompt</c> wins (even an empty one, which sends no system prompt, as before);
-    ///     otherwise the template's <c>SystemPromptFragment</c> with its <c>FewShotExamples</c>;
-    ///     otherwise <see cref="AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt" />. A node
-    ///     without template and without <c>systemPrompt</c> therefore sends exactly the old default.
-    /// </summary>
+    /// <inheritdoc cref="LlmPromptBuilder.ResolveSystemPrompt" />
     internal static string ResolveSystemPrompt(AnthropicAiQueryNodeConfiguration config,
         AiPromptTemplateSettings? template)
     {
-        if (config.SystemPrompt != null)
-        {
-            return config.SystemPrompt;
-        }
-
-        if (template == null)
-        {
-            return AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt;
-        }
-
-        var systemPrompt = template.SystemPrompt ?? AnthropicAiQueryNodeConfiguration.DefaultSystemPrompt;
-        return string.IsNullOrEmpty(template.FewShotExamples)
-            ? systemPrompt
-            : $"{systemPrompt}\n\n<examples>\n{template.FewShotExamples}\n</examples>";
+        return LlmPromptBuilder.ResolveSystemPrompt(ToOptions(config), template);
     }
 
-    /// <summary>
-    ///     True when the node runs in guaranteed-JSON mode (AB#8498): a non-empty <c>jsonSchema</c> with
-    ///     <c>responseFormat: json</c>. A schema on a text-format node is ignored with a warning rather
-    ///     than failing pipelines that only switched the format.
-    /// </summary>
-    internal static bool UsesJsonSchema(AnthropicAiQueryNodeConfiguration config, INodeContext nodeContext)
-    {
-        if (string.IsNullOrWhiteSpace(config.JsonSchema))
-        {
-            return false;
-        }
-
-        if (config.ResponseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        nodeContext.Warning(
-            $"jsonSchema is ignored because responseFormat is '{config.ResponseFormat}', not 'json'.");
-        return false;
-    }
-
-    /// <summary>
-    ///     True when the node's configuration promises tools to the model: it delegates to the
-    ///     caller, authenticates to MCP with a service account, or names a tool list. Such a node
-    ///     without a resolvable MCP URL must get the no-tools correction like one whose server
-    ///     is down.
-    /// </summary>
-    internal static bool ExpectsMcpTools(AnthropicAiQueryNodeConfiguration config)
-    {
-        return config.McpDelegateToCaller ||
-               !string.IsNullOrEmpty(config.McpServiceAccountConfigName) ||
-               config.McpToolNames is { Length: > 0 };
-    }
-
-    /// <summary>
-    ///     True when the node has an identity to call the MCP server with: a
-    ///     <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> (service account,
-    ///     AB#4315) or delegation to the caller (<c>mcpDelegateToCaller: true</c> / <c>identity: Caller</c>,
-    ///     AB#5031/AB#5127). Without one the node never calls MCP (AB#8685).
-    /// </summary>
-    internal static bool HasMcpIdentity(AnthropicAiQueryNodeConfiguration config)
-    {
-        return config.DelegatesToCaller || !string.IsNullOrEmpty(config.McpServiceAccountConfigName);
-    }
-
-    /// <summary>
-    ///     The warning written once per execution when an MCP server URL resolved but no identity is
-    ///     configured, so MCP is skipped (AB#8685). Names the node and the missing setting.
-    /// </summary>
-    internal static string BuildMissingMcpIdentityWarning(string nodePath)
-    {
-        return $"[{nodePath}]: AnthropicAiQuery@1 skips MCP: an MCP server URL is configured (node " +
-               "mcpServerUrl or AiConfiguration.McpServerUrl) but no identity to call it with — set " +
-               "'mcpServiceAccountConfigName' (service account) or 'mcpDelegateToCaller: true' / " +
-               "'identity: Caller' together with 'mcpServiceAccountConfigName'. The query runs without tools.";
-    }
-
-    /// <summary>Thrown when the model answered with tool-call markup as text (see <see cref="ContainsSimulatedToolCalls" />).</summary>
-    internal const string SimulatedToolCallsMessage =
-        "The AI answered with simulated tool calls (tool-call markup in the text) — its results are " +
-        "invented, not queried. The answer was refused. Check that the MCP server URL " +
-        "(AiConfiguration.McpServerUrl) is configured and reachable so real tools are available.";
-
-    /// <summary>
-    ///     Does a TEXT answer carry tool-call markup? Real tool use never does — it arrives as
-    ///     <c>tool_use</c> content blocks — so any of these tags in the text means the model
-    ///     imitated a tool and made its result up (observed 5.10.2026: <c>&lt;tool_call&gt;</c> +
-    ///     <c>&lt;tool_response&gt;</c> with invented invoices, on a tenant without an MCP URL).
-    /// </summary>
-    internal static bool ContainsSimulatedToolCalls(string? text)
-    {
-        if (string.IsNullOrEmpty(text)) return false;
-        foreach (var tag in new[] { "<tool_call>", "<tool_response>", "<function_calls>", "<tool_use>" })
-        {
-            if (text.Contains(tag, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// The system-prompt suffix appended when MCP is configured but no tools are available.
-    /// Without it, a tools-promising pipeline prompt makes the model imitate tool calls as
-    /// plain text and fabricate their results (AB#4562 follow-up; observed in the accounting
-    /// chat: invented invoice data). Kept as a constant so tests and callers stay in sync.
-    /// </summary>
-    internal const string NoToolsSystemPromptSuffix =
-        "\n\nIMPORTANT: No live data tools are available in this session (the tool service could not " +
-        "be reached). Do NOT simulate, imitate or fabricate tool calls or tool results, and do NOT " +
-        "invent any data. If answering requires live data, state clearly that live data access is " +
-        "currently unavailable and answer only from the content provided in this conversation.";
-
-    /// <summary>
-    /// Returns the system prompt to send to the model. When MCP is configured for the node but
-    /// zero tools were loaded (server unreachable, handshake rejected, name filter matched
-    /// nothing), the <see cref="NoToolsSystemPromptSuffix" /> is appended so the model does not
-    /// act on a prompt that promises tools it does not have. Returns the original reference
-    /// unchanged in all other cases (callers detect modification via ReferenceEquals).
-    /// </summary>
+    /// <inheritdoc cref="LlmPromptBuilder.BuildEffectiveSystemPrompt" />
     internal static string BuildEffectiveSystemPrompt(string systemPrompt, bool mcpConfigured, int mcpToolCount)
     {
-        if (!mcpConfigured || mcpToolCount > 0)
-        {
-            return systemPrompt;
-        }
-
-        return string.IsNullOrEmpty(systemPrompt)
-            ? NoToolsSystemPromptSuffix.TrimStart()
-            : systemPrompt + NoToolsSystemPromptSuffix;
+        return LlmPromptBuilder.BuildEffectiveSystemPrompt(systemPrompt, mcpConfigured, mcpToolCount);
     }
 
-    /// <summary>
-    /// Resolves the optional "main content" for the AI prompt from <paramref name="path" />.
-    /// The node's base-class default <c>Path</c> is <c>"$"</c> (the whole root object); reading that
-    /// as a string throws ("Cannot get the value of a token type 'StartObject' as a string"), which
-    /// broke MCP-only pipelines that never set an explicit path. Rules:
-    /// <list type="bullet">
-    /// <item>empty path → no main content;</item>
-    /// <item>path resolves to a string scalar → that string;</item>
-    /// <item>explicit (non-<c>"$"</c>) path to any other concrete value → rendered as indented JSON;</item>
-    /// <item>default <c>"$"</c> root object, or an absent path → no main content (rely on MCP tools).</item>
-    /// </list>
-    /// </summary>
+    /// <inheritdoc cref="LlmPromptBuilder.ResolveMainContent" />
     internal static string? ResolveMainContent(IDataContext dataContext, string? path)
     {
-        if (string.IsNullOrEmpty(path))
-        {
-            return null;
-        }
-
-        var kind = dataContext.GetKind(path);
-        if (kind == DataKind.String)
-        {
-            return dataContext.Get<string>(path);
-        }
-
-        if (kind != DataKind.Undefined && path != "$")
-        {
-            return JsonSerializer.Serialize(dataContext.Get<object?>(path), IndentedPromptOptions);
-        }
-
-        return null;
+        return LlmPromptBuilder.ResolveMainContent(dataContext, path);
     }
 
-    private static string? ResolveApiKey(AnthropicAiQueryNodeConfiguration config, IMeshEtlContext etlContext,
-        INodeContext nodeContext)
-    {
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName))
-        {
-            if (etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
-            {
-                var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-                if (rawJson != null)
-                {
-                    var configDoc = JsonNode.Parse(rawJson);
-                    var key = configDoc?["apiKey"]?.GetValue<string>();
-                    if (!string.IsNullOrEmpty(key))
-                    {
-                        nodeContext.Debug(
-                            $"API key loaded from configuration '{config.ApiKeyConfigurationName}'");
-                        return key;
-                    }
-                }
-            }
-
-            nodeContext.Warning(
-                $"AiConfiguration '{config.ApiKeyConfigurationName}' not found or has no ApiKey. " +
-                "Ensure the pipeline has a 'Uses' association to the AiConfiguration entity.");
-        }
-
-        return config.ApiKey;
-    }
-
-    private static string? ResolveMcpServerUrl(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext)
-    {
-        // Try loading from AiConfiguration first
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
-            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
-        {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            if (rawJson != null)
-            {
-                var configDoc = JsonNode.Parse(rawJson);
-                var url = configDoc?["mcpServerUrl"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(url))
-                {
-                    nodeContext.Debug(
-                        $"MCP server URL loaded from configuration '{config.ApiKeyConfigurationName}'");
-                    return url;
-                }
-            }
-        }
-
-        return config.McpServerUrl;
-    }
-
-    internal static string ResolveModel(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
-    {
-        // AB#8498: a prompt template is tuned for its model, so its DefaultModelId wins.
-        if (!string.IsNullOrEmpty(template?.ModelId))
-        {
-            nodeContext.Debug($"AI model '{template.ModelId}' loaded from AiPromptTemplate '{template.Name}'");
-            return template.ModelId;
-        }
-
-        // Prefer the model configured on the AiConfiguration entity (aiModel), mirroring how the
-        // API key and MCP server URL are resolved from it. Falls back to the node's own Model
-        // property (and thus its default) when the AiConfiguration has no aiModel.
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
-            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
-        {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            if (rawJson != null)
-            {
-                var configDoc = JsonNode.Parse(rawJson);
-                var model = configDoc?["aiModel"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(model))
-                {
-                    nodeContext.Debug(
-                        $"AI model '{model}' loaded from configuration '{config.ApiKeyConfigurationName}'");
-                    return model;
-                }
-            }
-        }
-
-        if (string.IsNullOrEmpty(config.Model))
-        {
-            // No hard-coded default: a pinned model id goes out of date (e.g. a retired
-            // "…-20250514" snapshot returns HTTP 404 not_found). The model must be provided.
-            throw new ArgumentException(
-                "AI model is required. Set 'aiModel' on the AiConfiguration (recommended) or 'model' on the node.",
-                nameof(config.Model));
-        }
-
-        return config.Model;
-    }
-
-    internal static int ResolveMaxTokens(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
-    {
-        // AB#8498: the prompt template's MaxTokens wins over the AiConfiguration.
-        if (template?.MaxTokens is { } templateMaxTokens)
-        {
-            nodeContext.Debug($"Max tokens {templateMaxTokens} loaded from AiPromptTemplate '{template.Name}'");
-            return templateMaxTokens;
-        }
-
-        // Prefer the max tokens configured on the AiConfiguration entity (maxTokens), mirroring
-        // how the model is resolved from it. Falls back to the node's own MaxTokens property
-        // (and thus its default) when the AiConfiguration has no usable maxTokens. int.TryParse
-        // on JsonNode.ToString() accepts the value both as JSON number and as string.
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
-            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
-        {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            if (rawJson != null)
-            {
-                var configDoc = JsonNode.Parse(rawJson);
-                var value = configDoc?["maxTokens"];
-                if (value != null && int.TryParse(value.ToString(), out var maxTokens) && maxTokens > 0)
-                {
-                    nodeContext.Debug(
-                        $"Max tokens {maxTokens} loaded from configuration '{config.ApiKeyConfigurationName}'");
-                    return maxTokens;
-                }
-            }
-        }
-
-        return config.MaxTokens;
-    }
-
-    internal static double ResolveTemperature(AnthropicAiQueryNodeConfiguration config,
-        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
-    {
-        // AB#8498: the prompt template's Temperature (already range-checked) wins over the AiConfiguration.
-        if (template?.Temperature is { } templateTemperature)
-        {
-            nodeContext.Debug($"Temperature {templateTemperature} loaded from AiPromptTemplate '{template.Name}'");
-            return templateTemperature;
-        }
-
-        // Prefer the temperature configured on the AiConfiguration entity (temperature),
-        // mirroring the maxTokens/aiModel resolution. 0.0 is a meaningful value, so the only
-        // rejection criteria are absence and the API's valid range (0.0 to 1.0). Parsed with
-        // the invariant culture; accepts the value both as JSON number and as string.
-        if (!string.IsNullOrEmpty(config.ApiKeyConfigurationName) &&
-            etlContext.GlobalConfiguration.IsDefined(config.ApiKeyConfigurationName))
-        {
-            var rawJson = etlContext.GlobalConfiguration.GetRawJson(config.ApiKeyConfigurationName);
-            if (rawJson != null)
-            {
-                var configDoc = JsonNode.Parse(rawJson);
-                var value = configDoc?["temperature"];
-                if (value != null &&
-                    double.TryParse(value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture,
-                        out var temperature) &&
-                    temperature is >= 0.0 and <= 1.0)
-                {
-                    nodeContext.Debug(
-                        $"Temperature {temperature} loaded from configuration '{config.ApiKeyConfigurationName}'");
-                    return temperature;
-                }
-            }
-        }
-
-        return config.Temperature;
-    }
-
-    /// <summary>
-    ///     The Messages API body for one round (5.10.2026, prompt caching). The system prompt and
-    ///     the tool list are the parts that repeat verbatim from round to round and from turn to
-    ///     turn of a chat — a tool list alone is thousands of tokens — so both carry an
-    ///     <c>ephemeral</c> cache breakpoint: the system prompt as its one block, the tools on
-    ///     their LAST entry (a breakpoint caches everything before it in the request, tools come
-    ///     first). The model then reuses the processed prefix instead of reading it again, which
-    ///     is what the first seconds of every follow-up answer went into. A request without a
-    ///     system prompt sends none; without tools, no <c>tools</c> key.
-    /// </summary>
-    internal static Dictionary<string, object> BuildRequestBody(string model, int maxTokens, double temperature,
-        string? systemPrompt, List<object> messages, List<JsonElement>? mcpTools, JsonNode? outputSchema = null)
-    {
-        var requestObj = new Dictionary<string, object>
-        {
-            ["model"] = model,
-            ["max_tokens"] = maxTokens,
-            ["temperature"] = temperature,
-            ["messages"] = messages
-        };
-
-        // AB#8498: constrained decoding (structured outputs) for a jsonSchema node. The schema is
-        // the API copy (unsupported keywords removed); the client validates the authored schema.
-        if (outputSchema != null)
-        {
-            requestObj["output_config"] = new Dictionary<string, object>
-            {
-                ["format"] = new Dictionary<string, object>
-                {
-                    ["type"] = "json_schema",
-                    ["schema"] = outputSchema.DeepClone()
-                }
-            };
-        }
-
-        if (!string.IsNullOrEmpty(systemPrompt))
-        {
-            requestObj["system"] = new object[]
-            {
-                new Dictionary<string, object>
-                {
-                    ["type"] = "text",
-                    ["text"] = systemPrompt,
-                    ["cache_control"] = new Dictionary<string, string> { ["type"] = "ephemeral" }
-                }
-            };
-        }
-
-        if (mcpTools is { Count: > 0 })
-        {
-            var tools = new List<object>(mcpTools.Count);
-            for (var i = 0; i < mcpTools.Count; i++)
-            {
-                if (i < mcpTools.Count - 1)
-                {
-                    tools.Add(mcpTools[i]);
-                    continue;
-                }
-
-                // The last tool carries the breakpoint: copy its members and add cache_control.
-                var last = new Dictionary<string, object>();
-                foreach (var property in mcpTools[i].EnumerateObject())
-                {
-                    last[property.Name] = property.Value;
-                }
-
-                last["cache_control"] = new Dictionary<string, string> { ["type"] = "ephemeral" };
-                tools.Add(last);
-            }
-
-            requestObj["tools"] = tools;
-        }
-
-        return requestObj;
-    }
-
-    private async Task<string> ExecuteClaudeApiAsync(AnthropicAiQueryNodeConfiguration config, string apiKey,
-        string model, int maxTokens, double temperature, string systemPrompt, string? mcpServerUrl, object userPrompt,
-        List<JsonElement>? mcpTools, INodeContext nodeContext, AiUsageAccumulator usage,
-        List<object>? historyMessages = null, JsonNode? outputSchema = null)
-    {
-        using var client = httpClientFactory.CreateClient("Anthropic");
-
-        var messages = new List<object>();
-
-        // Add conversation history before the current message
-        if (historyMessages is { Count: > 0 })
-        {
-            messages.AddRange(historyMessages);
-        }
-
-        messages.Add(new { role = "user", content = userPrompt });
-
-        for (var round = 0; round < (config.MaxToolRounds + 1); round++)
-        {
-            // Build request — system prompt and tool list carry prompt-cache breakpoints.
-            var requestObj = BuildRequestBody(model, maxTokens, temperature, systemPrompt, messages, mcpTools,
-                outputSchema);
-
-            var jsonRequest = JsonSerializer.Serialize(requestObj, JsonOptions);
-            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
-            {
-                Content = new StringContent(jsonRequest, Encoding.UTF8, "application/json")
-            };
-            request.Headers.Add("x-api-key", apiKey);
-            request.Headers.Add("anthropic-version", "2023-06-01");
-
-            using var response = await client.SendAsync(request);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                // Classify the failure so the pipeline execution's ErrorMessage says *why* the AI
-                // query could not run (rate limit / token quota, overloaded, or input over the
-                // context window) instead of a bare status code. The raw body is kept for
-                // diagnostics. This message is what lands in the RtPipelineExecution audit record.
-                var errorContent = await response.Content.ReadAsStringAsync();
-                throw new HttpRequestException(
-                    BuildAnthropicApiErrorMessage(response.StatusCode, errorContent));
-            }
-
-            var responseContent = await response.Content.ReadAsStringAsync();
-            var apiResponse = JsonSerializer.Deserialize<JsonElement>(responseContent);
-            usage.Add(apiResponse);
-
-            // Check stop reason
-            var stopReason = apiResponse.TryGetProperty("stop_reason", out var sr) ? sr.GetString() : null;
-
-            if (stopReason == "tool_use")
-            {
-                // Extract tool use blocks and execute them
-                var contentArray = apiResponse.GetProperty("content");
-                var assistantContent = contentArray.Clone();
-
-                // Add assistant message with tool use
-                messages.Add(new { role = "assistant", content = assistantContent });
-
-                // Execute each tool call and collect results
-                var toolResults = new List<object>();
-                foreach (var block in contentArray.EnumerateArray())
-                {
-                    if (block.TryGetProperty("type", out var type) && type.GetString() == "tool_use")
-                    {
-                        var toolId = block.GetProperty("id").GetString()!;
-                        var toolName = block.GetProperty("name").GetString()!;
-                        var toolInput = block.GetProperty("input");
-
-                        nodeContext.Debug($"Executing MCP tool: {toolName}, input: {toolInput.GetRawText()[..Math.Min(200, toolInput.GetRawText().Length)]}");
-
-                        try
-                        {
-                            var toolResult =
-                                await ExecuteMcpToolAsync(mcpServerUrl!, etlContext.TenantId,
-                                    toolName, toolInput);
-
-                            // Truncate tool results to prevent exceeding context window
-                            const int maxToolResultLength = 50_000;
-                            if (toolResult.Length > maxToolResultLength)
-                            {
-                                nodeContext.Warning(
-                                    $"MCP tool '{toolName}' result truncated from {toolResult.Length} to {maxToolResultLength} chars. " +
-                                    "Use attributePaths parameter to reduce response size.");
-                                toolResult = toolResult[..maxToolResultLength] +
-                                             "\n\n[TRUNCATED - result too large. Use attributePaths parameter to request only needed fields.]";
-                            }
-
-                            toolResults.Add(new
-                            {
-                                type = "tool_result",
-                                tool_use_id = toolId,
-                                content = toolResult
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            nodeContext.Warning($"MCP tool '{toolName}' failed: {ex.Message}");
-                            toolResults.Add(new
-                            {
-                                type = "tool_result",
-                                tool_use_id = toolId,
-                                is_error = true,
-                                content = $"Error: {ex.Message}"
-                            });
-                        }
-                    }
-                }
-
-                // Add tool results as user message
-                messages.Add(new { role = "user", content = toolResults });
-
-                nodeContext.Debug($"Tool round {round + 1} completed, continuing conversation");
-                continue;
-            }
-
-            // A "max_tokens" stop reason means the model hit the output-token limit before it
-            // finished — the returned text is a truncated fragment (for JSON responses, typically
-            // cut mid-object, so it fails to parse and silently "degrades"). Surface it as a clear,
-            // specific error instead of returning the partial text: the pipeline execution then
-            // records *why* nothing could be processed (e.g. why no documents were assigned). A
-            // pipeline that prefers to skip-and-retry rather than fail can still opt in via
-            // ContinueOnError. See AB#4544 (the root-cause class this makes visible).
-            if (stopReason == "max_tokens")
-            {
-                throw new InvalidOperationException(BuildTruncationMessage(maxTokens));
-            }
-
-            // stop_reason == "end_turn" or other — extract text response
-            if (apiResponse.TryGetProperty("content", out var finalContent) &&
-                finalContent.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var block in finalContent.EnumerateArray())
-                {
-                    if (block.TryGetProperty("type", out var t) && t.GetString() == "text" &&
-                        block.TryGetProperty("text", out var textEl))
-                    {
-                        return textEl.GetString() ?? "";
-                    }
-                }
-            }
-
-            throw new InvalidOperationException("No text content in Claude response");
-        }
-
-        throw new InvalidOperationException(
-            $"Claude exceeded maximum tool rounds ({config.MaxToolRounds})");
-    }
-
-    /// <summary>
-    ///     One repair call of the jsonSchema mode (AB#8498): a fresh single-turn request with the
-    ///     repair system prompt and the repair prompt only — no history, no tools, no original
-    ///     content — at temperature 0 and with the same constrained-decoding schema.
-    /// </summary>
-    private async Task<string> ExecuteJsonRepairCallAsync(string apiKey, string model, int maxTokens,
-        string repairPrompt, JsonNode apiSchema, AiUsageAccumulator usage)
-    {
-        using var client = httpClientFactory.CreateClient("Anthropic");
-        var messages = new List<object> { new { role = "user", content = repairPrompt } };
-        var requestObj = BuildRequestBody(model, maxTokens, 0.0, AiJsonSchemaResponseProcessor.RepairSystemPrompt,
-            messages, null, apiSchema);
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
-        {
-            Content = new StringContent(JsonSerializer.Serialize(requestObj, JsonOptions), Encoding.UTF8,
-                "application/json")
-        };
-        request.Headers.Add("x-api-key", apiKey);
-        request.Headers.Add("anthropic-version", "2023-06-01");
-
-        using var response = await client.SendAsync(request);
-        var responseContent = await response.Content.ReadAsStringAsync();
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(BuildAnthropicApiErrorMessage(response.StatusCode, responseContent));
-        }
-
-        var apiResponse = JsonSerializer.Deserialize<JsonElement>(responseContent);
-        usage.Add(apiResponse);
-        if (apiResponse.TryGetProperty("stop_reason", out var stopReason) && stopReason.GetString() == "max_tokens")
-        {
-            throw new InvalidOperationException(BuildTruncationMessage(maxTokens));
-        }
-
-        if (apiResponse.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var block in content.EnumerateArray())
-            {
-                if (block.TryGetProperty("type", out var type) && type.GetString() == "text" &&
-                    block.TryGetProperty("text", out var text))
-                {
-                    return text.GetString() ?? string.Empty;
-                }
-            }
-        }
-
-        return string.Empty;
-    }
-
-    /// <summary>
-    /// Builds the message thrown when the model stops with <c>stop_reason: "max_tokens"</c>. The
-    /// answer was truncated at the output-token cap, so the (typically JSON) result is incomplete
-    /// and must not be processed as-is. The message names the cause and the two fixes (raise
-    /// maxTokens or shrink the input) so it reads clearly in the pipeline-execution audit trail.
-    /// </summary>
-    internal static string BuildTruncationMessage(int maxTokens)
-    {
-        return "AI response truncated — the model reached the max_tokens output limit " +
-               $"({maxTokens}) before completing its answer, so the result is incomplete and was " +
-               "not processed. Increase maxTokens (on the AiConfiguration entity or the node) or " +
-               "reduce the input size (e.g. a smaller batch or less context).";
-    }
-
-    /// <summary>
-    /// Turns a non-success Anthropic HTTP response into a clear, cause-first message for the
-    /// pipeline-execution audit trail. Rate limit / token quota (429), overloaded (529) and
-    /// context-window-exceeded (400) are each spelled out; any other status falls back to the
-    /// status code. The raw response body is always appended for diagnostics.
-    /// </summary>
-    internal static string BuildAnthropicApiErrorMessage(HttpStatusCode statusCode, string responseBody)
-    {
-        var code = (int)statusCode;
-        var hint = code switch
-        {
-            429 => "Anthropic rejected the request with a rate limit / token quota error (HTTP 429). " +
-                   "No answer was produced and nothing could be processed — retry later, lower the " +
-                   "request frequency, or reduce the request size.",
-            529 => "The Anthropic API is temporarily overloaded (HTTP 529). No answer was produced — " +
-                   "retry later.",
-            400 when IsContextLengthError(responseBody) =>
-                "Anthropic rejected the request because the input exceeds the model's context window " +
-                "(HTTP 400). Reduce the input size (e.g. a smaller batch or less context) and retry.",
-            _ => $"Anthropic API error (HTTP {code} {statusCode})."
-        };
-
-        return $"{hint} Response body: {responseBody}";
-    }
-
-    /// <summary>
-    /// Heuristic for an Anthropic HTTP 400 that means "the prompt is larger than the context
-    /// window" (an <c>invalid_request_error</c> whose message mentions the prompt being too long /
-    /// the context window / the maximum length), as opposed to any other bad-request cause.
-    /// </summary>
-    internal static bool IsContextLengthError(string? responseBody)
-    {
-        if (string.IsNullOrEmpty(responseBody))
-        {
-            return false;
-        }
-
-        return responseBody.Contains("too long", StringComparison.OrdinalIgnoreCase)
-               || responseBody.Contains("context window", StringComparison.OrdinalIgnoreCase)
-               || responseBody.Contains("maximum context length", StringComparison.OrdinalIgnoreCase)
-               || responseBody.Contains("context length", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// MCP session ID for the current pipeline execution. Set during LoadMcpToolsAsync (initialize handshake).
-    /// </summary>
-    private string? _mcpSessionId;
-
-    /// <summary>
-    /// Bearer token for the MCP server, acquired once per execution: the token of exactly the service
-    /// account <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> names, or the
-    /// delegated token of the caller. Null when there is none; the node then does not call MCP at all
-    /// (AB#8685, AB#8699).
-    /// </summary>
-    private string? _mcpAccessToken;
-
-    /// <summary>
-    /// Acquires the MCP token into <see cref="_mcpAccessToken" /> and returns whether MCP may be called.
-    ///
-    /// <para>
-    /// Service-account mode: the token comes from
-    /// <see cref="IServiceAccountTokenService.AcquireServiceAccountTokenAsync" />, which RETURNS the token of
-    /// exactly the named account (cached per tenant, client and issuer) and never touches the process-wide
-    /// <c>IServiceClientAccessToken</c> — that singleton is the adapter's own identity, shared by every
-    /// pipeline of the process, so reading a token back from it could hand this node another account's token
-    /// or the adapter's own (AB#8699).
-    /// </para>
-    /// <para>
-    /// 🔴 <b>Fail-closed when the configured account yields no token (AB#8699):</b> a missing or broken
-    /// <c>ServiceAccountConfiguration</c>, a refused token request or an exception all end in one warning and
-    /// <c>false</c> — no MCP call, the query runs without tools. Until AB#8699 that case sent the MCP calls
-    /// unauthenticated (the AB#4541 degrade); the chat still keeps working, only the unauthenticated attempt
-    /// is gone.
-    /// </para>
-    /// <para>
-    /// With <see cref="AnthropicAiQueryNodeConfiguration.McpDelegateToCaller" /> a <b>delegated</b> token for
-    /// the calling user is acquired instead (AB#5031), and every failure throws — see
-    /// <see cref="AcquireDelegatedMcpAccessTokenAsync" />.
-    /// </para>
-    /// </summary>
-    internal async Task<bool> EnsureMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
-        INodeContext nodeContext)
-    {
-        // AB#5127: mcpDelegateToCaller is the AI-node alias of the general `identity` property.
-        // identity: Caller (or legacy mcpDelegateToCaller: true) delegates to the calling user;
-        // identity: ServiceAccount / System (the historical default, mcpDelegateToCaller absent) use
-        // the service account's own token. DelegatesToCaller resolves both spellings.
-        if (config.DelegatesToCaller)
-        {
-            _mcpAccessToken = await AcquireDelegatedMcpAccessTokenAsync(config, nodeContext);
-            return true;
-        }
-
-        _mcpAccessToken = null;
-        if (string.IsNullOrEmpty(config.McpServiceAccountConfigName))
-        {
-            return false;
-        }
-
-        string? token;
-        string? failure = null;
-        try
-        {
-            token = await serviceAccountTokenService.AcquireServiceAccountTokenAsync(etlContext.TenantRepository,
-                config.McpServiceAccountConfigName);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // AB#4541 shape (e.g. a repository error while reading the configuration): never fail the
-            // whole pipeline for it — the chat keeps working without tools.
-            token = null;
-            failure = ex.Message;
-        }
-
-        if (string.IsNullOrEmpty(token))
-        {
-            nodeContext.Warning(BuildMcpServiceAccountWithoutTokenWarning(config.McpServiceAccountConfigName, failure));
-            return false;
-        }
-
-        // AB#5538: the token is masked in every diagnostic output of this execution.
-        nodeContext.RegisterSecret(token);
-        _mcpAccessToken = token;
-        nodeContext.Debug(
-            $"MCP access token acquired via ServiceAccountConfiguration '{config.McpServiceAccountConfigName}'");
-        return true;
-    }
-
-    /// <summary>
-    ///     The warning written when the configured MCP service account yields no token, so MCP is not called
-    ///     (AB#8699). Names the configuration, never a credential.
-    /// </summary>
-    internal static string BuildMcpServiceAccountWithoutTokenWarning(string configName, string? failure)
-    {
-        var reason = string.IsNullOrEmpty(failure)
-            ? "see the adapter log for the reason"
-            : $"acquisition failed: {failure}";
-        return $"MCP ServiceAccountConfiguration '{configName}' did not yield an access token ({reason}); " +
-               "no MCP call is made and the query runs without tools.";
-    }
-
-    /// <summary>
-    ///     Acquires a token that runs on the <b>calling user's</b> identity — the service account of
-    ///     <see cref="AnthropicAiQueryNodeConfiguration.McpServiceAccountConfigName" /> acting on
-    ///     behalf of the caller who triggered the pipeline (AB#5026 / AB#5031). The MCP server then
-    ///     applies the user's own roles and data permissions instead of the service account's full
-    ///     <c>octo_api</c> reach.
-    /// </summary>
-    /// <remarks>
-    ///     🔴 <b>Fail-closed.</b> Every failure here throws instead of degrading. The two
-    ///     degrade-to-unauthenticated paths of the service-account mode exist so a broken
-    ///     ServiceAccountConfiguration still leaves a working (tool-less) chat; in delegation mode the
-    ///     whole point is that the request runs with the caller's permissions, so continuing with a
-    ///     service-account token — or with none at all, which an auth-enforcing MCP server answers
-    ///     with zero tools but a permissive one would answer with everything — would silently defeat
-    ///     the authorization this mode exists to enforce.
-    /// </remarks>
-    private async Task<string> AcquireDelegatedMcpAccessTokenAsync(AnthropicAiQueryNodeConfiguration config,
-        INodeContext nodeContext)
-    {
-        if (string.IsNullOrEmpty(config.McpServiceAccountConfigName))
-        {
-            throw new InvalidOperationException(
-                "mcpDelegateToCaller is set but no mcpServiceAccountConfigName is configured. Delegation " +
-                "runs through a service account acting on behalf of the caller, so the " +
-                "ServiceAccountConfiguration naming that account is required.");
-        }
-
-        var callerAccessToken = etlContext.CallerAccessToken;
-        if (string.IsNullOrEmpty(callerAccessToken))
-        {
-            throw new InvalidOperationException(
-                "mcpDelegateToCaller is set but the pipeline execution carries no caller token — the " +
-                "trigger was anonymous or does not forward one. Use FromHttpRequest@2 with " +
-                "allowAnonymous: false, or turn mcpDelegateToCaller off for a service-account-driven " +
-                "pipeline. Refusing to fall back to the service account's identity.");
-        }
-
-        // The caller's own token is a credential like the token it is exchanged for: registered before the
-        // exchange, so a refusal of the identity service that quotes the subject token is masked in the
-        // execution log and in the error of the execution.
-        nodeContext.RegisterSecret(callerAccessToken);
-
-        var delegatedToken = await serviceAccountTokenService.AcquireDelegatedTokenAsync(
-            etlContext.TenantRepository, config.McpServiceAccountConfigName, callerAccessToken);
-
-        if (string.IsNullOrEmpty(delegatedToken))
-        {
-            throw new InvalidOperationException(
-                $"Could not obtain a delegated access token via ServiceAccountConfiguration " +
-                $"'{config.McpServiceAccountConfigName}' for the calling user (see the adapter log for the " +
-                "reason reported by the identity service). Refusing to send MCP calls under another " +
-                "identity or unauthenticated.");
-        }
-
-        // Registered before the first log line and before any MCP call: an MCP server or gateway that
-        // echoes the bearer in an error body would otherwise put the delegated token into the log.
-        nodeContext.RegisterSecret(delegatedToken);
-
-        nodeContext.Debug(
-            "MCP access token acquired by delegation (on-behalf-of the calling user) via " +
-            $"ServiceAccountConfiguration '{config.McpServiceAccountConfigName}'");
-
-        return delegatedToken;
-    }
-
-    /// <summary>
-    /// Adds the <c>Authorization: Bearer</c> header to an MCP request when a service-account or
-    /// delegated token has been acquired. No-op otherwise (unauthenticated local/dev calls).
-    /// </summary>
-    internal void AddMcpAuthHeader(HttpRequestMessage request)
-    {
-        if (!string.IsNullOrEmpty(_mcpAccessToken))
-        {
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _mcpAccessToken);
-        }
-    }
-
-    private async Task<List<JsonElement>?> LoadMcpToolsAsync(string mcpServerUrl, string tenantId,
-        INodeContext nodeContext)
-    {
-        try
-        {
-            var url = $"{mcpServerUrl}/{tenantId}/mcp";
-
-            // Step 1: Initialize MCP session
-            _mcpSessionId = await InitializeMcpSessionAsync(url, nodeContext);
-
-            // Step 2: List tools with session ID
-            using var client = httpClientFactory.CreateClient("OctoMcp");
-            var rpcRequest = new
-            {
-                jsonrpc = "2.0",
-                id = 2,
-                method = "tools/list"
-            };
-
-            var request = new HttpRequestMessage(HttpMethod.Post, url)
-            {
-                Content = new StringContent(JsonSerializer.Serialize(rpcRequest), Encoding.UTF8,
-                    "application/json")
-            };
-            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
-            AddMcpAuthHeader(request);
-            if (_mcpSessionId != null)
-            {
-                request.Headers.Add("Mcp-Session-Id", _mcpSessionId);
-            }
-
-            using var response = await client.SendAsync(request);
-            var responseText = await response.Content.ReadAsStringAsync();
-
-            nodeContext.Debug($"MCP tools/list response status: {response.StatusCode}, length: {responseText.Length}, content-type: {response.Content.Headers.ContentType}");
-            if (responseText.Length < 500)
-            {
-                nodeContext.Debug($"MCP tools/list response body: {responseText}");
-            }
-
-            // Parse SSE response — look for JSON-RPC result in the event stream
-            var jsonRpcResponse = ExtractJsonRpcFromSse(responseText);
-            if (jsonRpcResponse == null)
-            {
-                nodeContext.Warning($"Could not parse MCP tools/list response. Raw: {responseText[..Math.Min(200, responseText.Length)]}");
-                return null;
-            }
-
-            var doc = JsonSerializer.Deserialize<JsonElement>(jsonRpcResponse);
-            if (!doc.TryGetProperty("result", out var result) ||
-                !result.TryGetProperty("tools", out var tools))
-            {
-                return null;
-            }
-
-            // Convert MCP tool format to Anthropic tool format
-            var anthropicTools = new List<JsonElement>();
-            foreach (var tool in tools.EnumerateArray())
-            {
-                var anthropicTool = new Dictionary<string, object>
-                {
-                    ["name"] = tool.GetProperty("name").GetString()!,
-                    ["description"] = tool.TryGetProperty("description", out var desc)
-                        ? desc.GetString() ?? ""
-                        : ""
-                };
-
-                if (tool.TryGetProperty("inputSchema", out var schema))
-                {
-                    anthropicTool["input_schema"] = schema;
-                }
-                else
-                {
-                    anthropicTool["input_schema"] = new { type = "object", properties = new { } };
-                }
-
-                var serialized = JsonSerializer.Serialize(anthropicTool, JsonOptions);
-                anthropicTools.Add(JsonSerializer.Deserialize<JsonElement>(serialized));
-            }
-
-            return anthropicTools;
-        }
-        catch (Exception ex)
-        {
-            nodeContext.Warning($"Failed to load MCP tools: {ex.Message}");
-            return null;
-        }
-    }
-
-    private async Task<string?> InitializeMcpSessionAsync(string url, INodeContext nodeContext)
-    {
-        using var client = httpClientFactory.CreateClient("OctoMcp");
-        var initRequest = new
-        {
-            jsonrpc = "2.0",
-            id = 1,
-            method = "initialize",
-            @params = new
-            {
-                protocolVersion = "2025-03-26",
-                capabilities = new { },
-                clientInfo = new
-                {
-                    name = "OctoMesh-AnthropicAiQueryNode",
-                    version = "1.0.0"
-                }
-            }
-        };
-
-        var request = new HttpRequestMessage(HttpMethod.Post, url)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(initRequest, JsonOptions), Encoding.UTF8,
-                "application/json")
-        };
-        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
-        AddMcpAuthHeader(request);
-
-        using var response = await client.SendAsync(request);
-        var responseText = await response.Content.ReadAsStringAsync();
-
-        // Extract session ID from response header
-        string? sessionId = null;
-        if (response.Headers.TryGetValues("Mcp-Session-Id", out var sessionIds))
-        {
-            sessionId = sessionIds.FirstOrDefault();
-        }
-
-        nodeContext.Debug($"MCP initialize: status={response.StatusCode}, sessionId={sessionId ?? "(none)"}");
-
-        if (!response.IsSuccessStatusCode)
-        {
-            nodeContext.Warning($"MCP initialize failed: {responseText[..Math.Min(300, responseText.Length)]}");
-        }
-
-        return sessionId;
-    }
-
-    private async Task<string> ExecuteMcpToolAsync(string mcpServerUrl, string tenantId, string toolName,
-        JsonElement toolInput)
-    {
-        using var client = httpClientFactory.CreateClient("OctoMcp");
-
-        var rpcRequest = new
-        {
-            jsonrpc = "2.0",
-            id = 1,
-            method = "tools/call",
-            @params = new
-            {
-                name = toolName,
-                arguments = toolInput
-            }
-        };
-
-        var url = $"{mcpServerUrl}/{tenantId}/mcp";
-        var request = new HttpRequestMessage(HttpMethod.Post, url)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(rpcRequest, JsonOptions), Encoding.UTF8,
-                "application/json")
-        };
-        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
-        AddMcpAuthHeader(request);
-        if (_mcpSessionId != null)
-        {
-            request.Headers.Add("Mcp-Session-Id", _mcpSessionId);
-        }
-
-        using var response = await client.SendAsync(request);
-        var responseText = await response.Content.ReadAsStringAsync();
-
-        var jsonRpcResponse = ExtractJsonRpcFromSse(responseText);
-        if (jsonRpcResponse == null)
-        {
-            throw new InvalidOperationException($"No valid response from MCP tool '{toolName}'");
-        }
-
-        var doc = JsonSerializer.Deserialize<JsonElement>(jsonRpcResponse);
-
-        if (doc.TryGetProperty("error", out var error))
-        {
-            var errorMsg = error.TryGetProperty("message", out var msg) ? msg.GetString() : "Unknown error";
-            throw new InvalidOperationException($"MCP tool error: {errorMsg}");
-        }
-
-        if (doc.TryGetProperty("result", out var resultProp))
-        {
-            // MCP tool result contains "content" array with text items
-            if (resultProp.TryGetProperty("content", out var content) &&
-                content.ValueKind == JsonValueKind.Array)
-            {
-                var sb = new StringBuilder();
-                foreach (var item in content.EnumerateArray())
-                {
-                    if (item.TryGetProperty("text", out var text))
-                    {
-                        sb.AppendLine(text.GetString());
-                    }
-                }
-
-                return sb.ToString();
-            }
-
-            return resultProp.ToString();
-        }
-
-        return responseText;
-    }
-
-    private static string? ExtractJsonRpcFromSse(string responseText)
-    {
-        // SSE format: "event: message\ndata: {json}\n\n"
-        // Or direct JSON-RPC response
-        if (responseText.TrimStart().StartsWith('{'))
-        {
-            return responseText;
-        }
-
-        foreach (var line in responseText.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("data:"))
-            {
-                var jsonPart = trimmed["data:".Length..].Trim();
-                if (jsonPart.StartsWith('{'))
-                {
-                    return jsonPart;
-                }
-            }
-        }
-
-        return null;
-    }
-
+    /// <inheritdoc cref="LlmPromptBuilder.BuildUserPrompt" />
     internal static string BuildUserPrompt(string question, string context, string responseFormat,
         string jsonExample, string? jsonSchema = null)
     {
-        var (sourcePart, instructionPart) =
-            BuildUserPromptParts(question, context, responseFormat, jsonExample, jsonSchema);
-        return sourcePart + instructionPart;
+        return LlmPromptBuilder.BuildUserPrompt(question, context, responseFormat, jsonExample, jsonSchema);
     }
 
-    /// <summary>
-    ///     The user prompt in two parts (AB#8658): the source part (preamble and the first
-    ///     <paramref name="cacheableContextLength" /> characters of the context — the main content) and the
-    ///     instruction part (the rest of the context, the question and the answer format). Their
-    ///     concatenation is exactly the prompt this node has always sent; the split lets <c>cacheSource</c>
-    ///     put the cache breakpoint after the stable source. Without a length the whole context is the source.
-    /// </summary>
+    /// <inheritdoc cref="LlmPromptBuilder.BuildUserPromptParts" />
     internal static (string SourcePart, string InstructionPart) BuildUserPromptParts(string question,
         string context, string responseFormat, string jsonExample, string? jsonSchema = null,
         int? cacheableContextLength = null)
     {
-        var split = Math.Clamp(cacheableContextLength ?? context.Length, 0, context.Length);
-
-        var sourceBuilder = new StringBuilder();
-        sourceBuilder.AppendLine("Please analyze the following content and answer the question provided.");
-        sourceBuilder.AppendLine();
-        sourceBuilder.AppendLine("CONTENT:");
-        sourceBuilder.AppendLine("---");
-        sourceBuilder.Append(context, 0, split);
-
-        var promptBuilder = new StringBuilder();
-        promptBuilder.AppendLine(context[split..]);
-        promptBuilder.AppendLine("---");
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine("QUESTION:");
-        promptBuilder.AppendLine(question);
-        promptBuilder.AppendLine();
-
-        if (jsonSchema != null)
-        {
-            // AB#8498: the schema is the contract; the (invoice-shaped) default sample would only
-            // contradict it.
-            promptBuilder.AppendLine("Please provide your response as JSON that satisfies this JSON Schema:");
-            promptBuilder.AppendLine(jsonSchema);
-        }
-        else if (responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
-        {
-            promptBuilder.AppendLine("Please provide your response in valid JSON format. For example:");
-            if (string.IsNullOrWhiteSpace(jsonExample))
-            {
-                promptBuilder.AppendLine("{");
-                promptBuilder.AppendLine("  \"transactionDate\": \"2024-01-15\",");
-                promptBuilder.AppendLine("  \"companyAddress\": \"123 Main St, City, Country\",");
-                promptBuilder.AppendLine("  \"grossTotal\": 1200.00,");
-                promptBuilder.AppendLine("  \"netTotal\": 1000.00,");
-                promptBuilder.AppendLine("  \"taxAmount\": 200.00");
-                promptBuilder.AppendLine("}");
-            }
-            else
-            {
-                promptBuilder.AppendLine(jsonExample);
-            }
-        }
-
-        return (sourceBuilder.ToString(), promptBuilder.ToString());
+        return LlmPromptBuilder.BuildUserPromptParts(question, context, responseFormat, jsonExample, jsonSchema,
+            cacheableContextLength);
     }
 
-    /// <summary>
-    /// Turns the model's raw answer into the value written to the data context: the parsed JSON for
-    /// <c>responseFormat: json</c> (recovering a JSON value embedded in prose when the whole answer
-    /// does not parse), the answer text otherwise. Every JSON result passes through
-    /// <see cref="SanitizeModelJson" /> — see there for why a duplicate key must be removed rather
-    /// than caught.
-    /// </summary>
+    /// <inheritdoc cref="LlmQueryEngine.ExpectsMcpTools" />
+    internal static bool ExpectsMcpTools(AnthropicAiQueryNodeConfiguration config)
+    {
+        return LlmQueryEngine.ExpectsMcpTools(ToOptions(config));
+    }
+
+    /// <inheritdoc cref="LlmQueryEngine.HasMcpIdentity" />
+    internal static bool HasMcpIdentity(AnthropicAiQueryNodeConfiguration config)
+    {
+        return LlmQueryEngine.HasMcpIdentity(ToOptions(config));
+    }
+
+    /// <inheritdoc cref="LlmQueryEngine.ResolveModel" />
+    internal static string ResolveModel(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
+    {
+        return LlmQueryEngine.ResolveModel(ToOptions(config), etlContext, nodeContext, template);
+    }
+
+    /// <inheritdoc cref="LlmQueryEngine.ResolveMaxTokens" />
+    internal static int ResolveMaxTokens(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
+    {
+        return LlmQueryEngine.ResolveMaxTokens(ToOptions(config), etlContext, nodeContext, template);
+    }
+
+    /// <inheritdoc cref="LlmQueryEngine.ResolveTemperature" />
+    internal static double ResolveTemperature(AnthropicAiQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
+    {
+        return LlmQueryEngine.ResolveTemperature(ToOptions(config), etlContext, nodeContext, template);
+    }
+
+    /// <inheritdoc cref="AnthropicMessagesChatClient.BuildRequestBody" />
+    internal static Dictionary<string, object> BuildRequestBody(string model, int maxTokens, double temperature,
+        string? systemPrompt, List<object> messages, List<JsonElement>? mcpTools, JsonNode? outputSchema = null)
+    {
+        return AnthropicMessagesChatClient.BuildRequestBody(model, maxTokens, temperature, systemPrompt, messages,
+            mcpTools, outputSchema);
+    }
+
+    /// <inheritdoc cref="AnthropicMessagesChatClient.BuildAnthropicApiErrorMessage" />
+    internal static string BuildAnthropicApiErrorMessage(HttpStatusCode statusCode, string responseBody)
+    {
+        return AnthropicMessagesChatClient.BuildAnthropicApiErrorMessage(statusCode, responseBody);
+    }
+
+    /// <inheritdoc cref="AnthropicMessagesChatClient.IsContextLengthError" />
+    internal static bool IsContextLengthError(string? responseBody)
+    {
+        return AnthropicMessagesChatClient.IsContextLengthError(responseBody);
+    }
+
+    /// <inheritdoc cref="LlmResponseProcessor.BuildTruncationMessage" />
+    internal static string BuildTruncationMessage(int maxTokens)
+    {
+        return LlmResponseProcessor.BuildTruncationMessage(maxTokens);
+    }
+
+    /// <inheritdoc cref="LlmResponseProcessor.ContainsSimulatedToolCalls" />
+    internal static bool ContainsSimulatedToolCalls(string? text)
+    {
+        return LlmResponseProcessor.ContainsSimulatedToolCalls(text);
+    }
+
+    /// <inheritdoc cref="LlmResponseProcessor.ProcessResponse" />
     internal static object ProcessResponse(string aiResponse, string responseFormat, INodeContext nodeContext)
     {
-        if (responseFormat.Equals("json", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                var jsonElement = JsonSerializer.Deserialize<JsonElement>(aiResponse);
-                return SanitizeModelJson(jsonElement, nodeContext);
-            }
-            catch (JsonException)
-            {
-                var extractedJson = ExtractJsonFromText(aiResponse);
-                if (extractedJson != null)
-                {
-                    try
-                    {
-                        // JsonDocument, not JsonNode.Parse: the node representation would accept a
-                        // duplicate key here and only throw later, deep in a downstream node (see
-                        // SanitizeModelJson). The element reader lets the sanitizer see it first.
-                        using var extractedDocument = JsonDocument.Parse(extractedJson);
-                        nodeContext.Debug("Successfully extracted JSON from mixed response");
-                        return SanitizeModelJson(extractedDocument.RootElement, nodeContext);
-                    }
-                    catch (JsonException ex)
-                    {
-                        nodeContext.Warning(
-                            $"Could not parse extracted JSON: {ex.Message}. Returning as text.");
-                    }
-                }
-                else
-                {
-                    nodeContext.Warning("No JSON block found in response. Returning as text.");
-                }
-
-                return aiResponse;
-            }
-        }
-
-        return aiResponse;
+        return LlmResponseProcessor.ProcessResponse(aiResponse, responseFormat, nodeContext);
     }
 
-    /// <summary>
-    /// Returns a data-context-safe copy of a model JSON answer: unchanged (detached) when every
-    /// object key is unique, and rebuilt with the LAST value of every repeated key otherwise.
-    /// <para>
-    /// AB#5348: a language model occasionally emits the same key twice in one object — on prod-1
-    /// roughly one in five invoice extractions repeated <c>addressComplete</c>, whose rule the
-    /// prompt states twice per party. That parses fine here (<see cref="JsonElement" /> keeps both
-    /// occurrences), and it is still fine when the value is written to the data context. It
-    /// detonates later: the data context hands the value on as a <see cref="JsonObject" />, whose
-    /// dictionary is built lazily, so the first downstream node that navigates into the offending
-    /// object dies with <c>An item with the same key has already been added</c>. On the accounting
-    /// document-analysis flow that is <c>CreateUpdateInfo@1</c> reading
-    /// <c>$.ai.result.invoices[0].vendor.addressComplete</c> — which is why this node's
-    /// <c>continueOnError</c> never helped: the throw happens after this node has already returned,
-    /// outside its try/catch, and takes the whole ForEach iteration with it. A borderline answer is
-    /// an expected input from a language model, so it is normalised at the boundary where it enters
-    /// the pipeline instead of being caught somewhere it cannot be caught.
-    /// </para>
-    /// </summary>
-    private static object SanitizeModelJson(JsonElement element, INodeContext nodeContext)
-    {
-        if (!JsonDuplicateKeys.TryFindDuplicateKey(element, out var duplicateKey))
-        {
-            // Clone detaches from the backing document, which the caller may dispose.
-            return element.Clone();
-        }
-
-        nodeContext.Warning(
-            $"The AI response repeats the JSON key '{duplicateKey}' in one object. Keeping the last " +
-            "value of every repeated key — an unrepaired response would fail a later node with " +
-            "'An item with the same key has already been added'.");
-
-        return JsonDuplicateKeys.RewriteLastValueWins(element)
-               ?? (object)element.Clone();
-    }
-
-    /// <summary>
-    /// Extracts a JSON value embedded in a mixed prose/markdown response. Handles a fenced
-    /// <c>```json … ```</c> block first, otherwise takes the first top-level JSON value — array
-    /// <c>[ … ]</c> or object <c>{ … }</c>, whichever appears first — via string/escape-aware brace
-    /// matching. The array case matters for this node: the prompt asks for a JSON array of mappings,
-    /// and when the model wraps it in prose ("Here are the mappings: [ … ]") the direct
-    /// deserialize fails and the fallback must return the whole array, not the first inner object.
-    /// </summary>
+    /// <inheritdoc cref="LlmResponseProcessor.ExtractJsonFromText" />
     internal static string? ExtractJsonFromText(string text)
     {
-        var fenced = ExtractFencedJson(text);
-        if (fenced != null)
-        {
-            return fenced;
-        }
-
-        var arrayStart = text.IndexOf('[');
-        var objectStart = text.IndexOf('{');
-
-        if (arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart))
-        {
-            return ExtractBalanced(text, arrayStart, '[', ']');
-        }
-
-        if (objectStart >= 0)
-        {
-            return ExtractBalanced(text, objectStart, '{', '}');
-        }
-
-        return null;
-    }
-
-    private static string? ExtractFencedJson(string text)
-    {
-        var fenceStart = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
-        if (fenceStart < 0)
-        {
-            return null;
-        }
-
-        var jsonStart = text.IndexOf('\n', fenceStart);
-        if (jsonStart < 0)
-        {
-            return null;
-        }
-
-        jsonStart++;
-        var jsonEnd = text.IndexOf("```", jsonStart, StringComparison.Ordinal);
-        return jsonEnd > jsonStart ? text.Substring(jsonStart, jsonEnd - jsonStart).Trim() : null;
-    }
-
-    /// <summary>
-    /// Returns the balanced <paramref name="open" />…<paramref name="close" /> span starting at
-    /// <paramref name="start" />, ignoring brackets inside JSON string literals (honouring
-    /// backslash escapes) so a bracket in a value like a reason text does not unbalance the scan.
-    /// </summary>
-    private static string? ExtractBalanced(string text, int start, char open, char close)
-    {
-        var depth = 0;
-        var inString = false;
-        var escaped = false;
-
-        for (var i = start; i < text.Length; i++)
-        {
-            var ch = text[i];
-
-            if (inString)
-            {
-                if (escaped)
-                {
-                    escaped = false;
-                }
-                else if (ch == '\\')
-                {
-                    escaped = true;
-                }
-                else if (ch == '"')
-                {
-                    inString = false;
-                }
-
-                continue;
-            }
-
-            if (ch == '"')
-            {
-                inString = true;
-            }
-            else if (ch == open)
-            {
-                depth++;
-            }
-            else if (ch == close)
-            {
-                depth--;
-                if (depth == 0)
-                {
-                    return text.Substring(start, i - start + 1);
-                }
-            }
-        }
-
-        return null;
+        return LlmResponseProcessor.ExtractJsonFromText(text);
     }
 }

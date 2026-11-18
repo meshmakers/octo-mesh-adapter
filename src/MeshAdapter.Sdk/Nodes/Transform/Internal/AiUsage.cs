@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 
@@ -73,6 +74,35 @@ internal sealed class AiUsageAccumulator
     public long OutputTokens { get; private set; }
     public long CacheReadInputTokens { get; private set; }
     public long CacheCreationInputTokens { get; private set; }
+
+    /// <summary>
+    ///     Key of the cache-write tokens in <see cref="UsageDetails.AdditionalCounts" />: the chat types
+    ///     have a field for cache reads but none for cache writes.
+    /// </summary>
+    internal const string CacheCreationInputTokensCount = "cache_creation_input_tokens";
+
+    /// <summary>
+    ///     Counts one call of a chat client. <see cref="UsageDetails.InputTokenCount" /> is read as the
+    ///     input tokens that were neither read from nor written to the prompt cache, as the Anthropic
+    ///     Messages API reports them. A call without usage still counts as a call.
+    /// </summary>
+    public void Add(UsageDetails? usage)
+    {
+        Calls++;
+        if (usage == null)
+        {
+            return;
+        }
+
+        InputTokens += usage.InputTokenCount ?? 0;
+        OutputTokens += usage.OutputTokenCount ?? 0;
+        CacheReadInputTokens += usage.CachedInputTokenCount ?? 0;
+        if (usage.AdditionalCounts != null &&
+            usage.AdditionalCounts.TryGetValue(CacheCreationInputTokensCount, out var cacheCreation))
+        {
+            CacheCreationInputTokens += cacheCreation;
+        }
+    }
 
     /// <summary>Adds the <c>usage</c> of one API response; a response without usage still counts as a call.</summary>
     public void Add(JsonElement apiResponse)

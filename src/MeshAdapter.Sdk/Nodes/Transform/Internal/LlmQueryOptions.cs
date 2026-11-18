@@ -107,4 +107,9 @@ internal sealed record LlmQueryOptions
 
     /// <summary>Whether the main content carries a prompt-cache breakpoint.</summary>
     public bool CacheSource { get; init; }
+
+    /// <summary>
+    ///     The longest tool result, in UTF-16 code units, that enters the conversation uncut.
+    /// </summary>
+    public int MaxToolResultChars { get; init; } = LlmQueryEngine.DefaultMaxToolResultChars;
 }

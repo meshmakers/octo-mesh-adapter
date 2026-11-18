@@ -159,7 +159,7 @@ public class LlmQueryEngineTests
     }
 
     [Fact]
-    public async Task AToolCall_GoesToMcpWithItsArguments_AndItsResultToTheNextRound()
+    public async Task AToolCall_GoesToMcpWithItsArguments_AndIsLoggedWithTheirNamesOnly()
     {
         _chat.Answers.Enqueue(ToolCall("call-1", "search", ("query", "geheime Suche"), ("limit", 5)));
         _chat.Answers.Enqueue(Answer("done"));
@@ -175,6 +175,8 @@ public class LlmQueryEngineTests
             _mcp.Bodies.Single(b => b.Contains("tools/call")));
         Assert.Contains("OctoMesh-TestQuery", _mcp.Bodies[0]);
 
+        Assert.Contains("debug: Executing MCP tool: search(query, limit)", _log);
+        Assert.DoesNotContain(_log, line => line.Contains("geheime Suche"));
 
         // The second round carries the assistant turn and the tool result.
         var secondRound = _chat.Calls[1].Messages;
@@ -200,6 +202,93 @@ public class LlmQueryEngineTests
         Assert.Equal("Error: MCP tool error: no such index", result.Result);
         Assert.NotNull(result.Exception);
         Assert.Contains("warning: MCP tool 'search' failed: MCP tool error: no such index", _log);
+    }
+
+    [Fact]
+    public async Task AToolResultOverTheNodesCap_IsCutAndMarked()
+    {
+        _chat.Answers.Enqueue(ToolCall("call-1", "search"));
+        _chat.Answers.Enqueue(Answer("done"));
+        _mcp.ToolResult = new string('x', 40);
+
+        await RunAsync(OptionsWithTools() with { MaxToolResultChars = 20 });
+
+        var result = Assert.IsType<FunctionResultContent>(Assert.Single(_chat.Calls[1].Messages[2].Contents));
+        var text = Assert.IsType<string>(result.Result);
+        Assert.StartsWith(new string('x', 20) + "\n\n[TRUNCATED", text);
+        Assert.DoesNotContain(new string('x', 21), text);
+        Assert.Contains(_log, line => line.StartsWith("warning: MCP tool 'search' result truncated from ") &&
+                                      line.Contains(" to 20 chars."));
+    }
+
+    [Fact]
+    public void TheDefaultCap_IsTheOneTheAnthropicNodeAlwaysHad()
+    {
+        Assert.Equal(50_000, Options().MaxToolResultChars);
+    }
+
+    [Fact]
+    public void AResultWithinTheCap_IsPassedOnUntouched()
+    {
+        var result = new string('x', 20);
+
+        Assert.Same(result, LlmQueryEngine.CapToolResult(result, "search", 20, _nodeContext));
+        Assert.Empty(_log);
+    }
+
+    [Theory]
+    [InlineData("ab\U0001F600cd", 3, "ab")] // the cut would fall between the two halves of the emoji
+    [InlineData("ab\U0001F600cd", 4, "ab\U0001F600")]
+    [InlineData("ab\U0001F600cd", 2, "ab")]
+    [InlineData("abc", 5, "abc")]
+    [InlineData("abc", 0, "")]
+    public void TheCut_NeverSplitsASurrogatePair(string text, int maxChars, string expected)
+    {
+        Assert.Equal(expected, LlmQueryEngine.TruncateSurrogateSafe(text, maxChars));
+    }
+
+    [Fact]
+    public void AToolCallIsDescribed_ByToolAndArgumentNames()
+    {
+        var withArguments = new FunctionCallContent("1", "search",
+            new Dictionary<string, object?> { ["query"] = "geheim", ["limit"] = 5 });
+
+        Assert.Equal("search(query, limit)", LlmQueryEngine.DescribeToolCall(withArguments));
+        Assert.Equal("count()", LlmQueryEngine.DescribeToolCall(new FunctionCallContent("2", "count")));
+    }
+
+    [Fact]
+    public void AMalformedAiConfiguration_EndsInTheNodesOwnSettings_AndTheWarningShowsNothingOfIt()
+    {
+        A.CallTo(() => _configuration.IsDefined("ai")).Returns(true);
+        A.CallTo(() => _configuration.GetRawJson("ai"))
+            .Returns("""{"apiKey":"sk-secret-value","aiModel":"configured-model","maxTokens":9000""");
+        var options = Options() with { ApiKeyConfigurationName = "ai" };
+
+        Assert.Equal("any-model", LlmQueryEngine.ResolveModel(options, _etlContext, _nodeContext));
+        Assert.Equal(500, LlmQueryEngine.ResolveMaxTokens(options, _etlContext, _nodeContext));
+        Assert.Equal(0.3, LlmQueryEngine.ResolveTemperature(options, _etlContext, _nodeContext));
+
+        Assert.Equal(3, _log.Count);
+        Assert.All(_log, line =>
+        {
+            Assert.StartsWith("warning: AiConfiguration 'ai' is not valid JSON (line ", line);
+            Assert.DoesNotContain("sk-secret-value", line);
+            Assert.DoesNotContain("configured-model", line);
+        });
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AnEmptyAiConfiguration_EndsInTheNodesOwnSettings(string rawJson)
+    {
+        A.CallTo(() => _configuration.IsDefined("ai")).Returns(true);
+        A.CallTo(() => _configuration.GetRawJson("ai")).Returns(rawJson);
+
+        Assert.Equal("any-model",
+            LlmQueryEngine.ResolveModel(Options() with { ApiKeyConfigurationName = "ai" }, _etlContext, _nodeContext));
+        Assert.Empty(_log);
     }
 
     private sealed record ChatCall(List<ChatMessage> Messages, ChatOptions Options);

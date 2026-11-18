@@ -44,6 +44,12 @@
         <ProjectReference Include="..\MeshAdapterIntegrationTestCkModel\MeshAdapterIntegrationTestCkModel.csproj" />
     </ItemGroup>
 
+    <!-- The recorded pipeline shapes of AnthropicAiQuery@1 and their golden request files, shared with the unit tests -->
+    <ItemGroup>
+        <Compile Include="..\MeshAdapter.Sdk.Tests\Nodes\Transform\AnthropicAiQueryGoldenScenario.cs" Link="Nodes\Transform\AnthropicAiQueryGoldenScenario.cs" />
+        <None Include="..\MeshAdapter.Sdk.Tests\Resources\GoldenRequests\**\*.txt" Link="Resources\GoldenRequests\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
     <!-- Test configuration and data -->
     <ItemGroup>
         <None Update="appsettings.test.json">

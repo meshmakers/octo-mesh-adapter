@@ -26,11 +26,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///         <item>A text part marked with <see cref="LlmQueryEngine.CacheBreakpointProperty" /> carries a cache
 ///         breakpoint.</item>
 ///         <item>Model, output-token limit and temperature are required. The temperature of the chat
-///         types is a <see cref="float" />; it is sent as its shortest decimal text, so <c>0.1</c> stays
-///         <c>0.1</c> and a value with more than seven significant digits is rounded to seven.</item>
-///         <item><see cref="UsageDetails.InputTokenCount" /> is the API's <c>input_tokens</c> (cache reads
-///         and cache writes not included), <see cref="UsageDetails.CachedInputTokenCount" /> the cache
-///         reads; the cache writes are in <see cref="UsageDetails.AdditionalCounts" /> under
+///         types is a <see cref="float" />; the exact value is read from
+///         <see cref="LlmQueryEngine.ExactTemperatureProperty" /> when the caller supplies it, otherwise the
+///         float is sent as its shortest decimal text, so <c>0.1</c> stays <c>0.1</c>.</item>
+///         <item>Usage follows the convention of the chat types: <see cref="UsageDetails.InputTokenCount" />
+///         is all input (the API's <c>input_tokens</c> plus cache reads and cache writes),
+///         <see cref="UsageDetails.CachedInputTokenCount" /> the cache reads; the cache writes are in <see cref="UsageDetails.AdditionalCounts" /> under
 ///         <see cref="AiUsageAccumulator.CacheCreationInputTokensCount" />.</item>
 ///     </list>
 /// </remarks>
@@ -62,11 +63,18 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
                     throw new ArgumentException("The Messages API needs a model.", nameof(options));
         var maxTokens = options.MaxOutputTokens ??
                         throw new ArgumentException("The Messages API needs an output-token limit.", nameof(options));
-        var temperature = options.Temperature ??
-                          throw new ArgumentException("The Messages API call needs a temperature.", nameof(options));
+        var temperature = ToWireTemperature(options.Temperature ??
+                                            throw new ArgumentException("The Messages API call needs a temperature.",
+                                                nameof(options)));
+        if (options.AdditionalProperties != null &&
+            options.AdditionalProperties.TryGetValue(LlmQueryEngine.ExactTemperatureProperty, out var exact) &&
+            exact is double exactTemperature)
+        {
+            temperature = exactTemperature;
+        }
 
         // Build request — system prompt and tool list carry prompt-cache breakpoints.
-        var requestObj = BuildRequestBody(model, maxTokens, ToWireTemperature(temperature), options.Instructions,
+        var requestObj = BuildRequestBody(model, maxTokens, temperature, options.Instructions,
             messages.Select(ToWireMessage).ToList(), ToWireTools(options.Tools), ToOutputSchema(options.ResponseFormat));
 
         var jsonRequest = JsonSerializer.Serialize(requestObj, JsonOptions);
@@ -287,15 +295,16 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
             return null;
         }
 
+        var cacheRead = ReadTokens(usage, "cache_read_input_tokens");
+        var cacheCreation = ReadTokens(usage, AiUsageAccumulator.CacheCreationInputTokensCount);
         return new UsageDetails
         {
-            InputTokenCount = ReadTokens(usage, "input_tokens"),
+            InputTokenCount = ReadTokens(usage, "input_tokens") + cacheRead + cacheCreation,
             OutputTokenCount = ReadTokens(usage, "output_tokens"),
-            CachedInputTokenCount = ReadTokens(usage, "cache_read_input_tokens"),
+            CachedInputTokenCount = cacheRead,
             AdditionalCounts = new AdditionalPropertiesDictionary<long>
             {
-                [AiUsageAccumulator.CacheCreationInputTokensCount] =
-                    ReadTokens(usage, AiUsageAccumulator.CacheCreationInputTokensCount)
+                [AiUsageAccumulator.CacheCreationInputTokensCount] = cacheCreation
             }
         };
     }

@@ -30,6 +30,7 @@ public class LlmQueryEngineTests
     private readonly List<string> _keys = [];
     private readonly ScriptedChatClient _chat = new();
     private readonly McpServer _mcp = new();
+    private readonly PipelineSecretRegistry _secrets = new();
 
     public LlmQueryEngineTests()
     {
@@ -40,6 +41,11 @@ public class LlmQueryEngineTests
         A.CallTo(() => _httpClientFactory.CreateClient(A<string>._)).ReturnsLazily(() => new HttpClient(_mcp, false));
         A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(A<ITenantRepository>._, "mcp-account",
             A<CancellationToken>._)).Returns(Task.FromResult<string?>("mcp-token"));
+
+        // The secret registry of an execution, as a real node context has it.
+        A.CallTo(() => _nodeContext.SecretRegistry).Returns(_secrets);
+        A.CallTo(() => _nodeContext.RegisterSecret(A<string?>._))
+            .Invokes((string? secret) => _secrets.Register(secret));
 
         A.CallTo(() => _nodeContext.Debug(A<string>._, A<object[]>._))
             .Invokes((string message, object[] _) => _log.Add("debug: " + message));
@@ -124,6 +130,7 @@ public class LlmQueryEngineTests
         Assert.Equal("any-model", call.Options.ModelId);
         Assert.Equal(500, call.Options.MaxOutputTokens);
         Assert.Equal(0.3f, call.Options.Temperature);
+        Assert.Equal(0.3, call.Options.AdditionalProperties![LlmQueryEngine.ExactTemperatureProperty]);
         Assert.Equal("You are a test.", call.Options.Instructions);
         Assert.Null(call.Options.Tools);
         Assert.Null(call.Options.ResponseFormat);
@@ -205,6 +212,33 @@ public class LlmQueryEngineTests
     }
 
     [Fact]
+    public async Task AToolErrorThatQuotesTheBearer_ReachesTheModelMasked()
+    {
+        _chat.Answers.Enqueue(ToolCall("call-1", "search"));
+        _chat.Answers.Enqueue(Answer("sorry"));
+        _mcp.ToolError = "Unauthorized: Bearer mcp-token has expired";
+
+        await RunAsync(OptionsWithTools());
+
+        var result = Assert.IsType<FunctionResultContent>(Assert.Single(_chat.Calls[1].Messages[2].Contents));
+        Assert.Equal("Error: MCP tool error: Unauthorized: Bearer *** has expired", result.Result);
+        Assert.DoesNotContain("mcp-token", result.Exception!.ToString());
+    }
+
+    [Fact]
+    public async Task AToolResultThatEchoesTheBearer_ReachesTheModelMasked()
+    {
+        _chat.Answers.Enqueue(ToolCall("call-1", "search"));
+        _chat.Answers.Enqueue(Answer("done"));
+        _mcp.ToolResult = "called with Bearer mcp-token";
+
+        await RunAsync(OptionsWithTools());
+
+        var result = Assert.IsType<FunctionResultContent>(Assert.Single(_chat.Calls[1].Messages[2].Contents));
+        Assert.Equal("called with Bearer ***" + Environment.NewLine, result.Result);
+    }
+
+    [Fact]
     public async Task AToolResultOverTheNodesCap_IsCutAndMarked()
     {
         _chat.Answers.Enqueue(ToolCall("call-1", "search"));
@@ -276,6 +310,45 @@ public class LlmQueryEngineTests
             Assert.DoesNotContain("sk-secret-value", line);
             Assert.DoesNotContain("configured-model", line);
         });
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("\"just text\"")]
+    [InlineData("null")]
+    public void AnAiConfigurationThatIsNoObject_EndsInTheNodesOwnSettings_WithAWarning(string rawJson)
+    {
+        A.CallTo(() => _configuration.IsDefined("ai")).Returns(true);
+        A.CallTo(() => _configuration.GetRawJson("ai")).Returns(rawJson);
+
+        Assert.Equal("any-model",
+            LlmQueryEngine.ResolveModel(Options() with { ApiKeyConfigurationName = "ai" }, _etlContext, _nodeContext));
+        Assert.Equal(["warning: AiConfiguration 'ai' is not a JSON object."], _log);
+    }
+
+    [Fact]
+    public async Task SettingsOfAnotherTypeThanText_AreNoSettings_AndTheNodesOwnApply()
+    {
+        A.CallTo(() => _configuration.IsDefined("ai")).Returns(true);
+        A.CallTo(() => _configuration.GetRawJson("ai"))
+            .Returns("""{"apiKey":123,"aiModel":456,"mcpServerUrl":true}""");
+        _chat.Answers.Enqueue(Answer("42"));
+
+        var data = await RunAsync(Options() with { ApiKeyConfigurationName = "ai" });
+
+        Assert.Equal("42", data["answer"]!.GetValue<string>());
+        Assert.Equal(["inline-key"], _keys);
+        Assert.Equal("any-model", _chat.Calls.Single().Options.ModelId);
+    }
+
+    [Fact]
+    public async Task TheJsonFormat_IsRecognisedInAnySpelling_BeforeAnAnswerIsRefusedAsSimulatedToolCalls()
+    {
+        _chat.Answers.Enqueue(Answer("""{"example":"<tool_call>"}"""));
+
+        var data = await RunAsync(Options() with { ResponseFormat = "JSON" });
+
+        Assert.Equal("<tool_call>", data["answer"]!["example"]!.GetValue<string>());
     }
 
     [Theory]

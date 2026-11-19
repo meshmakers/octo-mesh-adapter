@@ -44,6 +44,7 @@ public class LlmPromptBuilderTests
     [Theory]
     [InlineData("""{"history":[{"content":"no role"}]}""")]
     [InlineData("""{"history":[{"role":"","content":"empty role"}]}""")]
+    [InlineData("""{"history":[{"role":" ","content":"blank role"}]}""")]
     [InlineData("""{"history":[{"role":5,"content":"role is a number"}]}""")]
     [InlineData("""{"history":[{"role":"user"}]}""")]
     [InlineData("""{"history":[{"role":"user","content":""}]}""")]

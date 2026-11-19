@@ -9,8 +9,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 /// <summary>
 ///     The texts an LLM query sends: question, system prompt, user prompt and conversation history.
 ///     Moved unchanged out of <c>AnthropicAiQueryNode</c> so every LLM query node builds the same prompt;
-///     the history reader is lifted from the LlmQuery prototype
-///     (<c>philipp/AB#4861_llmquery-guaranteed-json</c>, Philipp Schwaab).
+///     the history reader is lifted from the LlmQuery prototype by Philipp Schwaab.
 /// </summary>
 internal static class LlmPromptBuilder
 {
@@ -222,7 +221,7 @@ internal static class LlmPromptBuilder
                 DataKind.Array => ExtractTextFromContentParts(entry),
                 _ => null
             };
-            if (string.IsNullOrEmpty(role) || string.IsNullOrEmpty(content))
+            if (string.IsNullOrWhiteSpace(role) || string.IsNullOrEmpty(content))
             {
                 continue;
             }

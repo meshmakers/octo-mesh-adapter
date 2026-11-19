@@ -60,6 +60,9 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
     {
         public int McpRequests { get; private set; }
 
+        /// <summary>What every MCP request carried as its credential, as the server received it.</summary>
+        public List<string?> Credentials { get; } = [];
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
@@ -74,6 +77,7 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
             }
 
             McpRequests++;
+            Credentials.Add(request.Headers.Authorization?.ToString());
             var body = new JsonObject
             {
                 ["error"] = "invalid_token",
@@ -162,6 +166,8 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
 
         // The scenario is real: MCP was called with the delegated token and its 401 body was logged.
         Assert.True(_http.McpRequests > 0);
+        // The server must have received the delegated token, or its echo would prove nothing.
+        Assert.All(_http.Credentials, credential => Assert.Equal("Bearer " + DelegatedToken, credential));
         var logged = EverythingLogged();
         Assert.Contains("MCP initialize failed", logged);
         Assert.DoesNotContain(DelegatedToken, logged);
@@ -224,6 +230,8 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.True(_http.McpRequests > 0);
+        // The server must have received the service account's token, or its echo would prove nothing.
+        Assert.All(_http.Credentials, credential => Assert.Equal("Bearer " + ServiceAccountToken, credential));
         var logged = EverythingLogged();
         Assert.Contains("MCP initialize failed", logged);
         Assert.DoesNotContain(ServiceAccountToken, logged);

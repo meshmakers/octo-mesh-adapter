@@ -25,6 +25,7 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Transform;
 ///         node is covered by <see cref="AnthropicAiQueryNodeMcpIdentityIntegrationTests" />.
 ///     </para>
 /// </summary>
+[Collection("Sequential")]
 public class AnthropicAiQueryPipelineGoldenIntegrationTests(AiQueryPipelineFixture fixture)
     : IClassFixture<AiQueryPipelineFixture>
 {

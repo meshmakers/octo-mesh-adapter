@@ -23,8 +23,7 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///     reads answer, finish reason, tool calls and usage; it knows no provider wire format. The tool
 ///     loop is the engine's own, so tool calls, their cap and their log are the same for every provider.
 ///     Guarded configuration read, history with content parts, the cut that never splits a surrogate
-///     pair and the tool-call log without argument values are lifted from the LlmQuery prototype
-///     (<c>philipp/AB#4861_llmquery-guaranteed-json</c>, Philipp Schwaab).
+///     pair and the tool-call log without argument values are lifted from the LlmQuery prototype by Philipp Schwaab.
 /// </remarks>
 internal sealed class LlmQueryEngine(
     IMeshEtlContext etlContext,
@@ -41,6 +40,13 @@ internal sealed class LlmQueryEngine(
     ///     without prompt caching ignores it.
     /// </summary>
     internal const string CacheBreakpointProperty = "cacheBreakpoint";
+
+    /// <summary>
+    ///     Key in <see cref="ChatOptions.AdditionalProperties" />: the temperature as the node resolved it, a
+    ///     <see cref="double" />. <see cref="ChatOptions.Temperature" /> is a <see cref="float" />; a provider
+    ///     client that sends the temperature as text reads the exact value here.
+    /// </summary>
+    internal const string ExactTemperatureProperty = "temperature";
 
     /// <summary>The MCP session of the node this engine serves (token, handshake, tool calls).</summary>
     internal LlmMcpSession McpSession { get; } = new(etlContext, httpClientFactory, serviceAccountTokenService);
@@ -306,7 +312,8 @@ internal sealed class LlmQueryEngine(
             // A text answer that CONTAINS tool-call markup is a simulation: real tool use arrives
             // as API content blocks, never as text. Its "results" are invented, so the answer is
             // refused rather than shown (the accounting chat would render invented invoices).
-            if (options.ResponseFormat != "json" && LlmResponseProcessor.ContainsSimulatedToolCalls(aiResponse))
+            if (!string.Equals(options.ResponseFormat, "json", StringComparison.OrdinalIgnoreCase) &&
+                LlmResponseProcessor.ContainsSimulatedToolCalls(aiResponse))
             {
                 throw new InvalidOperationException(LlmResponseProcessor.SimulatedToolCallsMessage);
             }
@@ -457,8 +464,7 @@ internal sealed class LlmQueryEngine(
     {
         if (!string.IsNullOrEmpty(options.ApiKeyConfigurationName))
         {
-            var key = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext)
-                ?.GetValue<string>();
+            var key = ReadAiConfigurationString(options.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext);
             if (!string.IsNullOrEmpty(key))
             {
                 nodeContext.Debug(
@@ -478,8 +484,8 @@ internal sealed class LlmQueryEngine(
         IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         // Try loading from AiConfiguration first
-        var url = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "mcpServerUrl", etlContext,
-            nodeContext)?.GetValue<string>();
+        var url = ReadAiConfigurationString(options.ApiKeyConfigurationName, "mcpServerUrl", etlContext,
+            nodeContext);
         if (!string.IsNullOrEmpty(url))
         {
             nodeContext.Debug(
@@ -503,8 +509,7 @@ internal sealed class LlmQueryEngine(
         // Prefer the model configured on the AiConfiguration entity (aiModel), mirroring how the
         // API key and MCP server URL are resolved from it. Falls back to the node's own Model
         // property (and thus its default) when the AiConfiguration has no aiModel.
-        var model = ReadAiConfigurationProperty(options.ApiKeyConfigurationName, "aiModel", etlContext, nodeContext)
-            ?.GetValue<string>();
+        var model = ReadAiConfigurationString(options.ApiKeyConfigurationName, "aiModel", etlContext, nodeContext);
         if (!string.IsNullOrEmpty(model))
         {
             nodeContext.Debug(
@@ -581,7 +586,7 @@ internal sealed class LlmQueryEngine(
 
     /// <summary>
     ///     One guarded read for every AiConfiguration lookup: <c>IsDefined</c> only proves the name is
-    ///     known, the stored payload can still be empty or malformed, and that must end in the callers'
+    ///     known, the stored payload can still be empty, malformed or not an object, and that must end in the callers'
     ///     documented fallback (warning, node default) rather than a parse exception. The warning names
     ///     the position of the defect, never a part of the payload: the payload holds the API key.
     /// </summary>
@@ -602,7 +607,13 @@ internal sealed class LlmQueryEngine(
 
         try
         {
-            return JsonNode.Parse(rawJson)?[property];
+            if (JsonNode.Parse(rawJson) is JsonObject payload)
+            {
+                return payload[property];
+            }
+
+            nodeContext.Warning($"AiConfiguration '{configurationName}' is not a JSON object.");
+            return null;
         }
         catch (JsonException ex)
         {
@@ -611,6 +622,19 @@ internal sealed class LlmQueryEngine(
                 $"byte {ex.BytePositionInLine}).");
             return null;
         }
+    }
+
+    /// <summary>
+    ///     A text value of the AiConfiguration. A value of another type is no usable setting and ends in the
+    ///     caller's fallback, like a missing one.
+    /// </summary>
+    private static string? ReadAiConfigurationString(string? configurationName, string property,
+        IMeshEtlContext etlContext, INodeContext nodeContext)
+    {
+        return ReadAiConfigurationProperty(configurationName, property, etlContext, nodeContext) is JsonValue value &&
+               value.TryGetValue<string>(out var text)
+            ? text
+            : null;
     }
 
     /// <summary>
@@ -642,7 +666,8 @@ internal sealed class LlmQueryEngine(
             Temperature = (float)temperature,
             Instructions = systemPrompt,
             Tools = mcpTools,
-            ResponseFormat = responseFormat
+            ResponseFormat = responseFormat,
+            AdditionalProperties = new AdditionalPropertiesDictionary { [ExactTemperatureProperty] = temperature }
         };
 
         for (var round = 0; round < (options.MaxToolRounds + 1); round++)
@@ -667,15 +692,17 @@ internal sealed class LlmQueryEngine(
                             call.Name, call.Arguments);
 
                         toolResults.Add(new FunctionResultContent(call.CallId,
-                            CapToolResult(toolResult, call.Name, options.MaxToolResultChars, nodeContext)));
+                            CapToolResult(RedactSecrets(toolResult, nodeContext), call.Name,
+                                options.MaxToolResultChars, nodeContext)));
                     }
                     catch (Exception ex)
                     {
                         nodeContext.Warning($"MCP tool '{call.Name}' failed: {ex.Message}");
-                        toolResults.Add(new FunctionResultContent(call.CallId, $"Error: {ex.Message}")
-                        {
-                            Exception = ex
-                        });
+                        toolResults.Add(
+                            new FunctionResultContent(call.CallId, RedactSecrets($"Error: {ex.Message}", nodeContext))
+                            {
+                                Exception = nodeContext.SecretRegistry?.RedactException(ex) ?? ex
+                            });
                     }
                 }
 
@@ -744,6 +771,16 @@ internal sealed class LlmQueryEngine(
     private static string? FirstText(ChatResponse response)
     {
         return response.Messages.SelectMany(m => m.Contents).OfType<TextContent>().FirstOrDefault()?.Text;
+    }
+
+    /// <summary>
+    ///     What a tool sent back, before it goes to the model: every registered secret of the execution is
+    ///     masked. A tool server that echoes the bearer of its caller would otherwise hand the token to the
+    ///     provider and, through the answer of the model, to the data context.
+    /// </summary>
+    private static string RedactSecrets(string text, INodeContext nodeContext)
+    {
+        return nodeContext.SecretRegistry?.Redact(text) ?? text;
     }
 
     /// <summary>

@@ -73,6 +73,24 @@ public class AnthropicMessagesChatClientTests
     }
 
     [Fact]
+    public async Task TheExactTemperatureOfTheCaller_WinsOverTheFloat()
+    {
+        _wire.Answers.Enqueue(TextAnswer);
+        var options = Options();
+        options.Temperature = (float)0.123456789;
+        options.AdditionalProperties = new AdditionalPropertiesDictionary
+        {
+            [LlmQueryEngine.ExactTemperatureProperty] = 0.123456789
+        };
+
+        using var client = Client();
+        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Hi")], options,
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains("\"temperature\":0.123456789,", _wire.Requests[0].Body);
+    }
+
+    [Fact]
     public async Task ATextPartWithACacheBreakpoint_IsSentAsBlocks_TheMarkedOneWithCacheControl()
     {
         _wire.Answers.Enqueue(TextAnswer);
@@ -200,7 +218,7 @@ public class AnthropicMessagesChatClientTests
     }
 
     [Fact]
-    public async Task Usage_IsReportedAsTheApiCountsIt_AndSumsUpInTheAccumulator()
+    public async Task Usage_FollowsTheConventionOfTheChatTypes_AndSumsUpInTheAccumulatorAsBefore()
     {
         _wire.Answers.Enqueue(TextAnswer);
 
@@ -209,7 +227,8 @@ public class AnthropicMessagesChatClientTests
             TestContext.Current.CancellationToken);
 
         Assert.NotNull(response.Usage);
-        Assert.Equal(11, response.Usage.InputTokenCount);
+        // All input: 11 uncached + 5 read from the cache + 3 written to it.
+        Assert.Equal(19, response.Usage.InputTokenCount);
         Assert.Equal(7, response.Usage.OutputTokenCount);
         Assert.Equal(5, response.Usage.CachedInputTokenCount);
         Assert.Equal(3, response.Usage.AdditionalCounts![AiUsageAccumulator.CacheCreationInputTokensCount]);
@@ -249,6 +268,8 @@ public class AnthropicMessagesChatClientTests
             client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
                 TestContext.Current.CancellationToken));
 
+        Assert.Contains("rate limit", exception.Message);
+        Assert.Contains("HTTP 429", exception.Message);
         Assert.Equal(
             AnthropicMessagesChatClient.BuildAnthropicApiErrorMessage(HttpStatusCode.TooManyRequests,
                 """{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"""),

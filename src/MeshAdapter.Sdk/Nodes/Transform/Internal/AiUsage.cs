@@ -82,9 +82,10 @@ internal sealed class AiUsageAccumulator
     internal const string CacheCreationInputTokensCount = "cache_creation_input_tokens";
 
     /// <summary>
-    ///     Counts one call of a chat client. <see cref="UsageDetails.InputTokenCount" /> is read as the
-    ///     input tokens that were neither read from nor written to the prompt cache, as the Anthropic
-    ///     Messages API reports them. A call without usage still counts as a call.
+    ///     Counts one call of a chat client. By the convention of the chat types
+    ///     <see cref="UsageDetails.InputTokenCount" /> is all input; the tokens read from and written to the
+    ///     prompt cache are taken out of it, because they are priced on their own. A call without usage
+    ///     still counts as a call.
     /// </summary>
     public void Add(UsageDetails? usage)
     {
@@ -94,14 +95,16 @@ internal sealed class AiUsageAccumulator
             return;
         }
 
-        InputTokens += usage.InputTokenCount ?? 0;
+        var cacheRead = usage.CachedInputTokenCount ?? 0;
+        var cacheCreation = usage.AdditionalCounts != null &&
+                            usage.AdditionalCounts.TryGetValue(CacheCreationInputTokensCount, out var written)
+            ? written
+            : 0;
+
+        InputTokens += Math.Max(0, (usage.InputTokenCount ?? 0) - cacheRead - cacheCreation);
         OutputTokens += usage.OutputTokenCount ?? 0;
-        CacheReadInputTokens += usage.CachedInputTokenCount ?? 0;
-        if (usage.AdditionalCounts != null &&
-            usage.AdditionalCounts.TryGetValue(CacheCreationInputTokensCount, out var cacheCreation))
-        {
-            CacheCreationInputTokens += cacheCreation;
-        }
+        CacheReadInputTokens += cacheRead;
+        CacheCreationInputTokens += cacheCreation;
     }
 
     /// <summary>Adds the <c>usage</c> of one API response; a response without usage still counts as a call.</summary>

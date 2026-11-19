@@ -256,7 +256,7 @@ internal sealed class LlmMcpSession(
             var jsonRpcResponse = ExtractJsonRpcFromSse(responseText);
             if (jsonRpcResponse == null)
             {
-                nodeContext.Warning($"Could not parse MCP tools/list response. Raw: {responseText[..Math.Min(200, responseText.Length)]}");
+                nodeContext.Warning($"Could not parse MCP tools/list response. Raw: {LogExcerpt(responseText, 200, nodeContext)}");
                 return null;
             }
 
@@ -333,7 +333,7 @@ internal sealed class LlmMcpSession(
 
         if (!response.IsSuccessStatusCode)
         {
-            nodeContext.Warning($"MCP initialize failed: {responseText[..Math.Min(300, responseText.Length)]}");
+            nodeContext.Warning($"MCP initialize failed: {LogExcerpt(responseText, 300, nodeContext)}");
         }
 
         return sessionId;
@@ -409,6 +409,17 @@ internal sealed class LlmMcpSession(
         }
 
         return responseText;
+    }
+
+    /// <summary>
+    ///     The start of an MCP answer for a log line. The secrets of the execution are masked in the whole
+    ///     text before it is cut: the registry masks a secret only as a whole, so a token the cut runs
+    ///     through would keep its head in the log.
+    /// </summary>
+    private static string LogExcerpt(string text, int maxLength, INodeContext nodeContext)
+    {
+        var redacted = nodeContext.SecretRegistry?.Redact(text) ?? text;
+        return redacted[..Math.Min(maxLength, redacted.Length)];
     }
 
     private static string? ExtractJsonRpcFromSse(string responseText)

@@ -270,6 +270,7 @@ public class AnthropicMessagesChatClientTests
 
         Assert.Contains("rate limit", exception.Message);
         Assert.Contains("HTTP 429", exception.Message);
+        Assert.Contains("retry later", exception.Message);
         Assert.Equal(
             AnthropicMessagesChatClient.BuildAnthropicApiErrorMessage(HttpStatusCode.TooManyRequests,
                 """{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"""),

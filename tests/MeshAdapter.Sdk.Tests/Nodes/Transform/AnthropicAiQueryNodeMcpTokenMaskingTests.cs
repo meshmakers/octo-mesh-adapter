@@ -27,7 +27,10 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 ///     <para>
 ///         Abuse cases, one test each: an MCP server that answers 401 and echoes the bearer it received
 ///         (the node logs that body), for the delegated and for the service-account token; an identity
-///         service whose refusal quotes the subject token, with the error logged and with the error thrown.
+///         service whose refusal quotes the subject token, with the error logged and with the error thrown;
+///         an echoed token longer than the excerpt the node logs of an MCP answer, in a JSON body and in a
+///         body the node cannot read a tool list from (the registry masks a token only as a whole, so an
+///         excerpt cut inside the token would keep its head).
 ///     </para>
 ///     The node runs with a real node context, so the registry and the redaction are the pipeline's own.
 /// </summary>
@@ -37,6 +40,17 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
     private const string CallerToken = "test-token-caller-eyJhbGciOiJub25lIn0.caller";
     private const string DelegatedToken = "test-token-delegated-eyJhbGciOiJub25lIn0.delegated";
     private const string ServiceAccountToken = "test-token-service-account-eyJhbGciOiJub25lIn0.sa";
+
+    /// <summary>A stretch of the long token's payload; nothing else the node logs contains it.</summary>
+    private static readonly string LongTokenPayloadPart = new('p', 16);
+
+    /// <summary>
+    ///     A token as long as a real access token (about 1,000 characters): longer than both excerpts the
+    ///     node logs of an MCP answer (300 and 200 characters), so each excerpt of a body that quotes it
+    ///     near its start ends inside the token.
+    /// </summary>
+    private static readonly string LongToken =
+        "test-token-long-eyJhbGciOiJub25lIn0." + new string('p', 960) + ".long";
 
     private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
     private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
@@ -63,6 +77,12 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
         /// <summary>What every MCP request carried as its credential, as the server received it.</summary>
         public List<string?> Credentials { get; } = [];
 
+        /// <summary>
+        ///     Answers with a plain text body instead of JSON, as a proxy in front of the MCP server does;
+        ///     the node reads no tool list out of it and logs the start of the body.
+        /// </summary>
+        public bool PlainText { get; set; }
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
@@ -78,6 +98,16 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
 
             McpRequests++;
             Credentials.Add(request.Headers.Authorization?.ToString());
+            if (PlainText)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent(
+                        $"The credential '{request.Headers.Authorization}' was rejected.", Encoding.UTF8,
+                        "text/plain")
+                });
+            }
+
             var body = new JsonObject
             {
                 ["error"] = "invalid_token",
@@ -237,5 +267,62 @@ public class AnthropicAiQueryNodeMcpTokenMaskingTests
         Assert.DoesNotContain(ServiceAccountToken, logged);
         AssertMasked(nodeContext, ServiceAccountToken);
         Assert.DoesNotContain(ServiceAccountToken, dataContext.Get<JsonNode>("$")!.ToJsonString());
+    }
+
+    /// <summary>
+    ///     No part of the long token is in what was logged: not the token, not its head (what an excerpt
+    ///     cut inside the token would keep) and no stretch of its payload.
+    /// </summary>
+    private static void AssertNoPartOfTheLongTokenIn(string logged)
+    {
+        Assert.DoesNotContain(LongToken, logged);
+        Assert.DoesNotContain(LongToken[..24], logged);
+        Assert.DoesNotContain(LongTokenPayloadPart, logged);
+    }
+
+    [Fact]
+    public async Task DelegationMode_AnEchoedTokenLongerThanTheLogExcerpt_LeavesNoPartOfItInTheLog()
+    {
+        A.CallTo(() => _etlContext.CallerAccessToken).Returns(CallerToken);
+        A.CallTo(() => _tokenService.AcquireDelegatedTokenAsync(_tenantRepository, ServiceAccountConfig,
+                CallerToken, A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>(LongToken));
+        var (node, dataContext, nodeContext) = Prepare(Config(delegateToCaller: true));
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // The server must have received the long token, or its echo would prove nothing.
+        Assert.True(_http.McpRequests > 0);
+        Assert.All(_http.Credentials, credential => Assert.Equal("Bearer " + LongToken, credential));
+        var logged = EverythingLogged();
+        // The excerpt of the 401 body was logged, with the mask where the token stood.
+        Assert.Contains("MCP initialize failed: {\"error\":\"invalid_token\"", logged);
+        Assert.Contains("Bearer " + PipelineSecretRegistry.Mask, logged);
+        AssertNoPartOfTheLongTokenIn(logged);
+        AssertMasked(nodeContext, LongToken);
+    }
+
+    [Fact]
+    public async Task ServiceAccountMode_AnUnreadableToolListEchoingALongToken_LeavesNoPartOfItInTheLog()
+    {
+        _http.PlainText = true;
+        A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(_tenantRepository, ServiceAccountConfig,
+                A<CancellationToken>._))
+            .Returns(Task.FromResult<string?>(LongToken));
+        var (node, dataContext, nodeContext) = Prepare(Config(delegateToCaller: false));
+
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        // Handshake and tool list were both asked for with the long token.
+        Assert.Equal(2, _http.McpRequests);
+        Assert.All(_http.Credentials, credential => Assert.Equal("Bearer " + LongToken, credential));
+        var logged = EverythingLogged();
+        // Both excerpts were logged, each with the mask where the token stood.
+        var maskedBody = $"The credential 'Bearer {PipelineSecretRegistry.Mask}' was rejected.";
+        Assert.Contains("MCP initialize failed: " + maskedBody, logged);
+        Assert.Contains("Could not parse MCP tools/list response. Raw: " + maskedBody, logged);
+        AssertNoPartOfTheLongTokenIn(logged);
+        AssertMasked(nodeContext, LongToken);
+        Assert.DoesNotContain(LongTokenPayloadPart, dataContext.Get<JsonNode>("$")!.ToJsonString());
     }
 }

@@ -239,6 +239,55 @@ public class LlmQueryEngineTests
     }
 
     [Fact]
+    public async Task AToolThatWasNotOffered_IsNeverCalled_AndTheModelIsToldSo()
+    {
+        // The server lists "delete" too, but the allowlist of the node offers only "search".
+        _chat.Answers.Enqueue(ToolCall("call-1", "delete", ("id", "42")));
+        _chat.Answers.Enqueue(Answer("sorry"));
+
+        var data = await RunAsync(OptionsWithTools());
+
+        Assert.Equal("sorry", data["answer"]!.GetValue<string>());
+        Assert.DoesNotContain(_mcp.Bodies, body => body.Contains("tools/call"));
+        var result = Assert.IsType<FunctionResultContent>(Assert.Single(_chat.Calls[1].Messages[2].Contents));
+        Assert.Equal("call-1", result.CallId);
+        Assert.Equal("Error: the tool 'delete' is not available.", result.Result);
+        Assert.NotNull(result.Exception);
+        Assert.Contains(_log, line => line.StartsWith("warning: The model asked for the tool 'delete'"));
+    }
+
+    [Fact]
+    public async Task WhenTheToolRoundsAreSpent_NoFurtherBatchRuns_AndTheQueryFails()
+    {
+        _chat.Answers.Enqueue(ToolCall("call-1", "search"));
+        _chat.Answers.Enqueue(ToolCall("call-2", "search"));
+
+        await RunAsync(OptionsWithTools() with { MaxToolRounds = 1, ContinueOnError = true });
+
+        // One round is allowed: its batch runs, the batch the model asks for afterwards does not.
+        Assert.Single(_mcp.Bodies, body => body.Contains("tools/call"));
+        Assert.Equal(2, _chat.Calls.Count);
+        Assert.Contains("error: Error during AI query: Claude exceeded maximum tool rounds (1)", _log);
+    }
+
+    [Fact]
+    public async Task WhenTheQueryIsSkippedForMissingContent_AFailureOfALaterNodeIsItsOwn_AndTheChainRunsOnce()
+    {
+        var downstream = new InvalidOperationException("a later node failed");
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).Throws(downstream);
+        using var document = JsonDocument.Parse("{}");
+        using var dataContext = new DataContextImpl(document.RootElement);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Engine().RunAsync(Options() with { ContinueOnError = true }, dataContext, _nodeContext, _next));
+
+        Assert.Same(downstream, thrown);
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustHaveHappenedOnceExactly();
+        Assert.Empty(_chat.Calls);
+        Assert.DoesNotContain(_log, line => line.StartsWith("error: Error during AI query"));
+    }
+
+    [Fact]
     public async Task AToolResultOverTheNodesCap_IsCutAndMarked()
     {
         _chat.Answers.Enqueue(ToolCall("call-1", "search"));

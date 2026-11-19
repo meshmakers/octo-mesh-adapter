@@ -57,6 +57,9 @@ internal sealed class LlmQueryEngine(
         // AB#8658: usage of every API call of this execution (tool rounds and repair calls included).
         var usage = new AiUsageAccumulator();
         string? usageModel = null;
+        // True once the rest of the pipeline has been handed the data from inside the try block: what a later
+        // node throws is then its own failure, not one of this query.
+        var handedOver = false;
 
         try
         {
@@ -113,6 +116,7 @@ internal sealed class LlmQueryEngine(
             if (string.IsNullOrEmpty(mainContent) && string.IsNullOrEmpty(mcpServerUrl))
             {
                 nodeContext.Warning($"No content found at path: {options.Path}");
+                handedOver = true;
                 await next(dataContext, nodeContext);
                 return;
             }
@@ -360,7 +364,7 @@ internal sealed class LlmQueryEngine(
             WriteUsage(options, dataContext, nodeContext, usage, usageModel);
             nodeContext.Info("AI query completed successfully");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!handedOver)
         {
             if (!options.ContinueOnError)
             {
@@ -670,6 +674,10 @@ internal sealed class LlmQueryEngine(
             AdditionalProperties = new AdditionalPropertiesDictionary { [ExactTemperatureProperty] = temperature }
         };
 
+        // What the model may call is what it was offered. The allowlist of the node must hold for the calls
+        // the model asks for, not only for the list it is shown.
+        var offeredTools = new HashSet<string>(mcpTools?.Select(t => t.Name) ?? [], StringComparer.Ordinal);
+
         for (var round = 0; round < (options.MaxToolRounds + 1); round++)
         {
             var response = await client.GetResponseAsync(messages, chatOptions);
@@ -677,6 +685,12 @@ internal sealed class LlmQueryEngine(
 
             if (response.FinishReason == ChatFinishReason.ToolCalls)
             {
+                if (round >= options.MaxToolRounds)
+                {
+                    // The budget is spent. Another batch would run tools whose results nobody reads.
+                    break;
+                }
+
                 // Add assistant message with tool use
                 messages.AddRange(response.Messages);
 
@@ -684,6 +698,18 @@ internal sealed class LlmQueryEngine(
                 var toolResults = new List<AIContent>();
                 foreach (var call in response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>())
                 {
+                    if (!offeredTools.Contains(call.Name))
+                    {
+                        nodeContext.Warning(
+                            $"The model asked for the tool '{call.Name}', which was not offered to it. The call is refused.");
+                        toolResults.Add(
+                            new FunctionResultContent(call.CallId, $"Error: the tool '{call.Name}' is not available.")
+                            {
+                                Exception = new InvalidOperationException("The tool was not offered to the model.")
+                            });
+                        continue;
+                    }
+
                     nodeContext.Debug($"Executing MCP tool: {DescribeToolCall(call)}");
 
                     try

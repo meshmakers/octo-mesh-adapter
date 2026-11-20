@@ -114,13 +114,13 @@ internal sealed class McpToolClient(HttpClient httpClient, Uri endpoint, string 
         {
             throw new McpToolCallException(
                 $"MCP server answered {what} with HTTP {(int)response.StatusCode} {response.ReasonPhrase}" +
-                (string.IsNullOrWhiteSpace(text) ? "." : $": {Truncate(text, MaxQuotedBodyLength)}"));
+                (string.IsNullOrWhiteSpace(text) ? "." : $": {Excerpt(text, MaxQuotedBodyLength)}"));
         }
 
         if (message?["result"] is not JsonObject result)
         {
             throw new McpToolCallException(
-                $"MCP server sent no JSON-RPC result for {what}: {Truncate(text, MaxQuotedBodyLength)}");
+                $"MCP server sent no JSON-RPC result for {what}: {Excerpt(text, MaxQuotedBodyLength)}");
         }
 
         return result;
@@ -167,7 +167,7 @@ internal sealed class McpToolClient(HttpClient httpClient, Uri endpoint, string 
         return fallback;
     }
 
-    internal static JsonNode? ReadToolResult(string toolName, JsonObject result)
+    internal JsonNode? ReadToolResult(string toolName, JsonObject result)
     {
         var texts = result["content"] is JsonArray content
             ? content.OfType<JsonObject>()
@@ -179,7 +179,7 @@ internal sealed class McpToolClient(HttpClient httpClient, Uri endpoint, string 
         if (result["isError"] is JsonValue isError && isError.TryGetValue<bool>(out var failed) && failed)
         {
             throw new McpToolCallException(
-                $"MCP tool '{toolName}' returned an error: {Truncate(string.Join("\n", texts), MaxQuotedToolErrorLength)}");
+                $"MCP tool '{toolName}' returned an error: {Excerpt(string.Join("\n", texts), MaxQuotedToolErrorLength)}");
         }
 
         if (result["structuredContent"] is { } structured)
@@ -215,5 +215,14 @@ internal sealed class McpToolClient(HttpClient httpClient, Uri endpoint, string 
         }
     }
 
-    private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+    /// <summary>
+    ///     The start of an MCP answer for an error message. The token is masked in the whole text before it
+    ///     is cut: masking afterwards finds only whole tokens, so a token the cut runs through would keep its
+    ///     head in the message.
+    /// </summary>
+    private string Excerpt(string text, int max)
+    {
+        var masked = McpToolCallNode.Redact(text, accessToken);
+        return masked.Length <= max ? masked : masked[..max] + "…";
+    }
 }

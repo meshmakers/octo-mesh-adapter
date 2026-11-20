@@ -23,6 +23,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 
     private LlmProvider _provider = LlmProvider.Anthropic;
     private string? _baseUrl;
+    private double? _temperature;
     private string _responseFormat = "json";
     private int _maxToolResultChars = DefaultMaxToolResultChars;
 
@@ -110,10 +111,22 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>
     /// Sampling temperature (0.0-1.0). Null (default) = not sent, the model's own default applies. A
     /// prompt template or the AiConfiguration wins. A model that rejects the temperature is asked once
-    /// more without it, with a warning.
+    /// more without it, with a warning. A value outside 0.0-1.0 is refused.
     /// </summary>
     [PropertyGroup("AI Configuration", 5)]
-    public double? Temperature { get; set; }
+    public double? Temperature
+    {
+        get => _temperature;
+        set
+        {
+            if (value is not null and not (>= 0.0 and <= 1.0))
+            {
+                throw new ArgumentException($"temperature must be between 0.0 and 1.0, not {value}.", "temperature");
+            }
+
+            _temperature = value;
+        }
+    }
 
     /// <summary>
     /// Sends the main content (path) as its own block with a prompt-cache breakpoint.

@@ -35,8 +35,8 @@ public class LlmProviderHttpClientTests
 
         Assert.Contains("HTTP 307", exception.Message);
         Assert.Contains("redirect", exception.Message);
-        Assert.Single(redirecting.Requests);
-        Assert.Contains("x-api-key: the-api-key", redirecting.Requests[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("x-api-key: the-api-key", Assert.Single(redirecting.Requests),
+            StringComparison.OrdinalIgnoreCase);
         Assert.Empty(target.Requests);
     }
 

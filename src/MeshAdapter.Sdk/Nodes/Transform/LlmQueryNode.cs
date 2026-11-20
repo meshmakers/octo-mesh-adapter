@@ -37,19 +37,17 @@ internal class LlmQueryNode(
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<LlmQueryNodeConfiguration>();
+        // Before any request: a base URL that breaks the rule fails the node, whatever continueOnError says.
+        var baseUrl = ResolveBaseUrl(config, etlContext, nodeContext);
         var engine = new LlmQueryEngine(etlContext, httpClientFactory, serviceAccountTokenService,
-            CreateChatClientFactory(config, httpClientFactory));
+            CreateChatClientFactory(config, httpClientFactory, baseUrl));
         await engine.RunAsync(ToOptions(config), dataContext, nodeContext, next);
     }
 
-    /// <summary>
-    ///     The chat client of the configured provider, for an API key. The base URL is resolved here and
-    ///     only here (<see cref="ResolveBaseUrl" />).
-    /// </summary>
+    /// <summary>The chat client of the configured provider at the resolved base URL, for an API key.</summary>
     internal static Func<string, IChatClient> CreateChatClientFactory(LlmQueryNodeConfiguration config,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory, Uri? baseUrl)
     {
-        var baseUrl = ResolveBaseUrl(config);
         return config.Provider switch
         {
             LlmProvider.Anthropic => apiKey => new AnthropicMessagesChatClient(httpClientFactory, apiKey, baseUrl),
@@ -58,14 +56,37 @@ internal class LlmQueryNode(
     }
 
     /// <summary>
-    ///     The one place that decides where the provider is reached: the node's <c>baseUrl</c>, checked by
-    ///     the rule of <see cref="LlmBaseUrl" /> once more (the configuration may have been built in code), or
-    ///     <c>null</c> for the provider's public endpoint.
+    ///     The one place that decides where the provider is reached: the <c>baseUrl</c> of the AiConfiguration
+    ///     named by <c>apiKeyConfigurationName</c> (the one that holds the key), read with the engine's guarded
+    ///     read and checked by the rule of <see cref="LlmBaseUrl" />. <c>null</c> (the provider's public endpoint)
+    ///     when it is absent or empty.
     /// </summary>
-    internal static Uri? ResolveBaseUrl(LlmQueryNodeConfiguration config)
+    /// <exception cref="InvalidOperationException">The value breaks the rule; nothing has been sent.</exception>
+    internal static Uri? ResolveBaseUrl(LlmQueryNodeConfiguration config, IMeshEtlContext etlContext,
+        INodeContext nodeContext)
     {
-        return LlmBaseUrl.Parse(config.BaseUrl);
+        var value = LlmQueryEngine.ReadAiConfigurationString(config.ApiKeyConfigurationName, BaseUrlProperty,
+            etlContext, nodeContext);
+        try
+        {
+            var baseUrl = LlmBaseUrl.Parse(value);
+            if (baseUrl != null)
+            {
+                nodeContext.Debug($"Provider base URL loaded from configuration '{config.ApiKeyConfigurationName}'");
+            }
+
+            return baseUrl;
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException(
+                $"[{nodeContext.NodePath}]: AiConfiguration '{config.ApiKeyConfigurationName}': {ex.Message} " +
+                "No request was sent.", ex);
+        }
     }
+
+    /// <summary>The key of the provider's endpoint in the AiConfiguration payload.</summary>
+    internal const string BaseUrlProperty = "baseUrl";
 
     /// <summary>The node's configuration as the engine reads it.</summary>
     internal static LlmQueryOptions ToOptions(LlmQueryNodeConfiguration config)

@@ -17,7 +17,7 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 
 /// <summary>
 ///     The credentials <c>LlmQuery@1</c> handles never reach a diagnostic output, also when the provider sits
-///     at a configured base URL.
+///     at the base URL of the AiConfiguration.
 ///     <para>
 ///         Invariant: the API key and every MCP token are registered secrets of the execution before the
 ///         first request; the execution log, the error of the execution and the data show the mask.
@@ -49,7 +49,7 @@ public class LlmQueryNodeSecretMaskingTests
         var configuration = A.Fake<IGlobalConfiguration>();
         A.CallTo(() => configuration.IsDefined(AiConfigName)).Returns(true);
         A.CallTo(() => configuration.GetRawJson(AiConfigName))
-            .Returns($$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test"}""");
+            .Returns($$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":"{{BaseUrl}}"}""");
         A.CallTo(() => _etlContext.TenantId).Returns("testTenant");
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _etlContext.VerifiedPrincipal).Returns(null);
@@ -118,7 +118,6 @@ public class LlmQueryNodeSecretMaskingTests
 
     private static LlmQueryNodeConfiguration Config(bool continueOnError = false) => new()
     {
-        BaseUrl = BaseUrl,
         ApiKeyConfigurationName = AiConfigName,
         Question = "What is it about?",
         Path = "$.text",

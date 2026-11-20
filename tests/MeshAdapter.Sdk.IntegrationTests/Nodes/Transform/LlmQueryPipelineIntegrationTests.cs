@@ -17,8 +17,8 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Transform;
 ///     <c>LlmQuery@1</c> as a pipeline: the YAML is read by the adapter's serializer, run by the real
 ///     orchestrator, and the node is built by the adapter's own container with its provider HTTP client.
 ///     A pipeline that moves from <c>AnthropicAiQuery@1</c> sends the recorded requests byte for byte; with a
-///     base URL the request goes to that host only; a refused setting fails when the pipeline is read and
-///     nothing is sent.
+///     base URL in the AiConfiguration the request goes to that host only; a base URL that breaks the rule fails
+///     the node before any request, and an unknown provider fails when the pipeline is read.
 /// </summary>
 [Collection("Sequential")]
 public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
@@ -62,15 +62,18 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
     }
 
     [Fact]
-    public async Task DocumentAnalysis_WithABaseUrl_PostsOnceToThatHost_AndNothingToThePublicApi()
+    public async Task DocumentAnalysis_WithABaseUrlInTheAiConfiguration_PostsOnceToThatHost_AndNothingToThePublicApi()
     {
         var (scenario, _) = AnthropicAiQueryGoldenScenario.DocumentAnalysis();
         scenario.ProviderHost = "my-resource.services.ai.azure.com";
+        scenario.Configuration[AnthropicAiQueryGoldenScenario.AiConfigName] =
+        (
+            """{"apiKey":"test-key-golden-0001","aiModel":"claude-sonnet-4-6","baseUrl":"https://my-resource.services.ai.azure.com/anthropic"}""",
+            null);
 
         await RunAsync(scenario, $"""
             transformations:
               - type: LlmQuery@1
-                baseUrl: https://my-resource.services.ai.azure.com/anthropic
                 {DocumentAnalysisNode}
             """);
 
@@ -81,10 +84,29 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
         Assert.DoesNotContain("api.anthropic.com", transcript);
     }
 
-    [Theory]
-    [InlineData("baseUrl: http://llm.example.test", "baseUrl")]
-    [InlineData("provider: OpenAiCompatible", "OpenAiCompatible")]
-    public async Task ARefusedSetting_FailsWhenThePipelineIsRead_AndNothingIsSent(string line, string named)
+    [Fact]
+    public async Task ABaseUrlInTheAiConfigurationThatBreaksTheRule_FailsTheNode_AndNothingIsSent()
+    {
+        var (scenario, _) = AnthropicAiQueryGoldenScenario.DocumentAnalysis();
+        scenario.Configuration[AnthropicAiQueryGoldenScenario.AiConfigName] =
+        (
+            """{"apiKey":"test-key-golden-0001","aiModel":"claude-sonnet-4-6","baseUrl":"http://llm.example.test"}""",
+            null);
+
+        // The node runs with continueOnError: true; a wrong endpoint still fails it.
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(scenario, $"""
+            transformations:
+              - type: LlmQuery@1
+                {DocumentAnalysisNode}
+            """));
+
+        Assert.Contains($"AiConfiguration '{AnthropicAiQueryGoldenScenario.AiConfigName}'", ex.ToString(),
+            StringComparison.Ordinal);
+        Assert.Empty(scenario.Transcript);
+    }
+
+    [Fact]
+    public async Task AnUnknownProvider_FailsWhenThePipelineIsRead_AndNothingIsSent()
     {
         var (scenario, _) = AnthropicAiQueryGoldenScenario.DocumentAnalysis();
         fixture.EnsureInitialized();
@@ -94,11 +116,11 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
             fixture.GetService<IPipelineConfigurationSerializer>().DeserializeAsync($"""
                 transformations:
                   - type: LlmQuery@1
-                    {line}
+                    provider: OpenAiCompatible
                     {DocumentAnalysisNode}
                 """));
 
-        Assert.Contains(named, ex.ToString(), StringComparison.Ordinal);
+        Assert.Contains("OpenAiCompatible", ex.ToString(), StringComparison.Ordinal);
         Assert.Empty(scenario.Transcript);
     }
 

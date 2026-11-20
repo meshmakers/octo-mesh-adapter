@@ -7,7 +7,7 @@ public enum LlmProvider
 {
     /// <summary>
     /// The Anthropic Messages API (Claude): api.anthropic.com, or a compatible endpoint such as
-    /// Microsoft Foundry set as <c>baseUrl</c>.
+    /// Microsoft Foundry set as <c>baseUrl</c> of the AiConfiguration.
     /// </summary>
     Anthropic
 }

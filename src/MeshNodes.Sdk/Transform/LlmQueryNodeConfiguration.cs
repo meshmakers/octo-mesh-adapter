@@ -5,7 +5,9 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// <summary>
 /// Queries an LLM with pipeline data, optionally with MCP tools. Provider-agnostic by design; the
 /// providers available today are listed in <see cref="LlmProvider"/>. Settings that fail their rule
-/// (base URL, response format, tool-result cap) are refused when the pipeline definition is read.
+/// (response format, temperature, tool-result cap) are refused when the pipeline definition is read.
+/// The provider's endpoint is not a node setting: it comes with the API key from the AiConfiguration
+/// (its optional baseUrl), so the key and the place it is sent to are configured together.
 /// </summary>
 /// <remarks>
 /// The configuration shape is lifted from the LlmQuery prototype by Philipp Schwaab and carries the
@@ -22,7 +24,6 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     public const int DefaultMaxToolResultChars = 50_000;
 
     private LlmProvider _provider = LlmProvider.Anthropic;
-    private string? _baseUrl;
     private double? _temperature;
     private string _responseFormat = "json";
     private int _maxToolResultChars = DefaultMaxToolResultChars;
@@ -50,27 +51,11 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     }
 
     /// <summary>
-    /// Optional endpoint of the provider, without the API path (e.g.
-    /// https://my-resource.services.ai.azure.com/anthropic for Microsoft Foundry). Null = the
-    /// provider's public endpoint (https://api.anthropic.com). Must be https (http only on a loopback
-    /// address) and carry no user info, query or fragment: the API key is sent to it.
-    /// </summary>
-    [PropertyGroup("Connection", 1)]
-    public string? BaseUrl
-    {
-        get => _baseUrl;
-        set
-        {
-            LlmBaseUrl.Parse(value);
-            _baseUrl = value;
-        }
-    }
-
-    /// <summary>
-    /// Well-known name of the AiConfiguration entity that holds the API key. An aiModel, maxTokens,
+    /// Well-known name of the AiConfiguration entity that holds the API key and, optionally, the
+    /// provider's endpoint (baseUrl; unset = https://api.anthropic.com). An aiModel, maxTokens,
     /// temperature or mcpServerUrl set there wins over the node's own value.
     /// </summary>
-    [PropertyGroup("Connection", 2)]
+    [PropertyGroup("Connection", 1)]
     public string? ApiKeyConfigurationName { get; set; }
 
     // ---- AI Configuration group ----

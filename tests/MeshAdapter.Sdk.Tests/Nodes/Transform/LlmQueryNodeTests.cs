@@ -110,9 +110,17 @@ public class LlmQueryNodeTests
         Assert.Null(LlmQueryNode.ToOptions(Config()).Temperature);
     }
 
-    [Fact]
-    public async Task WithoutABaseUrl_TheRequestGoesToThePublicApi()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("\"\"")]
+    [InlineData("\"  \"")]
+    public async Task WithoutABaseUrlInTheAiConfiguration_TheRequestGoesToThePublicApi(string? baseUrlJson)
     {
+        if (baseUrlJson != null)
+        {
+            _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":{{baseUrlJson}}}""";
+        }
+
         _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
 
         var data = await RunAsync(Config());
@@ -126,17 +134,48 @@ public class LlmQueryNodeTests
     [Theory]
     [InlineData("https://my-resource.services.ai.azure.com/anthropic")]
     [InlineData("https://my-resource.services.ai.azure.com/anthropic/")]
-    public async Task WithABaseUrl_TheRequestGoesThere_WithTheKey_AndNothingToThePublicApi(string baseUrl)
+    public async Task WithABaseUrlInTheAiConfiguration_TheRequestGoesThere_WithTheKey_AndNothingToThePublicApi(
+        string baseUrl)
     {
+        _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":"{{baseUrl}}"}""";
         _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
 
-        var data = await RunAsync(Config() with { BaseUrl = baseUrl });
+        var data = await RunAsync(Config());
 
         Assert.Equal("the answer", data["out"]!.GetValue<string>());
         var request = Assert.Single(_wire.Requests);
         Assert.Equal("POST https://my-resource.services.ai.azure.com/anthropic/v1/messages", request.Line);
         Assert.Equal(ApiKey, request.ApiKey);
         Assert.DoesNotContain(_wire.Requests, r => r.Line.Contains("api.anthropic.com", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("http://llm.example.test", "TLS")]
+    [InlineData("/v1", "not an absolute URL")]
+    [InlineData("https://llm.example.test/v1?key=secret-in-query", "query")]
+    public async Task ABaseUrlInTheAiConfigurationThatBreaksTheRule_FailsTheNode_AndNothingIsSent(string baseUrl,
+        string reason)
+    {
+        _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":"{{baseUrl}}"}""";
+
+        // continueOnError does not turn a wrong endpoint into a skipped query.
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(Config() with { ContinueOnError = true }));
+
+        Assert.Empty(_wire.Requests);
+        Assert.Contains($"AiConfiguration '{AiConfigName}'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(reason, ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-in-query", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ABaseUrlOfAnotherTypeThanText_IsNoBaseUrl()
+    {
+        _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":42}""";
+        _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
+
+        await RunAsync(Config());
+
+        Assert.Equal("POST https://api.anthropic.com/v1/messages", Assert.Single(_wire.Requests).Line);
     }
 
     [Fact]

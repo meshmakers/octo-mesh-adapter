@@ -636,7 +636,7 @@ internal sealed class LlmQueryEngine(
     ///     A text value of the AiConfiguration. A value of another type is no usable setting and ends in the
     ///     caller's fallback, like a missing one.
     /// </summary>
-    private static string? ReadAiConfigurationString(string? configurationName, string property,
+    internal static string? ReadAiConfigurationString(string? configurationName, string property,
         IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         return ReadAiConfigurationProperty(configurationName, property, etlContext, nodeContext) is JsonValue value &&

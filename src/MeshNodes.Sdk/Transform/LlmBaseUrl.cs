@@ -1,15 +1,15 @@
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-///     The rule for the <c>baseUrl</c> of <c>LlmQuery@1</c>. The provider receives the API key, so the URL
+///     The rule for the <c>baseUrl</c> of the AiConfiguration <c>LlmQuery@1</c> uses. The provider receives the API key, so the URL
 ///     must be one the key may travel to: absolute, https (plain http only on a loopback address, for a
 ///     local gateway during development), and without user info, query or fragment, which would either
 ///     carry a second credential or be cut off when the endpoint path is appended.
 /// </summary>
 /// <remarks>
 ///     The rule of the https check is lifted from the LlmQuery prototype by Philipp Schwaab
-///     (<c>LlmClientFactory.RequireHttpsForKeyedEndpoint</c>); there it ran on the first call, here it runs
-///     when the pipeline definition is read, so a wrong URL fails the deployment and no request is sent.
+///     (<c>LlmClientFactory.RequireHttpsForKeyedEndpoint</c>). The node checks the value before its first
+///     request, so a wrong URL fails the node and no request is sent.
 /// </remarks>
 public static class LlmBaseUrl
 {

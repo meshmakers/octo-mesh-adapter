@@ -21,7 +21,6 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         var config = new LlmQueryNodeConfiguration();
 
         Assert.Equal(LlmProvider.Anthropic, config.Provider);
-        Assert.Null(config.BaseUrl);
         Assert.Null(config.Temperature);
         Assert.Equal(4096, config.MaxTokens);
         Assert.Equal(string.Empty, config.JsonFormatSample);
@@ -52,20 +51,15 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     [InlineData("https://llm.example.com/v1?key=secret", false)]
     [InlineData("https://llm.example.com/v1#frag", false)]
     [InlineData("https://llm.example.com/v1?", false)]
-    public void BaseUrl_IsCheckedWhenSet(string baseUrl, bool accepted)
+    public void TheBaseUrlRule(string baseUrl, bool accepted)
     {
-        var config = new LlmQueryNodeConfiguration();
-
         if (accepted)
         {
-            config.BaseUrl = baseUrl;
-            Assert.Equal(baseUrl, config.BaseUrl);
+            Assert.NotNull(LlmBaseUrl.Parse(baseUrl));
             return;
         }
 
-        var ex = Assert.Throws<ArgumentException>(() => config.BaseUrl = baseUrl);
-        Assert.Equal("baseUrl", ex.ParamName);
-        Assert.Null(config.BaseUrl);
+        Assert.Equal("baseUrl", Assert.Throws<ArgumentException>(() => LlmBaseUrl.Parse(baseUrl)).ParamName);
     }
 
     [Theory]
@@ -74,7 +68,7 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     [InlineData("http://llm.example.com/v1#secret")]
     public void ARefusedBaseUrl_ThatMayHoldACredential_IsNotRepeatedInTheMessage(string baseUrl)
     {
-        var ex = Assert.Throws<ArgumentException>(() => new LlmQueryNodeConfiguration { BaseUrl = baseUrl });
+        var ex = Assert.Throws<ArgumentException>(() => LlmBaseUrl.Parse(baseUrl));
 
         Assert.DoesNotContain("secret", ex.Message, StringComparison.Ordinal);
     }
@@ -86,7 +80,6 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     public void AnEmptyBaseUrl_IsTheDefaultEndpoint(string? baseUrl)
     {
         Assert.Null(LlmBaseUrl.Parse(baseUrl));
-        Assert.Equal(baseUrl, new LlmQueryNodeConfiguration { BaseUrl = baseUrl }.BaseUrl);
     }
 
     [Theory]
@@ -172,7 +165,6 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
             transformations:
               - type: LlmQuery@1
                 provider: Anthropic
-                baseUrl: https://my-resource.services.ai.azure.com/anthropic
                 apiKeyConfigurationName: foundry-claude
                 model: claude-haiku-5-5
                 promptTemplateName: knowledge-ingest
@@ -199,7 +191,6 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
 
         var config = Assert.IsType<LlmQueryNodeConfiguration>(Assert.Single(root.Transformations!));
         Assert.Equal(LlmProvider.Anthropic, config.Provider);
-        Assert.Equal("https://my-resource.services.ai.azure.com/anthropic", config.BaseUrl);
         Assert.Equal("foundry-claude", config.ApiKeyConfigurationName);
         Assert.Equal("claude-haiku-5-5", config.Model);
         Assert.Equal(0.2, config.Temperature);
@@ -216,21 +207,18 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         var root = await Serializer().DeserializeAsync("""
             transformations:
               - type: LlmQuery@1
-                baseUrl: ~
                 temperature: ~
                 responseFormat: ~
                 maxToolResultChars: ~
             """);
 
         var config = Assert.IsType<LlmQueryNodeConfiguration>(Assert.Single(root.Transformations!));
-        Assert.Null(config.BaseUrl);
         Assert.Null(config.Temperature);
         Assert.Equal("json", config.ResponseFormat);
         Assert.Equal(50_000, config.MaxToolResultChars);
     }
 
     [Theory]
-    [InlineData("baseUrl: http://llm.example.com", "baseUrl")]
     [InlineData("responseFormat: jsno", "responseFormat")]
     [InlineData("maxToolResultChars: 0", "maxToolResultChars")]
     [InlineData("temperature: 1.5", "temperature")]
@@ -250,6 +238,7 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
 
     [Theory]
     [InlineData("apiKey: sk-inline")]
+    [InlineData("baseUrl: https://my-resource.services.ai.azure.com/anthropic")]
     [InlineData("mcpDelegateToCaller: true")]
     [InlineData("topP: 0.9")]
     [InlineData("mcpConfigurationNames: [a]")]
@@ -265,14 +254,14 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     }
 
     [Fact]
-    public void Schema_HasProviderBaseUrlAndAnOptionalTemperature_ButNoInlineKey()
+    public void Schema_HasProviderAndAnOptionalTemperature_ButNoInlineKeyAndNoBaseUrl()
     {
         var node = schema.NodeSchema("LlmQuery@1");
         var properties = node["properties"]!.AsObject();
 
         foreach (var expected in new[]
                  {
-                     "provider", "baseUrl", "apiKeyConfigurationName", "model", "temperature", "responseFormat",
+                     "provider", "apiKeyConfigurationName", "model", "temperature", "responseFormat",
                      "jsonSchema", "identity", "mcpServerUrl", "mcpToolNames", "maxToolResultChars", "usageOutputPath"
                  })
         {
@@ -280,11 +269,12 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         }
 
         Assert.False(properties.ContainsKey("apiKey"));
+        // The endpoint comes with the key from the AiConfiguration; the node has no second source.
+        Assert.False(properties.ContainsKey("baseUrl"));
         Assert.False(properties.ContainsKey("mcpDelegateToCaller"));
         Assert.Contains("null", properties["temperature"]!.ToJsonString(), StringComparison.Ordinal);
 
         var required = node["required"]?.AsArray().Select(r => r!.GetValue<string>()).ToArray() ?? [];
-        Assert.DoesNotContain("baseUrl", required);
         Assert.DoesNotContain("temperature", required);
         Assert.DoesNotContain("question", required);
     }

@@ -161,10 +161,16 @@ internal class DeployPipelineNode(
         nodeContext.Debug($"Deploying pipeline {targetPipelineRtId} to adapter {adapterEntity.RtId}");
 
         var communicationServicesClient = communicationClientFactory.Create(accessToken);
+        // AB#9053: the REST method stays here on purpose. Its replacement, the CK method
+        // System.Communication/Pipeline.Deploy-1, is called through the asset repository (GraphQL), and the adapter
+        // has no asset repository endpoint yet. AB#9563 adds that endpoint and switches this call; until then the
+        // [Obsolete] warning of the SDK (communication wave 3) is suppressed at exactly this call site.
+#pragma warning disable CS0618
         await communicationServicesClient.DeployPipelineAsync(
             adapterEntity.RtId.ToString(),
             targetPipelineRtId.Value.ToString(),
             pipelineDefinition);
+#pragma warning restore CS0618
 
         nodeContext.Info($"Pipeline {targetPipelineRtId} deployed successfully to adapter {adapterEntity.RtId}");
 

@@ -227,6 +227,12 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     public Queue<string> AnthropicAnswers { get; } = new();
     public Dictionary<string, Func<JsonNode, HttpResponseMessage>> McpAnswers { get; } = new();
     public VerifiedPrincipal? Principal { get; set; }
+
+    /// <summary>The host the scripted provider answers on; every other host is the MCP server.</summary>
+    public string ProviderHost { get; set; } = "api.anthropic.com";
+
+    /// <summary>Every request sent so far, as the golden files record them.</summary>
+    public string Transcript => _transcript.ToString();
     public string? CallerAccessToken { get; set; }
 
     /// <summary>The data the run starts with.</summary>
@@ -257,7 +263,63 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     public void SetFinalData(string? finalData) => _finalData = finalData;
 
     /// <summary>Runs the node directly, with a real data context and node context.</summary>
-    public async Task RunAsync(AnthropicAiQueryNodeConfiguration config)
+    public Task RunAsync(AnthropicAiQueryNodeConfiguration config)
+    {
+        return RunNodeAsync(config, "AnthropicAiQueryNode",
+            (etlContext, factory, tokenService) =>
+                new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory, tokenService));
+    }
+
+    /// <summary>
+    ///     Runs <c>LlmQuery@1</c> with the same settings as the given <c>AnthropicAiQuery@1</c> configuration
+    ///     (see <see cref="ToLlmQuery" />), on the same scripted wire.
+    /// </summary>
+    public Task RunLlmQueryAsync(AnthropicAiQueryNodeConfiguration config)
+    {
+        return RunNodeAsync(ToLlmQuery(config), "LlmQueryNode",
+            (etlContext, factory, tokenService) =>
+                new LlmQueryNode(A.Fake<NodeDelegate>(), etlContext, factory, tokenService));
+    }
+
+    /// <summary>
+    ///     The <c>LlmQuery@1</c> configuration of a pipeline that moves from <c>AnthropicAiQuery@1</c>: every
+    ///     value as it was, the delegation flag as <c>identity: Caller</c>.
+    /// </summary>
+    internal static LlmQueryNodeConfiguration ToLlmQuery(AnthropicAiQueryNodeConfiguration config)
+    {
+        Assert.Null(config.ApiKey);
+        return new LlmQueryNodeConfiguration
+        {
+            Path = config.Path,
+            TargetPath = config.TargetPath,
+            ApiKeyConfigurationName = config.ApiKeyConfigurationName,
+            Model = config.Model,
+            PromptTemplateName = config.PromptTemplateName,
+            Question = config.Question,
+            SystemPrompt = config.SystemPrompt,
+            DataPaths = config.DataPaths,
+            ConversationHistoryPath = config.ConversationHistoryPath,
+            MaxTokens = config.MaxTokens,
+            Temperature = config.Temperature,
+            ResponseFormat = config.ResponseFormat,
+            IncludeRawResponse = config.IncludeRawResponse,
+            RawResponseOutputPath = config.RawResponseOutputPath,
+            JsonFormatSample = config.JsonFormatSample,
+            JsonSchema = config.JsonSchema,
+            MaxJsonRepairAttempts = config.MaxJsonRepairAttempts,
+            UsageOutputPath = config.UsageOutputPath,
+            CacheSource = config.CacheSource,
+            ContinueOnError = config.ContinueOnError,
+            McpServerUrl = config.McpServerUrl,
+            McpServiceAccountConfigName = config.McpServiceAccountConfigName,
+            Identity = config.DelegatesToCaller ? NodeExecutionIdentity.Caller : config.Identity,
+            McpToolNames = config.McpToolNames,
+            MaxToolRounds = config.MaxToolRounds
+        };
+    }
+
+    private async Task RunNodeAsync(INodeConfiguration config, string nodeName,
+        Func<IMeshEtlContext, IHttpClientFactory, IServiceAccountTokenService, IPipelineNode> createNode)
     {
         var tenantRepository = A.Fake<ITenantRepository>();
         var etlContext = A.Fake<IMeshEtlContext>();
@@ -280,9 +342,9 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
         using var dataContext = new DataContextImpl(document.RootElement);
         var nodeContext = NodeContext.CreateRootNodeContext(new ServiceCollection().BuildServiceProvider(),
                 A.Fake<IPipelineLogger>(), dataContext)
-            .RegisterChildNode("AnthropicAiQueryNode", 0, config, dataContext);
+            .RegisterChildNode(nodeName, 0, config, dataContext);
 
-        var node = new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory, tokenService);
+        var node = createNode(etlContext, factory, tokenService);
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         _finalData = dataContext.Get<JsonNode>("$")?.ToJsonString();
@@ -290,10 +352,20 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
 
     public void AssertMatchesGolden(string name)
     {
-        var actual = _transcript + "=== data context after the node ===\n" + _finalData + "\n";
-        var relativePath = Path.Combine("Resources", "GoldenRequests", "AnthropicAiQuery", name + ".txt");
+        AssertMatchesGolden("AnthropicAiQuery", name, mayRecord: true);
+    }
 
-        if (Environment.GetEnvironmentVariable("OCTO_UPDATE_GOLDEN_REQUESTS") == "1")
+    /// <summary>
+    ///     Compares the run with a golden file of the given folder. Only a caller that owns the folder may
+    ///     record it: the <c>LlmQuery@1</c> parity tests read the files of <c>AnthropicAiQuery@1</c> and must
+    ///     never rewrite them.
+    /// </summary>
+    public void AssertMatchesGolden(string folder, string name, bool mayRecord)
+    {
+        var actual = _transcript + "=== data context after the node ===\n" + _finalData + "\n";
+        var relativePath = Path.Combine("Resources", "GoldenRequests", folder, name + ".txt");
+
+        if (mayRecord && Environment.GetEnvironmentVariable("OCTO_UPDATE_GOLDEN_REQUESTS") == "1")
         {
             // Nodes/Transform/<this file> → the unit test project folder, whichever project compiled the file.
             var projectDirectory = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(ThisFilePath())!, "..", ".."));
@@ -360,7 +432,7 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
 
             transcript.Append(body).Append("\n\n");
 
-            if (request.RequestUri!.Host == "api.anthropic.com")
+            if (request.RequestUri!.Host == scenario.ProviderHost)
             {
                 return Json(scenario.AnthropicAnswers.Dequeue());
             }

@@ -1,0 +1,47 @@
+=== request 1: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 170
+content-type: application/json; charset=utf-8
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"OctoMesh-LlmQueryNode","version":"1.0.0"}}}
+
+=== request 2: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 46
+content-type: application/json; charset=utf-8
+mcp-session-id: golden-session-1
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+
+=== request 3: POST https://api.anthropic.com/v1/messages ===
+anthropic-version: 2023-06-01
+content-length: 1464
+content-type: application/json; charset=utf-8
+x-api-key: <the api key of the AiConfiguration>
+{"model":"claude-opus-4-8","max_tokens":4000,"temperature":0.2,"messages":[{"role":"user","content":"Hallo"},{"role":"assistant","content":"Guten Tag, wie kann ich helfen?"},{"role":"user","content":"Please analyze the following content and answer the question provided.\n\nCONTENT:\n---\nAdditional Context:\nData from $.input.message:\nWelche Rechnungen sind offen?\n\nCalling user (the verified identity of the person you are talking to \u2014 address them personally, treat \u0022ich\u0022/\u0022meine\u0022 as this user, and answer any question about who they are, their name, username or e-mail directly from here, never via tools. The data you can query is already scoped to what this user may see):\n  name: Erika Mustermann\n  email: erika@example.test\n  roles: Accountant, Reader\n  tenant: goldenTenant\n\n\n---\n\nQUESTION:\nAnswer the user\u0027s message. Use the tools for every figure you state.\n\n"}],"system":[{"type":"text","text":"You are the accounting assistant of the tenant. Answer in the user\u0027s language.","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"query_entities","description":"Queries runtime entities \u2014 \u201ERechnungen\u201C \u003Call\u003E","input_schema":{"type":"object","properties":{"ckTypeId":{"type":"string"},"take":{"type":"integer","default":50}},"required":["ckTypeId"]}},{"name":"get_entity","description":"","input_schema":{"type":"object","properties":{}},"cache_control":{"type":"ephemeral"}}]}
+
+=== request 4: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 143
+content-type: application/json; charset=utf-8
+mcp-session-id: golden-session-1
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_entities","arguments":{"ckTypeId":"Basic.Accounting/Invoice","take":10}}}
+
+=== request 5: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 125
+content-type: application/json; charset=utf-8
+mcp-session-id: golden-session-1
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_entity","arguments":{"rtId":"650000000000000000000009"}}}
+
+=== request 6: POST https://api.anthropic.com/v1/messages ===
+anthropic-version: 2023-06-01
+content-length: 2031
+content-type: application/json; charset=utf-8
+x-api-key: <the api key of the AiConfiguration>
+{"model":"claude-opus-4-8","max_tokens":4000,"temperature":0.2,"messages":[{"role":"user","content":"Hallo"},{"role":"assistant","content":"Guten Tag, wie kann ich helfen?"},{"role":"user","content":"Please analyze the following content and answer the question provided.\n\nCONTENT:\n---\nAdditional Context:\nData from $.input.message:\nWelche Rechnungen sind offen?\n\nCalling user (the verified identity of the person you are talking to \u2014 address them personally, treat \u0022ich\u0022/\u0022meine\u0022 as this user, and answer any question about who they are, their name, username or e-mail directly from here, never via tools. The data you can query is already scoped to what this user may see):\n  name: Erika Mustermann\n  email: erika@example.test\n  roles: Accountant, Reader\n  tenant: goldenTenant\n\n\n---\n\nQUESTION:\nAnswer the user\u0027s message. Use the tools for every figure you state.\n\n"},{"role":"assistant","content":[{"type":"text","text":"Ich sehe nach."},{"type":"tool_use","id":"toolu_01","name":"query_entities","input":{"ckTypeId":"Basic.Accounting/Invoice","take":10}},{"type":"tool_use","id":"toolu_02","name":"get_entity","input":{"rtId":"650000000000000000000009"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"[{\u0022number\u0022:\u0022RE-1\u0022,\u0022open\u0022:120.5}]\n1 row\n"},{"type":"tool_result","tool_use_id":"toolu_02","is_error":true,"content":"Error: MCP tool error: Entity not found"}]}],"system":[{"type":"text","text":"You are the accounting assistant of the tenant. Answer in the user\u0027s language.","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"query_entities","description":"Queries runtime entities \u2014 \u201ERechnungen\u201C \u003Call\u003E","input_schema":{"type":"object","properties":{"ckTypeId":{"type":"string"},"take":{"type":"integer","default":50}},"required":["ckTypeId"]}},{"name":"get_entity","description":"","input_schema":{"type":"object","properties":{}},"cache_control":{"type":"ephemeral"}}]}
+
+=== data context after the node ===
+{"input":{"message":"Welche Rechnungen sind offen?","history":[{"role":"user","content":"Hallo"},{"role":"assistant","content":"Guten Tag, wie kann ich helfen?"},{"role":"","content":"dropped: no role"},{"role":"user","content":""}]},"answer":"Offen ist RE-1 mit 120,50 \u20AC."}

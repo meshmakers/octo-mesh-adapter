@@ -6,13 +6,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 public enum LlmProvider
 {
     /// <summary>
-    /// Any endpoint exposing the OpenAI HTTP API: OpenAI cloud, Azure OpenAI,
-    /// and self-hosted backends (Ollama, vLLM, Cerebras, LiteLLM, ...).
-    /// </summary>
-    OpenAiCompatible,
-
-    /// <summary>
-    /// Native Anthropic API (Claude).
+    /// The Anthropic Messages API (Claude): api.anthropic.com, or a compatible endpoint such as
+    /// Microsoft Foundry set as <c>baseUrl</c>.
     /// </summary>
     Anthropic
 }

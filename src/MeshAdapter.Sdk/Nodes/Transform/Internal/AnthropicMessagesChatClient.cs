@@ -25,22 +25,31 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///         <see cref="FunctionResultContent.Exception" /> is marked <c>is_error</c>.</item>
 ///         <item>A text part marked with <see cref="LlmQueryEngine.CacheBreakpointProperty" /> carries a cache
 ///         breakpoint.</item>
-///         <item>Model, output-token limit and temperature are required. The temperature of the chat
+///         <item>Model and output-token limit are required. Without a temperature the body carries no
+///         <c>temperature</c> key and the model's default applies. The temperature of the chat
 ///         types is a <see cref="float" />; the exact value is read from
 ///         <see cref="LlmQueryEngine.ExactTemperatureProperty" /> when the caller supplies it, otherwise the
 ///         float is sent as its shortest decimal text, so <c>0.1</c> stays <c>0.1</c>.</item>
+///         <item>A refusal of the temperature (HTTP 400, <c>invalid_request_error</c> whose message names
+///         the temperature) is thrown as <see cref="LlmSamplingRejectedException" />; every other failure as
+///         <see cref="HttpRequestException" />. A redirect is not followed (the adapter's provider client
+///         allows none) and fails like any other status.</item>
+///         <item>The endpoint is <c>{baseUrl}/v1/messages</c>; without a base URL the public API.</item>
 ///         <item>Usage follows the convention of the chat types: <see cref="UsageDetails.InputTokenCount" />
 ///         is all input (the API's <c>input_tokens</c> plus cache reads and cache writes),
 ///         <see cref="UsageDetails.CachedInputTokenCount" /> the cache reads; the cache writes are in <see cref="UsageDetails.AdditionalCounts" /> under
 ///         <see cref="AiUsageAccumulator.CacheCreationInputTokensCount" />.</item>
 ///     </list>
 /// </remarks>
-internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientFactory, string apiKey) : IChatClient
+internal sealed class AnthropicMessagesChatClient(
+    IHttpClientFactory httpClientFactory,
+    string apiKey,
+    Uri? baseUrl = null) : IChatClient
 {
     /// <summary>Name of the HTTP client the adapter registers for the Messages API.</summary>
     internal const string HttpClientName = "Anthropic";
 
-    private const string MessagesEndpoint = "https://api.anthropic.com/v1/messages";
+    private const string DefaultMessagesEndpoint = "https://api.anthropic.com/v1/messages";
     private const string ApiVersion = "2023-06-01";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -51,6 +60,15 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
     };
 
     private HttpClient? _httpClient;
+
+    /// <summary>The URL every request of this client is posted to.</summary>
+    internal string MessagesEndpoint { get; } = BuildMessagesEndpoint(baseUrl);
+
+    /// <summary><c>{baseUrl}/v1/messages</c> (a trailing slash of the base is dropped), or the public API.</summary>
+    internal static string BuildMessagesEndpoint(Uri? baseUrl)
+    {
+        return baseUrl == null ? DefaultMessagesEndpoint : baseUrl.AbsoluteUri.TrimEnd('/') + "/v1/messages";
+    }
 
     /// <inheritdoc />
     public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
@@ -63,10 +81,8 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
                     throw new ArgumentException("The Messages API needs a model.", nameof(options));
         var maxTokens = options.MaxOutputTokens ??
                         throw new ArgumentException("The Messages API needs an output-token limit.", nameof(options));
-        var temperature = ToWireTemperature(options.Temperature ??
-                                            throw new ArgumentException("The Messages API call needs a temperature.",
-                                                nameof(options)));
-        if (options.AdditionalProperties != null &&
+        double? temperature = options.Temperature is { } chatTemperature ? ToWireTemperature(chatTemperature) : null;
+        if (temperature != null && options.AdditionalProperties != null &&
             options.AdditionalProperties.TryGetValue(LlmQueryEngine.ExactTemperatureProperty, out var exact) &&
             exact is double exactTemperature)
         {
@@ -96,7 +112,13 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
             // query could not run (rate limit / token quota, overloaded, or input over the
             // context window) instead of a bare status code. The raw body is kept for
             // diagnostics. This message is what lands in the RtPipelineExecution audit record.
-            throw new HttpRequestException(BuildAnthropicApiErrorMessage(response.StatusCode, responseContent));
+            var message = BuildAnthropicApiErrorMessage(response.StatusCode, responseContent);
+            if (temperature != null && IsSamplingRejection(response.StatusCode, responseContent))
+            {
+                throw new LlmSamplingRejectedException(message);
+            }
+
+            throw new HttpRequestException(message);
         }
 
         return ToChatResponse(JsonSerializer.Deserialize<JsonElement>(responseContent), model);
@@ -337,16 +359,22 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
     ///     is what the first seconds of every follow-up answer went into. A request without a
     ///     system prompt sends none; without tools, no <c>tools</c> key.
     /// </summary>
-    internal static Dictionary<string, object> BuildRequestBody(string model, int maxTokens, double temperature,
+    internal static Dictionary<string, object> BuildRequestBody(string model, int maxTokens, double? temperature,
         string? systemPrompt, List<object> messages, List<JsonElement>? mcpTools, JsonNode? outputSchema = null)
     {
         var requestObj = new Dictionary<string, object>
         {
             ["model"] = model,
-            ["max_tokens"] = maxTokens,
-            ["temperature"] = temperature,
-            ["messages"] = messages
+            ["max_tokens"] = maxTokens
         };
+
+        // Without a temperature the key is left out, so the model's default applies.
+        if (temperature is { } sentTemperature)
+        {
+            requestObj["temperature"] = sentTemperature;
+        }
+
+        requestObj["messages"] = messages;
 
         // AB#8498: constrained decoding (structured outputs) for a jsonSchema node. The schema is
         // the API copy (unsupported keywords removed); the client validates the authored schema.
@@ -419,6 +447,9 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
                    "request frequency, or reduce the request size.",
             529 => "The Anthropic API is temporarily overloaded (HTTP 529). No answer was produced — " +
                    "retry later.",
+            >= 300 and < 400 =>
+                $"The provider answered with a redirect (HTTP {code}). Redirects are not followed, because the " +
+                "API key would go along; set baseUrl to the endpoint that answers.",
             400 when IsContextLengthError(responseBody) =>
                 "Anthropic rejected the request because the input exceeds the model's context window " +
                 "(HTTP 400). Reduce the input size (e.g. a smaller batch or less context) and retry.",
@@ -426,6 +457,35 @@ internal sealed class AnthropicMessagesChatClient(IHttpClientFactory httpClientF
         };
 
         return $"{hint} Response body: {responseBody}";
+    }
+
+    /// <summary>
+    ///     An HTTP 400 that refuses the temperature: an <c>invalid_request_error</c> whose message names the
+    ///     temperature. Newer models accept no temperature, or only their default; the message is the only
+    ///     place the API says so.
+    /// </summary>
+    internal static bool IsSamplingRejection(HttpStatusCode statusCode, string? responseBody)
+    {
+        if (statusCode != HttpStatusCode.BadRequest || string.IsNullOrEmpty(responseBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(responseBody);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("error", out var error) &&
+                   error.ValueKind == JsonValueKind.Object &&
+                   error.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
+                   type.GetString() == "invalid_request_error" &&
+                   error.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String &&
+                   message.GetString()!.Contains("temperature", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

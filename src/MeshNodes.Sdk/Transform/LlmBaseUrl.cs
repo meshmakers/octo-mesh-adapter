@@ -51,11 +51,11 @@ public static class LlmBaseUrl
         return uri;
     }
 
-    private static ArgumentException Invalid(string value, string reason)
+    private static ArgumentException Invalid(string value, string reason, string paramName = "value")
     {
         // The value is named because it is configuration, not a secret; user info, a query or a fragment
         // may hold a credential, so a value with one of them is not repeated.
         var shown = value.IndexOfAny(['@', '?', '#']) >= 0 ? "(not shown: it may hold a credential)" : $"'{value}'";
-        return new ArgumentException($"baseUrl {shown} is not allowed: {reason}.", "baseUrl");
+        return new ArgumentException($"baseUrl {shown} is not allowed: {reason}.", paramName);
     }
 }

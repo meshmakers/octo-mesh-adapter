@@ -43,7 +43,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
             {
                 throw new ArgumentException(
                     $"Unknown provider value '{(int)value}'. Use one of: {string.Join(", ", Enum.GetNames<LlmProvider>())}.",
-                    "provider");
+                    nameof(value));
             }
 
             _provider = value;
@@ -106,7 +106,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
         {
             if (value is not null and not (>= 0.0 and <= 1.0))
             {
-                throw new ArgumentException($"temperature must be between 0.0 and 1.0, not {value}.", "temperature");
+                throw new ArgumentException($"temperature must be between 0.0 and 1.0, not {value}.", nameof(value));
             }
 
             _temperature = value;
@@ -154,7 +154,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
             if (!string.Equals(value, "json", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(value, "text", StringComparison.OrdinalIgnoreCase))
             {
-                throw new ArgumentException($"Unknown responseFormat '{value}'. Use json or text.", "responseFormat");
+                throw new ArgumentException($"Unknown responseFormat '{value}'. Use json or text.", nameof(value));
             }
 
             _responseFormat = value;
@@ -259,7 +259,7 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
             if (value is < 1)
             {
                 throw new ArgumentException(
-                    $"maxToolResultChars must be at least 1, not {value}.", "maxToolResultChars");
+                    $"maxToolResultChars must be at least 1, not {value}.", nameof(value));
             }
 
             _maxToolResultChars = value ?? DefaultMaxToolResultChars;

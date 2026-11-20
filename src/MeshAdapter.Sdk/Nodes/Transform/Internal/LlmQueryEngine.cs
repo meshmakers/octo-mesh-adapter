@@ -106,7 +106,8 @@ internal sealed class LlmQueryEngine(
 
             // Resolve max tokens and temperature: template -> AiConfiguration -> node config
             var maxTokens = ResolveMaxTokens(options, etlContext, nodeContext, template);
-            var sampling = new RunSampling(ResolveTemperature(options, etlContext, nodeContext, template));
+            var sampling = new RunSampling(ResolveTemperature(options, etlContext, nodeContext, template),
+                options.NodeDisplayName, nodeContext);
 
             nodeContext.Debug("Starting Anthropic AI query");
 
@@ -335,8 +336,8 @@ internal sealed class LlmQueryEngine(
             object processedResponse = jsonSchemaMode
                 ? await AiJsonSchemaResponseProcessor.ProcessAsync(aiResponse, options.JsonSchema!, schema!,
                     options.MaxJsonRepairAttempts,
-                    repairPrompt => ExecuteJsonRepairCallAsync(options, apiKey, model, maxTokens, sampling, repairPrompt,
-                        responseFormat!, usage, nodeContext),
+                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, sampling, repairPrompt,
+                        responseFormat!, usage),
                     nodeContext)
                 : LlmResponseProcessor.ProcessResponse(aiResponse, options.ResponseFormat, nodeContext);
 
@@ -690,7 +691,7 @@ internal sealed class LlmQueryEngine(
 
         for (var round = 0; round < (options.MaxToolRounds + 1); round++)
         {
-            var response = await SendAsync(client, messages, chatOptions, sampling, options, nodeContext);
+            var response = await SendAsync(client, messages, chatOptions, sampling);
             usage.Add(response.Usage);
 
             if (response.FinishReason == ChatFinishReason.ToolCalls)
@@ -781,9 +782,8 @@ internal sealed class LlmQueryEngine(
     ///     temperature and without one when it does not (a model that refused the temperature is not asked
     ///     with one again).
     /// </summary>
-    private async Task<string> ExecuteJsonRepairCallAsync(LlmQueryOptions options, string apiKey, string model,
-        int maxTokens, RunSampling sampling, string repairPrompt, ChatResponseFormat responseFormat,
-        AiUsageAccumulator usage, INodeContext nodeContext)
+    private async Task<string> ExecuteJsonRepairCallAsync(string apiKey, string model, int maxTokens,
+        RunSampling sampling, string repairPrompt, ChatResponseFormat responseFormat, AiUsageAccumulator usage)
     {
         using var client = chatClientFactory(apiKey);
 
@@ -795,7 +795,7 @@ internal sealed class LlmQueryEngine(
                 Temperature = sampling.Temperature == null ? null : 0f,
                 Instructions = AiJsonSchemaResponseProcessor.RepairSystemPrompt,
                 ResponseFormat = responseFormat
-            }, sampling, options, nodeContext);
+            }, sampling);
         usage.Add(response.Usage);
 
         if (response.FinishReason == ChatFinishReason.Length)
@@ -812,7 +812,7 @@ internal sealed class LlmQueryEngine(
     ///     calls included). A second refusal is not caught.
     /// </summary>
     private static async Task<ChatResponse> SendAsync(IChatClient client, IList<ChatMessage> messages,
-        ChatOptions chatOptions, RunSampling sampling, LlmQueryOptions options, INodeContext nodeContext)
+        ChatOptions chatOptions, RunSampling sampling)
     {
         try
         {
@@ -820,8 +820,8 @@ internal sealed class LlmQueryEngine(
         }
         catch (LlmSamplingRejectedException) when (chatOptions.Temperature != null)
         {
-            nodeContext.Warning(
-                $"The model refused the temperature; {options.NodeDisplayName} asks once more without it. Remove " +
+            sampling.NodeContext.Warning(
+                $"The model refused the temperature; {sampling.NodeDisplayName} asks once more without it. Remove " +
                 "the temperature from the node, the prompt template or the AiConfiguration to save the extra call.");
             sampling.Temperature = null;
             chatOptions.Temperature = null;
@@ -830,10 +830,15 @@ internal sealed class LlmQueryEngine(
         }
     }
 
-    /// <summary>The temperature of one run; cleared when the provider refused it.</summary>
-    private sealed class RunSampling(double? temperature)
+    /// <summary>
+    ///     The temperature of one run, cleared when the provider refused it, and what the warning about that
+    ///     needs: the node's name and its context.
+    /// </summary>
+    private sealed class RunSampling(double? temperature, string nodeDisplayName, INodeContext nodeContext)
     {
         public double? Temperature { get; set; } = temperature;
+        public string NodeDisplayName { get; } = nodeDisplayName;
+        public INodeContext NodeContext { get; } = nodeContext;
     }
 
     /// <summary>The first text part of an answer; further text parts are not part of the result.</summary>

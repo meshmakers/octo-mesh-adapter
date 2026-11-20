@@ -59,7 +59,8 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
             return;
         }
 
-        Assert.Equal("baseUrl", Assert.Throws<ArgumentException>(() => LlmBaseUrl.Parse(baseUrl)).ParamName);
+        Assert.StartsWith("baseUrl", Assert.Throws<ArgumentException>(() => LlmBaseUrl.Parse(baseUrl)).Message,
+            StringComparison.Ordinal);
     }
 
     [Theory]
@@ -101,7 +102,8 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         }
         else
         {
-            Assert.Equal("responseFormat", Assert.Throws<ArgumentException>(() => config.ResponseFormat = value).ParamName);
+            Assert.Contains("responseFormat", Assert.Throws<ArgumentException>(() => config.ResponseFormat = value).Message,
+                StringComparison.Ordinal);
         }
     }
 
@@ -121,8 +123,8 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         }
         else
         {
-            Assert.Equal("maxToolResultChars",
-                Assert.Throws<ArgumentException>(() => config.MaxToolResultChars = value).ParamName);
+            Assert.Contains("maxToolResultChars", Assert.Throws<ArgumentException>(() => config.MaxToolResultChars = value).Message,
+                StringComparison.Ordinal);
         }
     }
 
@@ -144,8 +146,8 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         }
         else
         {
-            Assert.Equal("temperature",
-                Assert.Throws<ArgumentException>(() => config.Temperature = value).ParamName);
+            Assert.Contains("temperature", Assert.Throws<ArgumentException>(() => config.Temperature = value).Message,
+                StringComparison.Ordinal);
             Assert.Null(config.Temperature);
         }
     }
@@ -153,9 +155,9 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     [Fact]
     public void AnUndefinedProvider_IsRefused()
     {
-        Assert.Equal("provider",
+        Assert.Contains("provider",
             Assert.Throws<ArgumentException>(() => new LlmQueryNodeConfiguration { Provider = (LlmProvider)7 })
-                .ParamName);
+                .Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -349,7 +349,7 @@ public class AnthropicMessagesChatClientTests
             client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
                 TestContext.Current.CancellationToken));
 
-        Assert.IsAssignableFrom<HttpRequestException>(exception);
+        Assert.IsType<HttpRequestException>(exception, exactMatch: false);
         Assert.Contains("HTTP 400", exception.Message);
     }
 

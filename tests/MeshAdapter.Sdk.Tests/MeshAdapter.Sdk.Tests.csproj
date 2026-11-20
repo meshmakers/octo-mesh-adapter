@@ -30,6 +30,7 @@
 
     <ItemGroup>
       <None Include="Resources\Sepa\*.xsd" CopyToOutputDirectory="PreserveNewest" />
+      <None Include="Resources\GoldenRequests\**\*.txt" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>

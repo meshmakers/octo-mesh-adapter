@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 
@@ -73,6 +74,38 @@ internal sealed class AiUsageAccumulator
     public long OutputTokens { get; private set; }
     public long CacheReadInputTokens { get; private set; }
     public long CacheCreationInputTokens { get; private set; }
+
+    /// <summary>
+    ///     Key of the cache-write tokens in <see cref="UsageDetails.AdditionalCounts" />: the chat types
+    ///     have a field for cache reads but none for cache writes.
+    /// </summary>
+    internal const string CacheCreationInputTokensCount = "cache_creation_input_tokens";
+
+    /// <summary>
+    ///     Counts one call of a chat client. By the convention of the chat types
+    ///     <see cref="UsageDetails.InputTokenCount" /> is all input; the tokens read from and written to the
+    ///     prompt cache are taken out of it, because they are priced on their own. A call without usage
+    ///     still counts as a call.
+    /// </summary>
+    public void Add(UsageDetails? usage)
+    {
+        Calls++;
+        if (usage == null)
+        {
+            return;
+        }
+
+        var cacheRead = usage.CachedInputTokenCount ?? 0;
+        var cacheCreation = usage.AdditionalCounts != null &&
+                            usage.AdditionalCounts.TryGetValue(CacheCreationInputTokensCount, out var written)
+            ? written
+            : 0;
+
+        InputTokens += Math.Max(0, (usage.InputTokenCount ?? 0) - cacheRead - cacheCreation);
+        OutputTokens += usage.OutputTokenCount ?? 0;
+        CacheReadInputTokens += cacheRead;
+        CacheCreationInputTokens += cacheCreation;
+    }
 
     /// <summary>Adds the <c>usage</c> of one API response; a response without usage still counts as a call.</summary>
     public void Add(JsonElement apiResponse)

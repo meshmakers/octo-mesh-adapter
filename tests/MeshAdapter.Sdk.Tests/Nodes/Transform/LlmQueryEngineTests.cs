@@ -413,12 +413,114 @@ public class LlmQueryEngineTests
         Assert.Empty(_log);
     }
 
-    private sealed record ChatCall(List<ChatMessage> Messages, ChatOptions Options);
+    [Fact]
+    public async Task WithoutATemperature_TheChatOptionsCarryNone()
+    {
+        _chat.Answers.Enqueue(Answer("42"));
+
+        await RunAsync(Options() with { Temperature = null });
+
+        var call = Assert.Single(_chat.Calls);
+        Assert.Null(call.Temperature);
+        Assert.Null(call.ExactTemperature);
+    }
+
+    [Fact]
+    public async Task ARefusedTemperature_IsAskedOnceMoreWithoutIt_AndTheLaterToolRoundsStayWithoutIt()
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal());
+        _chat.Answers.Enqueue(ToolCall("call-1", "search"));
+        _chat.Answers.Enqueue(Answer("done"));
+
+        var data = await RunAsync(OptionsWithTools());
+
+        Assert.Equal("done", data["answer"]!.GetValue<string>());
+        Assert.Equal([0.3f, null, null], _chat.Calls.Select(c => c.Temperature));
+        Assert.Equal([0.3, null, null], _chat.Calls.Select(c => c.ExactTemperature));
+        // The repeat is the same request without the temperature.
+        Assert.Equal(_chat.Calls[0].Messages, _chat.Calls[1].Messages);
+        Assert.Single(_log, line => line.StartsWith("warning: The model refused the temperature; TestQuery@1",
+            StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ASecondRefusal_IsNotRepeated_AndFailsTheQuery()
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal());
+        _chat.Refusals.Enqueue(SamplingRefusal());
+
+        using var document = JsonDocument.Parse("""{"text":"the content"}""");
+        using var dataContext = new DataContextImpl(document.RootElement);
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            Engine().RunAsync(Options(), dataContext, _nodeContext, _next));
+
+        Assert.Equal(2, _chat.Calls.Count);
+    }
+
+    [Fact]
+    public async Task ARefusalWithoutATemperatureSent_IsNotRepeated()
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal());
+
+        using var document = JsonDocument.Parse("""{"text":"the content"}""");
+        using var dataContext = new DataContextImpl(document.RootElement);
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            Engine().RunAsync(Options() with { Temperature = null }, dataContext, _nodeContext, _next));
+
+        Assert.Single(_chat.Calls);
+        Assert.DoesNotContain(_log, line => line.Contains("refused the temperature", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(0.3, 0f)]
+    [InlineData(null, null)]
+    public async Task TheRepairCall_IsAtTemperatureZero_OnlyWhenTheRunSendsATemperature(double? configured,
+        float? expectedRepairTemperature)
+    {
+        _chat.Answers.Enqueue(Answer("""{"title":"x"}"""));
+        _chat.Answers.Enqueue(Answer("""{"title":"x","facts":["f"]}"""));
+
+        var data = await RunAsync(SchemaOptions() with { Temperature = configured });
+
+        Assert.Equal("f", data["answer"]!["facts"]![0]!.GetValue<string>());
+        Assert.Equal(2, _chat.Calls.Count);
+        Assert.Equal(expectedRepairTemperature, _chat.Calls[1].Temperature);
+    }
+
+    [Fact]
+    public async Task AfterARefusedTemperature_TheRepairCallIsWithoutOne()
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal());
+        _chat.Answers.Enqueue(Answer("""{"title":"x"}"""));
+        _chat.Answers.Enqueue(Answer("""{"title":"x","facts":["f"]}"""));
+
+        await RunAsync(SchemaOptions());
+
+        Assert.Equal([0.3f, null, null], _chat.Calls.Select(c => c.Temperature));
+        Assert.Single(_log, line => line.Contains("refused the temperature", StringComparison.Ordinal));
+    }
+
+    private static LlmQueryOptions SchemaOptions() => Options() with
+    {
+        ResponseFormat = "json",
+        JsonSchema = """{"type":"object","properties":{"title":{"type":"string"},"facts":{"type":"array","items":{"type":"string"}}},"required":["title","facts"]}"""
+    };
+
+    private static LlmSamplingRejectedException SamplingRefusal() =>
+        new("Anthropic API error (HTTP 400 BadRequest). Response body: temperature is not supported");
+
+    /// <summary>One call as the chat client saw it; the options are copied, the engine changes its instance.</summary>
+    private sealed record ChatCall(List<ChatMessage> Messages, ChatOptions Options, float? Temperature,
+        object? ExactTemperature);
 
     /// <summary>A chat client that answers from a script and keeps what it was asked.</summary>
     private sealed class ScriptedChatClient : IChatClient
     {
         public Queue<ChatResponse> Answers { get; } = new();
+
+        /// <summary>Thrown, in order, by the first calls before any answer is given.</summary>
+        public Queue<Exception> Refusals { get; } = new();
+
         public List<ChatCall> Calls { get; } = [];
         public int Disposals { get; private set; }
 
@@ -426,8 +528,12 @@ public class LlmQueryEngineTests
             CancellationToken cancellationToken = default)
         {
             // A copy: the engine keeps adding to its list between the rounds.
-            Calls.Add(new ChatCall(messages.ToList(), options!));
-            return Task.FromResult(Answers.Dequeue());
+            object? exact = null;
+            options!.AdditionalProperties?.TryGetValue(LlmQueryEngine.ExactTemperatureProperty, out exact);
+            Calls.Add(new ChatCall(messages.ToList(), options, options.Temperature, exact));
+            return Refusals.TryDequeue(out var refusal)
+                ? Task.FromException<ChatResponse>(refusal)
+                : Task.FromResult(Answers.Dequeue());
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,

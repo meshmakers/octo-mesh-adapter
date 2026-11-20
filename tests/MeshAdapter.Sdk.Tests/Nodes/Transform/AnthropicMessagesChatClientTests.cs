@@ -18,6 +18,9 @@ public class AnthropicMessagesChatClientTests
     private const string TextAnswer =
         """{"content":[{"type":"text","text":"Hello"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}""";
 
+    private const string SamplingRefusal =
+        """{"type":"error","error":{"type":"invalid_request_error","message":"temperature: this model does not support a custom temperature"}}""";
+
     private readonly Wire _wire = new();
     private readonly IHttpClientFactory _factory = A.Fake<IHttpClientFactory>();
 
@@ -280,15 +283,13 @@ public class AnthropicMessagesChatClientTests
     [Theory]
     [InlineData("model")]
     [InlineData("limit")]
-    [InlineData("temperature")]
-    public async Task WithoutModelLimitOrTemperature_NothingIsSent(string missing)
+    public async Task WithoutModelOrLimit_NothingIsSent(string missing)
     {
         var options = Options();
         switch (missing)
         {
             case "model": options.ModelId = null; break;
-            case "limit": options.MaxOutputTokens = null; break;
-            default: options.Temperature = null; break;
+            default: options.MaxOutputTokens = null; break;
         }
 
         using var client = Client();
@@ -297,6 +298,108 @@ public class AnthropicMessagesChatClientTests
                 TestContext.Current.CancellationToken));
 
         Assert.Empty(_wire.Requests);
+    }
+
+    [Fact]
+    public async Task WithoutATemperature_TheBodyCarriesNoTemperatureKey()
+    {
+        _wire.Answers.Enqueue(TextAnswer);
+        var options = Options();
+        options.Temperature = null;
+        // An exact value without a temperature is not a temperature either.
+        options.AdditionalProperties = new AdditionalPropertiesDictionary { ["temperature"] = 0.4 };
+
+        using var client = Client();
+        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Hi")], options,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            """{"model":"claude-test","max_tokens":100,"messages":[{"role":"user","content":"Hi"}]}""",
+            Assert.Single(_wire.Requests).Body);
+    }
+
+    [Theory]
+    [InlineData("https://my-resource.services.ai.azure.com/anthropic",
+        "https://my-resource.services.ai.azure.com/anthropic/v1/messages")]
+    [InlineData("https://my-resource.services.ai.azure.com/anthropic/",
+        "https://my-resource.services.ai.azure.com/anthropic/v1/messages")]
+    [InlineData("https://gateway.example.test", "https://gateway.example.test/v1/messages")]
+    [InlineData("http://localhost:8080/", "http://localhost:8080/v1/messages")]
+    public async Task ABaseUrl_IsWhereTheRequestGoes_WithTheKey(string baseUrl, string expected)
+    {
+        _wire.Answers.Enqueue(TextAnswer);
+
+        using var client = new AnthropicMessagesChatClient(_factory, "the-api-key", new Uri(baseUrl));
+        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Hi")], Options(),
+            TestContext.Current.CancellationToken);
+
+        var request = Assert.Single(_wire.Requests);
+        Assert.Equal($"POST {expected}", request.Line);
+        Assert.Equal("the-api-key", request.Headers["x-api-key"]);
+    }
+
+    [Fact]
+    public async Task ARefusedTemperature_IsThrownAsASamplingRejection()
+    {
+        _wire.Status = HttpStatusCode.BadRequest;
+        _wire.Answers.Enqueue(SamplingRefusal);
+
+        using var client = Client();
+        var exception = await Assert.ThrowsAsync<LlmSamplingRejectedException>(() =>
+            client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
+                TestContext.Current.CancellationToken));
+
+        Assert.IsAssignableFrom<HttpRequestException>(exception);
+        Assert.Contains("HTTP 400", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}""")]
+    [InlineData("""{"type":"error","error":{"type":"invalid_request_error","message":"messages: roles must alternate"}}""")]
+    [InlineData("""{"type":"error","error":{"type":"authentication_error","message":"temperature"}}""")]
+    [InlineData("temperature is not supported")]
+    [InlineData("")]
+    public async Task AnyOtherBadRequest_StaysAPlainHttpRequestException(string body)
+    {
+        _wire.Status = HttpStatusCode.BadRequest;
+        _wire.Answers.Enqueue(body);
+
+        using var client = Client();
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
+                TestContext.Current.CancellationToken));
+
+        Assert.IsNotType<LlmSamplingRejectedException>(exception);
+    }
+
+    [Fact]
+    public async Task ARefusalNamingTheTemperature_WithoutATemperatureSent_IsNoSamplingRejection()
+    {
+        // Nothing to leave out: a retry would send the same request again.
+        _wire.Status = HttpStatusCode.BadRequest;
+        _wire.Answers.Enqueue(SamplingRefusal);
+        var options = Options();
+        options.Temperature = null;
+
+        using var client = Client();
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], options,
+                TestContext.Current.CancellationToken));
+
+        Assert.IsNotType<LlmSamplingRejectedException>(exception);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.MovedPermanently)]
+    [InlineData(HttpStatusCode.TemporaryRedirect)]
+    [InlineData(HttpStatusCode.PermanentRedirect)]
+    public void ARedirect_IsNamedAsSuch(HttpStatusCode status)
+    {
+        var message = AnthropicMessagesChatClient.BuildAnthropicApiErrorMessage(status, "");
+
+        Assert.Contains("redirect", message);
+        Assert.Contains($"HTTP {(int)status}", message);
+        Assert.Contains("baseUrl", message);
     }
 
     [Fact]

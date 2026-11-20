@@ -1056,6 +1056,37 @@ Processes content using Claude AI API.
 
 > **Source caching (`cacheSource`, AB#8658):** the user prompt is built in two parts (`BuildUserPromptParts`): the source part (preamble, `CONTENT:` header and the **main content** — the value at `path`) and the instruction part (the `dataPaths` context, the verified caller, the closing `---`, the question and the answer format). Without `cacheSource` both are sent as one string — byte-for-byte the prompt before AB#8658. With it, the user message is two text blocks and the first carries `cache_control: ephemeral`; the concatenated text is identical, so the model reads the same thing. Only the main content is cached on purpose: `dataPaths` typically change between calls (a reviewer round adds the new draft), and anything changing inside the cached block would make every call a miss. Breakpoints per request: system prompt, last tool, source block = 3 of the API's 4. The cache is a **prefix match** (tools → system → messages): a call reads the source from the cache (`cacheReadInputTokens` > 0) only when tools, system prompt and source are identical — every MCP tool round of one execution (each round resends the whole conversation) and repeated runs of the same node over the same source within 5 minutes (e.g. reviewer rounds that change only the draft in `dataPaths`). A generation node and a verification node with different system prompts do **not** share the cached source. Prefixes below the model's minimum cacheable length (512–4096 tokens) are silently not cached. Tests `AnthropicAiQueryNodeUsageTests.CacheSource_*` and `PromptParts_*` (mocked API; the real cache hit is the API's behaviour).
 
+#### LlmQueryNode
+
+`LlmQuery@1` is the provider-agnostic LLM query node. Like `AnthropicAiQuery@1` it is a thin shim over `Internal/LlmQueryEngine`: it maps its configuration to `LlmQueryOptions` and supplies the chat client of the configured provider, so prompt, AiConfiguration and prompt template, MCP, tool loop, guaranteed JSON, usage and secret masking behave exactly as described for `AnthropicAiQueryNode` above. Configuration and node are lifted from the LlmQuery prototype by Philipp Schwaab; the prototype's own query code is replaced by the engine.
+
+```yaml
+- type: LlmQuery@1
+  provider: Anthropic            # default; the only provider today
+  baseUrl: https://my-resource.services.ai.azure.com/anthropic   # optional; unset = https://api.anthropic.com
+  apiKeyConfigurationName: foundry-claude
+  model: claude-haiku-4-5        # after template and AiConfiguration; on Microsoft Foundry the deployment name
+  question: "Summarise the document."
+  path: $.document.text
+  # temperature: 0.2             # optional; unset = not sent
+  responseFormat: json           # json | text
+  identity: ServiceAccount       # or Caller (MCP on the caller's identity)
+  targetPath: $.ai.result
+```
+
+Differences to `AnthropicAiQuery@1`:
+
+- **No inline `apiKey`.** The key comes only from the AiConfiguration named by `apiKeyConfigurationName`. There is no `mcpDelegateToCaller`; `identity: Caller` is the one spelling.
+- **`baseUrl`** (optional): requests go to `{baseUrl}/v1/messages` (a trailing slash is dropped), e.g. Microsoft Foundry's `https://{resource}.services.ai.azure.com/anthropic`; unset = `https://api.anthropic.com`. The value is checked when the pipeline definition is read (`LlmBaseUrl`): an absolute URL, https (plain http only on a loopback address, for a local gateway), no user info, query or fragment. A refused value fails the deployment and names the option; a value that may hold a credential is not repeated in the message. The node resolves the base URL in one place (`LlmQueryNode.ResolveBaseUrl`).
+- **`temperature` is optional** and not sent when no template, AiConfiguration or node sets one, so the model's default applies. Newer models refuse a temperature, or every value but their default; when the provider answers HTTP 400 `invalid_request_error` naming the temperature, the engine asks **once more without it** and warns once; the rest of the run (later tool rounds, a repair call) stays without it, and a second refusal fails the query. This repeat is in the engine and so applies to `AnthropicAiQuery@1` as well. A repair call is sent at temperature 0 only when the run sends a temperature.
+- **Validation when the definition is read:** `responseFormat` must be `json` or `text`, `maxToolResultChars` at least 1 (default 50 000), `provider` a known value. YAML nulls fall back to the defaults.
+- **Defaults:** `maxTokens` 4096, `jsonFormatSample` empty, `maxToolRounds` 10, no temperature.
+- **MCP client name** in the handshake is `OctoMesh-LlmQueryNode`.
+
+**Redirects are not followed** by the providers' HTTP client (`AddLlmProviderHttpClient`, for both nodes): the key travels in the custom header `x-api-key`, which the handler would send on to the origin a redirect names. A 3xx answer fails with a message that names the redirect and asks for the endpoint that answers.
+
+Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQueryNodeTests` (mapping, base URL, temperature, repeat), `LlmQueryNodeGoldenParityTests` (the golden pipeline shapes of `AnthropicAiQuery@1` through `LlmQuery@1`: document analysis and knowledge generation match the files of `AnthropicAiQuery@1` byte for byte; the chat with MCP tools has its own file `Resources/GoldenRequests/LlmQuery/chat-mcp-delegation.txt`, which differs only in the client name and that request's length), `LlmQueryNodeSecretMaskingTests` (a provider at the base URL that echoes the key, an MCP server that echoes the delegated bearer), `LlmProviderHttpClientTests` (a 307 to another origin is not followed), and the integration tests `LlmQueryPipelineIntegrationTests`.
+
 #### McpToolCallNode
 
 `McpToolCall@1` (AB#8658) calls **one allowlisted tool** on the tenant's OctoMesh MCP service, deterministically and as a configured service account — no model decides anything. Typical use is the write after an `AnthropicAiQuery@1` step: the model only reads and returns schema-valid JSON, then the pipeline writes it through `knowledge_upsert_page` / `knowledge_link` as `knowledge-curator`, so the MCP tool's content guard and versioning apply (write path W1 of AB#8486; node idea from the KnowledgeCapture prototype, AB#4237).

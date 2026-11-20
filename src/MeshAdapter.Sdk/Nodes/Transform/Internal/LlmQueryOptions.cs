@@ -57,8 +57,8 @@ internal sealed record LlmQueryOptions
     /// <summary>Output-token limit set on the node.</summary>
     public int MaxTokens { get; init; }
 
-    /// <summary>Temperature set on the node.</summary>
-    public double Temperature { get; init; }
+    /// <summary>Temperature set on the node; <c>null</c> sends none unless a template or AiConfiguration sets one.</summary>
+    public double? Temperature { get; init; }
 
     /// <summary><c>json</c> or <c>text</c>.</summary>
     public string ResponseFormat { get; init; } = "json";

@@ -133,6 +133,30 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
         }
     }
 
+    [Theory]
+    [InlineData(0.0, true)]
+    [InlineData(0.7, true)]
+    [InlineData(1.0, true)]
+    [InlineData(-0.1, false)]
+    [InlineData(1.5, false)]
+    [InlineData(double.NaN, false)]
+    public void Temperature_IsBetweenZeroAndOne(double value, bool accepted)
+    {
+        var config = new LlmQueryNodeConfiguration();
+
+        if (accepted)
+        {
+            config.Temperature = value;
+            Assert.Equal(value, config.Temperature);
+        }
+        else
+        {
+            Assert.Equal("temperature",
+                Assert.Throws<ArgumentException>(() => config.Temperature = value).ParamName);
+            Assert.Null(config.Temperature);
+        }
+    }
+
     [Fact]
     public void AnUndefinedProvider_IsRefused()
     {
@@ -209,6 +233,7 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     [InlineData("baseUrl: http://llm.example.com", "baseUrl")]
     [InlineData("responseFormat: jsno", "responseFormat")]
     [InlineData("maxToolResultChars: 0", "maxToolResultChars")]
+    [InlineData("temperature: 1.5", "temperature")]
     [InlineData("provider: OpenAiCompatible", "OpenAiCompatible")]
     public async Task ARefusedValue_FailsWhenThePipelineIsRead_NamingIt(string line, string named)
     {

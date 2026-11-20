@@ -449,7 +449,7 @@ internal sealed class AnthropicMessagesChatClient(
                    "retry later.",
             >= 300 and < 400 =>
                 $"The provider answered with a redirect (HTTP {code}). Redirects are not followed, because the " +
-                "API key would go along; set baseUrl to the endpoint that answers.",
+                "API key would go along; set the baseUrl of the AiConfiguration to the endpoint that answers.",
             400 when IsContextLengthError(responseBody) =>
                 "Anthropic rejected the request because the input exceeds the model's context window " +
                 "(HTTP 400). Reduce the input size (e.g. a smaller batch or less context) and retry.",

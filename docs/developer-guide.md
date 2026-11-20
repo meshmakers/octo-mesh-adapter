@@ -1063,8 +1063,7 @@ Processes content using Claude AI API.
 ```yaml
 - type: LlmQuery@1
   provider: Anthropic            # default; the only provider today
-  baseUrl: https://my-resource.services.ai.azure.com/anthropic   # optional; unset = https://api.anthropic.com
-  apiKeyConfigurationName: foundry-claude
+  apiKeyConfigurationName: foundry-claude   # holds apiKey and, optionally, baseUrl
   model: claude-haiku-4-5        # after template and AiConfiguration; on Microsoft Foundry the deployment name
   question: "Summarise the document."
   path: $.document.text
@@ -1077,7 +1076,7 @@ Processes content using Claude AI API.
 Differences to `AnthropicAiQuery@1`:
 
 - **No inline `apiKey`.** The key comes only from the AiConfiguration named by `apiKeyConfigurationName`. There is no `mcpDelegateToCaller`; `identity: Caller` is the one spelling.
-- **`baseUrl`** (optional): requests go to `{baseUrl}/v1/messages` (a trailing slash is dropped), e.g. Microsoft Foundry's `https://{resource}.services.ai.azure.com/anthropic`; unset = `https://api.anthropic.com`. The value is checked when the pipeline definition is read (`LlmBaseUrl`): an absolute URL, https (plain http only on a loopback address, for a local gateway), no user info, query or fragment. A refused value fails the deployment and names the option; a value that may hold a credential is not repeated in the message. The node resolves the base URL in one place (`LlmQueryNode.ResolveBaseUrl`).
+- **The provider's endpoint is set on the AiConfiguration, not on the node**: the optional `baseUrl` of the AiConfiguration named by `apiKeyConfigurationName` (the one that holds the key; System.Communication 4.19.0 adds the attribute). Requests go to `{baseUrl}/v1/messages` (a trailing slash is dropped), e.g. Microsoft Foundry's `https://{resource}.services.ai.azure.com/anthropic`; absent or empty = `https://api.anthropic.com`. The node has no `baseUrl` option, so there is one source. `LlmQueryNode.ResolveBaseUrl` reads it with the engine's guarded AiConfiguration read and checks it with `LlmBaseUrl` before any request: an absolute URL, https (plain http only on a loopback address, for a local gateway), no user info, query or fragment. A value that breaks the rule fails the node, whatever `continueOnError` says, naming the AiConfiguration and the rule; nothing is sent, and a value that may hold a credential is not repeated in the message. `AnthropicAiQuery@1` does not read `baseUrl` and always uses the public endpoint.
 - **`temperature` is optional** and not sent when no template, AiConfiguration or node sets one, so the model's default applies. Newer models refuse a temperature, or every value but their default; when the provider answers HTTP 400 `invalid_request_error` naming the temperature, the engine asks **once more without it** and warns once; the rest of the run (later tool rounds, a repair call) stays without it, and a second refusal fails the query. This repeat is in the engine and so applies to `AnthropicAiQuery@1` as well. A repair call is sent at temperature 0 only when the run sends a temperature.
 - **Validation when the definition is read:** `responseFormat` must be `json` or `text`, `temperature` (when set) between 0.0 and 1.0, `maxToolResultChars` at least 1 (default 50 000), `provider` a known value. YAML nulls fall back to the defaults.
 - **Defaults:** `maxTokens` 4096, `jsonFormatSample` empty, `maxToolRounds` 10, no temperature.
@@ -1085,7 +1084,7 @@ Differences to `AnthropicAiQuery@1`:
 
 **Redirects are not followed** by the providers' HTTP client (`AddLlmProviderHttpClient`, for both nodes): the key travels in the custom header `x-api-key`, which the handler would send on to the origin a redirect names. A 3xx answer fails with a message that names the redirect and asks for the endpoint that answers.
 
-Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQueryNodeTests` (mapping, base URL, temperature, repeat), `LlmQueryNodeGoldenParityTests` (the golden pipeline shapes of `AnthropicAiQuery@1` through `LlmQuery@1`: document analysis and knowledge generation match the files of `AnthropicAiQuery@1` byte for byte; the chat with MCP tools has its own file `Resources/GoldenRequests/LlmQuery/chat-mcp-delegation.txt`, which differs only in the client name and that request's length), `LlmQueryNodeSecretMaskingTests` (a provider at the base URL that echoes the key, an MCP server that echoes the delegated bearer), `LlmProviderHttpClientTests` (a 307 to another origin is not followed), and the integration tests `LlmQueryPipelineIntegrationTests`.
+Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQueryNodeTests` (mapping, base URL from the AiConfiguration including a refused one, temperature, repeat), `LlmQueryNodeGoldenParityTests` (the golden pipeline shapes of `AnthropicAiQuery@1` through `LlmQuery@1`: document analysis and knowledge generation match the files of `AnthropicAiQuery@1` byte for byte; the chat with MCP tools has its own file `Resources/GoldenRequests/LlmQuery/chat-mcp-delegation.txt`, which differs only in the client name and that request's length), `LlmQueryNodeSecretMaskingTests` (a provider at the AiConfiguration's base URL that echoes the key, an MCP server that echoes the delegated bearer), `LlmProviderHttpClientTests` (a 307 to another origin is not followed), and the integration tests `LlmQueryPipelineIntegrationTests`.
 
 #### McpToolCallNode
 

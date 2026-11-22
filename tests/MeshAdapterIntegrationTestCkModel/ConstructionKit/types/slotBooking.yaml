@@ -1,0 +1,16 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+# AB#9465 / AB#9466: a booking of one slot of one resource. SlotKey = "<resourceRtId>|<slotStartUtc>"; the unique index
+# makes the database refuse a second booking of the same slot, also from a concurrent call.
+- typeId: SlotBooking
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/SlotKey
+    name: SlotKey
+  - id: ${this}/BookedBy
+    name: BookedBy
+  indexes:
+    - indexType: UniqueNotDeleted
+      fields:
+        - attributePaths:
+            - SlotKey

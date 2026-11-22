@@ -280,10 +280,10 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
     {
         var (_, logger) = await MergeAsync(
             UpdateWith(("Cfg", new Dictionary<string, object?>
-                { ["a"] = new List<object?> { new Dictionary<string, object?> { ["x"] = null } }, ["b"] = "s" }),
+            { ["a"] = new List<object?> { new Dictionary<string, object?> { ["x"] = null } }, ["b"] = "s" }),
                 ("Nothing", null)),
             UpdateWith(("Cfg", new Dictionary<string, object?>
-                { ["b"] = "s", ["a"] = new List<object?> { new Dictionary<string, object?> { ["x"] = null } } }),
+            { ["b"] = "s", ["a"] = new List<object?> { new Dictionary<string, object?> { ["x"] = null } } }),
                 ("Nothing", null)));
 
         Assert.Empty(WarningTexts(logger));
@@ -764,5 +764,306 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
             () => node.ProcessObjectAsync(dataContext, nodeContext));
         A.CallTo(() => dataContext.Set(A<string>._, A<bool>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    // ----- AB#9466: write conflicts (112) across adapter replicas -----
+
+    private static MongoCommandException WriteConflict()
+    {
+        var connection = new ConnectionId(
+            new ServerId(new ClusterId(), new DnsEndPoint("localhost", 27017)));
+        return new MongoCommandException(connection, "WriteConflict error: this operation conflicted",
+            new BsonDocument("insert", "RtEntity_SlotBooking"),
+            new BsonDocument
+            {
+                { "ok", 0 }, { "code", 112 }, { "codeName", "WriteConflict" },
+                { "errmsg", "WriteConflict error: this operation conflicted" }
+            });
+    }
+
+    private static MongoCommandException OtherCommandFailure()
+    {
+        var connection = new ConnectionId(
+            new ServerId(new ClusterId(), new DnsEndPoint("localhost", 27017)));
+        return new MongoCommandException(connection, "not authorized",
+            new BsonDocument("insert", "RtEntity_SlotBooking"),
+            new BsonDocument { { "ok", 0 }, { "code", 13 }, { "codeName", "Unauthorized" } });
+    }
+
+    private static MongoBulkWriteException<BsonDocument> BulkWriteConflict()
+    {
+        var errorCtor = typeof(BulkWriteError).GetConstructors(
+            BindingFlags.NonPublic | BindingFlags.Instance).Single();
+        var error = (BulkWriteError)errorCtor.Invoke(
+            [0, ServerErrorCategory.Uncategorized, 112, "WriteConflict", new BsonDocument()]);
+        var processed = new List<WriteModel<BsonDocument>>();
+        var result = new BulkWriteResult<BsonDocument>.Acknowledged(1, 0, 0, 0, 0, processed, []);
+        var connection = new ConnectionId(
+            new ServerId(new ClusterId(), new DnsEndPoint("localhost", 27017)));
+        return new MongoBulkWriteException<BsonDocument>(connection, result, [error], null, processed);
+    }
+
+    private void GivenApplyChangesThrowsThenSucceeds(int failures, Exception failure)
+    {
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
+                A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
+                A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Throws(failure).NumberOfTimes(failures)
+            .Then.Returns(Task.CompletedTask);
+    }
+
+    private void VerifyApplyChangesCalled(int times)
+    {
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
+                A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
+                A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .MustHaveHappened(times, Times.Exactly);
+    }
+
+    [Fact]
+    public void A_write_conflict_is_recognised_anywhere_in_the_exception_chain()
+    {
+        Assert.True(ApplyChangesNode2.IsWriteConflict(WriteConflict()));
+        Assert.True(ApplyChangesNode2.IsWriteConflict(Wrapped(WriteConflict())));
+        Assert.True(ApplyChangesNode2.IsWriteConflict(Wrapped(Wrapped(WriteConflict()))));
+        Assert.True(ApplyChangesNode2.IsWriteConflict(Wrapped(BulkWriteConflict())));
+    }
+
+    [Fact]
+    public void A_duplicate_key_or_another_failure_is_no_write_conflict()
+    {
+        Assert.False(ApplyChangesNode2.IsWriteConflict(null));
+        Assert.False(ApplyChangesNode2.IsWriteConflict(Wrapped(DuplicateKeyFailure())));
+        Assert.False(ApplyChangesNode2.IsWriteConflict(Wrapped(OtherCommandFailure())));
+        Assert.False(ApplyChangesNode2.IsWriteConflict(new InvalidOperationException("boom")));
+    }
+
+    [Theory]
+    [InlineData(1, 12.5, 25)]
+    [InlineData(2, 25, 50)]
+    [InlineData(3, 50, 100)]
+    [InlineData(4, 100, 200)]
+    [InlineData(5, 200, 400)]
+    [InlineData(9, 200, 400)]
+    [InlineData(40, 200, 400)]
+    public void The_backoff_is_short_jittered_and_capped(int attempt, double minMs, double maxMs)
+    {
+        var random = new Random(4711);
+        var delays = Enumerable.Range(0, 200)
+            .Select(_ => ApplyChangesNode2.WriteConflictBackoff(attempt, random).TotalMilliseconds)
+            .ToList();
+
+        Assert.All(delays, d => Assert.InRange(d, minMs, maxMs));
+        Assert.True(delays.Distinct().Count() > 1, "the wait is jittered, so two replicas do not retry in lock step");
+    }
+
+    /// <summary>
+    /// A wrapped WriteConflict used to escape the node and fail the pipeline. Now the transaction is aborted and the
+    /// write retried on a fresh session; the retry stores the record.
+    /// </summary>
+    [Fact]
+    public async Task A_wrapped_write_conflict_is_aborted_and_retried_and_the_retry_stores_the_record()
+    {
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrowsThenSucceeds(2, Wrapped(WriteConflict()));
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyApplyChangesCalled(3);
+        A.CallTo(() => Session.AbortTransactionAsync()).MustHaveHappenedTwiceExactly();
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, false, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, true, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustNotHaveHappened();
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// The other replica commits first: the retry meets the unique index and is reported as a duplicate.
+    /// </summary>
+    [Fact]
+    public async Task A_write_conflict_followed_by_a_duplicate_key_is_reported_as_a_duplicate()
+    {
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
+                A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._,
+                A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Throws(Wrapped(WriteConflict())).Once()
+            .Then.Throws(Wrapped(DuplicateKeyFailure()));
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyApplyChangesCalled(2);
+        A.CallTo(() => Session.CommitTransactionAsync()).MustNotHaveHappened();
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, true, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// The conflict outlasts every attempt. With Report the node reports a conflict - the flag is true and nothing
+    /// was committed - instead of ending as a silent success, which the pipeline would have read as "booked".
+    /// </summary>
+    [Fact]
+    public async Task A_write_conflict_that_outlasts_the_retries_is_reported_never_a_silent_success()
+    {
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrows(Wrapped(WriteConflict()));
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        VerifyApplyChangesCalled(ApplyChangesNode2.MaxWriteAttempts);
+        A.CallTo(() => Session.AbortTransactionAsync()).MustHaveHappened(ApplyChangesNode2.MaxWriteAttempts, Times.Exactly);
+        A.CallTo(() => Session.CommitTransactionAsync()).MustNotHaveHappened();
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, true, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, false, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustNotHaveHappened();
+        VerifyNextCalled(next, dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// The same unwrapped (how the node's old catch saw it): when the attempts ran out, the old loop ended without an
+    /// error and without the flag.
+    /// </summary>
+    [Fact]
+    public async Task An_unwrapped_write_conflict_that_outlasts_the_retries_is_reported_too()
+    {
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrows(WriteConflict());
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, true, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+    }
+
+    /// <summary>
+    /// Without Report a conflict that outlasts the retries fails the node, as a duplicate key does.
+    /// </summary>
+    [Fact]
+    public async Task Without_reporting_a_write_conflict_that_outlasts_the_retries_throws()
+    {
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrows(Wrapped(WriteConflict()));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        VerifyApplyChangesCalled(ApplyChangesNode2.MaxWriteAttempts);
+        A.CallTo(() => dataContext.Set(A<string>._, A<bool>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    /// <summary>
+    /// Report without a target path cannot report (CanReportDuplicateKey), so it throws like Throw.
+    /// </summary>
+    [Fact]
+    public async Task Report_without_a_target_path_throws_when_the_conflict_outlasts_the_retries()
+    {
+        var config = new ApplyChangesNodeConfiguration2
+        {
+            EntityUpdatesPath = EntityUpdatesPath,
+            OnDuplicateKey = DuplicateKeyHandling.Report
+        };
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(config);
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrows(Wrapped(WriteConflict()));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    /// <summary>
+    /// A failure that is no write conflict is not retried and travels as before, Report or not.
+    /// </summary>
+    [Fact]
+    public async Task Another_command_failure_is_not_retried_and_still_throws()
+    {
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrows(Wrapped(OtherCommandFailure()));
+
+        var node = CreateNode(next);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        VerifyApplyChangesCalled(1);
+        A.CallTo(() => dataContext.Set(A<string>._, A<bool>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+    }
+
+    /// <summary>
+    /// An abort that fails (the server already aborted the transaction) does not hide the conflict being handled.
+    /// </summary>
+    [Fact]
+    public async Task A_failing_abort_does_not_hide_the_write_conflict()
+    {
+        var (dataContext, nodeContext, next) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataContext, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo() });
+        GivenApplyChangesThrowsThenSucceeds(1, Wrapped(WriteConflict()));
+        A.CallTo(() => Session.AbortTransactionAsync()).Throws(new InvalidOperationException("no transaction"));
+
+        var node = CreateNode(next);
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataContext.Set(DuplicateTargetPath, false, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+    }
+
+    /// <summary>
+    /// The backoff waits without the process-wide lock: while one write sits out its conflict retries, another
+    /// ApplyChanges@2 run of the same adapter goes through instead of queueing behind it (review of PR #130).
+    /// </summary>
+    [Fact]
+    public async Task The_backoff_releases_the_process_wide_lock_so_other_writes_go_on()
+    {
+        const string conflicting = "0000000000000000000000a1";
+        const string other = "0000000000000000000000b2";
+        var (dataA, nodeContextA, nextA) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataA, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(conflicting) });
+        var (dataB, nodeContextB, nextB) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataB, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(other) });
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
+                A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>.That.Matches(
+                    list => list.Any(u => u.RtEntity != null && u.RtEntity.RtId.ToString() == conflicting)),
+                A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Throws(Wrapped(WriteConflict()));
+
+        var conflictingRun = CreateNode(nextA).ProcessObjectAsync(dataA, nodeContextA);
+        await Task.Delay(TimeSpan.FromMilliseconds(60), TestContext.Current.CancellationToken);
+        var otherRun = CreateNode(nextB).ProcessObjectAsync(dataB, nodeContextB);
+
+        var first = await Task.WhenAny(conflictingRun, otherRun);
+        Assert.Same(otherRun, first);
+        await conflictingRun;
+        A.CallTo(() => dataB.Set(DuplicateTargetPath, false, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataA.Set(DuplicateTargetPath, true, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
     }
 }

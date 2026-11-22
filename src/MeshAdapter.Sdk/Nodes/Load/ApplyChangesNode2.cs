@@ -22,6 +22,17 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 {
     private static readonly SemaphoreSlim ApplySemaphoreSlim = new(1, 1);
 
+    /// <summary>
+    /// How often the node tries a write that meets a WriteConflict (112) before it gives up (AB#9466).
+    /// </summary>
+    internal const int MaxWriteAttempts = 6;
+
+    private const int WriteConflictBackoffBaseMs = 25;
+    private const int WriteConflictBackoffCapMs = 400;
+
+    /// <summary>MongoDB's error code for a WriteConflict in a transaction.</summary>
+    private const int WriteConflictCode = 112;
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -90,11 +101,11 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                 // There is a timeout of 5 milliseconds to lock transactions - so we need to make sure that we are not running into this issue.
                 await ApplySemaphoreSlim.WaitAsync();
 
-                // Retry this 5 times with a delay of 1 second
-                int count = 0;
-                while (count <= 5)
+                // AB#9466: a WriteConflict (112) is retried with a short jittered backoff, on a fresh session after
+                // the failed transaction was aborted. The semaphore above serialises the writes of THIS process only;
+                // a second adapter replica writing the same document or unique key in parallel still meets 112.
+                for (var attempt = 1; ; attempt++)
                 {
-                    count++;
                     IOctoSession? session = null;
                     try
                     {
@@ -104,7 +115,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                         // now the adapter's service account and only then the system context, decided
                         // once per execution rather than here (AB#5027 / AB#5028).
                         //
-                        // Assigned rather than declared here: the duplicate-key catch below rolls the
+                        // Assigned rather than declared here: the catch blocks below roll the
                         // transaction back, so the session has to outlive this block (AB#3717).
                         session = await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
@@ -140,31 +151,69 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                             }
                         }
                     }
-                    catch (MongoCommandException e)
-                    {
-                        if (e.Code == 112) // Indicates write conflict
-                        {
-                            continue;
-                        }
-
-                        throw;
-                    }
                     catch (Exception e) when (CanReportDuplicateKey(c) && IsDuplicateKey(e))
                     {
                         // A unique index refused the write. Not a retry case: the conflicting
                         // document is committed, so every attempt would fail the same way. The
                         // pipeline asked to hear about it rather than to fail, so roll back and
                         // hand it a flag - see DuplicateKeyHandling.Report.
-                        if (session != null)
-                        {
-                            await session.AbortTransactionAsync();
-                        }
+                        await AbortQuietlyAsync(session, nodeContext);
 
                         nodeContext.Warning(
                             $"A unique index refused the write, reporting it as configured: {DescribeDuplicates(e)}");
 
                         dataContext.Set(c.DuplicateKeyTargetPath!, true, DocumentModes.Extend,
                             ValueKinds.Simple, TargetValueWriteModes.Overwrite);
+                    }
+                    catch (Exception e) when (IsWriteConflict(e))
+                    {
+                        // AB#9466: another transaction holds the same document or unique key - typically a second
+                        // adapter replica that has not committed yet. The server has already aborted this
+                        // transaction; abort it on our side too, so the next attempt starts clean.
+                        await AbortQuietlyAsync(session, nodeContext);
+
+                        if (attempt < MaxWriteAttempts)
+                        {
+                            var delay = WriteConflictBackoff(attempt, Random.Shared);
+                            nodeContext.Debug(
+                                $"Write conflict (attempt {attempt} of {MaxWriteAttempts}), retrying in {delay.TotalMilliseconds:F0} ms");
+                            session?.Dispose();
+                            session = null;
+
+                            // Wait without the process-wide lock, so the other ApplyChanges@2 runs of this
+                            // adapter (every pipeline and tenant) are not held up by one conflicting write.
+                            // Re-acquired before the next attempt; the outer finally releases it once.
+                            ApplySemaphoreSlim.Release();
+                            try
+                            {
+                                await Task.Delay(delay);
+                            }
+                            finally
+                            {
+                                await ApplySemaphoreSlim.WaitAsync();
+                            }
+
+                            continue;
+                        }
+
+                        if (!CanReportDuplicateKey(c))
+                        {
+                            // Without Report the node fails, as it does for a duplicate key: nothing was
+                            // written, so the pipeline must not carry on as if it had been.
+                            throw;
+                        }
+
+                        // Report: the other writer kept the key for the whole retry window. Nothing was
+                        // written, so this is a conflict and never a silent success.
+                        nodeContext.Warning(
+                            $"A write conflict persisted over {MaxWriteAttempts} attempts, reporting it as a conflict as configured");
+
+                        dataContext.Set(c.DuplicateKeyTargetPath!, true, DocumentModes.Extend,
+                            ValueKinds.Simple, TargetValueWriteModes.Overwrite);
+                    }
+                    finally
+                    {
+                        session?.Dispose();
                     }
 
                     break;
@@ -183,7 +232,61 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 
         await next(dataContext, nodeContext);
     }
-    
+
+    /// <summary>
+    /// Whether a WriteConflict (112) sits anywhere in the inner-exception chain (AB#9466). The repository
+    /// wraps the driver failure in an OperationFailedException, so matching only the outermost exception
+    /// misses it, and the pipeline failed instead of retrying or reporting the conflict.
+    /// </summary>
+    internal static bool IsWriteConflict(Exception? e)
+    {
+        for (; e != null; e = e.InnerException)
+        {
+            switch (e)
+            {
+                case MongoCommandException { Code: WriteConflictCode }:
+                case MongoWriteException { WriteError.Code: WriteConflictCode }:
+                case MongoBulkWriteException bulk when bulk.WriteErrors.Any(w => w.Code == WriteConflictCode):
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The wait before the next attempt after a WriteConflict: an exponential ceiling (25, 50, 100, 200,
+    /// 400 ms) of which a random half to all is used, so two replicas that conflicted once do not retry in
+    /// lock step. Over all attempts the node waits about 0.4 to 0.8 seconds before it gives up.
+    /// </summary>
+    internal static TimeSpan WriteConflictBackoff(int attempt, Random random)
+    {
+        var exponent = Math.Clamp(attempt - 1, 0, 16);
+        var ceiling = Math.Min(WriteConflictBackoffBaseMs * (1 << exponent), WriteConflictBackoffCapMs);
+        return TimeSpan.FromMilliseconds(ceiling / 2.0 + random.NextDouble() * ceiling / 2.0);
+    }
+
+    /// <summary>
+    /// Rolls the transaction back after a refused write. The server may already have aborted it (a
+    /// WriteConflict does), and a failing abort must not hide the refusal the node is handling.
+    /// </summary>
+    private static async Task AbortQuietlyAsync(IOctoSession? session, INodeContext nodeContext)
+    {
+        if (session == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await session.AbortTransactionAsync();
+        }
+        catch (Exception abortFailure)
+        {
+            nodeContext.Debug($"Aborting the refused transaction failed: {abortFailure.GetType().Name}");
+        }
+    }
+
     /// <summary>
     /// Walks the inner-exception chain: the repository wraps the driver failure in an
     /// OperationFailedException, so the bulk-write exception is never the one that arrives here.

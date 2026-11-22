@@ -56,6 +56,10 @@
         <None Update="TestData\ck-models\*.yaml">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
+        <!-- AB#9466: the documented sample method pipeline runs in SlotBookingConflictTests, so the sample stays true. -->
+        <None Include="..\..\docs\examples\slot-booking-method.yaml" Link="TestData\slot-booking-method.yaml">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
     </ItemGroup>
 
 </Project>

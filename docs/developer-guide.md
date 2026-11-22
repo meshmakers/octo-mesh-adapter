@@ -1423,6 +1423,61 @@ records and JSON trees by content, numbers by value), so equal content is no con
 produces one warning per entity and batch naming all conflicting attributes with compact values
 truncated to 200 characters; credential-like attributes are shown as `<redacted>` (AB#7436).
 
+##### Unique keys and concurrent writers: `onDuplicateKey` (AB#9466)
+
+A unique index on the CK type (`Unique` / `UniqueNotDeleted`) is the only check that holds when two callers
+write the same natural key at once; a pipeline's own "does it exist yet" lookup reads before it writes, so
+both callers pass it. With `onDuplicateKey: Report` and `duplicateKeyTargetPath` the node writes `true` there
+when the write was refused and nothing was stored, and `false` when the write was stored; the pipeline carries
+on and answers for itself. Without Report (the default `Throw`) the refusal fails the pipeline, as before.
+
+| Situation | Report (with `duplicateKeyTargetPath`) | Throw (default) |
+|-----------|----------------------------------------|-----------------|
+| Write stored | flag `false` | continues |
+| Unique index refuses (E11000) | rolled back, flag `true` | pipeline fails |
+| WriteConflict (112) that clears within the retries | retried; then stored (`false`) or refused (`true`) | retried; then stored or fails |
+| WriteConflict (112) that outlasts the retries | rolled back, flag `true` (never a silent success) | pipeline fails |
+| Engine reports errors in its operation result (validation) | logged as an error, rolled back, **no flag written**, pipeline continues | logged as an error, rolled back, pipeline continues |
+| Any other exception | pipeline fails | pipeline fails |
+
+The validation row is the node's behaviour before AB#9466 and stays unchanged: the flag is then absent (or
+still holds the value of an earlier iteration of a `ForEach@1`). A pipeline must therefore read only an
+explicit `false` as "stored"; the sample answers neither branch in that case, so the method returns no
+result and the caller gets `METHOD_HANDLER_FAILED`.
+
+Within one adapter process the node writes one batch at a time (a process-wide semaphore). Two adapter
+replicas do not share that lock: while replica A's transaction holds an uncommitted insert of a key, replica
+B's insert of the same key meets a MongoDB **WriteConflict (112)**, which the repository wraps in an
+`OperationFailedException`. The node looks for 112 anywhere in the exception chain, aborts the transaction
+and retries on a fresh session, up to six attempts with a jittered exponential wait (ceilings 25, 50, 100,
+200, 400 ms, of which a random half to all is used; about 0.4 to 0.8 s in total). Once A has committed, B's
+retry meets the unique index and is reported as a duplicate; if A rolls back, B's retry stores the record.
+The node releases the process-wide semaphore for the wait and takes it again before the next attempt, so
+the other `ApplyChanges@2` runs of the same adapter (every pipeline and tenant) go on meanwhile.
+
+Before AB#9466 the node recognised 112 only unwrapped: the wrapped conflict failed the pipeline, and a CK
+method pipeline answered `METHOD_HANDLER_FAILED` instead of its declared conflict error. The old retry loop
+also ended without an error and without the flag when its attempts ran out, so a pipeline read "stored"
+although nothing was written.
+
+**Pattern: book a slot without double booking.** The CK type declares a `UniqueNotDeleted` index on a slot
+key (`<resourceRtId>|<slotStartUtc>`); the method pipeline inserts with `ApplyChanges@2`
+`onDuplicateKey: Report`, then two complementary `If@1` branches write either `{"value": true}` or
+`{"error": {"code": "CONCURRENT_CHANGE", ...}}` (a code the method declares in its `errors`) and
+`SetPipelineExecutionResult@1` returns it. A move of a booking is an UPDATE of the slot key and is covered
+the same way. Sample: [`docs/examples/slot-booking-method.yaml`](examples/slot-booking-method.yaml); the
+integration test `SlotBookingConflictTests` runs it (12 parallel bookings: 1 booked, 11 `CONCURRENT_CHANGE`;
+10 parallel moves into one slot: 1 success, 9 conflicts; a second replica holding the slot).
+
+Limits of the pattern:
+
+- Declare the unique index in the type's **first** version. Adding a unique index to an existing type that
+  already holds data is a **Major** change of the CK model and fails on duplicates already stored (AB#5347).
+- Cancelling must delete the booking (soft delete); a cancelled booking that is only marked keeps the slot
+  blocked under `UniqueNotDeleted`.
+- A slot capacity above 1 or variable durations need one claim entity per slot unit, written in the same
+  `ApplyChanges@2` batch (all or nothing).
+
 #### Origin of archive rows (all three archive load nodes, AB#5356 / AB#7593 / AB#7596)
 
 Every archive row records whether it was entered manually or delivered automatically. The three load

@@ -1100,6 +1100,46 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "range or the set of entities, or raise MaxGapScanRows.");
     }
 
+    public static Exception DetectGapsRequiresWindowedArchive(INodeContext nodeContext,
+        OctoObjectId archiveRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ArchiveRtId '{archiveRtId}' is a raw archive holding single " +
+            "timestamps. DetectStreamDataGaps checks archives that store a row window per value — " +
+            "point ArchiveRtId at a time-range or rollup archive.");
+    }
+
+    public static Exception DetectGapsBoundaryRequired(INodeContext nodeContext, string property,
+        string pathProperty)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {property} is required — gaps can only be judged against a " +
+            $"closed period. Set {property} (a timestamp with UTC offset) or {pathProperty}.");
+    }
+
+    public static Exception DetectGapsSeriesRequired(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: No series configured. Set RtIds or RtIdsPath to the runtime " +
+            "ids of the series to check — a series without any data can only be reported when it is " +
+            "named.");
+    }
+
+    public static Exception DetectGapsIntervalUnknown(INodeContext nodeContext, OctoObjectId archiveRtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ExpectedInterval is not set and archive '{archiveRtId}' " +
+            "declares no period. Set ExpectedInterval to the length of one value slot, e.g. " +
+            "'00:15:00'.");
+    }
+
+    public static Exception DetectGapsTooManySlots(INodeContext nodeContext, TimeSpan interval, long maxSlots)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ExpectedInterval '{interval}' divides the period into {maxSlots} slots " +
+            "or more, more than the slot counts can hold. Use a longer ExpectedInterval or a shorter period.");
+    }
+
     public static Exception InvalidRtId(INodeContext nodeContext, string value)
     {
         return new MeshAdapterPipelineExecutionException(

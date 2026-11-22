@@ -49,25 +49,15 @@ internal static class StreamDataGapAnalyzer
 
         foreach (var row in rows)
         {
-            var start = AsDateTime(StreamDataNodeHelpers.ResolveStreamColumnValue(
-                row.Values, StreamDataNodeHelpers.WindowStartColumn));
-            // window_end is aliased as the time axis on a windowed archive, so it arrives as
-            // Timestamp; fall back to the projected column for completeness.
-            var end = row.Timestamp
-                      ?? AsDateTime(StreamDataNodeHelpers.ResolveStreamColumnValue(
-                          row.Values, StreamDataNodeHelpers.WindowEndColumn));
-
             // Register the entity even when the row carries no usable window: it did deliver
             // something, and surfacing it as a fully uncovered series is more honest than dropping
             // it from the report altogether.
             var series = GetOrAdd(byEntity, row.RtId, row.RtWellKnownName);
 
-            if (start is null || end is null)
+            if (TryGetWindow(row, out var window))
             {
-                continue;
+                series.Windows.Add(window);
             }
-
-            series.Windows.Add(new Window(ToUtc(start.Value), ToUtc(end.Value)));
         }
 
         if (expectedEntities != null)
@@ -110,7 +100,36 @@ internal static class StreamDataGapAnalyzer
         };
     }
 
-    private static StreamDataGapSeries AnalyseSeries(Series series, DateTime from, DateTime to,
+    /// <summary>
+    /// Extracts a row's window in UTC: <c>window_start</c> from the projected column, the end from
+    /// the row's timestamp (window_end is aliased as the time axis on a windowed archive) with the
+    /// projected column as fallback. False when either boundary is missing — such a row cannot say
+    /// anything about coverage.
+    /// </summary>
+    internal static bool TryGetWindow(StreamDataRow row, out Window window)
+    {
+        var start = AsDateTime(StreamDataNodeHelpers.ResolveStreamColumnValue(
+            row.Values, StreamDataNodeHelpers.WindowStartColumn));
+        var end = row.Timestamp
+                  ?? AsDateTime(StreamDataNodeHelpers.ResolveStreamColumnValue(
+                      row.Values, StreamDataNodeHelpers.WindowEndColumn));
+
+        if (start is null || end is null)
+        {
+            window = default;
+            return false;
+        }
+
+        window = new Window(ToUtc(start.Value), ToUtc(end.Value));
+        return true;
+    }
+
+    /// <summary>
+    /// Analyses the coverage of one series over from..to: the per-series rule set behind
+    /// <see cref="Analyse" />, shared with <c>DetectStreamDataGaps@1</c> so both nodes report the
+    /// same ranges and counts for the same windows.
+    /// </summary>
+    internal static StreamDataGapSeries AnalyseSeries(Series series, DateTime from, DateTime to,
         TimeSpan? interval)
     {
         var (covered, hasOverlaps) = MergeClampedWindows(series.Windows, from, to);
@@ -230,10 +249,12 @@ internal static class StreamDataGapAnalyzer
 
     /// <summary>
     /// Intervals a duration spans, rounded up: a gap shorter than one interval still means one
-    /// interval was not delivered in full.
+    /// interval was not delivered in full. Exact tick arithmetic: a floating-point division loses
+    /// precision for very long ranges and could round a remainder of one tick away. Callers keep
+    /// the result within int (DetectStreamDataGaps@1 refuses periods that could exceed it).
     /// </summary>
-    private static int CountIntervals(TimeSpan duration, TimeSpan interval)
-        => (int)Math.Ceiling((double)duration.Ticks / interval.Ticks);
+    internal static int CountIntervals(TimeSpan duration, TimeSpan interval)
+        => (int)(duration.Ticks / interval.Ticks + (duration.Ticks % interval.Ticks == 0 ? 0 : 1));
 
     private static Series GetOrAdd(IDictionary<string, Series> byEntity, OctoObjectId? rtId,
         string? wellKnownName)

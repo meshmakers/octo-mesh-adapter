@@ -1,0 +1,65 @@
+# Sample method pipeline (AB#9466): book a slot without double booking.
+#
+# Handler of the static CK method Acme.Scheduling/SlotBooking.Book (execution.handler: pipeline). Deploy it with
+# rtWellKnownName = the qualified method id. The method declares:
+#   parameters: resourceRtId (String), slotStartUtc (String, ISO-8601 UTC), bookedBy (String)
+#   result:     Boolean (true = booked)
+#   errors:     CONCURRENT_CHANGE (the slot is already booked, also by a concurrent call)
+#
+# The CK type Acme.Scheduling/SlotBooking declares a UniqueNotDeleted index on SlotKey in its FIRST version.
+# Adding a unique index to an existing type that already holds data is a Major change of the CK model and fails on
+# duplicates already stored (AB#5347).
+#
+# Why this is safe against concurrent calls: the unique index is the only check that holds when two calls book the
+# same slot at once. ApplyChanges@2 with onDuplicateKey: Report turns the refused write into $.slotTaken = true
+# instead of failing the pipeline (which the caller would see as METHOD_HANDLER_FAILED). A WriteConflict with a
+# second adapter replica is retried and, when it does not clear, reported the same way - never a silent "booked".
+#
+# Cancelling a booking must delete it (soft delete), not only set a status: a cancelled booking that is not deleted
+# keeps the slot blocked under UniqueNotDeleted.
+#
+# Tested by MeshAdapter.Sdk.IntegrationTests/Nodes/Load/SlotBookingConflictTests.cs (the test runs the
+# transformations of this file against the integration test model).
+triggers:
+  - type: FromExecutePipelineCommand@1
+    callerBinding: BindingRequired
+transformations:
+  - type: FormatString@1
+    format: "{$.parameters.resourceRtId}|{$.parameters.slotStartUtc}"
+    targetPath: $.slotKey
+  - type: CreateUpdateInfo@1
+    targetPath: $._inserts
+    targetValueKind: Array
+    updateKind: INSERT
+    ckTypeId: Acme.Scheduling/SlotBooking
+    generateRtId: true
+    attributeUpdates:
+      - attributeName: SlotKey
+        attributeValueType: String
+        valuePath: $.slotKey
+      - attributeName: BookedBy
+        attributeValueType: String
+        valuePath: $.parameters.bookedBy
+  - type: ApplyChanges@2
+    entityUpdatesPath: $._inserts
+    onDuplicateKey: Report
+    duplicateKeyTargetPath: $.slotTaken
+  # Two complementary branches, each writes $.result once (see the method handler contract).
+  - type: If@1
+    path: $.slotTaken
+    value: true
+    valueType: Boolean
+    transformations:
+      - type: WriteJson@1
+        targetPath: $.result
+        jsonString: '{"error": {"code": "CONCURRENT_CHANGE", "parameters": {"reason": "slot-taken"}}}'
+  - type: If@1
+    path: $.slotTaken
+    value: false
+    valueType: Boolean
+    transformations:
+      - type: WriteJson@1
+        targetPath: $.result
+        jsonString: '{"value": true}'
+  - type: SetPipelineExecutionResult@1
+    path: $.result

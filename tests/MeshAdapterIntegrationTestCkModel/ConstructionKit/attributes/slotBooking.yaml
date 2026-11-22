@@ -1,0 +1,7 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # AB#9465 / AB#9466 (SlotBooking)
+  - id: SlotKey
+    valueType: String
+  - id: BookedBy
+    valueType: String

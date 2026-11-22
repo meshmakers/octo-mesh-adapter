@@ -176,7 +176,7 @@ internal sealed class StreamDataGapDetector
             From = request.From,
             To = request.To,
             Interval = StreamDataGapDuration.ToIso8601(request.Interval),
-            ExpectedCount = (int)Math.Ceiling((double)(request.To - request.From).Ticks / request.Interval.Ticks),
+            ExpectedCount = StreamDataGapAnalyzer.CountIntervals(request.To - request.From, request.Interval),
             SeriesCount = series.Count,
             SeriesWithGapsCount = withGaps.Count,
             MissingCount = missingTotal,
@@ -327,7 +327,13 @@ internal sealed class StreamDataGapDetector
                     .WithRtIds(rtIds)
                     .WithTimeRange(sliceFrom, sliceTo)
                     .WithFieldFilters(request.FieldFilters)
-                    .WithSortOrders([new SortOrderItem(StreamDataNodeHelpers.WindowStartColumn, SortOrders.Ascending)])
+                    // The full row key as order, so offset pages are stable on their own (the engine
+                    // appends the same key since AB#9110; stating it keeps the paging independent of that).
+                    .WithSortOrders([
+                        new SortOrderItem(StreamDataNodeHelpers.WindowStartColumn, SortOrders.Ascending),
+                        new SortOrderItem(StreamDataNodeHelpers.WindowEndColumn, SortOrders.Ascending),
+                        new SortOrderItem(RtIdColumn, SortOrders.Ascending)
+                    ])
                     .WithPagination(offset, _pageRows);
 
                 StreamDataQueryResult result;

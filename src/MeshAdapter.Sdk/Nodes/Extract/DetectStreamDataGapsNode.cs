@@ -26,6 +26,9 @@ public class DetectStreamDataGapsNode(
     ISystemContext systemContext)
     : IPipelineNode
 {
+    /// <summary>Most slots a period may hold, so every per-series count fits into an int.</summary>
+    internal const long MaxSlotsPerPeriod = int.MaxValue / 2;
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -74,11 +77,13 @@ public class DetectStreamDataGapsNode(
             throw MeshAdapterPipelineExecutionException.DetectGapsIntervalUnknown(nodeContext, c.ArchiveRtId);
         }
 
-        // The slot counts are ints (shared with GetStreamData@1's report); a period that needs more
-        // slots would wrap silently, so it is refused up front.
-        if ((to - from).Ticks / interval.Value.Ticks >= int.MaxValue)
+        // The slot counts are ints (shared with GetStreamData@1's report). Each missing range rounds
+        // up by less than one slot and there are never more ranges than slots, so a series' sum stays
+        // below twice the period's slots; a period that could exceed int is refused up front.
+        if ((to - from).Ticks / interval.Value.Ticks >= MaxSlotsPerPeriod)
         {
-            throw MeshAdapterPipelineExecutionException.DetectGapsTooManySlots(nodeContext, interval.Value);
+            throw MeshAdapterPipelineExecutionException.DetectGapsTooManySlots(nodeContext, interval.Value,
+                MaxSlotsPerPeriod);
         }
 
         var rtIds = StreamDataNodeHelpers.ResolveRtIds(c.RtIds, c.RtIdsPath, dataContext, nodeContext,

@@ -249,10 +249,12 @@ internal static class StreamDataGapAnalyzer
 
     /// <summary>
     /// Intervals a duration spans, rounded up: a gap shorter than one interval still means one
-    /// interval was not delivered in full.
+    /// interval was not delivered in full. Exact tick arithmetic: a floating-point division loses
+    /// precision for very long ranges and could round a remainder of one tick away. Callers keep
+    /// the result within int (DetectStreamDataGaps@1 refuses periods that could exceed it).
     /// </summary>
-    private static int CountIntervals(TimeSpan duration, TimeSpan interval)
-        => (int)Math.Ceiling((double)duration.Ticks / interval.Ticks);
+    internal static int CountIntervals(TimeSpan duration, TimeSpan interval)
+        => (int)(duration.Ticks / interval.Ticks + (duration.Ticks % interval.Ticks == 0 ? 0 : 1));
 
     private static Series GetOrAdd(IDictionary<string, Series> byEntity, OctoObjectId? rtId,
         string? wellKnownName)

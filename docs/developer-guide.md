@@ -607,7 +607,7 @@ can then be requested again as one request.
 | `ArchiveRtId` | OctoObjectId | RtId of a windowed archive. A raw archive fails the node. Required |
 | `RtIds` / `RtIdsPath` | collection\<string\> / string | The series to check. One of them is required; a path resolving to nothing writes an empty result with a warning |
 | `From` / `To` (+ `…Path`) | DateTime? / string | The period, half-open. Both required; give them with their UTC offset, a value without offset is UTC |
-| `ExpectedInterval` | TimeSpan? | Length of one slot; defaults to the archive's period. Must be positive |
+| `ExpectedInterval` | TimeSpan? | Length of one slot; defaults to the archive's period. Must be positive; the period may hold fewer than int.MaxValue / 2 slots |
 | `FieldFilters` | collection | Only rows matching every filter count as present |
 
 **Result** (`TargetPath`): `from`, `to`, `interval` (ISO-8601), `expectedCount` (slots per series),
@@ -627,7 +627,7 @@ periods so that days x series stay within the storage cap of 100,000 rows per co
 `ExecuteDownsamplingQueryAsync` counts the windows per series and 24-hour bin anchored at `from` (AB#7360
 local-day bins, no zone, `BinOrigin` = the UTC time of day of `from`). A bin whose count equals its slot
 count is complete and not read; a bin without windows is missing as a whole; only the other bins and a
-remainder shorter than a day are read row by row (`window_start` only, sliced by time, paged). When the
+remainder shorter than a day are read row by row (`window_start` only, in time slices of at least one hour, ordered by the row key and paged). When the
 count is not usable — the archive's declared `Period` is not the slot length, the period is shorter than a
 day, the slot does not divide a day, `from` is not on a whole minute, or the storage refuses the bins
 (windows across a bin boundary) — the batch is read row by row, with the same result. Only the configured

@@ -569,13 +569,28 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
     [Fact]
     public async Task AVeryShortSlot_DoesNotMultiplyTheRowQueries()
     {
-        // One-second slots over two days of an empty archive: hour-long slices, not 50-second ones.
-        var config = Config(Day1, Day1.AddDays(2), SeriesA) with { ExpectedInterval = TimeSpan.FromSeconds(1) };
+        // One-second slots over two days of an empty archive with pages of two rows: sized by the slot
+        // alone a slice would be two seconds long (86,400 queries); the floor makes it one hour (48).
+        var nodeContext = PrepareTest(Config(Day1, Day1.AddDays(2))).NodeContext;
+        var detector = new StreamDataGapDetector(_archive.Repository, WindowedSnapshot(Quarter), TestArchiveRtId,
+            nodeContext, pageRows: 2);
 
-        var (result, _) = await RunAsync(config);
+        var result = await detector.DetectAsync(
+            new StreamDataGapDetector.Request(Day1, Day1.AddDays(2), TimeSpan.FromSeconds(1), [SeriesA], null));
 
-        Assert.True(_archive.RowQueryRanges.Count <= 48, $"{_archive.RowQueryRanges.Count} row queries");
+        Assert.Equal(48, detector.RowQueries);
+        Assert.All(_archive.RowQueryRanges, r => Assert.Equal(TimeSpan.FromHours(1), r.To - r.From));
         Assert.Equal(172_800, Assert.Single(result.Series).MissingCount);
+    }
+
+    [Fact]
+    public void SlotCounts_UseExactTickArithmetic()
+    {
+        // 20,000 days plus one tick at one day per slot: 20,001 slots (a double division gives 20,000).
+        Assert.Equal(20_001, StreamDataGapAnalyzer.CountIntervals(TimeSpan.FromDays(20_000) + TimeSpan.FromTicks(1),
+            TimeSpan.FromDays(1)));
+        Assert.Equal(96, StreamDataGapAnalyzer.CountIntervals(TimeSpan.FromDays(1), Quarter));
+        Assert.Equal(1, StreamDataGapAnalyzer.CountIntervals(TimeSpan.FromMinutes(7), Quarter));
     }
 
     [Fact]

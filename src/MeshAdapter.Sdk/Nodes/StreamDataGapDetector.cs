@@ -16,14 +16,18 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// (<see cref="IStreamDataRepository.ExecuteDownsamplingQueryAsync" />, AB#7360). A bin whose count
 /// equals the slots it holds is taken as complete and is not read; a bin without windows is missing
 /// as a whole; only the other bins, and a period remainder shorter than a day, are read row by row
-/// (only <c>window_start</c>, sliced by time and paged). Without a usable COUNT — the period is
-/// shorter than a day, the slot does not divide a day, <c>From</c> is not on a whole minute, or the
-/// storage refuses the bins (e.g. windows across a bin boundary) — the whole batch is read row by
-/// row, which gives the same result, only slower.
+/// (only <c>window_start</c>, sliced by time and paged). Without a usable COUNT — the archive does
+/// not declare the slot length as its <c>Period</c>, the period is shorter than a day, the slot does
+/// not divide a day, <c>From</c> is not on a whole minute, or the storage refuses the bins (e.g.
+/// windows across a bin boundary) — the whole batch is read row by row, which gives the same result,
+/// only slower.
 /// </para>
 /// <para>
-/// Known limit of the COUNT shortcut: a bin whose window count equals its slot count is not read, so
-/// windows of mixed lengths overlapping inside such a bin are neither seen nor flagged there.
+/// Known limit of the COUNT shortcut: a count stands for "every slot delivered" only when the
+/// windows are one slot long, which is why the shortcut needs the archive's declared <c>Period</c> to
+/// equal the slot length. An archive that declares that period but still stores windows of another
+/// length (shorter, longer or overlapping ones) inside a bin whose window count happens to equal its
+/// slot count hides a hole there: such a bin is not read, so the hole is neither seen nor flagged.
 /// </para>
 /// </summary>
 internal sealed class StreamDataGapDetector
@@ -99,7 +103,7 @@ internal sealed class StreamDataGapDetector
             .OrderBy(id => id.ToString(), StringComparer.Ordinal)
             .ToList();
 
-        var plan = CountPlan.Create(request);
+        var plan = CountPlan.Create(request, _snapshot.Period);
         var batchSize = plan.Usable
             ? Math.Max(1, Math.Min(_maxSeriesPerBatch, MaxCountRowsPerQuery / plan.Days))
             : _maxSeriesPerBatch;
@@ -355,14 +359,17 @@ internal sealed class StreamDataGapDetector
 
     /// <summary>
     /// Whether and how the COUNT shortcut applies: whole 24-hour bins from <c>From</c> up to
-    /// <see cref="CountEnd" />, each holding <see cref="SlotsPerBin" /> slots.
+    /// <see cref="CountEnd" />, each holding <see cref="SlotsPerBin" /> slots. A window count only
+    /// equals "every slot delivered" when the windows are one slot long, so the archive must declare
+    /// the slot length as its period; otherwise every bin is read row by row.
     /// </summary>
     private readonly record struct CountPlan(bool Usable, int Days, DateTime CountEnd, long SlotsPerBin)
     {
-        internal static CountPlan Create(Request request)
+        internal static CountPlan Create(Request request, TimeSpan? archivePeriod)
         {
             var days = (request.To - request.From).Ticks / Bin.Ticks;
-            var usable = days is >= 1 and <= MaxCountBins
+            var usable = archivePeriod == request.Interval
+                         && days is >= 1 and <= MaxCountBins
                          && Bin.Ticks % request.Interval.Ticks == 0
                          && request.From.TimeOfDay.Ticks % TimeSpan.TicksPerMinute == 0;
 

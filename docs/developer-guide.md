@@ -628,12 +628,15 @@ periods so that days x series stay within the storage cap of 100,000 rows per co
 local-day bins, no zone, `BinOrigin` = the UTC time of day of `from`). A bin whose count equals its slot
 count is complete and not read; a bin without windows is missing as a whole; only the other bins and a
 remainder shorter than a day are read row by row (`window_start` only, sliced by time, paged). When the
-count is not usable — period shorter than a day, a slot that does not divide a day, `from` not on a whole
-minute, or the storage refuses the bins (windows across a bin boundary) — the batch is read row by row,
-with the same result. Only the configured archive is read; no rollup selection, no fallback archive.
-Overlapping windows are counted once, flagged with `hasOverlaps` and named in a warning; a storage
-failure fails the node with the storage message. Known limit: a bin whose window count equals its slot
-count is not read, so windows of mixed lengths overlapping inside such a bin are not seen there.
+count is not usable — the archive's declared `Period` is not the slot length, the period is shorter than a
+day, the slot does not divide a day, `from` is not on a whole minute, or the storage refuses the bins
+(windows across a bin boundary) — the batch is read row by row, with the same result. Only the configured
+archive is read; no rollup selection, no fallback archive. Overlapping windows are counted once, flagged
+with `hasOverlaps` and named in a warning; a storage failure fails the node with the storage message.
+Known limit: a window count stands for "every slot delivered" only when the windows are one slot long. An
+archive that declares the slot length as its `Period` but stores windows of another length (shorter,
+longer or overlapping) inside a bin whose window count equals its slot count hides a hole there, because
+such a bin is not read.
 
 #### BackfillFromRtEntityNode
 

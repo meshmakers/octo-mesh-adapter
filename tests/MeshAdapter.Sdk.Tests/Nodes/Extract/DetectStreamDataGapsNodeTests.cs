@@ -250,6 +250,25 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
         AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), Day1.AddHours(1), Day1.AddHours(2), 4);
     }
 
+    [Fact]
+    public async Task AnArchiveWhosePeriodIsNotTheSlot_IsReadRowByRow_SoShortWindowsCannotHideAHole()
+    {
+        // 94 quarter-hours plus two 5-minute windows: 96 windows in the day, but 20 minutes missing.
+        SetupArchive(WindowedSnapshot(Hour));
+        _archive.AddSlots(SeriesA, Day1, Day1.AddDays(1), Quarter,
+            skip: [Day1.AddHours(10), Day1.AddHours(10).Add(Quarter)]);
+        _archive.Add(SeriesA, Day1.AddHours(10), Day1.AddHours(10).AddMinutes(5));
+        _archive.Add(SeriesA, Day1.AddHours(10).AddMinutes(20), Day1.AddHours(10).AddMinutes(25));
+
+        var (result, _) = await RunAsync(Config(Day1, Day1.AddDays(1), SeriesA) with { ExpectedInterval = Quarter });
+
+        Assert.Equal(0, _archive.CountQueries);
+        var series = Assert.Single(result.Series);
+        Assert.Equal(2, series.Ranges.Count);
+        AssertRange(series.Ranges[0], Day1.AddHours(10).AddMinutes(5), Day1.AddHours(10).AddMinutes(20), 1);
+        AssertRange(series.Ranges[1], Day1.AddHours(10).AddMinutes(25), Day1.AddHours(10).AddMinutes(30), 1);
+    }
+
     // ------------------------------------------------------------------ field filters
 
     [Fact]

@@ -41,7 +41,7 @@ public record DetectStreamDataGapsNodeConfiguration : TargetPathNodeConfiguratio
 
     /// <summary>
     /// Start of the period, inclusive. Give it with its UTC offset
-    /// ("2026-06-30T22:00:00+02:00"): the offset also decides where a day starts, so a calendar
+    /// ("2026-07-01T00:00:00+02:00"): the offset also decides where a day starts, so a calendar
     /// month in local time is from local midnight of the first day to local midnight of the next
     /// month. A value without an offset is read as UTC.
     /// </summary>

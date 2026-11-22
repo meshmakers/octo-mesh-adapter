@@ -193,12 +193,14 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
     [Fact]
     public async Task ACalendarMonthGivenWithOffsets_HasExactly2976QuarterHourSlots()
     {
-        var from = DateTimeOffset.Parse("2026-06-30T22:00:00+02:00", CultureInfo.InvariantCulture).UtcDateTime;
-        var to = DateTimeOffset.Parse("2026-07-31T22:00:00+02:00", CultureInfo.InvariantCulture).UtcDateTime;
+        // July 2026 in local time (UTC+2): local midnight to local midnight.
+        var from = DateTimeOffset.Parse("2026-07-01T00:00:00+02:00", CultureInfo.InvariantCulture).UtcDateTime;
+        var to = DateTimeOffset.Parse("2026-08-01T00:00:00+02:00", CultureInfo.InvariantCulture).UtcDateTime;
 
         var (result, _) = await RunAsync(Config(from, to, SeriesA));
 
-        Assert.Equal(new DateTime(2026, 6, 30, 20, 0, 0, DateTimeKind.Utc), result.From);
+        Assert.Equal(new DateTime(2026, 6, 30, 22, 0, 0, DateTimeKind.Utc), result.From);
+        Assert.Equal(new DateTime(2026, 7, 31, 22, 0, 0, DateTimeKind.Utc), result.To);
         Assert.Equal(2976, result.ExpectedCount);
         Assert.Equal(2976, Assert.Single(result.Series).MissingCount);
     }
@@ -553,6 +555,27 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
         var config = Config(Day1, Day1.AddDays(1), SeriesA) with { ExpectedInterval = TimeSpan.FromMinutes(minutes) };
 
         Assert.Contains("ExpectedInterval", await RunExpectingErrorAsync(config));
+    }
+
+    [Fact]
+    public async Task MoreSlotsThanTheCountsCanHold_FailNamingExpectedInterval()
+    {
+        // One tick per slot over a day: about 864 billion slots.
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with { ExpectedInterval = TimeSpan.FromTicks(1) };
+
+        Assert.Contains("ExpectedInterval", await RunExpectingErrorAsync(config));
+    }
+
+    [Fact]
+    public async Task AVeryShortSlot_DoesNotMultiplyTheRowQueries()
+    {
+        // One-second slots over two days of an empty archive: hour-long slices, not 50-second ones.
+        var config = Config(Day1, Day1.AddDays(2), SeriesA) with { ExpectedInterval = TimeSpan.FromSeconds(1) };
+
+        var (result, _) = await RunAsync(config);
+
+        Assert.True(_archive.RowQueryRanges.Count <= 48, $"{_archive.RowQueryRanges.Count} row queries");
+        Assert.Equal(172_800, Assert.Single(result.Series).MissingCount);
     }
 
     [Fact]

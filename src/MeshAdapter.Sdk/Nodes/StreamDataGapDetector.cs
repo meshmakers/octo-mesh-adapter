@@ -47,6 +47,9 @@ internal sealed class StreamDataGapDetector
     /// <summary>Bins one COUNT may have (<c>DownsamplingBinAxis.MaxBins</c>).</summary>
     internal const int MaxCountBins = 10_000;
 
+    /// <summary>Shortest time slice of a row read (one hour), so a tiny slot cannot multiply the queries.</summary>
+    private const long MinSliceTicks = TimeSpan.TicksPerHour;
+
     /// <summary>The series identity column the COUNT groups by.</summary>
     private const string RtIdColumn = "rtId";
 
@@ -306,6 +309,10 @@ internal sealed class StreamDataGapDetector
         var sliceTicks = request.Interval.Ticks >= rangeTicks / slotsPerSlice
             ? rangeTicks
             : request.Interval.Ticks * slotsPerSlice;
+        // At least an hour (or the whole range): with a very short slot a slice sized by the slot
+        // alone would turn a sparse or empty range into thousands of queries. Dense slices stay
+        // correct, they just need more pages.
+        sliceTicks = Math.Max(sliceTicks, Math.Min(rangeTicks, MinSliceTicks));
         var slice = TimeSpan.FromTicks(Math.Max(1, sliceTicks));
 
         for (var sliceFrom = from; sliceFrom < to;)

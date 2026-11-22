@@ -74,6 +74,13 @@ public class DetectStreamDataGapsNode(
             throw MeshAdapterPipelineExecutionException.DetectGapsIntervalUnknown(nodeContext, c.ArchiveRtId);
         }
 
+        // The slot counts are ints (shared with GetStreamData@1's report); a period that needs more
+        // slots would wrap silently, so it is refused up front.
+        if ((to - from).Ticks / interval.Value.Ticks >= int.MaxValue)
+        {
+            throw MeshAdapterPipelineExecutionException.DetectGapsTooManySlots(nodeContext, interval.Value);
+        }
+
         var rtIds = StreamDataNodeHelpers.ResolveRtIds(c.RtIds, c.RtIdsPath, dataContext, nodeContext,
             nameof(c.RtIdsPath)) ?? [];
         var fieldFilters = StreamDataNodeHelpers.BuildFieldFilters(null, null, c.FieldFilters, snapshot,

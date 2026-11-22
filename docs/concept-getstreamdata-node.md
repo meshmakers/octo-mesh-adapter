@@ -177,11 +177,12 @@ stillschweigend breiter und genau die Lücken verschwinden. Der Clamp ist für C
 
 **Konsequenz:** Gap-Detection scannt über `ExecuteQueryAsync` die tatsächlichen Fenster (§6).
 
-**Nachtrag AB#9588:** Der Clamp betrifft nur die Bins aus Zeitraum und `Limit`. Die Local-Day-Bins von
-AB#7360 (`BinOrigin`/`BinInterval`, ohne `Limit`) haben eine feste Achse ohne Clamp; `DetectStreamDataGaps@1`
-nutzt sie nur als Vorfilter (COUNT je Serie und 24-Stunden-Bin ab `From`: volle Bins werden nicht gelesen,
-alle anderen weiter über `ExecuteQueryAsync`). Die Lücken selbst kommen weiterhin aus den tatsächlichen
-Fenstern; Details im developer-guide, Abschnitt `DetectStreamDataGapsNode`.
+**Addendum AB#9588:** The clamp only affects the bins derived from the range and `Limit`. The local-day
+bins of AB#7360 (`BinOrigin`/`BinInterval`, no `Limit`) have a fixed axis without a clamp.
+`DetectStreamDataGaps@1` uses them only as a pre-filter: one COUNT per series and 24-hour bin from `From`;
+complete bins are not read, every other bin is still read row by row through `ExecuteQueryAsync`. The
+gaps themselves still come from the actual windows; details in the developer guide, section
+`DetectStreamDataGapsNode`.
 
 ### (b) Welche Spalten wirklich in `StreamDataRow.Values` landen
 

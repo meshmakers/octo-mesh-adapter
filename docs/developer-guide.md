@@ -592,8 +592,8 @@ can then be requested again as one request.
 - type: DetectStreamDataGaps@1
   archiveRtId: <archiveRtId>
   rtIdsPath: $.meteringPoints[*].rtId
-  from: 2026-06-30T22:00:00+02:00      # the offset sets the day boundary: July 2026 local
-  to:   2026-07-31T22:00:00+02:00
+  from: 2026-07-01T00:00:00+02:00      # the offset sets the day boundary: July 2026 local
+  to:   2026-08-01T00:00:00+02:00
   expectedInterval: 00:15:00           # default: the archive's period
   fieldFilters:
     - attributePath: Amount.Unit
@@ -618,7 +618,7 @@ over the whole period. The ranges and counts are those of `GetStreamData@1`'s ga
 data — both use `StreamDataGapAnalyzer` (coverage of the windows, counts rounded up per range).
 
 **No time zone, no day start, no per-day mode** (decided by Markus 2026-11-22): the day boundary
-follows from the offset of `from`/`to` (`2026-06-30T22:00:00+02:00` .. `2026-07-31T22:00:00+02:00` is
+follows from the offset of `from`/`to` (`2026-07-01T00:00:00+02:00` .. `2026-08-01T00:00:00+02:00` is
 the local month July with 2976 quarter-hour slots; gas days start at 06:00 local in a separate call).
 Counting is by instants, so a DST change needs no special case.
 

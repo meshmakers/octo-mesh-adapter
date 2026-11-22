@@ -1133,6 +1133,14 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "'00:15:00'.");
     }
 
+    public static Exception DetectGapsTooManySlots(INodeContext nodeContext, TimeSpan interval)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: ExpectedInterval '{interval}' divides the period into more than " +
+            $"{int.MaxValue} slots, more than the slot counts can hold. Use a longer ExpectedInterval or a " +
+            "shorter period.");
+    }
+
     public static Exception InvalidRtId(INodeContext nodeContext, string value)
     {
         return new MeshAdapterPipelineExecutionException(

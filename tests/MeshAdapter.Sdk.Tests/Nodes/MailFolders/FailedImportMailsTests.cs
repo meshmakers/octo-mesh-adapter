@@ -296,7 +296,10 @@ public class FailedImportMailsTests : NodeTestBase
         // "Steuer" stays.
         A.CallTo(() => failed.StoreAsync(new UniqueId(5), A<IStoreFlagsRequest>._, A<CancellationToken>._))
             .MustHaveHappenedOnceExactly()
-            .Then(A.CallTo(() => failed.MoveToAsync(new UniqueId(5), source, A<CancellationToken>._))
+            .Then(A.CallTo(() => failed.MoveToAsync(
+                    A<IList<UniqueId>>.That.Matches(ids => ids.Count == 1 && ids[0] == new UniqueId(5)),
+                    A<IMoveRequest>.That.Matches(request => ReferenceEquals(request.Destination, source)),
+                    A<CancellationToken>._))
                 .MustHaveHappenedOnceExactly());
         Assert.NotNull(stored);
         Assert.Equal(StoreAction.Remove, stored!.Action);
@@ -318,7 +321,7 @@ public class FailedImportMailsTests : NodeTestBase
 
         Assert.Equal(RequeueOutcome.Failed, outcome.Status);
         Assert.Contains("NOT moved", outcome.Reason);
-        A.CallTo(() => failed.MoveToAsync(A<UniqueId>._, A<IMailFolder>._, A<CancellationToken>._)).MustNotHaveHappened();
+        A.CallTo(() => failed.MoveToAsync(A<IList<UniqueId>>._, A<IMoveRequest>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Theory]
@@ -337,7 +340,7 @@ public class FailedImportMailsTests : NodeTestBase
         Assert.Equal(RequeueOutcome.NotFound, outcome.Status);
         A.CallTo(() => failed.StoreAsync(A<UniqueId>._, A<IStoreFlagsRequest>._, A<CancellationToken>._))
             .MustNotHaveHappened();
-        A.CallTo(() => failed.MoveToAsync(A<UniqueId>._, A<IMailFolder>._, A<CancellationToken>._)).MustNotHaveHappened();
+        A.CallTo(() => failed.MoveToAsync(A<IList<UniqueId>>._, A<IMoveRequest>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Reflection;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -1030,6 +1030,40 @@ public class ApplyChangesNode2Tests : SessionNodeTestBase
 
         A.CallTo(() => Session.CommitTransactionAsync()).MustHaveHappenedOnceExactly();
         A.CallTo(() => dataContext.Set(DuplicateTargetPath, false, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+    }
+
+    /// <summary>
+    /// The backoff waits without the process-wide lock: while one write sits out its conflict retries, another
+    /// ApplyChanges@2 run of the same adapter goes through instead of queueing behind it (review of PR #130).
+    /// </summary>
+    [Fact]
+    public async Task The_backoff_releases_the_process_wide_lock_so_other_writes_go_on()
+    {
+        const string conflicting = "0000000000000000000000a1";
+        const string other = "0000000000000000000000b2";
+        var (dataA, nodeContextA, nextA) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataA, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(conflicting) });
+        var (dataB, nodeContextB, nextB) = PrepareTest<ApplyChangesNodeConfiguration2>(ReportingConfig());
+        SetupEntityData(dataB, EntityUpdatesPath, new List<EntityUpdateInfo<RtEntity>> { CreateInsertUpdateInfo(other) });
+        A.CallTo(() => TenantRepository.ApplyChangesAsync(
+                A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>.That.Matches(
+                    list => list.Any(u => u.RtEntity != null && u.RtEntity.RtId.ToString() == conflicting)),
+                A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Throws(Wrapped(WriteConflict()));
+
+        var conflictingRun = CreateNode(nextA).ProcessObjectAsync(dataA, nodeContextA);
+        await Task.Delay(TimeSpan.FromMilliseconds(60), TestContext.Current.CancellationToken);
+        var otherRun = CreateNode(nextB).ProcessObjectAsync(dataB, nodeContextB);
+
+        var first = await Task.WhenAny(conflictingRun, otherRun);
+        Assert.Same(otherRun, first);
+        await conflictingRun;
+        A.CallTo(() => dataB.Set(DuplicateTargetPath, false, DocumentModes.Extend,
+            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => dataA.Set(DuplicateTargetPath, true, DocumentModes.Extend,
             ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
     }
 }

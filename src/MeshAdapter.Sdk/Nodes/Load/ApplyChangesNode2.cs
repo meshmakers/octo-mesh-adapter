@@ -179,7 +179,20 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                                 $"Write conflict (attempt {attempt} of {MaxWriteAttempts}), retrying in {delay.TotalMilliseconds:F0} ms");
                             session?.Dispose();
                             session = null;
-                            await Task.Delay(delay);
+
+                            // Wait without the process-wide lock, so the other ApplyChanges@2 runs of this
+                            // adapter (every pipeline and tenant) are not held up by one conflicting write.
+                            // Re-acquired before the next attempt; the outer finally releases it once.
+                            ApplySemaphoreSlim.Release();
+                            try
+                            {
+                                await Task.Delay(delay);
+                            }
+                            finally
+                            {
+                                await ApplySemaphoreSlim.WaitAsync();
+                            }
+
                             continue;
                         }
 

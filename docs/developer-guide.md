@@ -1437,7 +1437,13 @@ on and answers for itself. Without Report (the default `Throw`) the refusal fail
 | Unique index refuses (E11000) | rolled back, flag `true` | pipeline fails |
 | WriteConflict (112) that clears within the retries | retried; then stored (`false`) or refused (`true`) | retried; then stored or fails |
 | WriteConflict (112) that outlasts the retries | rolled back, flag `true` (never a silent success) | pipeline fails |
-| Any other failure | pipeline fails | pipeline fails |
+| Engine reports errors in its operation result (validation) | logged as an error, rolled back, **no flag written**, pipeline continues | logged as an error, rolled back, pipeline continues |
+| Any other exception | pipeline fails | pipeline fails |
+
+The validation row is the node's behaviour before AB#9466 and stays unchanged: the flag is then absent (or
+still holds the value of an earlier iteration of a `ForEach@1`). A pipeline must therefore read only an
+explicit `false` as "stored"; the sample answers neither branch in that case, so the method returns no
+result and the caller gets `METHOD_HANDLER_FAILED`.
 
 Within one adapter process the node writes one batch at a time (a process-wide semaphore). Two adapter
 replicas do not share that lock: while replica A's transaction holds an uncommitted insert of a key, replica
@@ -1446,8 +1452,8 @@ B's insert of the same key meets a MongoDB **WriteConflict (112)**, which the re
 and retries on a fresh session, up to six attempts with a jittered exponential wait (ceilings 25, 50, 100,
 200, 400 ms, of which a random half to all is used; about 0.4 to 0.8 s in total). Once A has committed, B's
 retry meets the unique index and is reported as a duplicate; if A rolls back, B's retry stores the record.
-The wait holds the process-wide semaphore, so other `ApplyChanges@2` runs of the same adapter wait with it;
-it only happens under a conflict.
+The node releases the process-wide semaphore for the wait and takes it again before the next attempt, so
+the other `ApplyChanges@2` runs of the same adapter (every pipeline and tenant) go on meanwhile.
 
 Before AB#9466 the node recognised 112 only unwrapped: the wrapped conflict failed the pipeline, and a CK
 method pipeline answered `METHOD_HANDLER_FAILED` instead of its declared conflict error. The old retry loop

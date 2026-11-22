@@ -1,4 +1,4 @@
-﻿using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
 
@@ -83,7 +83,10 @@ public record ApplyChangesNodeConfiguration2 : NodeConfiguration
     /// <see cref="DuplicateKeyHandling.Report" />: <c>true</c> when a unique index refused the write or a
     /// write conflict outlasted the retries (nothing was written), <c>false</c> when the write was
     /// stored. Required for Report; without it the node throws as with
-    /// <see cref="DuplicateKeyHandling.Throw" />.
+    /// <see cref="DuplicateKeyHandling.Throw" />. When the engine reports errors in its operation result
+    /// (a validation error), the node logs an error, stores nothing and writes no flag, so the value is
+    /// absent or still the one of an earlier run against the same data document: read only an explicit
+    /// <c>false</c> as "stored".
     /// </summary>
     [PropertyGroup("Behaviour", 1, "jsonpath")]
     public string? DuplicateKeyTargetPath { get; init; }

@@ -581,6 +581,60 @@ vocabulary and translation as `GetStreamData@1`, with the same refusal for unkno
 aggregation the stakes are higher: a dropped filter inflates the figure, and a dropped group-by
 column collapses every group into one row. See AB#4722 / AB#4752.
 
+#### DetectStreamDataGapsNode
+
+`DetectStreamDataGaps@1` (AB#9588) returns, per series of one windowed archive (time-range or rollup),
+the missing time ranges `[start, end)` and the number of missing slots over the period `[from, to)` —
+with no row limit, so a whole month of a thousand quarter-hourly series is one call. Each missing range
+can then be requested again as one request.
+
+```yaml
+- type: DetectStreamDataGaps@1
+  archiveRtId: <archiveRtId>
+  rtIdsPath: $.meteringPoints[*].rtId
+  from: 2026-06-30T22:00:00+02:00      # the offset sets the day boundary: July 2026 local
+  to:   2026-07-31T22:00:00+02:00
+  expectedInterval: 00:15:00           # default: the archive's period
+  fieldFilters:
+    - attributePath: Amount.Unit
+      operator: Equals
+      comparisonValue: 1
+  targetPath: $.gaps
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ArchiveRtId` | OctoObjectId | RtId of a windowed archive. A raw archive fails the node. Required |
+| `RtIds` / `RtIdsPath` | collection\<string\> / string | The series to check. One of them is required; a path resolving to nothing writes an empty result with a warning |
+| `From` / `To` (+ `…Path`) | DateTime? / string | The period, half-open. Both required; give them with their UTC offset, a value without offset is UTC |
+| `ExpectedInterval` | TimeSpan? | Length of one slot; defaults to the archive's period. Must be positive |
+| `FieldFilters` | collection | Only rows matching every filter count as present |
+
+**Result** (`TargetPath`): `from`, `to`, `interval` (ISO-8601), `expectedCount` (slots per series),
+`seriesCount`, `seriesWithGapsCount`, `missingCount` and `series` — only the series with gaps, sorted by
+runtime id (ordinal), each with `rtId`, `missingCount`, `hasOverlaps` and `ranges` (`start`, `end`,
+`missingCount`, sorted by start). Touching ranges are merged; a series without any data is one range
+over the whole period. The ranges and counts are those of `GetStreamData@1`'s gap report for the same
+data — both use `StreamDataGapAnalyzer` (coverage of the windows, counts rounded up per range).
+
+**No time zone, no day start, no per-day mode** (decided by Markus 2026-11-22): the day boundary
+follows from the offset of `from`/`to` (`2026-06-30T22:00:00+02:00` .. `2026-07-31T22:00:00+02:00` is
+the local month July with 2976 quarter-hour slots; gas days start at 06:00 local in a separate call).
+Counting is by instants, so a DST change needs no special case.
+
+**How it reads** (`StreamDataGapDetector`): the series go in batches (at most 1000, fewer for long
+periods so that days x series stay within the storage cap of 100,000 rows per count). Per batch one
+`ExecuteDownsamplingQueryAsync` counts the windows per series and 24-hour bin anchored at `from` (AB#7360
+local-day bins, no zone, `BinOrigin` = the UTC time of day of `from`). A bin whose count equals its slot
+count is complete and not read; a bin without windows is missing as a whole; only the other bins and a
+remainder shorter than a day are read row by row (`window_start` only, sliced by time, paged). When the
+count is not usable — period shorter than a day, a slot that does not divide a day, `from` not on a whole
+minute, or the storage refuses the bins (windows across a bin boundary) — the batch is read row by row,
+with the same result. Only the configured archive is read; no rollup selection, no fallback archive.
+Overlapping windows are counted once, flagged with `hasOverlaps` and named in a warning; a storage
+failure fails the node with the storage message. Known limit: a bin whose window count equals its slot
+count is not read, so windows of mixed lengths overlapping inside such a bin are not seen there.
+
 #### BackfillFromRtEntityNode
 
 Supplements entities with additional data from MongoDB.

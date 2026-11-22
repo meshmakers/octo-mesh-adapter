@@ -102,6 +102,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<SftpListNode>()
             .RegisterNode<SftpDownloadNode>()
             .RegisterNode<AggregateStreamDataNode>()
+            .RegisterNode<DetectStreamDataGapsNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()

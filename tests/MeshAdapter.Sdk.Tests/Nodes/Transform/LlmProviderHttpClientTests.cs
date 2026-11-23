@@ -40,6 +40,32 @@ public class LlmProviderHttpClientTests
         Assert.Empty(target.Requests);
     }
 
+    [Fact]
+    public async Task ACookieTheProviderSets_IsNotSentWithTheNextRequest()
+    {
+        const string body = """{"stop_reason":"end_turn","content":[{"type":"text","text":"a"}]}""";
+        using var provider = new LoopbackServer(_ =>
+            "HTTP/1.1 200 OK\r\nSet-Cookie: session=from-the-provider; Path=/\r\nContent-Type: application/json\r\n" +
+            $"Content-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}");
+
+        var services = new ServiceCollection();
+        services.AddLlmProviderHttpClient();
+        await using var container = services.BuildServiceProvider();
+        var factory = container.GetRequiredService<IHttpClientFactory>();
+
+        for (var i = 0; i < 2; i++)
+        {
+            using var client = new AnthropicMessagesChatClient(factory, "the-api-key",
+                new Uri($"http://127.0.0.1:{provider.Port}"));
+            await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")],
+                new ChatOptions { ModelId = "m", MaxOutputTokens = 10 }, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(2, provider.Requests.Count);
+        Assert.All(provider.Requests, head =>
+            Assert.DoesNotContain("cookie:", head, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>A one-answer-per-connection HTTP server on a loopback port; keeps the request heads.</summary>
     private sealed class LoopbackServer : IDisposable
     {

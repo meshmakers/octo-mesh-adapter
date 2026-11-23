@@ -256,12 +256,18 @@ public static class ServiceCollectionExtensions
     ///     The HTTP client of the LLM providers (<c>AnthropicAiQuery@1</c>, <c>LlmQuery@1</c>). Long-running
     ///     tool-use loops with several MCP tool rounds exceed the default 100 s timeout, hence 10 minutes.
     ///     Redirects are not followed: the API key travels in a custom header (<c>x-api-key</c>), which the
-    ///     handler would send on to whatever origin a redirect names.
+    ///     handler would send on to whatever origin a redirect names. No cookies are kept: the factory pools
+    ///     handlers, so a cookie one configured endpoint sets would otherwise go to another endpoint on that host.
     /// </summary>
     internal static IServiceCollection AddLlmProviderHttpClient(this IServiceCollection services)
     {
         services.AddHttpClient(AnthropicMessagesChatClient.HttpClientName, c => c.Timeout = TimeSpan.FromMinutes(10))
-            .UseSocketsHttpHandler((handler, _) => handler.AllowAutoRedirect = false);
+            .UseSocketsHttpHandler((handler, _) =>
+            {
+                handler.AllowAutoRedirect = false;
+                // Pooled handlers share their cookie container: a cookie one endpoint sets must not reach another.
+                handler.UseCookies = false;
+            });
         return services;
     }
 }

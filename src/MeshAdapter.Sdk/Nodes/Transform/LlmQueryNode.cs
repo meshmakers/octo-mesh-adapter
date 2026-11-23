@@ -96,6 +96,8 @@ internal class LlmQueryNode(
             ApiKeyConfigurationName = config.ApiKeyConfigurationName,
             // No inline key: the key comes from the AiConfiguration only.
             ApiKey = null,
+            HasInlineApiKeyOption = false,
+            TemperatureIsOptional = true,
             Model = config.Model,
             PromptTemplateName = config.PromptTemplateName,
             Question = config.Question,

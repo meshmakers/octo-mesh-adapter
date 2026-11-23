@@ -69,6 +69,18 @@ internal sealed record LlmQueryOptions
     /// <summary>JSON path of the unprocessed answer.</summary>
     public string? RawResponseOutputPath { get; init; }
 
+    /// <summary>
+    ///     Whether the node has an inline <c>apiKey</c> option. A node without one is pointed to the AiConfiguration
+    ///     when no key is found.
+    /// </summary>
+    public bool HasInlineApiKeyOption { get; init; } = true;
+
+    /// <summary>
+    ///     Whether the node can leave the temperature unset. The warning about a refused temperature then advises to
+    ///     remove it from the node; otherwise it advises a node where the temperature is optional.
+    /// </summary>
+    public bool TemperatureIsOptional { get; init; }
+
     /// <summary>Whether a failed query is logged and the pipeline continues.</summary>
     public bool ContinueOnError { get; init; }
 

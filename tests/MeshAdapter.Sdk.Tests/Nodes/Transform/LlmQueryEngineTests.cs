@@ -510,6 +510,20 @@ public class LlmQueryEngineTests
         new("Anthropic API error (HTTP 400 BadRequest). Response body: temperature is not supported",
             providerError ?? "invalid_request_error: `temperature` is deprecated for this model.");
 
+    [Theory]
+    [InlineData(true, "Remove the temperature from the node")]
+    [InlineData(false, "or move to LlmQuery@1, where the temperature is optional")]
+    public async Task TheRefusalWarning_AdvisesOnlyWhatTheNodeCanDo(bool temperatureIsOptional, string advice)
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal());
+        _chat.Answers.Enqueue(Answer("42"));
+
+        await RunAsync(Options() with { TemperatureIsOptional = temperatureIsOptional });
+
+        var warning = Assert.Single(_log, line => line.Contains("refused the temperature", StringComparison.Ordinal));
+        Assert.Contains(advice, warning, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TheRefusalWarning_QuotesTheProvidersWords_OnOneLine()
     {

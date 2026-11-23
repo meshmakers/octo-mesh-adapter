@@ -1140,7 +1140,7 @@ Differences to `AnthropicAiQuery@1`:
 - **Defaults:** `maxTokens` 4096, `jsonFormatSample` empty, `maxToolRounds` 10, no temperature.
 - **MCP client name** in the handshake is `OctoMesh-LlmQueryNode`.
 
-**Redirects are not followed** by the providers' HTTP client (`AddLlmProviderHttpClient`, for both nodes): the key travels in the custom header `x-api-key`, which the handler would send on to the origin a redirect names. A 3xx answer fails with a message that names the redirect and asks for the endpoint that answers.
+**Redirects are not followed and no cookies are kept** by the providers' HTTP client (`AddLlmProviderHttpClient`, for both nodes): the key travels in the custom header `x-api-key`, which the handler would send on to the origin a redirect names. A 3xx answer fails with a message that names the redirect and asks for the endpoint that answers.
 
 Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQueryNodeTests` (mapping, sealed endpoint with and without key, the configuration key never sent to it, malformed values, temperature, repeat), `LlmQueryNodeGoldenParityTests` (the golden pipeline shapes of `AnthropicAiQuery@1` through `LlmQuery@1`: document analysis and knowledge generation match the files of `AnthropicAiQuery@1` byte for byte; the chat with MCP tools has its own file `Resources/GoldenRequests/LlmQuery/chat-mcp-delegation.txt`, which differs only in the client name and that request's length), `LlmQueryNodeSecretMaskingTests` (a provider at the sealed endpoint that echoes its key, an MCP server that echoes the delegated bearer), `LlmProviderHttpClientTests` (a 307 to another origin is not followed), and the integration tests `LlmQueryPipelineIntegrationTests`.
 

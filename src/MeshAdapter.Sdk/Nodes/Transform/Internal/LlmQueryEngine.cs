@@ -70,7 +70,10 @@ internal sealed class LlmQueryEngine(
             if (string.IsNullOrEmpty(apiKey) && !options.HasSealedProviderEndpoint)
             {
                 throw new ArgumentException(
-                    "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node.",
+                    options.HasInlineApiKeyOption
+                        ? "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node."
+                        : "API key is required. Set 'apiKeyConfigurationName' to an AiConfiguration that holds an " +
+                          "'apiKey' or a 'providerEndpoint'.",
                     nameof(options.ApiKey));
             }
 
@@ -107,7 +110,7 @@ internal sealed class LlmQueryEngine(
             // Resolve max tokens and temperature: template -> AiConfiguration -> node config
             var maxTokens = ResolveMaxTokens(options, etlContext, nodeContext, template);
             var sampling = new RunSampling(ResolveTemperature(options, etlContext, nodeContext, template),
-                options.NodeDisplayName, nodeContext);
+                options.NodeDisplayName, nodeContext, options.TemperatureIsOptional);
 
             nodeContext.Debug("Starting Anthropic AI query");
 
@@ -827,8 +830,12 @@ internal sealed class LlmQueryEngine(
         catch (LlmSamplingRejectedException rejection) when (chatOptions.Temperature != null)
         {
             sampling.NodeContext.Warning(
-                $"The model refused the temperature; {sampling.NodeDisplayName} asks once more without it. Remove " +
-                "the temperature from the node, the prompt template or the AiConfiguration to save the extra call." +
+                $"The model refused the temperature; {sampling.NodeDisplayName} asks once more without it. " +
+                (sampling.TemperatureIsOptional
+                    ? "Remove the temperature from the node, the prompt template or the AiConfiguration to save the " +
+                      "extra call."
+                    : "Remove it from the prompt template and the AiConfiguration, or move to LlmQuery@1, where the " +
+                      "temperature is optional, to save the extra call.") +
                 DescribeProviderError(rejection.ProviderError, sampling.NodeContext));
             sampling.Temperature = null;
             chatOptions.Temperature = null;
@@ -862,11 +869,13 @@ internal sealed class LlmQueryEngine(
     ///     The temperature of one run, cleared when the provider refused it, and what the warning about that
     ///     needs: the node's name and its context.
     /// </summary>
-    private sealed class RunSampling(double? temperature, string nodeDisplayName, INodeContext nodeContext)
+    private sealed class RunSampling(double? temperature, string nodeDisplayName, INodeContext nodeContext,
+        bool temperatureIsOptional)
     {
         public double? Temperature { get; set; } = temperature;
         public string NodeDisplayName { get; } = nodeDisplayName;
         public INodeContext NodeContext { get; } = nodeContext;
+        public bool TemperatureIsOptional { get; } = temperatureIsOptional;
     }
 
     /// <summary>The first text part of an answer; further text parts are not part of the result.</summary>

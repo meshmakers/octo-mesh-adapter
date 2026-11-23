@@ -106,6 +106,8 @@ public class LlmQueryNodeTests
         Assert.Equal("$.text", options.Path);
         Assert.Equal("$.out", options.TargetPath);
 
+        Assert.False(options.HasInlineApiKeyOption);
+        Assert.True(options.TemperatureIsOptional);
         Assert.False(LlmQueryNode.ToOptions(Config()).DelegatesToCaller);
         Assert.Null(LlmQueryNode.ToOptions(Config()).Temperature);
     }
@@ -244,6 +246,18 @@ public class LlmQueryNodeTests
     }
 
     [Fact]
+    public async Task WithoutAKey_TheErrorPointsToTheAiConfiguration_NotToAnOptionTheNodeDoesNotHave()
+    {
+        _aiConfiguration = """{"aiModel":"claude-test"}""";
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(Config()));
+
+        Assert.Empty(_wire.Requests);
+        Assert.Contains("'apiKey' or a 'providerEndpoint'", ex.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("'apiKey' on the node", ex.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task WithoutATemperatureAnywhere_TheBodyCarriesNone()
     {
         _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
@@ -283,6 +297,7 @@ public class LlmQueryNodeTests
         first.Remove("temperature");
         Assert.Equal(first.ToJsonString(), second.ToJsonString());
         Assert.Single(Warnings(), w => w.Contains("refused the temperature; LlmQuery@1", StringComparison.Ordinal) &&
+            w.Contains("Remove the temperature from the node", StringComparison.Ordinal) &&
             w.EndsWith("Provider answer: invalid_request_error: `temperature` is deprecated for this model.",
                 StringComparison.Ordinal));
     }

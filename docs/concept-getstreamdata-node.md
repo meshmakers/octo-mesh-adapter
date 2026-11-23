@@ -1,6 +1,6 @@
 ---
 description: Concept and implementation notes of GetStreamData@1, AggregateStreamData@1 and the gap detection of stream data archives.
-applies_to: src/MeshAdapter.Sdk/Nodes/Extract/GetStreamDataNode.cs, src/MeshAdapter.Sdk/Nodes/Extract/AggregateStreamDataNode.cs, src/MeshAdapter.Sdk/Nodes/StreamData*.cs
+applies_to: src/MeshAdapter.Sdk/Nodes/Extract/{GetStreamData,AggregateStreamData}Node.cs, src/MeshAdapter.Sdk/Nodes/StreamData*.cs
 ---
 
 # Concept: `GetStreamData@1` / `AggregateStreamData@1` — Extract-Nodes für Stream Data Archives
@@ -145,8 +145,7 @@ Leicht zu verwechseln, deshalb explizit:
 * **Kein Downsampling (AB#4727 gestrichen).** In diesem Feature geht es um exakte Daten und um die
   Lückenerkennung — eine Verdichtung in Bins verwischt genau die Information, die hier gebraucht
   wird. Downsampling-Queries sind über `GetQueryById@1` mit einer persistierten
-  `RtDownsamplingSdQuery` vollständig abgedeckt (inkl. resolution-aware Rollup-Auswahl,
-  AB#4195/AB#4233/AB#4290/AB#4725); das genügt.
+  `RtDownsamplingSdQuery` vollständig abgedeckt (inkl. resolution-aware Rollup-Auswahl); das genügt.
 * **Keine resolution-aware Rollup-Auswahl.** Beide Nodes lesen **exakt das konfigurierte Archiv** —
   vorhersagbar und ohne Exaktheits-Guards. Wer Routing will, nimmt `GetQueryById@1`.
 * Keine Änderungen an Engine, CrateDB-Provider, GraphQL oder Studio. Die Nodes erreichen die
@@ -177,8 +176,7 @@ if (distinctBins > 0 && distinctBins < requestedLimit)
 ```
 
 Fehlen 20 von 96 Viertelstunden, werden aus 96 angeforderten Buckets 76 — das Raster wird
-stillschweigend breiter und genau die Lücken verschwinden. Der Clamp ist für Charts richtig
-(AB#4246), für Lückenerkennung fatal.
+stillschweigend breiter und genau die Lücken verschwinden. Der Clamp ist für Charts richtig, für Lückenerkennung fatal.
 
 **Konsequenz:** Gap-Detection scannt über `ExecuteQueryAsync` die tatsächlichen Fenster (§6).
 
@@ -326,7 +324,7 @@ Die Engine-seitige Ursache ist als eigener Bug erfasst (**AB#4765**) — jeder a
 Stream-Data-Query-API läuft weiterhin hinein. **§7 muss dieselbe Übersetzung anwenden**, für
 `FieldFilters` und für `groupBy`.
 
-### UTC-Regel (AB#4734)
+### UTC-Regel
 
 Ein `DateTime` mit `Kind == Unspecified` — also `"2026-07-01T00:00:00"` aus Pipeline-JSON — wird
 **als UTC** gelesen, nicht als Lokalzeit des Adapter-Hosts. Gilt für Literale und für aus JSONPath
@@ -353,7 +351,7 @@ Semantik bestehender Properties änderte.
 
 ### Doku-Pflicht
 
-Laut Präambel von `CLAUDE.md` aktualisiert **jeder Task** `CLAUDE.md` §Extract Nodes **und**
+Laut Präambel von `AGENTS.md` aktualisiert **jeder Task** `docs/nodes-extract.md` **und**
 `docs/developer-guide.md` für seinen eigenen Umfang. XML-`<summary>`-Kommentare auf Config-Klasse und
 jeder Property sind Pflicht — über `NodeSchemaRegistry.InjectXmlDescriptions` sind sie die einzige
 Doku-Oberfläche im Pipeline-Editor.
@@ -431,7 +429,7 @@ Die letzten beiden Zeilen werden erst von §7 benötigt. Sie lassen sich entwede
        .WithCkTypeId(snapshot.TargetCkTypeId)
        .WithColumns(columns)
        .WithRtIds(rtIds)
-       .WithTimeRange(from, to)      // beide Grenzen unabhängig optional (AB#4617)
+       .WithTimeRange(from, to)      // beide Grenzen unabhängig optional
        .WithLimit(limit)
        .WithSortOrders(sortOrders)
        .WithFieldFilters(filters)
@@ -460,7 +458,7 @@ Datenspalten aus `snapshot.Columns`, davor eine `WellKnownName`-Spalte direkt au
 lediglich die Zeitachse, was als Stolperfalle gemeldet wurde. Ist `Columns` gesetzt, gilt die Liste
 unverändert; `rtWellKnownName` lässt sich dort wie jede andere Spalte anfordern.
 
-**Spaltennamen kommen vom Engine-Resolver, nicht aus einer Ableitung** (AB#4764, nachgezogen). Der
+**Spaltennamen kommen vom Engine-Resolver, nicht aus einer Ableitung** (nachgezogen). Der
 ursprüngliche Entwurf leitete den Storage-Key aus dem Attributpfad ab (Punkte weg, kleinschreiben) und
 nahm Computed Columns deshalb aus dem Automatik-Satz heraus: nach einer Formeländerung liegt ihre
 physische Spalte unter `{base}__v{N}`, und `ComputedColumnNaming` ist im CrateDB-Provider `internal`.
@@ -748,7 +746,7 @@ ohne Bedeutung (siehe §2.1).
 **Spaltennamen übersetzen (§4).** `FieldFilters`, `GroupBy` und die `attributePath`-Werte in
 `Aggregations` laufen durch `StreamDataNodeHelpers.ResolveQueryableColumn` — nötig, weil die
 Storage-Schicht nur die physischen Namen kennt, und weil eine Formel-Spalte ihren Storage-Key erst
-über den Resolver hergibt (AB#4764). Vor **AB#4765** verwarf die Storage-Schicht einen nicht
+über den Resolver hergibt. Vor **AB#4765** verwarf die Storage-Schicht einen nicht
 auflösbaren Namen zusätzlich stillschweigend — bei einem Filter ein zu breites Ergebnis, bei einer
 Aggregation also eine **zu hohe Summe**, ohne jeden Hinweis; genau der Fehler, der bei
 `GetStreamData@1` im Feld auftrat. Inzwischen weist die Engine solche Namen selbst zurück, die
@@ -770,7 +768,7 @@ public record AggregationColumnDto
     /// <summary>Aggregationsfunktion.</summary>
     public required AggregationTypesDto Function { get; set; }
 
-    /// <summary>Zustandsliteral für StateDuration; sonst ignoriert (AB#4336).</summary>
+    /// <summary>Zustandsliteral für StateDuration; sonst ignoriert.</summary>
     public string? ComparisonValue { get; set; }
 }
 ```
@@ -963,9 +961,9 @@ mit Energiesumme und maximaler Datenqualität.
 
 | Task | Neu | Geändert |
 |---|---|---|
-| **AB#4726**<br>Basis | `MeshNodes.Sdk/Extract/GetStreamDataNodeConfiguration.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/GetStreamDataNode.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataNodeHelpers.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/GetStreamDataNodeIntegrationTests.cs` | `MeshAdapter.Sdk/Nodes/Extract/GetQueryByIdNode.cs` (Helfer)<br>`ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`CLAUDE.md`, `docs/developer-guide.md` |
-| **AB#4728**<br>Gaps | `MeshAdapter.Sdk/Nodes/StreamDataGapAnalyzer.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataGapReport.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/StreamDataGapAnalyzerTests.cs` | `GetStreamDataNodeConfiguration.cs` + `GetStreamDataNode.cs` (Gap-Zweig)<br>`MeshAdapterPipelineExecutionException.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Fixtures/StreamDataFixture.cs` (TimeRange-Archiv)<br>Tests<br>`CLAUDE.md`, `docs/developer-guide.md` |
-| **neu**<br>Aggregation | `MeshNodes.Sdk/Extract/AggregateStreamDataNodeConfiguration.cs`<br>`MeshNodes.Sdk/PipelineDataTransferObjects/AggregationColumnDto.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/AggregateStreamDataNode.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/AggregateStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/AggregateStreamDataNodeIntegrationTests.cs` | `ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`StreamDataNodeHelpers.cs` (Aggregations-Helfer, falls nicht in §5 mitgezogen)<br>`CLAUDE.md`, `docs/developer-guide.md` |
+| **AB#4726**<br>Basis | `MeshNodes.Sdk/Extract/GetStreamDataNodeConfiguration.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/GetStreamDataNode.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataNodeHelpers.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/GetStreamDataNodeIntegrationTests.cs` | `MeshAdapter.Sdk/Nodes/Extract/GetQueryByIdNode.cs` (Helfer)<br>`ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
+| **AB#4728**<br>Gaps | `MeshAdapter.Sdk/Nodes/StreamDataGapAnalyzer.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataGapReport.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/StreamDataGapAnalyzerTests.cs` | `GetStreamDataNodeConfiguration.cs` + `GetStreamDataNode.cs` (Gap-Zweig)<br>`MeshAdapterPipelineExecutionException.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Fixtures/StreamDataFixture.cs` (TimeRange-Archiv)<br>Tests<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
+| **neu**<br>Aggregation | `MeshNodes.Sdk/Extract/AggregateStreamDataNodeConfiguration.cs`<br>`MeshNodes.Sdk/PipelineDataTransferObjects/AggregationColumnDto.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/AggregateStreamDataNode.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/AggregateStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/AggregateStreamDataNodeIntegrationTests.cs` | `ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`StreamDataNodeHelpers.cs` (Aggregations-Helfer, falls nicht in §5 mitgezogen)<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
 
 **Abhängigkeiten:** §6 und §7 setzen §5 voraus. `requireGapFree` (§7) setzt zusätzlich den
 `StreamDataGapAnalyzer` aus §6 voraus — ohne §6 ist §7 bis auf diese eine Property lieferbar.

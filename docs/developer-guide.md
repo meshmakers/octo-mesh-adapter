@@ -100,13 +100,13 @@ Retrieves all runtime entities of a specified type.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `CkTypeId` / `CkTypeIdPath` | string | Type identifier |
-| `CkInterfaceId` | string | CK interface id (AB#6933), e.g. `System/Named`. Selects the entities of **all** types that implement the interface, instead of `CkTypeId`; exactly one of the two |
+| `CkInterfaceId` | string | CK interface id, e.g. `System/Named`. Selects the entities of **all** types that implement the interface, instead of `CkTypeId`; exactly one of the two |
 | `FieldFilters` | ICollection | Field-based filtering |
 | `SortOrders` | ICollection | Result sorting |
 | `Skip` / `Take` | int | Pagination |
 
 **Selecting by CK interface** (`CkInterfaceId`): the node makes one call of the engine's interface query
-(`GetRtEntitiesByInterfaceAsync`, AB#7019) and returns the same result shape as the type variant
+(`GetRtEntitiesByInterfaceAsync`) and returns the same result shape as the type variant
 (`Items` with `CkTypeId` per row, `TotalCount`). v1 limits: `Take` is required (`Skip` defaults to 0) and
 `Skip` + `Take` must not exceed 1000; filters and sort orders may only use members of the interface; no text
 search, aggregation or navigation. The cost of a page is about (`Skip` + `Take`) x the number of collections the
@@ -147,7 +147,7 @@ Fetches entities related through associations.
 
 #### RevealSecretNode
 
-`RevealSecret@1` (AB#5538, concept AB#5528 decision 6) is the only way for a pipeline to obtain the
+`RevealSecret@1` (concept decision 6) is the only way for a pipeline to obtain the
 plaintext of a CK attribute of value type `Secret`. Every other node — `GetRtEntitiesById@1`,
 `GetRtEntitiesByType@1`, queries, `FromWatchRtEntity@1` — sees the marker `{"isSet": true|false}`.
 A stored value whose key id is not in the adapter's key ring reads as `{"isSet": false, "keyMissing": true}`,
@@ -193,7 +193,7 @@ Behaviour:
 - The plaintext is registered with `INodeContext.RegisterSecret` before it is written, so debug
   snapshots, dry-run intents, the execution log and `SetPipelineExecutionResult@1` show `***`.
 
-#### Platform-only secrets (AB#7246)
+#### Platform-only secrets
 
 A secret default declared on an Application (`System.Communication/Application.SecretDefaults[].SecretValue`) and
 projected by the Communication Controller into every served tenant (`System.Communication/SecretDefault.Value`) is
@@ -206,7 +206,7 @@ tenant pipeline, user or role, tenant administrators included, can obtain it.
   attribute and never a value, and `targetPath` stays unset. Other Secret attributes behave as before.
   (`RevealSecret@1` cannot address record array members at all - it refuses them with "record arrays are not
   supported" - so the explicit refusal is a named rule on top of that, not the only line of defence.)
-- `VerifyCaptcha@1` (AB#7251) is the platform building block that **uses** a secret default: it reads the
+- `VerifyCaptcha@1` is the platform building block that **uses** a secret default: it reads the
   `SecretDefault` itself, in the executing tenant only and only by its well-known name, and returns only a verdict
   (see the node below).
 - `GetPipelineConfigByCkTypeId@1` fails for the type id `System.Communication/SecretDefault` before it reads the
@@ -218,7 +218,7 @@ tenant pipeline, user or role, tenant administrators included, can obtain it.
   `ServiceAccountTokenService` and `VerifyCaptchaNode`). **A new decrypting node** is added to that list in the same change, calls
   `PlatformOnlySecrets` before it reads, and gets a test next to the `SecretDefault` ones in `RevealSecretNodeTests`.
 
-#### Secret attributes in the other nodes (AB#5538)
+#### Secret attributes in the other nodes
 
 - **Reads** put only the marker into the data context. Change streams (`FromWatchRtEntity@1`) are not
   normalised by the repository; strings found in Secret slots are wrapped by CK attribute type
@@ -302,7 +302,7 @@ aggregation columns, an incomplete or inverted time range, a non-positive bucket
 unsupported `Aggregation` override, and a failure inside the archive selection) — no silent empty
 results.
 
-**Downsampling** (`RtDownsamplingSdQuery`, AB#4195 / AB#4233). Executed via
+**Downsampling** (`RtDownsamplingSdQuery`). Executed via
 `IStreamDataRepository.ExecuteDownsamplingQueryAsync`: the window is cut into `Limit` DATE_BIN
 buckets and each persisted column is aggregated per bucket. `From`, `To` and a positive `Limit`
 (the *bucket count*, not a row cap) are mandatory for this query type — resolved through the same
@@ -311,9 +311,9 @@ misconfiguration surfaces as a pipeline exception rather than a storage-layer er
 aggregation columns is rejected as well. `Skip` / `Take` page the returned bins **in memory** — the
 bin axis is generated, not paged, so the storage layer ignores offset / page size on this path. The
 engine additionally clamps the requested bucket count down to the number of distinct source bins in
-range (AB#4246), so a sparsely-populated window can return fewer bins than requested.
+range, so a sparsely-populated window can return fewer bins than requested.
 
-**Resolution-aware archive selection** (AB#4290). Inherent to a downsampling query — there is no
+**Resolution-aware archive selection**. Inherent to a downsampling query — there is no
 switch to turn it on or off, because choosing the archive is part of answering the query. Instead of
 reading the archive persisted on the query, the node asks `SeriesResolutionService` — composed per
 tenant from `GetArchiveRuntimeStore()`, a `RollupDependencyGraph` over
@@ -351,7 +351,7 @@ lies completely inside one bin. The node checks that before accepting the rollup
 | the rollup's watermark covers `To` | otherwise the newest bins read low |
 
 If any condition fails the persisted archive is read and the reason is logged as a warning, because it is
-nearly always a query-definition detail the author can fix. Worked example from the field (AB#4725): a
+nearly always a query-definition detail the author can fix. Worked example from the field: a
 7-day window with **10** buckets gives 16 h 48 min bins over an hourly rollup — not a multiple, so one
 hour per bin would fall out (measured: 8 of 168 hours, −4.1 % on the total and −27 % on a single bin,
 because the dropped hour may be a load peak). The same window with **12** buckets gives 14 h bins, the
@@ -362,7 +362,7 @@ The archive actually queried is reported at info level together with the bin wid
 bucket size, so the origin of the numbers is visible without guesswork.
 
 Every non-`Ok` signal (`ResolutionLimited`, `NoSuitableRollup`, `UnknownBaseGrain`, `EmptyLadder`,
-`CoverageLimited`) is reported as a warning as well. `CoverageLimited` (AB#5157) says the finest
+`CoverageLimited`) is reported as a warning as well. `CoverageLimited` says the finest
 matching rung holds no data as far back as the requested start, so the resolver named a coarser rung
 whose history does reach it; whether that rung is then read is still the exactness check's decision
 alone, so a bin-compatible `FixedSize` fallback is used and a calendar-aligned one is not. The
@@ -400,7 +400,7 @@ persisted query entity is needed. Writes a `QueryResult` (`Columns` + `Rows`) to
 
 **Precedence and UTC.** Per value the literal wins over the JSONPath variant. Timestamps may be
 ISO-8601 strings or date/time values; a value without a time-zone offset (`"2026-07-01T00:00:00"`) is
-read as UTC, not as the adapter host's local time (AB#4734), so the queried window never shifts with
+read as UTC, not as the adapter host's local time, so the queried window never shifts with
 the server's zone. A path that resolves to nothing leaves the value unset and logs a warning; a value
 that is present but not a date/time (resp. not an integer for `LimitPath`) fails the node rather than
 silently widening the range.
@@ -445,7 +445,7 @@ of its own.
 
 Names are resolved through the storage layer's own field resolver, which is also what makes a formula
 column readable: after a formula change its physical column is versioned (`{base}__v{N}`) and cannot
-be derived from the name (AB#4764).
+be derived from the name.
 
 The translation is what makes the node's own vocabulary work at all: the storage layer knows
 `window_start`, not `WindowStart`, and its lookup is case-insensitive but not separator-insensitive.
@@ -455,7 +455,7 @@ The node additionally rejects any name that is neither a result header nor a col
 and the error lists the names that would have worked. A sort on `WindowStart` against a *raw* archive
 is refused for the same reason — that archive has no row window. This check began as a guard against
 the storage layer **dropping an unresolvable name without raising anything** (a mistyped sort returned
-rows in storage order, a mistyped filter returned too many rows); since AB#4765 the storage layer
+rows in storage order, a mistyped filter returned too many rows); the storage layer now
 validates and rejects on its own, so the node's check is now the earlier and better-worded of two —
 it can name the pipeline, the node and the valid names as the caller writes them.
 
@@ -463,7 +463,7 @@ it can name the pipeline, the node and the valid names as the caller writes them
 tenant, archive not found, a malformed runtime id, an inverted time range, a non-positive `Limit`, an
 unknown sort/filter column, and any storage-level failure — so there are no silent empty results.
 
-**Gap detection** (AB#4728). Setting `GapsTargetPath` makes the node additionally check whether the
+**Gap detection**. Setting `GapsTargetPath` makes the node additionally check whether the
 queried range is actually covered, and write a report there:
 
 ```yaml
@@ -508,7 +508,7 @@ the overlap twice.
 Not in scope for this node: downsampling and resolution-aware rollup selection. Both are covered by
 `GetQueryById@1` with a persisted `RtDownsamplingSdQuery`; `GetStreamData@1` always reads exactly the
 archive it was configured with, so the numbers never depend on an archive choice made behind the
-caller's back. See AB#4722 / AB#4726.
+caller's back.
 
 One consequence worth knowing: the node exposes no time-zone option, so the resolver resolves in UTC and a
 calendar-aligned rollup stored in another zone is already excluded from the ladder. Since the exactness
@@ -540,7 +540,7 @@ the rows themselves. Writes a `QueryResult` to `TargetPath`.
 |-----------|------|-------------|
 | `ArchiveRtId` | OctoObjectId | RtId of the archive to read. Must be activated. Required |
 | `Aggregations` | collection | The key figures: `attributePath` + `function`. At least one. Required |
-| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row. On raw and time-range archives `row_origin` (`manual` / `automated`, AB#7616) is groupable too, e.g. `[rtId, DataQuality, row_origin]` with `Count` counts manual intervals per series |
+| `GroupBy` | collection\<string\> | Columns to group by, e.g. `rtId` for one row per source entity. Empty means a single row. On raw and time-range archives `row_origin` (`manual` / `automated`) is groupable too, e.g. `[rtId, DataQuality, row_origin]` with `Count` counts manual intervals per series |
 | `WellKnownNames` / `WellKnownNamesPath` | collection\<string\> / string | Restrict to these source entities by name |
 | `RtIds` / `RtIdsPath` | collection\<string\> / string | Restrict to these source entities by runtime id |
 | `FieldFilters` | collection | Additional filters, AND-combined |
@@ -549,7 +549,7 @@ the rows themselves. Writes a `QueryResult` to `TargetPath`.
 | `ExpectedInterval` | TimeSpan? | Interval the completeness check counts in. Defaults to the archive's period |
 | `MaxGapScanRows` | int? | Row cap for the completeness check (default 200000) |
 
-**Functions: `COUNT`, `MINIMUM`, `MAXIMUM`, `AVERAGE`, `SUM`, `INTEGRAL`.** `INTEGRAL` (AB#7919) is the
+**Functions: `COUNT`, `MINIMUM`, `MAXIMUM`, `AVERAGE`, `SUM`, `INTEGRAL`.** `INTEGRAL` is the
 engine's step integral over `[from, to)` in value unit x hours (a power column in W gives Wh): the last value
 holds until the next row, the last row before `from` carries in, several entities are summed (per group with
 `groupBy`), an empty window gives null. It needs both `from` and `to` (refused before the query otherwise) and a
@@ -584,11 +584,11 @@ Three things it does not do, deliberately:
 Column names in `GroupBy`, `FieldFilters` and the `attributePath` values follow the same result
 vocabulary and translation as `GetStreamData@1`, with the same refusal for unknown names. On an
 aggregation the stakes are higher: a dropped filter inflates the figure, and a dropped group-by
-column collapses every group into one row. See AB#4722 / AB#4752.
+column collapses every group into one row.
 
 #### DetectStreamDataGapsNode
 
-`DetectStreamDataGaps@1` (AB#9588) returns, per series of one windowed archive (time-range or rollup),
+`DetectStreamDataGaps@1` returns, per series of one windowed archive (time-range or rollup),
 the missing time ranges `[start, end)` and the number of missing slots over the period `[from, to)` —
 with no row limit, so a whole month of a thousand quarter-hourly series is one call. Each missing range
 can then be requested again as one request.
@@ -614,9 +614,9 @@ can then be requested again as one request.
 | `From` / `To` (+ `…Path`) | DateTime? / string | The period, half-open. Both required; give them with their UTC offset, a value without offset is UTC |
 | `ExpectedInterval` | TimeSpan? | Length of one slot; defaults to the archive's period. Must be positive; the period may hold fewer than int.MaxValue / 2 slots |
 | `FieldFilters` | collection | Only rows matching every filter count as present |
-| `ValidityPeriods` / `ValidityPeriodsPath` | collection\<{rtId, from, to}\> / string | Optional validity periods per series (AB#9589), see below. A non-empty inline list wins over the path |
+| `ValidityPeriods` / `ValidityPeriodsPath` | collection\<{rtId, from, to}\> / string | Optional validity periods per series, see below. A non-empty inline list wins over the path |
 
-**Validity periods** (AB#9589): each entry is the half-open range `[from, to)` of one series (timestamps with
+**Validity periods**: each entry is the half-open range `[from, to)` of one series (timestamps with
 UTC offset; `to` unset is an open end). A series may have several entries; overlapping or touching ones are
 merged. With validity periods set, a series is checked only inside its periods cut to `[from, to)` of the
 node: every range is cut exactly at a validity boundary (not rounded to a slot), a gap across a hole between
@@ -659,8 +659,7 @@ Counting is by instants, so a DST change needs no special case.
 
 **How it reads** (`StreamDataGapDetector`): the series go in batches (at most 1000, fewer for long
 periods so that days x series stay within the storage cap of 100,000 rows per count). Per batch one
-`ExecuteDownsamplingQueryAsync` counts the windows per series and 24-hour bin anchored at `from` (AB#7360
-local-day bins, no zone, `BinOrigin` = the UTC time of day of `from`). A bin whose count equals its slot
+`ExecuteDownsamplingQueryAsync` counts the windows per series and 24-hour bin anchored at `from` (local-day bins, no zone, `BinOrigin` = the UTC time of day of `from`). A bin whose count equals its slot
 count is complete and not read; a bin without windows is missing as a whole; only the other bins and a
 remainder shorter than a day are read row by row (`window_start` only, in time slices of at least one hour, ordered by the row key and paged). When the
 count is not usable — the archive's declared `Period` is not the slot length, the period is shorter than a
@@ -720,7 +719,7 @@ Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nest
 
 #### ListMailFoldersNode
 
-Lists the folders of a mailbox in exactly the syntax the channel's mail trigger accepts (AB#5370), so a settings page can offer a picker instead of a free-text path. Read-only.
+Lists the folders of a mailbox in exactly the syntax the channel's mail trigger accepts, so a settings page can offer a picker instead of a free-text path. Read-only.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -735,14 +734,14 @@ Lists the folders of a mailbox in exactly the syntax the channel's mail trigger 
 
 **Path contract** — `path` is the string to store in the trigger's folder setting:
 - IMAP: the folder's `FullName` as the server reports it (server delimiter, e.g. `INBOX.Finanzen.Rechnungen` on Dovecot), walked recursively with MailKit `GetSubfoldersAsync`; no client-side reassembly
-- Graph: display names from the root joined with `/`; inside a name `/` → `\/` and `\` → `\\` (`MailFolderPathSyntax.JoinGraphPath`; `SplitGraphPath` is the exact inverse — it consumes only those two escapes, any other `\x` stays literal — and `FromMicrosoftGraphEmail@1` resolves its folder paths with it, AB#5385 part 3)
+- Graph: display names from the root joined with `/`; inside a name `/` → `\/` and `\` → `\\` (`MailFolderPathSyntax.JoinGraphPath`; `SplitGraphPath` is the exact inverse — it consumes only those two escapes, any other `\x` stays literal — and `FromMicrosoftGraphEmail@1` resolves its folder paths with it)
 - Depth-first, in server order; `depth` 0 is a root folder
 
-**Failures** throw with an operator-worded message (no node-path prefix): IMAP authentication rejected, TLS handshake refused, host unreachable, no answer in time; Graph token refused, 401, 403 (`Mail.Read` application permission / admin consent), 404 mailbox not found. The HTTP route answers a throwing execution with **HTTP 500 and `{ "errorMessage": "<message>" }`** (`HttpRequestService.SendRequestAsync`, AB#5370 — before that the body was empty), so the message reaches the caller.
+**Failures** throw with an operator-worded message (no node-path prefix): IMAP authentication rejected, TLS handshake refused, host unreachable, no answer in time; Graph token refused, 401, 403 (`Mail.Read` application permission / admin consent), 404 mailbox not found. The HTTP route answers a throwing execution with **HTTP 500 and `{ "errorMessage": "<message>" }`** (`HttpRequestService.SendRequestAsync`; before that the body was empty), so the message reaches the caller.
 
 #### ListFailedImportMailsNode / RequeueFailedImportMailsNode
 
-The two halves of "send failed import mails back" (AB#7087) for the e-mail document import. `ListFailedImportMails@1` (read-only) lists what is in the channel's failed folder; `RequeueFailedImportMails@1` sends mails back into the folder the import polls.
+The two halves of "send failed import mails back" for the e-mail document import. `ListFailedImportMails@1` (read-only) lists what is in the channel's failed folder; `RequeueFailedImportMails@1` sends mails back into the folder the import polls.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -755,7 +754,7 @@ The two halves of "send failed import mails back" (AB#7087) for the e-mail docum
 | `AllPath` | string | Requeue: JSONPath to a boolean; `true` re-queues every mail of the failed folder |
 | `TargetPath` | string | Where the result is written (shapes in the node configurations' XML docs) |
 
-**Re-queue contract** — per mail, in this order: clear the markers, then move. Clearing removes every well-formed `OctoMesh-Import-Attempt-N` / `OctoMesh-Import-Failed` marker (the rule of `FromMicrosoftGraphEmailNode.WithoutImportMarkers`; the user's own categories survive) and, for IMAP, the `\Seen` and `\Deleted` flags and any marker keyword. If clearing fails the mail is **not** moved — a mail moved back with its markers on is parked again by the next poll (AB#7068). The target is the configured *source* folder of the channel, never a hard-coded inbox. A mail that is not in the failed folder (any more) is `NotFound` and nothing is changed. One failing mail never stops the others.
+**Re-queue contract** — per mail, in this order: clear the markers, then move. Clearing removes every well-formed `OctoMesh-Import-Attempt-N` / `OctoMesh-Import-Failed` marker (the rule of `FromMicrosoftGraphEmailNode.WithoutImportMarkers`; the user's own categories survive) and, for IMAP, the `\Seen` and `\Deleted` flags and any marker keyword. If clearing fails the mail is **not** moved — a mail moved back with its markers on is parked again by the next poll. The target is the configured *source* folder of the channel, never a hard-coded inbox. A mail that is not in the failed folder (any more) is `NotFound` and nothing is changed. One failing mail never stops the others.
 
 **Security** — mailbox, folders and credentials come only from the configuration entities the pipeline `Uses`; the request supplies the channel and the ids, nothing else. The route's authentication, role check and tenant check are `FromHttpRequest@2`'s. Credentials are registered as secrets and never appear in a result or log line.
 
@@ -830,7 +829,7 @@ Maps values from source to target types with configurable mapping rules.
 | `TargetValueType` | enum | Desired output data type |
 | `Mappings` | ICollection | Source-to-target value mappings |
 
-**Whole arrays (AB#6589).** The shape of `Path` decides. A path that addresses one value (including an
+**Whole arrays.** The shape of `Path` decides. A path that addresses one value (including an
 indexed one such as `$.rows[1].unit`) behaves as it always did: one typed read, one write at
 `TargetPath`. A path that can address several values - a wildcard (`$.sd.Rows[*].Values[5]`), a recursive
 descent (`$..unit`) or a filter (`$.items[?(@.kind=='a')].unit`) - maps **every addressed element in
@@ -844,15 +843,15 @@ place**, without `ForEach@1` and without a script:
   among the matches. The run is **not atomic**: elements before the failing one are already mapped when the node
   fails (the data context writes each element back as it is done). A failing node ends the execution and its data is
   discarded; an all-or-nothing run needs a second pass over every match and would make the node slower than
-  `ForEach@1` (decided on AB#6589).
+  `ForEach@1` (by decision).
 - The mapping entries are converted lazily and once per run by the same `ConvertToConfiguredType` the
-  single-value route uses, so a type-conversion rework (AB#2141 / AB#6074) replaces it in one place. One
+  single-value route uses, so a type-conversion rework replaces it in one place. One
   debug line summarises the run (`Mapped N of M elements`) instead of one per element.
 - `TargetValueKind` / `TargetValueWriteMode` / `DocumentMode` do not apply to the in-place write, so a value
   other than the default (`Simple` / `Overwrite` / `Extend`) fails the node, naming the setting, instead of being
   silently ignored.
 
-Measured on 123,000 rows (AB#6589, local stack, warm adapter): ~1.07 s for the wildcard mapping against
+Measured on 123,000 rows (local stack, warm adapter): ~1.07 s for the wildcard mapping against
 ~1.43 s for `ForEach@1` with `DataMapping@1` per row (about 1.3x), peak working set +184 MB against
 +274 MB over the generation baseline. The per-element cost is the data context's multi-match write
 (`UpdateMatchesAsync`: one child context and one write-back per match); a larger gain needs a bulk
@@ -868,15 +867,15 @@ Constructs update information objects for entity persistence.
 | `CkTypeId` / `CkTypeIdPath` | string | Entity type |
 | `UpdateKind` | enum | Insert, Update, or Delete |
 | `AttributeUpdates` | ICollection | Field updates to apply |
-| `RecordArrayItemUpdates` | ICollection | Atomic updates of single RecordArray items, without reading the entity (AB#7442, below) |
+| `RecordArrayItemUpdates` | ICollection | Atomic updates of single RecordArray items, without reading the entity (below) |
 | `RtWellKnownName` / `RtWellKnownNamePath` | string | Semantic name |
 | `TimestampPath` | string | Optional timestamp override |
-| `ExplicitNullCreatesRecords` | bool | Default `false`. `true`: a JSON null on a member of a record the update does not hold yet (`Amount.Value` without `Amount`) creates the record with that member null, so the null reaches an archive (AB#8625, "Partial delivery" below). Only for updates that go to an archive |
+| `ExplicitNullCreatesRecords` | bool | Default `false`. `true`: a JSON null on a member of a record the update does not hold yet (`Amount.Value` without `Amount`) creates the record with that member null, so the null reaches an archive ("Partial delivery" below). Only for updates that go to an archive |
 
 **Output**: `EntityUpdateInfo` object for persistence operations.
 
-**`RecordArrayItemUpdates` (AB#7442).** Each entry changes one record of a RecordArray attribute in ONE atomic
-MongoDB update (`$set` with `arrayFilters` on the match member), executed by the engine (AB#7445) when
+**`RecordArrayItemUpdates`.** Each entry changes one record of a RecordArray attribute in ONE atomic
+MongoDB update (`$set` with `arrayFilters` on the match member), executed by the engine when
 `ApplyChanges@2` applies the info. The entity is not read, so there is nothing to overwrite: parallel executions
 that change different records of one entity do not lose each other, for the same record the last write wins.
 `UpdateKind: UPDATE` only; `AttributeUpdates` for other attributes may be combined (same statement).
@@ -913,8 +912,7 @@ Creates association updates between entities.
 
 #### UpdateRecordArrayItemNode / UpdateRecordArrayItemV2Node
 
-`UpdateRecordArrayItem@1` changes exactly one record of a RecordArray per call. `UpdateRecordArrayItem@2`
-(AB#7439) updates several records of one array in a single in-memory pass and writes the array once:
+`UpdateRecordArrayItem@1` changes exactly one record of a RecordArray per call. `UpdateRecordArrayItem@2` updates several records of one array in a single in-memory pass and writes the array once:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1015,7 +1013,7 @@ Executes HTTP requests to external services.
 
 #### VerifyCaptchaNode
 
-`VerifyCaptcha@1` (AB#7251, Feature AB#7219, decisions E1 = A and E3 = A) verifies a CAPTCHA token with the tenant's
+`VerifyCaptcha@1` (decisions E1 = A and E3 = A) verifies a CAPTCHA token with the tenant's
 own secret, else with the platform's secret default, and writes **only the verdict**. The secret never enters the data
 context, a node output, a variable or the execution result.
 
@@ -1086,7 +1084,7 @@ Parses and imports hierarchical data from Excel files.
 
 **Features**: Hierarchical entity parsing, parent-child relationship establishment, well-known name resolution.
 
-**Dry run (AB#7500)**: honours `IsDryRun` (`DryRunHonouredLoadNodes.ImportFromExcel`). The node validates the input,
+**Dry run**: honours `IsDryRun` (`DryRunHonouredLoadNodes.ImportFromExcel`). The node validates the input,
 parses the tree and runs the replaced-create guard (a refusal such as `GENERIC_CREATE_REPLACED_BY_METHOD` still fails
 the run), then records a dry-run intent with `entityCount`, `associationCount` and `wouldInsert` (the entity ids that
 would be inserted) and writes no entities or associations. Without dry run the node writes as before.
@@ -1111,42 +1109,42 @@ Processes content using Claude AI API.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `Path` | string | Main content path. Optional — read only when it resolves to a string value; a non-string value at an explicit path is rendered as JSON. The default `"$"` (root object) is treated as "no main content" so **MCP-only** pipelines (no `path` set) work without error (AB#4313). |
-| `PromptTemplateName` | string? | Well-known name of a `System.Ai/AiPromptTemplate` with `PromptPurpose` KnowledgeGeneration (AB#8498). Supplies system prompt (`SystemPromptFragment` + `FewShotExamples`), question (`UserTemplate`) and `DefaultModelId`/`Temperature`/`MaxTokens`. See *Prompt by name* below. |
+| `Path` | string | Main content path. Optional — read only when it resolves to a string value; a non-string value at an explicit path is rendered as JSON. The default `"$"` (root object) is treated as "no main content" so **MCP-only** pipelines (no `path` set) work without error. |
+| `PromptTemplateName` | string? | Well-known name of a `System.Ai/AiPromptTemplate` with `PromptPurpose` KnowledgeGeneration. Supplies system prompt (`SystemPromptFragment` + `FewShotExamples`), question (`UserTemplate`) and `DefaultModelId`/`Temperature`/`MaxTokens`. See *Prompt by name* below. |
 | `Question` | string? | Query to ask Claude. Required unless `promptTemplateName` names a template with a `UserTemplate`; overrides the template's `UserTemplate`. |
 | `SystemPrompt` | string? | System prompt. Overrides the template's `SystemPromptFragment`; when neither is set the old default text (`DefaultSystemPrompt`) applies. An explicit empty string still sends no system prompt — except the no-tools instruction, which is sent when MCP is configured or expected but no tools loaded (as before). |
 | `DataPaths` | ICollection | Additional context data |
 | `ApiKey` | string | Anthropic API key (prefer `ApiKeyConfigurationName`) |
 | `Model` | string? | Claude model id. **No default** (a pinned id goes out of date). Resolved as template `DefaultModelId` → `AiConfiguration.aiModel` → node `model`; if neither is set the node fails with a clear "AI model is required" error. |
 | `ApiKeyConfigurationName` | string? | Well-known name of the `AiConfiguration` entity that supplies `apiKey`, `mcpServerUrl` **and `aiModel`** (all take precedence over the node's own values). |
-| `McpServiceAccountConfigName` | string? | Well-known name of a `System.Communication/ServiceAccountConfiguration` entity. When set, the node acquires an OAuth2 client-credentials token and sends `Authorization: Bearer` on every MCP request. Required for MCP tools (the MCP server enforces auth, AB#4315): without it (or delegation to the caller) the node does not call MCP at all (AB#8685). |
+| `McpServiceAccountConfigName` | string? | Well-known name of a `System.Communication/ServiceAccountConfiguration` entity. When set, the node acquires an OAuth2 client-credentials token and sends `Authorization: Bearer` on every MCP request. Required for MCP tools (the MCP server enforces auth): without it (or delegation to the caller) the node does not call MCP at all. |
 | `TargetPath` | string | Response storage location |
-| `JsonSchema` | string? | JSON Schema (as JSON string) the answer must satisfy; only with `responseFormat: json` (AB#8498). See *Guaranteed JSON* below. |
+| `JsonSchema` | string? | JSON Schema (as JSON string) the answer must satisfy; only with `responseFormat: json`. See *Guaranteed JSON* below. |
 | `MaxJsonRepairAttempts` | int | Repair calls when a `jsonSchema` answer is invalid (default 1, hard cap 2, 0 = none). Ignored without `jsonSchema`. |
-| `UsageOutputPath` | string? | Where the summed usage of every API call of the execution is written (AB#8658). Not set = nothing written. See *Usage* below. |
-| `CacheSource` | bool | Sends the source content (main content + `dataPaths`) as its own user-message block with an `ephemeral` cache breakpoint (AB#8658). Default `false`. See *Source caching* below. |
+| `UsageOutputPath` | string? | Where the summed usage of every API call of the execution is written. Not set = nothing written. See *Usage* below. |
+| `CacheSource` | bool | Sends the source content (main content + `dataPaths`) as its own user-message block with an `ephemeral` cache breakpoint. Default `false`. See *Source caching* below. |
 
 > **MCP-only mode:** when `McpServerUrl` / `apiKeyConfigurationName` supplies MCP tools, the node needs no `path` — Claude queries live data via the tools. `ResolveMainContent` returns null for the default `"$"` root object instead of trying to read it as a string (which previously threw *"Cannot get the value of a token type 'StartObject' as a string"*).
 
-> **Model resolution:** `apiKey`, `mcpServerUrl` **and** `aiModel` are all read from the referenced `AiConfiguration` entity (with node-config fallback), so the AI settings live in one place. `ResolveModel` resolves the prompt template's `DefaultModelId` (when `promptTemplateName` is set, AB#8498) → `AiConfiguration.aiModel` → node `model`; `maxTokens` and `temperature` follow the same order. A template's value therefore cannot be overridden through the AiConfiguration — change the template or drop its value. There is deliberately no hard-coded default model.
+> **Model resolution:** `apiKey`, `mcpServerUrl` **and** `aiModel` are all read from the referenced `AiConfiguration` entity (with node-config fallback), so the AI settings live in one place. `ResolveModel` resolves the prompt template's `DefaultModelId` (when `promptTemplateName` is set) → `AiConfiguration.aiModel` → node `model`; `maxTokens` and `temperature` follow the same order. A template's value therefore cannot be overridden through the AiConfiguration — change the template or drop its value. There is deliberately no hard-coded default model.
 
-> **MCP authentication:** the node authenticates to the OctoMesh MCP server via a `ServiceAccountConfiguration` (`McpServiceAccountConfigName`), reusing `IServiceAccountTokenService.AcquireServiceAccountTokenAsync` (same mechanism as `DeployPipelineNode` and `McpToolCall@1`): the token of **exactly** that account is returned to the node, cached per tenant, client and issuer, and never stored in the adapter's process-wide token holder (AB#8699 — before, the node read the token back from that shared holder and could get another account's token, the adapter's own token or a foreign tenant's). The acquired bearer token is attached to the `initialize` / `tools/list` / `tools/call` requests. With `mcpDelegateToCaller: true` / `identity: Caller` the token is a delegated one for the calling user (AB#5031, fail-closed). The MCP service enforces authentication (AB#4315).
+> **MCP authentication:** the node authenticates to the OctoMesh MCP server via a `ServiceAccountConfiguration` (`McpServiceAccountConfigName`), reusing `IServiceAccountTokenService.AcquireServiceAccountTokenAsync` (same mechanism as `DeployPipelineNode` and `McpToolCall@1`): the token of **exactly** that account is returned to the node, cached per tenant, client and issuer, and never stored in the adapter's process-wide token holder (before, the node read the token back from that shared holder and could get another account's token, the adapter's own token or a foreign tenant's). The acquired bearer token is attached to the `initialize` / `tools/list` / `tools/call` requests. With `mcpDelegateToCaller: true` / `identity: Caller` the token is a delegated one for the calling user (fail-closed). The MCP service enforces authentication.
 
-> **Configured service account without a token: no MCP call (AB#8699).** When `mcpServiceAccountConfigName` is set but yields no token — the configuration is missing or broken (e.g. a placeholder `IssuerUri`), the identity service refuses the request, or reading it throws — the node writes one warning (*"MCP ServiceAccountConfiguration '&lt;name&gt;' did not yield an access token (…); no MCP call is made and the query runs without tools."*) and runs the query without tools. The pipeline does not fail (unchanged AB#4541 rule), but the MCP calls are no longer sent unauthenticated as before. Delegation (`mcpDelegateToCaller`) stays fail-closed with an exception. Tests `AnthropicAiQueryNodeServiceAccountIsolationTests`, `AnthropicAiQueryNodeDelegationTests`.
+> **Configured service account without a token: no MCP call.** When `mcpServiceAccountConfigName` is set but yields no token — the configuration is missing or broken (e.g. a placeholder `IssuerUri`), the identity service refuses the request, or reading it throws — the node writes one warning (*"MCP ServiceAccountConfiguration '&lt;name&gt;' did not yield an access token (…); no MCP call is made and the query runs without tools."*) and runs the query without tools. The pipeline does not fail (unchanged rule), but the MCP calls are no longer sent unauthenticated as before. Delegation (`mcpDelegateToCaller`) stays fail-closed with an exception. Tests `AnthropicAiQueryNodeServiceAccountIsolationTests`, `AnthropicAiQueryNodeDelegationTests`.
 
-> **No identity, no MCP call (AB#8685):** when an MCP URL resolves (node `mcpServerUrl` or the inherited `AiConfiguration.McpServerUrl`) but neither `mcpServiceAccountConfigName` nor delegation to the caller is configured, the node **skips MCP**: no network call, one warning per execution — *"[&lt;node path&gt;]: AnthropicAiQuery@1 skips MCP: an MCP server URL is configured … but no identity to call it with — set 'mcpServiceAccountConfigName' …"* — and the query runs without tools (the no-tools system-prompt instruction is appended without a second warning). Before, the node called MCP unauthenticated, got 401 and lost its tools silently. With an identity nothing changes here; for a configured service account that yields no token see the note above. Tests `AnthropicAiQueryNodeMcpIdentityTests`, `AnthropicAiQueryNodeMcpIdentityIntegrationTests`.
+> **No identity, no MCP call:** when an MCP URL resolves (node `mcpServerUrl` or the inherited `AiConfiguration.McpServerUrl`) but neither `mcpServiceAccountConfigName` nor delegation to the caller is configured, the node **skips MCP**: no network call, one warning per execution — *"[&lt;node path&gt;]: AnthropicAiQuery@1 skips MCP: an MCP server URL is configured … but no identity to call it with — set 'mcpServiceAccountConfigName' …"* — and the query runs without tools (the no-tools system-prompt instruction is appended without a second warning). Before, the node called MCP unauthenticated, got 401 and lost its tools silently. With an identity nothing changes here; for a configured service account that yields no token see the note above. Tests `AnthropicAiQueryNodeMcpIdentityTests`, `AnthropicAiQueryNodeMcpIdentityIntegrationTests`.
 
 > **MCP tokens are masked:** the service account's token, the delegated token of the caller and the caller's own access token (the subject token of the exchange) are registered as secrets of the execution (`INodeContext.RegisterSecret`) as soon as the node holds them — the caller's token before the exchange, the delegated token before the first log line and the first MCP call. A server that echoes the bearer in an error body, or an identity service that quotes the subject token in its refusal, therefore shows `***` in the execution log, in the error of the execution, in debug snapshots and in the persisted result. The excerpts the node logs of an MCP answer (failed handshake, unreadable tool list) are masked before they are cut, so a token longer than the excerpt leaves no head in the log. Tests `AnthropicAiQueryNodeMcpTokenMaskingTests`.
 
 > **JSON response recovery (`responseFormat: json`):** the node first tries to parse the whole response as JSON; if the model wrapped it in prose or a ```` ```json ```` fence, `ExtractJsonFromText` recovers the first top-level JSON value — **array `[…]` or object `{…}`, whichever comes first** — with string/escape-aware bracket matching. The array case is load-bearing for mapping pipelines: a prose-wrapped array (`"Here are the mappings: [ … ]"`) must be returned whole, not reduced to its first inner object (which made the downstream `ForEach` fail with *"value is not an array"*).
 
-> **Guaranteed JSON (`jsonSchema`, AB#8498):** ported from the KnowledgeCapture prototype (`philipp/AB#4861_llmquery-guaranteed-json`, `LlmJsonResponseProcessor`/`LlmJsonExtractor`) into `Internal/AiJsonSchemaResponseProcessor` and `Internal/LlmJsonExtractor`. With a schema the node (1) sends `output_config.format` (`type: json_schema`) for constrained decoding — the API copy drops keywords the endpoint does not support (`minimum`/`maximum`/`multipleOf`, `minLength`/`maxLength`/`pattern`, `minItems`/`maxItems`/`uniqueItems`, `min/maxProperties`, `$schema`, `$id`) and sets `additionalProperties: false` on every object schema; (2) parses with the cheap tiers first — strict, extraction of every balanced candidate from prose, mechanical repair (naked quotes, trailing commas, unclosed strings/brackets), repeated-key normalisation (AB#5348); (3) validates against the **authored** schema with NJsonSchema; (4) if still invalid, makes at most `maxJsonRepairAttempts` (cap 2) repair calls — single-turn, temperature 0, no tools, no history, containing only the errors, the schema and the broken answer, **never the original prompt or content**; (5) fails with *"The AI answer does not satisfy the configured jsonSchema … Violations: $.sections[1].sortOrder: PropertyRequired; …"* (JSONPath notation); the message lists at most the first 10 flattened violations, so it is not necessarily the complete list. `continueOnError` applies as usual. In schema mode the user prompt states the schema instead of `jsonFormatSample`. Without `jsonSchema` nothing of this runs — the answer path is byte-for-byte the previous one (tests `AnthropicAiQueryNodeJsonSchemaTests`).
+> **Guaranteed JSON (`jsonSchema`):** ported from the KnowledgeCapture prototype (`LlmJsonResponseProcessor`/`LlmJsonExtractor`) into `Internal/AiJsonSchemaResponseProcessor` and `Internal/LlmJsonExtractor`. With a schema the node (1) sends `output_config.format` (`type: json_schema`) for constrained decoding — the API copy drops keywords the endpoint does not support (`minimum`/`maximum`/`multipleOf`, `minLength`/`maxLength`/`pattern`, `minItems`/`maxItems`/`uniqueItems`, `min/maxProperties`, `$schema`, `$id`) and sets `additionalProperties: false` on every object schema; (2) parses with the cheap tiers first — strict, extraction of every balanced candidate from prose, mechanical repair (naked quotes, trailing commas, unclosed strings/brackets), repeated-key normalisation; (3) validates against the **authored** schema with NJsonSchema; (4) if still invalid, makes at most `maxJsonRepairAttempts` (cap 2) repair calls — single-turn, temperature 0, no tools, no history, containing only the errors, the schema and the broken answer, **never the original prompt or content**; (5) fails with *"The AI answer does not satisfy the configured jsonSchema … Violations: $.sections[1].sortOrder: PropertyRequired; …"* (JSONPath notation); the message lists at most the first 10 flattened violations, so it is not necessarily the complete list. `continueOnError` applies as usual. In schema mode the user prompt states the schema instead of `jsonFormatSample`. Without `jsonSchema` nothing of this runs — the answer path is byte-for-byte the previous one (tests `AnthropicAiQueryNodeJsonSchemaTests`).
 
-> **Prompt by name (`promptTemplateName`, AB#8498):** the node reads an `AiPromptTemplate` (System.Ai 4.7.0+, `PromptPurpose` = KnowledgeGeneration) by well-known name from the pipeline's configuration hand-over — exactly like the `AiConfiguration` of `apiKeyConfigurationName`, so the pipeline needs a **`Uses` association** to the template entity (`Internal/AiPromptTemplateResolver`, attributes read through `ConfigurationSettingsReader`). Precedence: inline `question` / `systemPrompt` override the template's texts; `model` / `temperature` / `maxTokens` come from the template, then the `AiConfiguration`, then the node. Errors before any API call, each naming the template: not handed over (*"AiPromptTemplate 'x' not found. The pipeline needs a 'Uses' association …"*), another CK type, another `PromptPurpose` (absent = SessionSystemPrompt, rejected), no `UserTemplate` and no inline `question`. `FewShotExamples` are appended to the template's system prompt inside `<examples>…</examples>` (not when an inline `systemPrompt` replaces it). **Limitation:** the adapter caches the configuration hand-over at pipeline registration — a changed prompt takes effect after the pipeline is redeployed. A pipeline without `promptTemplateName` behaves exactly as before (tests `AnthropicAiQueryNodePromptTemplateTests`).
+> **Prompt by name (`promptTemplateName`):** the node reads an `AiPromptTemplate` (System.Ai 4.7.0+, `PromptPurpose` = KnowledgeGeneration) by well-known name from the pipeline's configuration hand-over — exactly like the `AiConfiguration` of `apiKeyConfigurationName`, so the pipeline needs a **`Uses` association** to the template entity (`Internal/AiPromptTemplateResolver`, attributes read through `ConfigurationSettingsReader`). Precedence: inline `question` / `systemPrompt` override the template's texts; `model` / `temperature` / `maxTokens` come from the template, then the `AiConfiguration`, then the node. Errors before any API call, each naming the template: not handed over (*"AiPromptTemplate 'x' not found. The pipeline needs a 'Uses' association …"*), another CK type, another `PromptPurpose` (absent = SessionSystemPrompt, rejected), no `UserTemplate` and no inline `question`. `FewShotExamples` are appended to the template's system prompt inside `<examples>…</examples>` (not when an inline `systemPrompt` replaces it). **Limitation:** the adapter caches the configuration hand-over at pipeline registration — a changed prompt takes effect after the pipeline is redeployed. A pipeline without `promptTemplateName` behaves exactly as before (tests `AnthropicAiQueryNodePromptTemplateTests`).
 
-> **Usage (`usageOutputPath`, AB#8658):** every Messages API call of one execution — tool rounds and JSON repair calls included — is summed (`Internal/AiUsageAccumulator`) and written as `{ model, calls, inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, estimatedCostUsd, priceListDate }`. `inputTokens` is the API's uncached remainder; the prompt size is the sum of the three input fields. `calls` counts the **answered** calls, i.e. the billed ones whose `usage` is summed, not the requests sent: a request the provider refuses with an error (e.g. HTTP 400 for an unsupported temperature, which the engine then repeats once without it) returns no usage and is not counted, for both nodes and both providers. An answer the provider delivered but the chat client refuses (a tool call whose arguments are not a JSON object, `LlmQuery@1` with `OpenAiCompatible`) was billed, so it is counted with its tokens before the query fails. `estimatedCostUsd` uses the built-in first-party list prices (`Internal/AnthropicPricing`, longest model-id prefix wins, cache writes at the 5-minute rate 1.25× input, cache reads as published per model, else 0.1× input) — an estimate, not the invoice; partner platforms and long-context tiers are not modelled. A model missing from the table gets `estimatedCostUsd: null` and a warning. With `continueOnError` the usage of a failed query is written too (the calls were paid). Update the price table when Anthropic changes prices or ships a model (tests `AnthropicAiQueryNodeUsageTests.PriceTable_*`).
+> **Usage (`usageOutputPath`):** every Messages API call of one execution — tool rounds and JSON repair calls included — is summed (`Internal/AiUsageAccumulator`) and written as `{ model, calls, inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, estimatedCostUsd, priceListDate }`. `inputTokens` is the API's uncached remainder; the prompt size is the sum of the three input fields. `calls` counts the **answered** calls, i.e. the billed ones whose `usage` is summed, not the requests sent: a request the provider refuses with an error (e.g. HTTP 400 for an unsupported temperature, which the engine then repeats once without it) returns no usage and is not counted, for both nodes and both providers. An answer the provider delivered but the chat client refuses (a tool call whose arguments are not a JSON object, `LlmQuery@1` with `OpenAiCompatible`) was billed, so it is counted with its tokens before the query fails. `estimatedCostUsd` uses the built-in first-party list prices (`Internal/AnthropicPricing`, longest model-id prefix wins, cache writes at the 5-minute rate 1.25× input, cache reads as published per model, else 0.1× input) — an estimate, not the invoice; partner platforms and long-context tiers are not modelled. A model missing from the table gets `estimatedCostUsd: null` and a warning. With `continueOnError` the usage of a failed query is written too (the calls were paid). Update the price table when Anthropic changes prices or ships a model (tests `AnthropicAiQueryNodeUsageTests.PriceTable_*`).
 
-> **Source caching (`cacheSource`, AB#8658):** the user prompt is built in two parts (`BuildUserPromptParts`): the source part (preamble, `CONTENT:` header and the **main content** — the value at `path`) and the instruction part (the `dataPaths` context, the verified caller, the closing `---`, the question and the answer format). Without `cacheSource` both are sent as one string — byte-for-byte the prompt before AB#8658. With it, the user message is two text blocks and the first carries `cache_control: ephemeral`; the concatenated text is identical, so the model reads the same thing. Only the main content is cached on purpose: `dataPaths` typically change between calls (a reviewer round adds the new draft), and anything changing inside the cached block would make every call a miss. Breakpoints per request: system prompt, last tool, source block = 3 of the API's 4. The cache is a **prefix match** (tools → system → messages): a call reads the source from the cache (`cacheReadInputTokens` > 0) only when tools, system prompt and source are identical — every MCP tool round of one execution (each round resends the whole conversation) and repeated runs of the same node over the same source within 5 minutes (e.g. reviewer rounds that change only the draft in `dataPaths`). A generation node and a verification node with different system prompts do **not** share the cached source. Prefixes below the model's minimum cacheable length (512–4096 tokens) are silently not cached. Tests `AnthropicAiQueryNodeUsageTests.CacheSource_*` and `PromptParts_*` (mocked API; the real cache hit is the API's behaviour).
+> **Source caching (`cacheSource`):** the user prompt is built in two parts (`BuildUserPromptParts`): the source part (preamble, `CONTENT:` header and the **main content** — the value at `path`) and the instruction part (the `dataPaths` context, the verified caller, the closing `---`, the question and the answer format). Without `cacheSource` both are sent as one string — byte-for-byte the prompt before the cache option existed. With it, the user message is two text blocks and the first carries `cache_control: ephemeral`; the concatenated text is identical, so the model reads the same thing. Only the main content is cached on purpose: `dataPaths` typically change between calls (a reviewer round adds the new draft), and anything changing inside the cached block would make every call a miss. Breakpoints per request: system prompt, last tool, source block = 3 of the API's 4. The cache is a **prefix match** (tools → system → messages): a call reads the source from the cache (`cacheReadInputTokens` > 0) only when tools, system prompt and source are identical — every MCP tool round of one execution (each round resends the whole conversation) and repeated runs of the same node over the same source within 5 minutes (e.g. reviewer rounds that change only the draft in `dataPaths`). A generation node and a verification node with different system prompts do **not** share the cached source. Prefixes below the model's minimum cacheable length (512–4096 tokens) are silently not cached. Tests `AnthropicAiQueryNodeUsageTests.CacheSource_*` and `PromptParts_*` (mocked API; the real cache hit is the API's behaviour).
 
 #### LlmQueryNode
 
@@ -1214,7 +1212,7 @@ Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQue
 
 #### McpToolCallNode
 
-`McpToolCall@1` (AB#8658) calls **one allowlisted tool** on the tenant's OctoMesh MCP service, deterministically and as a configured service account — no model decides anything. Typical use is the write after an `AnthropicAiQuery@1` step: the model only reads and returns schema-valid JSON, then the pipeline writes it through `knowledge_upsert_page` / `knowledge_link` as `knowledge-curator`, so the MCP tool's content guard and versioning apply (write path W1 of AB#8486; node idea from the KnowledgeCapture prototype, AB#4237).
+`McpToolCall@1` calls **one allowlisted tool** on the tenant's OctoMesh MCP service, deterministically and as a configured service account — no model decides anything. Typical use is the write after an `AnthropicAiQuery@1` step: the model only reads and returns schema-valid JSON, then the pipeline writes it through `knowledge_upsert_page` / `knowledge_link` as `knowledge-curator`, so the MCP tool's content guard and versioning apply (write path W1; node idea from the KnowledgeCapture prototype).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1222,7 +1220,7 @@ Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQue
 | `ToolName` | string? | The tool to call. Exactly one of `toolName` / `toolNamePath`. |
 | `ToolNamePath` | string? | JSONPath to a string naming the tool (e.g. chosen by an earlier step). Still checked against `allowedTools`. |
 | `ArgumentsPath` | string? | JSONPath to a JSON **object** sent as the tool arguments. Not set = `{}`. Anything other than an object fails the node before any call. |
-| `ExecutionIdArgument` | string? | Name of a top-level tool argument that receives the **id of the current pipeline execution** (GUID string, AB#8703), e.g. `runRef` for `knowledge_upsert_page`, so the page version references the exact run. Replaces an argument of the same name from `argumentsPath`; not set = arguments unchanged. An empty name or one with leading/trailing spaces is a configuration error. |
+| `ExecutionIdArgument` | string? | Name of a top-level tool argument that receives the **id of the current pipeline execution** (GUID string), e.g. `runRef` for `knowledge_upsert_page`, so the page version references the exact run. Replaces an argument of the same name from `argumentsPath`; not set = arguments unchanged. An empty name or one with leading/trailing spaces is a configuration error. |
 | `AiConfigurationName` | string? | Well-known name of the `System.Communication/AiConfiguration` whose `McpServerUrl` is used (recommended; the per-cluster value, handed over via the pipeline's `Uses` association). |
 | `McpServerUrl` | string? | Fallback URL (e.g. `https://localhost:5017` locally). The tenant is appended: `{url}/{tenantId}/mcp`. |
 | `McpServiceAccountConfigName` | string | **Required.** Well-known name of the `System.Communication/ServiceAccountConfiguration` the call runs as. |
@@ -1238,7 +1236,7 @@ Tests: `LlmQueryConfigurationTests` (defaults, the rules, YAML, schema), `LlmQue
   argumentsPath: $.page            # built by earlier nodes from the AI answer
   aiConfigurationName: AiConfig    # McpServerUrl; pipeline needs a Uses association
   mcpServiceAccountConfigName: knowledge-curator
-  executionIdArgument: runRef      # AB#8703: the page version records this execution's id
+  executionIdArgument: runRef      # the page version records this execution's id
   targetPath: $.write
 ```
 
@@ -1249,7 +1247,7 @@ execution, not of the caller. Without an execution id (empty GUID) the argument 
 Behaviour and order of checks (tests `McpToolCallNodeTests`, `McpToolCallNodeIntegrationTests` against an in-process ModelContextProtocol 2.2.0 server — the SDK of octo-mcp-service):
 
 1. Configuration (allowlist present, one tool-name source, service account, timeout, `executionIdArgument` name), tool name, **allowlist** (exact, case-sensitive), arguments (plus the execution id) and endpoint are resolved **before** a token is requested or any request is sent. A violation fails the node with *"MCP tool 'x' is not in this node's allowedTools [...]. The tool was not called."*
-2. **Identity, fail-closed:** the token comes from `IServiceAccountTokenService.AcquireServiceAccountTokenAsync` — client credentials (or the AB#5114 impersonation grant for a secret-less configuration), **returned** and cached per `(TenantId, ClientId)` until 60 s before expiry, **never** written into the process-wide `IServiceClientAccessToken` (the adapter's own identity, shared by concurrent pipelines — reading a token back from it after `EnsureTokenAsync` could hand one pipeline another pipeline's account). No token → the node fails; it never sends an unauthenticated request (unlike `AnthropicAiQuery@1`'s degrade path). The token is registered as a secret (masked in diagnostics) and redacted from every error message.
+2. **Identity, fail-closed:** the token comes from `IServiceAccountTokenService.AcquireServiceAccountTokenAsync` — client credentials (or the impersonation grant for a secret-less configuration), **returned** and cached per `(TenantId, ClientId)` until 60 s before expiry, **never** written into the process-wide `IServiceClientAccessToken` (the adapter's own identity, shared by concurrent pipelines — reading a token back from it after `EnsureTokenAsync` could hand one pipeline another pipeline's account). No token → the node fails; it never sends an unauthenticated request (unlike `AnthropicAiQuery@1`'s degrade path). The token is registered as a secret (masked in diagnostics) and redacted from every error message.
 3. **MCP Streamable HTTP** (`Internal/McpToolClient`): `initialize` → `notifications/initialized` → `tools/call`, with `Authorization: Bearer` and the `Mcp-Session-Id` the server hands out; JSON and SSE answers (notifications before the answer are skipped).
 4. **Result:** `structuredContent` when present, else a single text content parsed as JSON, else the text.
 5. **Errors:** a JSON-RPC error fails with *"MCP error {code} on tool 'x': {message}"*; a tool result with `isError: true` with *"MCP tool 'x' returned an error: {text}"* (the tool's own code, e.g. a content-guard refusal, is in the text); another HTTP status with the status and up to 300 characters of the body; a timeout names the limit. The quoted body and tool text are cut only after the token has been masked in the whole text, so a token longer than the excerpt never leaves its head in the message.
@@ -1353,7 +1351,7 @@ a blank `Path`/`TargetPath`, a `Delimiter` that is not exactly one character, an
 
 #### ConvertToCsvNode
 
-Turns an array of records into ONE CSV document (`ConvertToCsv@1`, AB#6733). Generic: it knows
+Turns an array of records into ONE CSV document (`ConvertToCsv@1`). Generic: it knows
 nothing about a particular customer format. Not a replacement of `RenderDelimitedText@1` - that
 node writes a fixed layout **without** quoting on purpose; this one writes real CSV.
 
@@ -1417,7 +1415,7 @@ with both `Value` and `ValuePath`, `Format`/`Decimals`/`Factor`/`TimeZone` on a 
 type they do not apply to, `Decimals` outside 0-28, an unknown time zone, and value paths that do
 not parse or select a set.
 
-The grid-operator layout of the interim CSV delivery (AB#6403) is plain configuration:
+The grid-operator layout of the interim CSV delivery is plain configuration:
 
 ```yaml
 - type: ConvertToCsv@1
@@ -1445,7 +1443,7 @@ Formats query results as Markdown tables for report generation.
 Creates and persists reports from pipeline data: calls `{tenantId}/v1/reports/generateAndStore` (or
 `generateAndStoreWithRelatedEntity` when a related entity is configured) on the reporting service.
 
-**Authenticated as the adapter (AB#7581).** The reporting routes require a bearer token of the route tenant with the
+**Authenticated as the adapter.** The reporting routes require a bearer token of the route tenant with the
 `octo_api` scope. The node sends the adapter's own service token (`IServiceClientAccessToken`, kept current by
 `AdapterAccessTokenService` from `Adapter:ClientId` / `Adapter:IssuerUri`; the borrower's token during a leased execution).
 An adapter without a configured client sends the request anonymously with a node warning, and an enforcing reporting service
@@ -1524,9 +1522,9 @@ When one batch holds several updates for the same entity they are merged into on
 conflicting attribute the later value wins. Values are compared **structurally** (lists, dictionaries,
 records and JSON trees by content, numbers by value), so equal content is no conflict. A real conflict
 produces one warning per entity and batch naming all conflicting attributes with compact values
-truncated to 200 characters; credential-like attributes are shown as `<redacted>` (AB#7436).
+truncated to 200 characters; credential-like attributes are shown as `<redacted>`.
 
-##### Unique keys and concurrent writers: `onDuplicateKey` (AB#9466)
+##### Unique keys and concurrent writers: `onDuplicateKey`
 
 A unique index on the CK type (`Unique` / `UniqueNotDeleted`) is the only check that holds when two callers
 write the same natural key at once; a pipeline's own "does it exist yet" lookup reads before it writes, so
@@ -1543,7 +1541,7 @@ on and answers for itself. Without Report (the default `Throw`) the refusal fail
 | Engine reports errors in its operation result (validation) | logged as an error, rolled back, **no flag written**, pipeline continues | logged as an error, rolled back, pipeline continues |
 | Any other exception | pipeline fails | pipeline fails |
 
-The validation row is the node's behaviour before AB#9466 and stays unchanged: the flag is then absent (or
+The validation row is the node's behaviour before the retry change and stays unchanged: the flag is then absent (or
 still holds the value of an earlier iteration of a `ForEach@1`). A pipeline must therefore read only an
 explicit `false` as "stored"; the sample answers neither branch in that case, so the method returns no
 result and the caller gets `METHOD_HANDLER_FAILED`.
@@ -1558,7 +1556,7 @@ retry meets the unique index and is reported as a duplicate; if A rolls back, B'
 The node releases the process-wide semaphore for the wait and takes it again before the next attempt, so
 the other `ApplyChanges@2` runs of the same adapter (every pipeline and tenant) go on meanwhile.
 
-Before AB#9466 the node recognised 112 only unwrapped: the wrapped conflict failed the pipeline, and a CK
+Before the retry change the node recognised 112 only unwrapped: the wrapped conflict failed the pipeline, and a CK
 method pipeline answered `METHOD_HANDLER_FAILED` instead of its declared conflict error. The old retry loop
 also ended without an error and without the flag when its attempts ran out, so a pipeline read "stored"
 although nothing was written.
@@ -1575,13 +1573,13 @@ integration test `SlotBookingConflictTests` runs it (12 parallel bookings: 1 boo
 Limits of the pattern:
 
 - Declare the unique index in the type's **first** version. Adding a unique index to an existing type that
-  already holds data is a **Major** change of the CK model and fails on duplicates already stored (AB#5347).
+  already holds data is a **Major** change of the CK model and fails on duplicates already stored.
 - Cancelling must delete the booking (soft delete); a cancelled booking that is only marked keeps the slot
   blocked under `UniqueNotDeleted`.
 - A slot capacity above 1 or variable durations need one claim entity per slot unit, written in the same
   `ApplyChanges@2` batch (all or nothing).
 
-#### Origin of archive rows (all three archive load nodes, AB#5356 / AB#7593 / AB#7596)
+#### Origin of archive rows (all three archive load nodes)
 
 Every archive row records whether it was entered manually or delivered automatically. The three load
 nodes below declare it:
@@ -1591,16 +1589,16 @@ nodes below declare it:
 | `Origin` | enum | `Automated` (default — a pipeline without it writes exactly as before) or `Manual` |
 | `ManualReason` | string? | Optional reason stored with every manual row; only allowed with `Origin: Manual` |
 | `ManualReasonAttributePath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: attribute on the upstream entity carrying a per-row reason (removed from the attributes, wins over `ManualReason` when not empty). The CK type must declare the attribute, otherwise `CreateUpdateInfo` refuses it — prefer `ManualReasonPath` |
-| `ManualReasonPath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only (AB#7638): path, relative to each item at `Path`, that carries the reason of that row, e.g. `$.manualReason` next to `rtEntity` in the update info. Read from the DataContext, so the CK type needs no reason attribute. Wins over `ManualReasonAttributePath` and `ManualReason` when not empty |
-| `ManualReasonProperty` | string? | `SaveTimeRangeSeriesInArchive@1` only (AB#7638): property of each value object that carries the reason of its row. Wins over `ManualReason` when not empty |
-| `WriteResultPath` | string? | All three nodes (AB#7598): path the write result `{ stored, skipped, skippedByReason }` is stored at |
-| `FailOnSkippedRows` | bool | All three nodes (AB#7598): fail when the archive did not store every row, for any reason including `CkTypeMismatch` (default `false`: rows not stored are logged per reason, see below) |
+| `ManualReasonPath` | string? | `SaveStreamDataInArchive@1` and `SaveTimeRangeStreamDataInArchive@1` only: path, relative to each item at `Path`, that carries the reason of that row, e.g. `$.manualReason` next to `rtEntity` in the update info. Read from the DataContext, so the CK type needs no reason attribute. Wins over `ManualReasonAttributePath` and `ManualReason` when not empty |
+| `ManualReasonProperty` | string? | `SaveTimeRangeSeriesInArchive@1` only: property of each value object that carries the reason of its row. Wins over `ManualReason` when not empty |
+| `WriteResultPath` | string? | All three nodes: path the write result `{ stored, skipped, skippedByReason }` is stored at |
+| `FailOnSkippedRows` | bool | All three nodes: fail when the archive did not store every row, for any reason including `CkTypeMismatch` (default `false`: rows not stored are logged per reason, see below) |
 
 The write result says how many rows the archive stored and why the others were not
 (`LowerPrecedence`, `ManualValueProtected`, `CkTypeMismatch`). Losing rows are a normal outcome for
 automated deliveries; a manual row that cannot be stored always fails the node.
 
-How rows not stored are logged (AB#7988):
+How rows not stored are logged:
 
 | Rows not stored | Without `FailOnSkippedRows` | With `FailOnSkippedRows` |
 |-----------------|-----------------------------|--------------------------|
@@ -1634,12 +1632,12 @@ reason without `Origin: Manual` fails the node. An archive that ranks by the res
   manualReasonAttributePath: Reason
 ```
 
-#### Partial delivery: a missing column keeps its value, an explicit null clears it (all three archive load nodes, AB#8622)
+#### Partial delivery: a missing column keeps its value, an explicit null clears it (all three archive load nodes)
 
 The archive treats a column a row does not name differently from a column named with null: a column
 that is **not named keeps its stored value**, a column **named with null is cleared**, and a new row
-stores NULL for every column it does not name (engine rule, octo-construction-kit-engine-mongodb
-`docs/streamdata-archive-concept.md`, "Partial delivery"). The load nodes hand that distinction on
+stores NULL for every column it does not name (engine rule,
+`octo-construction-kit-engine-mongodb/docs/streamdata-archive-concept.md`, "Partial delivery"). The load nodes hand that distinction on
 unchanged, so a pipeline decides by the shape of its data:
 
 | In the document | What reaches the archive | Effect on a stored row |
@@ -1654,18 +1652,18 @@ unchanged, so a pipeline decides by the shape of its data:
 - `SaveTimeRangeSeriesInArchive@1`: a series or value property holding JSON `null` becomes a named
   column with null; a missing property, an object or array, and a value the enum conversion cannot map
   stay unnamed (`TimeRangeSeriesShaper.TryReadColumn`).
-- **Enum columns (AB#8625):** a JSON null on an **optional** enum attribute (`isOptional: true`) reaches
+- **Enum columns:** a JSON null on an **optional** enum attribute (`isOptional: true`) reaches
   the archive as a named null, so `CreateUpdateInfo@1` clears an enum column such as a quality code. On a
   **required** enum the node fails with `Path '<path>' cannot be set to null: the enum attribute '<name>'
   ... is not optional.` (an `InvalidPathException` of the engine, thrown before the update is built).
   `SaveTimeRangeSeriesInArchive@1` skips the conversion for a null and clears either kind.
-- **Record members (AB#8625), opt-in per node:** with `explicitNullCreatesRecords: true` on
+- **Record members, opt-in per node:** with `explicitNullCreatesRecords: true` on
   `CreateUpdateInfo@1`, a JSON null on a record member such as `Amount.Value` while the update holds no
   `Amount` yet creates the record with that member as a named null, so the null reaches the archive;
   members of the record that are not sent stay unnamed. A record none of whose members are sent stays
   missing. The node then calls the path evaluator with `RtPathNullHandling.CreateMissingRecords` (engine
-  `docs/rt-path-evaluator-set-value.md`). **The default (`false`) drops such a null** and the record stays
-  missing, as before AB#8625. Keep it off for runtime entities: an update replaces a stored record with the
+  `octo-construction-kit-engine/docs/runtime-semantics.md`). **The default (`false`) drops such a null** and the record stays
+  missing, as before. Keep it off for runtime entities: an update replaces a stored record with the
   one it carries, so a record holding only the null would lose the other stored members, an insert or
   replace fails on a required record member that was not sent, and a null on a required enum member would
   fail the node. A null on a member of a record the update already holds (because another member carries a
@@ -1673,19 +1671,19 @@ unchanged, so a pipeline decides by the shape of its data:
 - The anchor entity of `SaveTimeRangeSeriesInArchive@1` (a runtime entity, not an archive row) still
   ignores a null column value: it keeps the attribute it had.
 
-- **Record members reach their columns on raw archives too (AB#8666, engine-mongodb):** the save node
+- **Record members reach their columns on raw archives too (engine-mongodb):** the save node
   hands the record on as one attribute (`Amount` -> record); the repository expands it into the member
   columns (`Amount.Value`, `Amount.Unit`) on both paths. Before that engine fix the raw path dropped the
   record, so a pipeline write left every member column as it was, values and nulls alike.
 
 Tests: `TimeRangeSeriesShaperTests` (null, missing, value per scope), `ArchiveNullVersusMissingChainTests`
 (document -> `CreateUpdateInfo@1` -> real data context -> raw and time-range save node; enum and record
-member cases of AB#8625 with and without `ExplicitNullCreatesRecords`; the repository is a fake), and `RawArchiveRecordMemberPipelineIntegrationTests`
+member cases with and without `ExplicitNullCreatesRecords`; the repository is a fake), and `RawArchiveRecordMemberPipelineIntegrationTests`
 (integration, `StreamDataPipelineFixture`: real orchestrator, `CreateUpdateInfo@1` ->
 `SaveStreamDataInArchive@1` -> the real `CrateDbStreamDataRepository` on CrateDB; a row seeded in the
 REST shape, then a member value, an explicit null, a member left out, and a null on a member of a record
 the update does not hold yet with the option off and on; needs the engine-mongodb
-package with AB#8666).
+package with the record-member fix).
 
 #### SaveStreamDataInArchiveNode
 
@@ -1712,7 +1710,7 @@ window is skipped with a debug note.
 
 Before inserting it runs an **orphan guard**: the distinct source rtIds of the batch are grouped by
 CkTypeId and looked up, and the whole insert is refused naming the missing ids. That read uses a
-**system** session by decision (AB#5028) — under a narrow identity "you may not see it" would read as
+**system** session by decision — under a narrow identity "you may not see it" would read as
 "it does not exist" and the node would refuse perfectly good measurements.
 
 `Origin`, `ManualReason`, `ManualReasonAttributePath` and `ManualReasonPath`: see *Origin of archive rows* above.
@@ -1746,7 +1744,7 @@ windowed values at `ValuesProperty`.
 | `Columns` | list | `{ name, valueProperty, scope }` — `name` is the archive column / attribute path, `scope` is `Value` (default, read per window) or `Series` (read once from the series) |
 | `AnchorWindowFromAttribute` / `AnchorWindowToAttribute` | string? | Attribute paths the anchor's own window is written to; the `To` attribute also decides whether an existing anchor is advanced |
 | `ParentRtIdProperty` / `ParentCkTypeId` / `ParentAssociationRoleId` | string? | Parent association for newly created anchors — **all three or none** |
-| `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` (AB#5127) |
+| `Identity` | enum | `Caller` (default) / `ServiceAccount` / `System` |
 | `Origin` / `ManualReason` / `ManualReasonProperty` | | See *Origin of archive rows* above |
 
 **Order of operations, and why it is load-bearing:**
@@ -1826,7 +1824,7 @@ both from the stored binary instead, `ContentId` to make it addressable from the
 
 **Why v2 exists**: v1 carries exactly one attachment described by four sibling properties and
 offers no way to reference it from the body, so a billing dispatch spends its only slot on the
-invoice PDF and cannot also show the community logo (AB#2570). An image pointed at by URL is
+invoice PDF and cannot also show the community logo. An image pointed at by URL is
 refused by the asset service without a bearer token the mail client does not have, and a `data:`
 URI is stripped by Outlook and Gmail — a `cid:` reference backed by a `LinkedResource` is the
 only shape that renders.
@@ -1932,7 +1930,7 @@ Deletes exactly one file from an SFTP server: it removes the file `SftpDownload@
 - A path ending in `/` is refused before connecting: this node deletes a file, not a directory
 - Deletion goes through the same session factory as the other SFTP nodes, so the per-server concurrency limit and the host key check apply here as well
 
-##### Deleting only the file that was listed (AB#8284)
+##### Deleting only the file that was listed
 
 Between the listing and the delete, a sender can deliver a new file under the same name. Without an expected identity the node deletes whatever carries the name at that moment, including a file nobody has processed. With `ExpectedLength` and `ExpectedLastWriteTimeUtc` (each statically or through its `...Path` property) the node deletes the file only while it is still the file that was listed:
 
@@ -1963,7 +1961,7 @@ Nothing is ever renamed back. Whatever arrives under the listed name after step 
 
 **Measured against OpenSSH 8.4p1 and SFTPGo 2.7.5** (integration tests `SftpDeleteIdentityIntegrationTests`): on both, the listing and the check report the same length and last write time to the tick, in whole seconds, and the move keeps both. OpenSSH offers `posix-rename@openssh.com`; SFTPGo does not, so there the move uses the plain rename. A symbolic link under the listed name: on OpenSSH every request resolves the link first (SSH.NET sends `REALPATH`), so the check, the move and the delete address the link's target. The target normally differs from what the listing reported for the link, whose length is the length of the link text, so nothing is moved; where it has the same length and second, the target is moved and deleted and the link stays behind, as the plain delete without an identity removes the target too. On SFTPGo the check, the move and the delete address the link, so the link is deleted and its target stays.
 
-**Limits** (AB#8284):
+**Limits**:
 - The identity is length and last write time; the content is not compared. A file replaced by one of the same length with the same last write time - SFTP version 3 reports whole seconds - reads as the file that was listed and is deleted.
 - A file under the temporary name is not recovered by a later run: listings whose pattern does not contain `.sftpdelete-` skip it and warn about it, the failed run names it, and a person deals with it.
 - The temporary name adds 45 ASCII characters to the file name. A file whose name the server cannot hold with that addition fails at the move on every run and is not deleted. Both measured servers hold 255 bytes in a name, so the limit there is a file name of 210 bytes in UTF-8: 210 characters of ASCII, fewer with characters beyond it.
@@ -2019,7 +2017,7 @@ Triggers pipeline via HTTP requests.
 }
 ```
 
-**Response contract** (AB#5674): the HTTP response is the final pipeline data root minus the
+**Response contract**: the HTTP response is the final pipeline data root minus the
 request envelope. `HttpResponseGuard` (`src/MeshAdapter.Sdk/Services/HttpRequests/HttpResponseGuard.cs`)
 runs in `HttpRequestService.SendRequestAsync` just before the response is written, so
 `FromHttpRequest@1`, `FromHttpRequest@2` and `FromTeamsBot@1` are covered alike and nodes stay unchanged:
@@ -2072,7 +2070,7 @@ Cron / scheduled trigger. The communication controller (`TriggerManagementServic
 registers one Hangfire recurring send per (trigger, pipeline); each tick lands in the durable queue
 `{instancePrefix}octo::bot::pipeline-trigger-{tenant}-{pipelineRtId}`, which this node consumes.
 
-**Backlog coalescing and no overlap (AB#5709).** The queue keeps buffering while the adapter is down or
+**Backlog coalescing and no overlap.** The queue keeps buffering while the adapter is down or
 hibernated (OnDemand), and the consumer used to take the whole backlog at MassTransit's default prefetch
 (processor count × 2) — on test-2 an hourly "Recompute Category Actuals" ran 20× in parallel after a
 ~20 h outage. The node now registers its consumer with `RoutedEventConsumerOptions.LatestOnly`
@@ -2084,7 +2082,7 @@ never two runs of the same pipeline through this trigger at once.
 - Opt-out: node property `allowConcurrentExecution: true` restores the old behaviour (every tick, possibly
   in parallel).
 - Scope: per adapter process. Two replicas consuming the same trigger queue can still overlap.
-- Interplay with `octo.pipeline.cron.missed_executions` (AB#5492, controller): the gauge counts fire times
+- Interplay with `octo.pipeline.cron.missed_executions` (controller): the gauge counts fire times
   after the last recorded execution start, so a coalesced backlog clears it with the one run, exactly as
   the previous burst did. A skipped tick is always older than the run that replaced it.
 - Unknown backlog (broker error) fails open: the tick is executed.
@@ -2103,10 +2101,9 @@ correctness, would also drop ticks of pipelines that opted out, and must be comb
 Triggers on notification events for notification processing workflows (e.g. the identity mailer pipeline that
 delivers OTP, welcome and password-reset mails).
 
-**Command consumer: exclusive by design (AB#8405).** The node registers one endpoint per data flow,
+**Command consumer: exclusive by design.** The node registers one endpoint per data flow,
 `{prefix}-octo::com-controller::send-notification-pipeline-{tenant}-data-flow-{dataFlowRtId}`, with
-`CommandConsumerOptions.ExclusiveByDesign(FromSendNotificationNode.ExclusiveByDesignReason)` (event hub option from
-AB#8363, same pattern as the SDK trigger nodes in AB#8105), so registering the pipeline logs no AB#6909 deprecation
+`CommandConsumerOptions.ExclusiveByDesign(FromSendNotificationNode.ExclusiveByDesignReason)` (an event hub option, same pattern as the SDK trigger nodes), so registering the pipeline logs no deprecation
 warning; the reason is logged at Debug. Topology and queue are unchanged (classic exclusive, non-durable, auto-delete).
 
 Why exclusive and not shared: no sender addresses this endpoint by name. identity-services
@@ -2116,7 +2113,7 @@ default consume topology creates. Exclusive by design keeps that binding; the pl
 topology off (and exclusive by design refuses `ConfigureConsumeTopology`), so a move to shared belongs with a change
 of the publishers, not here. A second adapter replica stays a hot standby, as before.
 
-**Tenant guard (AB#8409).** Because the publishers publish to the `SendNotificationsRequest` message-type exchange,
+**Tenant guard.** Because the publishers publish to the `SendNotificationsRequest` message-type exchange,
 every FromSendNotification queue on the broker receives the requests of **all** tenants — the tenant in the queue name
 has no routing effect. The handler therefore compares `message.TenantId` with the pipeline's tenant
 (`ITriggerContext.TenantId`, case-insensitive) first. A foreign request is dropped: the pipeline is not started, no
@@ -2124,7 +2121,7 @@ response is sent, the handler returns normally so the message is acknowledged, a
 tenant ids only (never recipients, subject or body). Consequence for operators: the mailer pipeline must run in the
 same tenant whose identity/common services issue the mail; a central mailer in another tenant no longer delivers
 foreign tenants' mails. Residual: the payloads still *reach* every adapter process that runs such a pipeline (fan-out
-by type); per-tenant routing (tenant-routed exchange, routing key = tenant id) is AB#8410. Tests:
+by type); per-tenant routing (tenant-routed exchange, routing key = tenant id) is planned. Tests:
 `FromSendNotificationNodeTests` (foreign tenant → no pipeline start, WARN without payload; own tenant in any casing →
 pipeline starts).
 
@@ -2198,7 +2195,7 @@ starts an execution has to be mirrored here by hand.
 | `StartExecutePipelineAsync()` | Begin pipeline run |
 | `EndExecutePipelineAsync()` | Await the run, report status and output data to the controller |
 
-**Dry run (AB#5159)**: `ExecutePipelineOptions.IsDryRun` (set by `FromExecutePipelineCommand@1`
+**Dry run**: `ExecutePipelineOptions.IsDryRun` (set by `FromExecutePipelineCommand@1`
 from the `ExecutePipelineRequest` the controller sends for
 `POST /{tenant}/v1/pipeline/execute?pipelineRtId=<id>&isDryRun=true`) is turned into a
 `DefaultPipelineExecutionMode { IsDryRun = true }` on the orchestrator call, which is the only
@@ -2241,7 +2238,7 @@ Return Result / Store in Time-Series / Send Notifications
 
 **Note**: The `Properties` dictionary in the context carries state across all nodes.
 
-### Method-invocation marker and the generic-create guard (AB#7462)
+### Method-invocation marker and the generic-create guard
 
 A run started by the invocation of a Construction Kit method carries `IMeshEtlContext.MethodInvocation`
 (`ExecutePipelineMethodInvocation`: `MethodId`, `InvocationId`, `CkTypeId`, `PipelineRtId`), `null` for every other run.
@@ -2254,9 +2251,9 @@ in `Properties`): direct path via `ExecutePipelineOptions.MethodInvocation`, lea
 `MethodId` equals the replacing method's qualified id (ordinal) and its `PipelineRtId` equals the running pipeline.
 The whole batch is refused before any write with `GenericCreateReplacedByMethodException`
 (`Code` = `GENERIC_CREATE_REPLACED_BY_METHOD`, `Refusals` = type, method, cause). Update/Replace/Delete are not
-checked; the lookup is memoized per type. `ApplyChanges@1`, `ApplyChanges@2` and `ImportFromExcel` call it (AB#7463): on
+checked; the lookup is memoized per type. `ApplyChanges@1`, `ApplyChanges@2` and `ImportFromExcel` call it: on
 the update infos of the batch before the dry-run branch and before the first write. `ImportFromExcel` honours dry runs
-since AB#7500 (it reports the counts and writes nothing); refusals apply in dry runs. The pipeline run fails; nothing is written. A flag added later takes effect only after the CK cache
+(it reports the counts and writes nothing); refusals apply in dry runs. The pipeline run fails; nothing is written. A flag added later takes effect only after the CK cache
 reload on `CkModelChanged`. When the tenant CK cache is not loaded (it can be unloaded mid-run), the guard loads it first
 and fails closed with `GenericCreateCheckUnavailableException` (`GENERIC_CREATE_CHECK_UNAVAILABLE`, retryable, nothing
 written) if that does not work. Chained pipelines (`ToPipelineDataEvent`)
@@ -2264,7 +2261,7 @@ do not inherit the marker and are refused. Rollout: core-libs train, then contro
 then the adapter; no compatibility switch.
 
 **Nodes covered by the guard** (every SDK node that inserts `RtEntity` instances through
-`TenantRepository.ApplyChangesAsync`; AB#7463 and AB#7499):
+`TenantRepository.ApplyChangesAsync`):
 
 | Node | Where the guard runs |
 |------|----------------------|
@@ -2288,7 +2285,7 @@ public class MyWriteNode(NodeDelegate next, IMeshEtlContext etlContext, ICkCache
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         List<IEntityUpdateInfo<RtEntity>> updates = BuildUpdates(dataContext);
-        // runs the generic-create guard, then the attribute-access guard (AB#7768)
+        // runs the generic-create guard, then the attribute-access guard
         await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, updates); // throws, nothing written
         // ... session, ApplyChangesAsync, commit
     }
@@ -2300,11 +2297,11 @@ in a `try/catch` that logs a store error. Tests belong next to the node: refused
 `ApplyChangesAsync` was never called), allowed with `ConfigureRun(..., OwnRunMarker())`, non-flagged types and updates
 unaffected (see `ReplacedCreateTestSupport` in the test project).
 
-### Attribute access in pipelines: Hidden, MethodOnly, ReadOnly (AB#7768)
+### Attribute access in pipelines: Hidden, MethodOnly, ReadOnly
 
 A pipeline runs with system rights and reads the repository directly, so the GraphQL guards of CK v2 attribute access
 (`access: Hidden | MethodOnly | ReadOnly`) do not reach it. `MeshAdapter.Sdk/Common/RtAttributeAccessGuard` applies them
-(rules from the engine helpers of AB#7767: `CkTypeAttributeGraph.IsReadableOutsideMethod` / `IsWritableOutsideMethod`):
+(rules from the engine helpers: `CkTypeAttributeGraph.IsReadableOutsideMethod` / `IsWritableOutsideMethod`):
 
 | Access | Emitted by extract nodes | Filter / sort / query column | Written by load nodes |
 |--------|-------------------------|------------------------------|-----------------------|
@@ -2327,14 +2324,14 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   `GetRtEntitiesById@1`, `GetAssociationTargets@1`, `GetOrCreateRtEntitiesByType@1`, `CheckDuplicate@1`,
   `FromWatchRtEntity@1` (in `StartAsync`), `GetQueryById@1` (the node's filters). An entity-selector key
   (`nav.Type[passwordHash=X]->name`, an equality lookup) is refused when it names a Hidden attribute of any CK type of the
-  tenant; the error shows the path with the selector values removed (`WithoutSelectorValues`, AB#8077: everything from the first `=` inside a selector to the last `]` is replaced, but that `]` only ends the redaction when the rest is a valid path suffix — `->name`, `.name`, `::meta` or nothing; an unclosed selector, a value with a `]` followed by anything else, or a quoted value still open at that `]` (odd number of `'` or `"` between the `=` and the `]`, or a quote still open when the quotes are read in order, AB#8085) is redacted to the end of the path; the same rule as the asset repository's access errors). It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
+  tenant; the error shows the path with the selector values removed (`WithoutSelectorValues`: everything from the first `=` inside a selector to the last `]` is replaced, but that `]` only ends the redaction when the rest is a valid path suffix — `->name`, `.name`, `::meta` or nothing; an unclosed selector, a value with a `]` followed by anything else, or a quoted value still open at that `]` (odd number of `'` or `"` between the `=` and the `]`, or a quote still open when the quotes are read in order) is redacted to the end of the path; the same rule as the asset repository's access errors). It reuses the engine's `ArchiveHiddenColumnGuard` (segments case-insensitive, `[*]` ignored, a record column
   that contains a Hidden member counts). Interface queries check every implementing type; a navigated path
   (`role.Type->attribute`) is judged by its trailing attribute on every CK type of the tenant (conservative).
 * **Stored queries.** `EnsureStoredQueryNotHidden(cache, tenant, node, query)` checks the paths a persisted query carries
   itself - columns, field filters, sort orders, attribute-search paths, group-by and aggregation columns, for every runtime and
   stream-data query kind - against the query type and every type derived from it (an unknown query type, e.g. a CK interface,
   against every type of the tenant). A stored filter on a Hidden attribute is an oracle for its value (the number of rows answers
-  the guess, AB#8049); the asset repository refuses to save such a query, but a query can also arrive through an import, a
+  the guess); the asset repository refuses to save such a query, but a query can also arrive through an import, a
   restore or an older version. Called by `GetQueryById@1` (before the query, for runtime and stream-data queries) and
   `PrepareNotification@1` (before the subscription's query runs; the refusal is recorded as the preference's `LastError`).
   Usages in the error: `stored query column`, `stored field filter`, `stored sort order`, `stored attribute search`,
@@ -2349,7 +2346,7 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
   an entity whose type has an attribute this run may not write is refused (`REPLACE_WOULD_CLEAR`): the replacement
   document would clear the stored value. Presence counts as a write, so read-modify-write of a whole entity fails on a
   ReadOnly/MethodOnly attribute. Runs before the dry-run branch, so a dry run reports the refusal.
-* **Identity-owned User fields and identity associations (AB#8059).** The same call enforces the engine's list
+* **Identity-owned User fields and identity associations.** The same call enforces the engine's list
   `IdentityOwnedWrites` (`ConstructionKit.Contracts`), which asset-repo GraphQL and the user-started RT import enforce too:
   the `System.Identity/User` attributes `NormalizedUserName`, `NormalizedEmail`, `EmailConfirmed`, `PhoneNumberConfirmed`,
   `TwoFactorEnabled`, `LockoutEnabled`, `ResetPasswordOnLogin`, `Claims`, `UserLogins`, `PreferredChannelBindingId`,
@@ -2384,11 +2381,11 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
 * **Credential guard regression tests.** `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Access/IdentityCredentialGuardPipelineTests`
   prove the rules for the real `System.Identity` user (snapshot of the compiled model in `TestData/ck-models/`, see the README there):
   no extract node emits `PasswordHash`, `SecurityStamp` or `UserTokens`, filters and sorts on them are refused (also in the
-  persisted query's own filters of `GetQueryById@1`, AB#8049), and `ApplyChanges@1/@2` refuse writes of the Hidden, MethodOnly
+  persisted query's own filters of `GetQueryById@1`), and `ApplyChanges@1/@2` refuse writes of the Hidden, MethodOnly
   (`UserName`, `Email`) and ReadOnly (`LockoutEnd`, `AccessFailedCount`) attributes; the seeded user carries fixed dummy values that
-  no output, error or log line may contain. Since AB#8059 they also prove that every identity-owned User attribute (update,
+  no output, error or log line may contain. They also prove that every identity-owned User attribute (update,
   `ApplyChanges@1/@2`) and every identity association role (insert and delete, from either end) is refused outside an
-  identity method run and allowed in it. Since AB#7777 (engine) the generic writers refuse every new `System.Identity/User`
+  identity method run and allowed in it. Since the engine change the generic writers refuse every new `System.Identity/User`
   with `GENERIC_CREATE_REPLACED_BY_METHOD` (users are created by `User.CreateUser-1`), so the insert tests assert that refusal
   (also for an insert without any restricted attribute); the attribute refusals (`RT_ATTRIBUTE_WRITE_RESTRICTED`,
   `IDENTITY_OWNED`) are proven by the updates of the seeded user.
@@ -2406,11 +2403,11 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
 | `ReportingServiceUrl` | string | `https://localhost:5007` | Report service endpoint |
 | `AuthorityUrl` | string | `https://localhost:5003` | Identity service issuing the access tokens accepted by secured trigger nodes |
 | `AuditAnonymousInvocations` | bool | `false` | Stores an event per invocation of an anonymous trigger route. Opt in per environment; the decision always reaches the adapter log at debug level regardless |
-| `ServiceTokenEnforcement` | enum | `Enforce` | `Enforce` refuses a client-credentials token of another tenant, or one without `tenant_id`, with `403` on secured trigger routes; `Warn` lets it pass and records a warning event instead (AB#5628, env `OCTO_ADAPTER__SERVICETOKENENFORCEMENT`) |
+| `ServiceTokenEnforcement` | enum | `Enforce` | `Enforce` refuses a client-credentials token of another tenant, or one without `tenant_id`, with `403` on secured trigger routes; `Warn` lets it pass and records a warning event instead (env `OCTO_ADAPTER__SERVICETOKENENFORCEMENT`) |
 | `StreamDataHost` | string | `127.0.0.1` | CrateDB hostname |
 | `StreamDataUser` | string | `crate` | CrateDB user |
 | `StreamDataPassword` | string | (empty) | CrateDB password |
-| `StreamDataCoverageCacheTtlSeconds` | int | `60` | TTL of the measured archive-coverage memo used by `GetQueryById@1`'s resolution-aware archive selection (AB#5157); the adapter's equivalent of the platform services' `StreamData:Coverage:CacheTtlSeconds` (env `OCTO_ADAPTER__STREAMDATACOVERAGECACHETTLSECONDS`) |
+| `StreamDataCoverageCacheTtlSeconds` | int | `60` | TTL of the measured archive-coverage memo used by `GetQueryById@1`'s resolution-aware archive selection; the adapter's equivalent of the platform services' `StreamData:Coverage:CacheTtlSeconds` (env `OCTO_ADAPTER__STREAMDATACOVERAGECACHETTLSECONDS`) |
 
 ### Build Configurations
 
@@ -2460,8 +2457,8 @@ both logged and written to the tenant's event log (see **Route audit** below):
    `401 Unauthorized` when missing or invalid.
 2. The token's tenant (`tenant_id`) must be the tenant this adapter serves — `403 Forbidden`
    otherwise. This runs before the role check, so a role of the same name in another tenant never
-   opens a route. It applies to user tokens and, since AB#5628, to client-credentials tokens too
-   (no `sub` / name-identifier claim), which identity stamps with `tenant_id` since AB#5032. A token
+   opens a route. It applies to user tokens and also to client-credentials tokens
+   (no `sub` / name-identifier claim), which identity stamps with `tenant_id`. A token
    without a tenant claim is rejected rather than waved through. `allowed_tenants` is deliberately
    ignored, it drives tenant selection rather than authorization (same rule as
    `TenantAuthorizationMiddleware` in octo-common-services). There is no cross-tenant allow-list.

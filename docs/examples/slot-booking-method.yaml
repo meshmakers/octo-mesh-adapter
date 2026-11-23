@@ -1,4 +1,4 @@
-# Sample method pipeline (AB#9466): book a slot without double booking.
+# Sample method pipeline: book a slot without double booking.
 #
 # Handler of the static CK method Acme.Scheduling/SlotBooking.Book (execution.handler: pipeline). Deploy it with
 # rtWellKnownName = the qualified method id. The method declares:
@@ -8,7 +8,7 @@
 #
 # The CK type Acme.Scheduling/SlotBooking declares a UniqueNotDeleted index on SlotKey in its FIRST version.
 # Adding a unique index to an existing type that already holds data is a Major change of the CK model and fails on
-# duplicates already stored (AB#5347).
+# duplicates already stored.
 #
 # Why this is safe against concurrent calls: the unique index is the only check that holds when two calls book the
 # same slot at once. ApplyChanges@2 with onDuplicateKey: Report turns the refused write into $.slotTaken = true

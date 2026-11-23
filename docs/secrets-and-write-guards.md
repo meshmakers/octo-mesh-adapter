@@ -1,11 +1,11 @@
 ---
 description: Platform-only secrets, the generic-create guard, attribute access (Hidden, MethodOnly, ReadOnly) and the failure kind of an execution.
-applies_to: src/MeshAdapter.Sdk/Common/PlatformOnlySecrets.cs, src/MeshAdapter.Sdk/Common/SecretAttributes.cs, src/MeshAdapter.Sdk/Common/GenericCreate*.cs, src/MeshAdapter.Sdk/Common/RtAttributeAccess*.cs
+applies_to: src/MeshAdapter.Sdk/Common/{PlatformOnlySecrets,SecretAttributes,GenericCreate*,RtAttributeAccess*}.cs
 ---
 
 # Secrets and write guards
 
-## Platform-only secrets - no pipeline reveals a SecretDefault (AB#7246)
+## Platform-only secrets - no pipeline reveals a SecretDefault
 
 A secret default that an Application declares (`System.Communication/Application.SecretDefaults[].SecretValue`) and
 the controller projects into every served tenant (`System.Communication/SecretDefault.Value`) may be used only inside
@@ -24,16 +24,16 @@ has ownership Secret) and not by data permissions (decryption needs none):
 - `SecretDecryptionCallSiteArchitectureTests` enumerates every `.Unprotect(` / `.RevealOrNull(` call site in `src/`
   against an allow-list (today `RevealSecretNode`, `ServiceAccountTokenService`, `VerifyCaptchaNode`) and fails on a new
   one, and on a stale entry. A new decrypting node is added to the list only together with its use of
-  `PlatformOnlySecrets`, and the platform's own consumer, `VerifyCaptcha@1` (AB#7251), is the only reader of a
+  `PlatformOnlySecrets`, and the platform's own consumer, `VerifyCaptcha@1`, is the only reader of a
   SecretDefault, in its own system session, by well-known name, in the executing tenant only.
-- The controller keeps the type out of the configuration it ships to adapters (see its CLAUDE.md).
+- The controller keeps the type out of the configuration it ships to adapters (see the `octo-communication-controller-services` repository).
 
-### Generic-create guard — inserts of a type whose method replaces the generic create (AB#7462)
+### Generic-create guard — inserts of a type whose method replaces the generic create
 
-A CK method with `replacesGenericCreate` (Feature AB#6884 F3.7, decision note AB#7120) is the only way to create
+A CK method with `replacesGenericCreate` (feature F3.7) is the only way to create
 an entity of its type and of every derived type. `MeshAdapter.Sdk/Common/GenericCreateGuard.EnsureAllowedAsync(IMeshEtlContext,
 ICkCacheService, IEnumerable<IEntityUpdateInfo<RtEntity>>)` is the shared pre-check for the nodes that insert
-(ApplyChanges@1/@2, ImportFromExcel — wired in AB#7463, see "Node wiring" below; the method is async since the
+(ApplyChanges@1/@2, ImportFromExcel — wired later, see "Node wiring" below; the method is async since the
 unloaded-cache case needs a load, `EnsureAllowedAsync`). Rules:
 
 - Only `EntityModOptions.Insert` is checked (Update/Replace/Delete cannot create). The replacing method comes from
@@ -48,17 +48,17 @@ unloaded-cache case needs a load, `EnsureAllowedAsync`). Rules:
   method id, cause `MISSING_METHOD_INVOCATION` / `METHOD_MISMATCH` / `PIPELINE_MISMATCH`); the message is for logs
   only. Call it before the dry-run branch and before the first write.
 
-**Node wiring (AB#7463).** All three nodes take `ICkCacheService` (DI) and call the guard once per batch, before the
+**Node wiring.** All three nodes take `ICkCacheService` (DI) and call the guard once per batch, before the
 first write:
 - `ApplyChangesNode` (`ApplyChanges@1`, `ProcessObjectAsync`): on the whole `list` read from `Path`, **before the dry-run
   branch**, so a dry run reports the refusal instead of "would apply".
 - `ApplyChangesNode2` (`ApplyChanges@2`): on the `entityUpdates` read from `EntityUpdatesPath` (every insert ends up in
   `resultUpdateInfos`; merging only touches non-inserts), **before the dry-run branch**. A dry run of the method's own
   run passes and still writes nothing.
-- `ImportFromExcelNode` (`StoreTreeInDatabase`): on the insert list, before the dry-run branch (AB#7500) and before
+- `ImportFromExcelNode` (`StoreTreeInDatabase`): on the insert list, before the dry-run branch and before
   `ApplyChangesInRepositoryAsync`, so a dry run reports the refusal instead of "would insert". The exception is
   thrown outside the repository `try/catch`, so it fails the node instead of being logged as a store error.
-**Direct writers (AB#7499).** The nodes that bypass `ApplyChanges` and call `TenantRepository.ApplyChangesAsync` themselves
+**Direct writers.** The nodes that bypass `ApplyChanges` and call `TenantRepository.ApplyChangesAsync` themselves
 take `ICkCacheService` too and call the guard once per batch before the write:
 - `CreateFileSystemItemUpdateNode`: on the single file-system-item insert, before the scoped session is opened.
 - `CreateZipArchiveNode` (`PersistFileSystemItemAsync`, `persistAsFileSystemItem`): same.
@@ -66,23 +66,23 @@ take `ICkCacheService` too and call the guard once per batch before the write:
   anchor, participation period). The guard runs inside the open transaction; the refusal propagates through the
   `catch { AbortTransactionAsync; throw; }`, so a customer written by an earlier helper call is rolled back.
 - `SaveTimeRangeSeriesInArchiveNode`: on the anchor entities (`entityUpdates`), before the write session is opened. Found
-  by the AB#7499 grep; archive rows themselves are stream data and are not checked.
-- **`NotificationDeliveryStateStore` is exempt (decision AB#7499).** `NotificationDeliveryState` is an internal System
+  by a grep over the call sites; archive rows themselves are stream data and are not checked.
+- **`NotificationDeliveryStateStore` is exempt (by decision).** `NotificationDeliveryState` is an internal System
   type (`System.Notification`); a CK author cannot flag a System type, and a flag on a derived/other type never
   applies to it. Guarding would add a tenant-cache access per notification delivery on a hot path without protecting
   anything. If a System type ever gains `replacesGenericCreate`, revisit this. Do not copy this exemption to a node
   whose type is configurable.
-- Complete list of `ApplyChangesAsync` callers in `src/` (grep, AB#7499): ApplyChanges@1/@2, ImportFromExcel, the four
+- Complete list of `ApplyChangesAsync` callers in `src/` (grep): ApplyChanges@1/@2, ImportFromExcel, the four
   nodes above, `NotificationDeliveryStateStore`. `SaveStreamDataInArchive` / `SaveTimeRangeStreamDataInArchive` write
   stream rows, `UpdateRtEntityIfNewer` only emits update infos for `ApplyChanges`. A new write node must call the guard
   (developer-guide, "Using the guard in a custom write node").
 The exception propagates and fails the pipeline run; nothing is written. Consequences worth knowing:
-- **`ImportFromExcel` honours dry runs (AB#7500)**: after validation, parsing and the guard it records the dry-run
+- **`ImportFromExcel` honours dry runs**: after validation, parsing and the guard it records the dry-run
   intent (`entityCount`, `associationCount`, `wouldInsert` = the RtEntityIds that would be inserted) and writes
   nothing (no session, no `ApplyChangesAsync`). Refusals apply in dry runs as well.
 - **A flag added later takes effect only after the CK cache reload** on `CkModelChanged`; a run that started earlier works
   with the cache it loaded.
-- **Unloaded tenant cache (fail closed, AB#7463 review S1).** `GenericCreateReplacement.TryGetReplacingMethod` answers
+- **Unloaded tenant cache (fail closed).** `GenericCreateReplacement.TryGetReplacingMethod` answers
   "no replacing method" for a tenant whose cache is not loaded, and the repository reloads the cache on its own when it
   writes, so a guard that just asked would wave the insert through. The cache can be unloaded in the middle of a run
   (`CkModelCacheLeaseParticipant.LeaveLeaseAsync`, `CkModelChanged`). `GenericCreateGuard.EnsureAllowedAsync` therefore
@@ -91,14 +91,14 @@ The exception propagates and fails the pipeline run; nothing is written. Consequ
   refused with `GenericCreateCheckUnavailableException` (`Code` = `GENERIC_CREATE_CHECK_UNAVAILABLE`, inner exception =
   the load failure). It is deliberately a different error than `GENERIC_CREATE_REPLACED_BY_METHOD`: the insert was not
   judged, nothing was written and the run can simply be repeated (retryable).
-Tests: `ApplyChangesReplacedCreateGuardTests`, the `AB#7499` guard tests in `FileSystemTransitionTests` (file item, zip) and
+Tests: `ApplyChangesReplacedCreateGuardTests`, the guard tests in `FileSystemTransitionTests` (file item, zip) and
 `RegisterSelfReportedMeteringPointNodeTests`, `SaveTimeRangeSeriesInArchiveReplacedCreateGuardTests`,
-`ImportFromExcelReplacedCreateGuardTests` (unit, per node: no marker, dry run refused, dry run of a plain type writes nothing and reports the counts (AB#7500), matching marker, other pipeline/method,
+`ImportFromExcelReplacedCreateGuardTests` (unit, per node: no marker, dry run refused, dry run of a plain type writes nothing and reports the counts, matching marker, other pipeline/method,
 plain type, Update/Replace unaffected) and `ReplacedGenericCreateIntegrationTests` (real orchestrator + MongoDB + CK
 cache, model type `MeshAdapterIntegrationTest/ReplacedAccount` with the static method `Provision-1`
 `replacesGenericCreate`). The integration test models the marker by building the `MeshEtlContext` with or without it;
 there is no controller/lease/event hub in that harness, so the hand-over from the method invocation to the node is
-covered only by the controller (AB#7461) and communication-sdk (AB#7459) tests.
+covered only by the controller and communication-sdk tests.
 
 **Where the marker comes from.** The controller's method invoker sets `ExecutePipelineRequest.MethodInvocation`
 (direct path) or `LeaseDto.MethodInvocation` (lease path). Direct path: communication-sdk
@@ -114,7 +114,7 @@ new adapter: no marker, the method's own run is refused (availability only) — 
 controller. New controller + old adapter: the unknown member is ignored and today's gap remains until the adapter is
 upgraded.
 
-### Attribute access in pipelines — Hidden, MethodOnly, ReadOnly (AB#7768)
+### Attribute access in pipelines — Hidden, MethodOnly, ReadOnly
 
 `MeshAdapter.Sdk/Common/RtAttributeAccessGuard` applies the CK v2 attribute `access` to the nodes (a pipeline reads the
 repository with system rights, so the GraphQL guards do not reach it). Full description, node list and exceptions:
@@ -128,7 +128,7 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   (`RT_ATTRIBUTE_WRITE_RESTRICTED`).
 - **ReadOnly**: readable; a pipeline never writes it (also not on insert). A `Replace` that would clear an attribute the run
   may not write is refused. Presence in an update counts as a write.
-- **Identity-owned writes (AB#8059)**: the same write call enforces the engine's `IdentityOwnedWrites` list (identity-owned
+- **Identity-owned writes**: the same write call enforces the engine's `IdentityOwnedWrites` list (identity-owned
   `System.Identity/User` attributes, incl. `LockoutEnd`/`AccessFailedCount`, and the association roles `AssignedRole`,
   `GroupMember`, `ChildGroup`, `MayActAs`, `GrantsPermission`): refused with cause `IDENTITY_OWNED` (attributes on insert/update/
   replace, associations on insert **and** delete in both directions; messages name type, attribute or role and target type,
@@ -137,29 +137,29 @@ repository with system rights, so the GraphQL guards do not reach it). Full desc
   `EnsureWritesAllowedAsync(etlContext, cache, entityUpdates, associationUpdates)` (ApplyChanges@2, SaveTimeRangeSeriesInArchive,
   ImportFromExcel, CreateFileSystemUpdate, CreateZipArchive, RegisterSelfReportedMeteringPoint); a new write node that writes
   associations must pass them. Tests: `Nodes/Access/IdentityOwnedWriteGuardTests`, `IdentityCredentialGuardPipelineTests`.
-- **Stored queries (AB#8049)**: a persisted query whose own columns, filters, sort orders, attribute-search, group-by or
+- **Stored queries**: a persisted query whose own columns, filters, sort orders, attribute-search, group-by or
   aggregation paths reach Hidden is refused before it runs (`EnsureStoredQueryNotHidden`, `GetQueryById@1` for every query kind,
   `PrepareNotification@1`); paths are checked against the query type and its derived types (unknown type: every type). Entity-selector
   keys (`[passwordHash=X]`) count as Hidden paths; error messages remove selector values (`WithoutSelectorValues`: from the first
-  selector `=` to the last `]` followed by a valid path suffix with balanced quotes before it (even counts, none open in reading order, AB#8085), else to the end — also unclosed
-  selectors and open quoted values, AB#8077; tests `SelectorValueRedactionTests`).
+  selector `=` to the last `]` followed by a valid path suffix with balanced quotes before it (even counts, none open in reading order), else to the end — also unclosed
+  selectors and open quoted values; tests `SelectorValueRedactionTests`).
 - Write nodes call `RtAttributeAccessGuard.EnsureWritesAllowedAsync` (it runs `GenericCreateGuard` first); extract nodes
   call `DropHidden(Async)` and `EnsureNotHidden`; nodes that run a stored query call `EnsureStoredQueryNotHidden`. Unknown types are not judged; an unloaded CK cache is loaded, else fail closed.
   `SessionNodeTestBase.CkCache` gives tests a loaded cache that knows no type.
-- **Credential guard regression tests (AB#7781)**: `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Access/IdentityCredentialGuardPipelineTests`
+- **Credential guard regression tests**: `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Access/IdentityCredentialGuardPipelineTests`
   run the real orchestrator and nodes against the **real** System.Identity model (compiler output in `TestData/ck-models/`, loaded by
   `Fixtures/SystemIdentitySnapshotCkModel`; refresh procedure in the README there) with a user whose `PasswordHash`, `SecurityStamp` and
   `UserTokens` hold fixed dummy values (`IdentityCredentialPipelineFixture`): extract nodes (`GetRtEntitiesByType@1`, `GetRtEntitiesById@1`,
   `GetAssociationTargets@1`, `GetQueryById@1` with a stored Hidden column) emit no credential, filters and sorts on them are refused,
   `ApplyChanges@1/@2` refuse Hidden, MethodOnly and ReadOnly user attributes (Hidden also in an identity method run); no output, error or
   captured log line contains a dummy value; a stored query whose own filter reaches a credential is refused by `GetQueryById@1`
-  (AB#8049, `GetQueryById_WithACredentialFilterInTheStoredQuery_IsRefused`).
+  (`GetQueryById_WithACredentialFilterInTheStoredQuery_IsRefused`).
 
-### Failure kind of a failed execution — unacknowledged writes (AB#8037)
+### Failure kind of a failed execution — unacknowledged writes
 
 A pipeline method whose ApplyChanges write was not acknowledged (MongoDB write-concern error under `w:majority`, or
 `UnknownTransactionCommitResult`) may have written; the caller must get `METHOD_OUTCOME_UNKNOWN`, not
-`METHOD_HANDLER_FAILED` (rule R3, same as service handlers since AB#8020). The adapter is the only place that still sees the
+`METHOD_HANDLER_FAILED` (rule R3, same as service handlers). The adapter is the only place that still sees the
 exception, so it classifies it with `PipelineExecutionFailureKinds.Of(ex)` (octo-sdk, delegating to the engine's
 `UnacknowledgedWriteClassifier`) and reports the structured kind next to `Failed`, at three places:
 `MeshAdapterTriggerContext.EndExecutePipelineAsync` (pipeline task faulted), `ReportExecutionFailedBeforeRunAsync` (context

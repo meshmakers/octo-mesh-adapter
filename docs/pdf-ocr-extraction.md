@@ -180,7 +180,7 @@ The node provides detailed logging at different levels:
 ## Performance Considerations
 
 1. **Memory Usage**: Large PDF files will consume significant memory during processing.
-   - **One OCR call at a time, native memory returned after each call (AB#8407).** IronOCR frees its page
+   - **One OCR call at a time, native memory returned after each call.** IronOCR frees its page
      buffers on dispose, but glibc keeps the freed pages, so without help the adapter's native memory grew
      with every OCR batch until the pod was OOM-killed. The node therefore runs every IronOCR call through
      `OcrNativeMemoryCoordinator`: at most one OCR call per adapter process at a time (further calls wait),
@@ -197,7 +197,7 @@ The node provides detailed logging at different levels:
 
 ## Dependencies
 
-- **IronOCR**: Version 2026.10.4 (AB#7067)
+- **IronOCR**: Version 2026.10.4
 - **Meshmakers.Octo.Sdk.Common.EtlDataPipeline**: For pipeline integration
 - **.NET 10.0**: Runtime requirement
 

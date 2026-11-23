@@ -5,7 +5,7 @@ applies_to: src/charts/**, tests/chart/**, src/MeshAdapter.Sdk/Leasing/**, src/M
 
 # Chart, credentials, pools and publishing
 
-## The adapter's own credential in the chart (AB#5072)
+## The adapter's own credential in the chart
 
 `src/charts/octo-mesh-adapter` carries the three env vars the SDK's
 `AdapterAccessTokenService` needs to log the adapter in **before** it connects to
@@ -17,7 +17,7 @@ acquires no token and connects anonymously, which is what the whole fleet does t
 | `OCTO_ADAPTER__ISSUERURI` | `.Values.authUri` | **Same value as `OCTO_ADAPTER__AUTHORITYURL`, by decision.** |
 | `OCTO_ADAPTER__CLIENTID` | `.Values.serviceAccountClientId` | Non-secret. Written by the communication controller as a `ValueOverride` at deploy time. |
 | `OCTO_ADAPTER__CLIENTSECRET` | `.Values.secrets.serviceAccountClientSecret` via `octo-mesh.secretEnv` | 🔴 Secret-flagged; accepts a plaintext string **or** the `{valueFrom: {secretKeyRef: …}}` map the operator produces from `{release}-octo-secrets`, exactly like `secrets.rabbitmq`. |
-| `OCTO_ADAPTER__IRONOCRLICENSEKEY` | `.Values.secrets.ironOcrLicenseKey` via `octo-mesh.secretEnv` | 🔴 Secret-flagged, optional (AB#5449). Consumed only by `PdfOcrExtraction@1`; an adapter without it starts and serves everything else, and only an OCR'd document fails. Same two accepted shapes as the client secret. |
+| `OCTO_ADAPTER__IRONOCRLICENSEKEY` | `.Values.secrets.ironOcrLicenseKey` via `octo-mesh.secretEnv` | 🔴 Secret-flagged, optional. Consumed only by `PdfOcrExtraction@1`; an adapter without it starts and serves everything else, and only an OCR'd document fails. Same two accepted shapes as the client secret. |
 
 🔴 **`AUTHORITYURL` and `ISSUERURI` are two keys for two directions, fed from one value.**
 `AuthorityUrl` (`MeshAdapterConfiguration`, this repo) is **inbound** — the issuer secured
@@ -33,7 +33,7 @@ against it and the communication controller validates the issuer of the resultin
 cluster secrets. The client secret is optional, so its `include` sits behind an `if`; dropping that
 guard makes every adapter without credentials fail to render.
 
-**Split-horizon issuers (AB#5232):** `.Values.additionalValidIssuers` (a string list) renders as
+**Split-horizon issuers:** `.Values.additionalValidIssuers` (a string list) renders as
 `OCTO_ADAPTER__ADDITIONALVALIDISSUERS__<n>` and feeds
 `MeshAdapterConfiguration.AdditionalValidIssuers` — extra issuer values accepted on top of
 `authUri` in the inbound JWT validation (issuer STRING comparison only; signing keys still come
@@ -44,19 +44,19 @@ context values layer (`OPERATOR__ADDITIONALVALIDISSUERS__<n>`, see octo-communic
 
 The controller side of the wire (which `ValueOverride` paths are projected, why they are not gated on
 `ReceivesClusterSecrets`, and why provisioning had to move before the deploy notification) is
-documented in `octo-communication-controller-services/CLAUDE.md` → "Phase 4 — the credentials reach
-the adapter pod (AB#5072)".
+documented in the `octo-communication-controller-services` repository, section "Phase 4 — the credentials reach
+the adapter pod".
 
-## Tenant isolation — `AdapterOptions.TenantId` is gone (AB#4924, increment 3)
+## Tenant isolation — `AdapterOptions.TenantId` is gone (increment 3)
 
 The SDK deleted `AdapterOptions.TenantId` so that shared adapter leasing cannot read a process-wide
 tenant where it needs the tenant of the current work item. Full rationale in
-`octo-communication-sdk/CLAUDE.md`; what changed **here** is four call sites, all of which are
+`octo-communication-sdk/AGENTS.md`; what changed **here** is four call sites, all of which are
 genuinely process-level and now say so:
 
 | Site | Why `DedicatedTenantId` is correct |
 |---|---|
-| `Services/ServiceAccountTokenService.ResolveTenantId` | The AB#5115 fallback for a service-account configuration that names no tenant — the adapter's *own* tenant, not any execution's. |
+| `Services/ServiceAccountTokenService.ResolveTenantId` | The fallback for a service-account configuration that names no tenant — the adapter's *own* tenant, not any execution's. |
 | `Services/HttpRequests/HttpRequestService.IsCallerAuthorizedAsync` | Inbound routes are published under the adapter's own tenant prefix. |
 | `Services/HttpRequests/HttpRequestService.GetUri` | The `/{tenant}` route prefix itself. |
 | `Configuration/DependencyInjection/ServiceCollectionExtensions` | `CommunicationServiceClientOptions` — the `DeployDataFlow`/`DeployPipeline` node's client talks to the controller *as this adapter*, on its own tenant route. |
@@ -79,10 +79,10 @@ The one entry worth knowing about is `CrateDbConnectionAccess`: it caches a Crat
 tenant schema**. Keyed, so isolation-safe by construction — but **unbounded across leases**, exactly
 the shape `ICkCacheService` had before this increment. Sockets and memory, not leakage; the next
 candidate for a lease participant if a member ever leases stream-data tenants at scale.
-`CrateDbStreamDataRepositoryFactory` (AB#7009) is cleared too: its only process state is a table-keyed
+`CrateDbStreamDataRepositoryFactory` is cleared too: its only process state is a table-keyed
 `RecomputeProcessState`, no credential, no tenant field; `DeleteTenantStateAsync` forgets that state.
 
-The tenant-database ownership singletons of engine-mongodb (AB#8796/AB#8672, cleared in AB#8883):
+The tenant-database ownership singletons of engine-mongodb (since cleared):
 `TenantDatabaseRegistrationLookup`, `TenantOwnershipReview` and `SystemDatabaseMarkerStore` are stateless
 (fresh server snapshot per call, admin paths only). `TenantOwnershipConflictTracker` **does** keep
 per-tenant state — the ownership conflicts seen on resolve, keyed by tenant, feeding the health check —
@@ -91,7 +91,7 @@ and is cleared on every release: `CkModelCacheLeaseParticipant.LeaveLeaseAsync` 
 (`CkModelCacheLeaseParticipantTests` pins the call). A new engine singleton that keeps per-tenant
 state needs such a release hook, not just an entry in the cleared list.
 
-The tenant generation cache of octo-common-services (AB#8999, cleared in AB#9022): `TenantGenerationReader`
+The tenant generation cache of octo-common-services (since cleared): `TenantGenerationReader`
 **does** keep per-tenant state — the current generation (creation time of the tenant's lifecycle record) of every
 tenant id it was asked for, keyed by tenant, at most 60 s and 1024 tenants — and is cleared on every release by
 `TenantGenerationLeaseParticipant`, which calls `ITenantGenerationReader.Invalidate(tenant)` as the last leave step
@@ -101,7 +101,7 @@ its key (transport, client id, outcome, decision) and outlives a lease, which ca
 line, never expose data. A new common-services singleton with per-tenant state needs the same: a release
 hook here, not just an entry in the cleared list.
 
-## Adapter pool membership (AB#4924, increment 6)
+## Adapter pool membership (increment 6)
 
 `AddOctoMeshAdapterPoolMember()` (`src/MeshAdapter.Sdk/Leasing/`) makes this adapter a **pool
 member**: a process handed one borrowing tenant per lease. 🔴 **Call it before
@@ -114,18 +114,18 @@ reverse is the order they are left**:
 
 | Participant | Enter | Leave |
 |---|---|---|
-| `TenantGenerationLeaseParticipant` | — | `ITenantGenerationReader.Invalidate` for the released tenant, as the last step (AB#9022) |
+| `TenantGenerationLeaseParticipant` | — | `ITenantGenerationReader.Invalidate` for the released tenant, as the last step |
 | `BorrowerIdentityLeaseParticipant` | exchanges the lease's credential for a token and publishes it as the process identity | empties `IServiceClientAccessToken` |
 | `BorrowerDatabaseLeaseParticipant` | hands the lease's database credential to `LeasedDatabaseCredentialSource` | drops the credential and evicts the released tenant's cached repository clients |
-| `CkModelCacheLeaseParticipant` | warms the borrower's CK model | `ICkCacheService.Unload` + `InvalidateTenantResolveImportGuards` (resolve attempt guards and the tenant's ownership conflict, AB#8883) |
+| `CkModelCacheLeaseParticipant` | warms the borrower's CK model | `ICkCacheService.Unload` + `InvalidateTenantResolveImportGuards` (resolve attempt guards and the tenant's ownership conflict) |
 | `PipelineRegistryLeaseParticipant` | — | `UnregisterAllPipelinesAsync` |
 
 Identity first, because a member that cannot become the borrower must not touch its data at all; the
 registry last, because it is the one holding the borrower's credentials once a pipeline is deployed
-(`PipelineRegistration.GlobalConfiguration`, AB#5027) and therefore has to be the **first** thing
+(`PipelineRegistration.GlobalConfiguration`) and therefore has to be the **first** thing
 dropped.
 
-🔴 **`acr_values=tenant:{borrower}` is not optional, and the result is verified.** Since AB#5077 a
+🔴 **`acr_values=tenant:{borrower}` is not optional, and the result is verified.** A
 token request without it is issued for the **system** tenant — a 403 if you are lucky and a
 cross-tenant read if you are not. `BorrowerIdentityLeaseParticipant` therefore reads the issued
 token's own `tenant_id` claim (hence the field added to `JwtPayloadReader`) and **fails the lease**
@@ -150,11 +150,11 @@ deprecation warning on every start. The other seven SDK-based adapter charts (Lo
 weclapp, modbus-plug, modbus-socket, finapi, eda) still carry the old key and have to follow before
 `ConfigureLegacyAdapterTenantId` is removed.
 
-### The chart can deploy a pool member (AB#4924 §9.4)
+### The chart can deploy a pool member
 
 `adapterPool.poolTenantId` + `adapterPool.poolRtId` turn the deployment into a pool member: the two
 render as `OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID` / `__ADAPTERPOOLRTID` (the values keys are *not*
-the env names — see `_env.tpl`; emitting the short spelling binds nothing, which is AB#5303 item 5),
+the env names — see `_env.tpl`; emitting the short spelling binds nothing, which is a known trap),
 and the member then gets **neither**
 `OCTO_ADAPTER__DEDICATEDTENANTID` **nor** `OCTO_ADAPTER__ADAPTERRTID`. Before this, neither value had
 any route into the container, so an `AdapterPool` workload deployed a pod that started, found
@@ -171,7 +171,7 @@ member id, and the controller's registry keys members by it.
 The controller writes both paths as `ValueOverride`s when it deploys an `RtAdapterPool`
 (`PoolService.AppendAdapterPoolMemberOverrides`).
 
-### 🔴 A member needs NO installation-wide database credential (AB#4924 §9.4)
+### 🔴 A member needs NO installation-wide database credential
 
 The member used to have to resolve the borrower through the installation's registry, which runs
 `listDatabases` on the **admin** connection and reads the system database — six `octosystem` commands
@@ -206,7 +206,7 @@ admin / CrateDB passwords or the SECRET attribute key ring (`OCTO_SECRETENCRYPTI
 withholds the cluster-secret tier from an `AdapterPool` (its `AppendClusterSecretsTests`); the chart
 withholds them again, in the env **and** in the chart-owned `<fullname>-backend` Secret — the Secret
 used to pack plaintext DB passwords and key ring values for a member if a values file carried them,
-even though no env var referenced them (fixed AB#4924, `secret.yaml` + `hasPlaintextBackendSecret`).
+even though no env var referenced them (fixed, `secret.yaml` + `hasPlaintextBackendSecret`).
 
 `tests/chart/test-chart.sh` (bash + helm, no cluster) renders the chart with `member-values.yaml`
 (operator shape **plus** sentinel values for every forbidden secret) in two shapes and with
@@ -215,11 +215,11 @@ base64. Run it after every chart change; it is not wired into CI yet (would be a
 `helm package` in `azure-pipelines.yml`; the agent already has helm for `HelmDeploy@0`).
 
 ⚠️ What a member gets from the engine this way is a **detached** tenant context: it reads and writes
-entities but performs none of the model management the registry route performs (see
-`octo-construction-kit-engine-mongodb/CLAUDE.md`). Deliberate — those are writes on behalf of the
+entities but performs none of the model management the registry route performs (see the
+`octo-construction-kit-engine-mongodb` repository). Deliberate — those are writes on behalf of the
 installation that owns the tenant, and a borrowed process is not it.
 
-## Helm chart publishing (AB#4948)
+## Helm chart publishing
 
 `src/charts/octo-mesh-adapter` is packaged on every build and published to two
 places, plus a third for long-lived branch lines:

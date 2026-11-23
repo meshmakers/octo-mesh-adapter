@@ -474,6 +474,34 @@ public class McpToolCallNodeTests : NodeTestBase
         Assert.DoesNotContain(Token, ex.ToString());
     }
 
+    // A real access token is far longer than the quoted excerpts: the cut must not run through it.
+    private static readonly string LongToken = "eyJ" + string.Concat(Enumerable.Repeat("LongTokenPart0123456789", 43));
+
+    [Fact]
+    public async Task ALongEchoedToken_IsMaskedBeforeTheHttpErrorBodyIsCut()
+    {
+        var h = Prepare(Config(), token: LongToken, arguments: PageArgs());
+        h.Server.OnToolsCall = _ => Json(HttpStatusCode.Unauthorized, $"invalid token: {LongToken}");
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext));
+
+        Assert.Contains("HTTP 401", ex.Message);
+        Assert.Contains("invalid token: ***", ex.Message);
+        Assert.DoesNotContain(LongToken[..20], ex.ToString());
+    }
+
+    [Fact]
+    public async Task ALongEchoedToken_IsMaskedBeforeTheToolErrorIsCut()
+    {
+        var h = Prepare(Config(), token: LongToken, arguments: PageArgs());
+        h.Server.OnToolsCall = _ => Json(HttpStatusCode.OK, ToolResult($"rejected for {LongToken}", isError: true));
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => h.Node.ProcessObjectAsync(h.DataContext, h.NodeContext));
+
+        Assert.Contains("rejected for ***", ex.Message);
+        Assert.DoesNotContain(LongToken[..20], ex.ToString());
+    }
+
     [Fact]
     public async Task ContinueOnError_LogsTheFailureAndContinues()
     {

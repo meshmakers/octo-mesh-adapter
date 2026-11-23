@@ -165,7 +165,7 @@ internal class CommunityEnergyBalanceNode(
             slotArray.Add(slotNode);
         }
 
-        var simulatedIncluded = simulatedWithValue.Values.All(v => v);
+        var simulatedIncluded = simulatedWithValue.Count > 0 && simulatedWithValue.Values.All(v => v);
         var output = new JsonObject
         {
             ["status"] = "ok",

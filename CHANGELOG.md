@@ -4,6 +4,15 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ## [Unreleased]
 
+### Changed
+
+- NuGet packages raised to the newest version within the .NET 10 line (AB#9597): MailKit and MimeKit 5.0.0,
+  Microsoft.ML and Microsoft.ML.TimeSeries 6.0.0, AngleSharp 1.10.5, ModelContextProtocol.AspNetCore 2.4.0,
+  SSH.NET 2026.0.1, System.Security.Cryptography.Pkcs 10.0.15, and the test tooling (xunit, Testcontainers 4.17.0,
+  Microsoft.NET.Test.Sdk, coverlet, FluentAssertions, TimeProvider.Testing 10.11.1). The IMAP requeue tests now
+  intercept `IMailFolder.MoveToAsync(IList<UniqueId>, IMoveRequest, ...)` because MailKit 5 made the single-id
+  overload an extension method. IronOcr, PdfSharp and QuestPDF stay on their versions (see the PR for the reasons).
+
 ### Fixed
 
 - `ApplyChanges@2`: concurrent writers across adapter replicas end in one stored write and a reported conflict

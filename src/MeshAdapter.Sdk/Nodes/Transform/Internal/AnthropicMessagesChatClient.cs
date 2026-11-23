@@ -117,9 +117,10 @@ internal sealed class AnthropicMessagesChatClient(
             // context window) instead of a bare status code. The raw body is kept for
             // diagnostics. This message is what lands in the RtPipelineExecution audit record.
             var message = BuildAnthropicApiErrorMessage(response.StatusCode, responseContent);
-            if (temperature != null && IsSamplingRejection(response.StatusCode, responseContent))
+            if (temperature != null && TryReadSamplingRejection(response.StatusCode, responseContent,
+                    out var providerError))
             {
-                throw new LlmSamplingRejectedException(message);
+                throw new LlmSamplingRejectedException(message, providerError);
             }
 
             throw new HttpRequestException(message);
@@ -470,6 +471,16 @@ internal sealed class AnthropicMessagesChatClient(
     /// </summary>
     internal static bool IsSamplingRejection(HttpStatusCode statusCode, string? responseBody)
     {
+        return TryReadSamplingRejection(statusCode, responseBody, out _);
+    }
+
+    /// <summary>
+    ///     <see cref="IsSamplingRejection" />, and the provider's words for it: <c>{type}: {message}</c>.
+    /// </summary>
+    internal static bool TryReadSamplingRejection(HttpStatusCode statusCode, string? responseBody,
+        out string? providerError)
+    {
+        providerError = null;
         if (statusCode != HttpStatusCode.BadRequest || string.IsNullOrEmpty(responseBody))
         {
             return false;
@@ -478,13 +489,19 @@ internal sealed class AnthropicMessagesChatClient(
         try
         {
             using var document = JsonDocument.Parse(responseBody);
-            return document.RootElement.ValueKind == JsonValueKind.Object &&
-                   document.RootElement.TryGetProperty("error", out var error) &&
-                   error.ValueKind == JsonValueKind.Object &&
-                   error.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
-                   type.GetString() == "invalid_request_error" &&
-                   error.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String &&
-                   message.GetString()!.Contains("temperature", StringComparison.OrdinalIgnoreCase);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("error", out var error) ||
+                error.ValueKind != JsonValueKind.Object ||
+                !error.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String ||
+                type.GetString() != "invalid_request_error" ||
+                !error.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String ||
+                !message.GetString()!.Contains("temperature", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            providerError = $"{type.GetString()}: {message.GetString()}";
+            return true;
         }
         catch (JsonException)
         {

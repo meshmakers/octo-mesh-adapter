@@ -506,8 +506,55 @@ public class LlmQueryEngineTests
         JsonSchema = """{"type":"object","properties":{"title":{"type":"string"},"facts":{"type":"array","items":{"type":"string"}}},"required":["title","facts"]}"""
     };
 
-    private static LlmSamplingRejectedException SamplingRefusal() =>
-        new("Anthropic API error (HTTP 400 BadRequest). Response body: temperature is not supported");
+    private static LlmSamplingRejectedException SamplingRefusal(string? providerError = null) =>
+        new("Anthropic API error (HTTP 400 BadRequest). Response body: temperature is not supported",
+            providerError ?? "invalid_request_error: temperature is not supported for this model");
+
+    [Fact]
+    public async Task TheRefusalWarning_QuotesTheProvidersWords_OnOneLine()
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal("invalid_request_error: temperature:\nonly 1.0 is supported"));
+        _chat.Answers.Enqueue(Answer("42"));
+
+        await RunAsync(Options());
+
+        var warning = Assert.Single(_log, line => line.Contains("refused the temperature", StringComparison.Ordinal));
+        Assert.EndsWith(" Provider answer: invalid_request_error: temperature: only 1.0 is supported", warning,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheQuotedProviderError_IsMaskedBeforeItIsCut()
+    {
+        // A secret that crosses the cap: cut first, its head would stay in the log.
+        const string secret = "test-key-echoed-by-the-provider-0123456789abcdef";
+        _secrets.Register(secret);
+        var providerError = "invalid_request_error: temperature refused for " + new string('x', 242) + " " + secret +
+                            " " + new string('y', 400);
+        _chat.Refusals.Enqueue(SamplingRefusal(providerError));
+        _chat.Answers.Enqueue(Answer("42"));
+
+        await RunAsync(Options());
+
+        var warning = Assert.Single(_log, line => line.Contains("refused the temperature", StringComparison.Ordinal));
+        Assert.DoesNotContain("test-key-", warning, StringComparison.Ordinal);
+        Assert.Contains(PipelineSecretRegistry.Mask, warning, StringComparison.Ordinal);
+        var quoted = warning[(warning.IndexOf("Provider answer: ", StringComparison.Ordinal) + 17)..];
+        Assert.Equal(LlmQueryEngine.MaxQuotedProviderErrorChars + 1, quoted.Length);
+        Assert.EndsWith("…", quoted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ARefusedRequest_IsNotCountedInTheUsage_OnlyTheAnsweredOne()
+    {
+        _chat.Refusals.Enqueue(SamplingRefusal());
+        _chat.Answers.Enqueue(Answer("42", inputTokens: 10, outputTokens: 4));
+
+        var data = await RunAsync(Options() with { UsageOutputPath = "$.usage" });
+
+        Assert.Equal(2, _chat.Calls.Count);
+        Assert.Equal(1, data["usage"]!["calls"]!.GetValue<int>());
+    }
 
     /// <summary>One call as the chat client saw it; the options are copied, the engine changes its instance.</summary>
     private sealed record ChatCall(List<ChatMessage> Messages, ChatOptions Options, float? Temperature,

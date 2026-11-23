@@ -351,6 +351,8 @@ public class AnthropicMessagesChatClientTests
 
         Assert.IsType<HttpRequestException>(exception, exactMatch: false);
         Assert.Contains("HTTP 400", exception.Message);
+        Assert.Equal("invalid_request_error: temperature: this model does not support a custom temperature",
+            exception.ProviderError);
     }
 
     [Theory]

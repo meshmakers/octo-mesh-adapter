@@ -824,16 +824,38 @@ internal sealed class LlmQueryEngine(
         {
             return await client.GetResponseAsync(messages, chatOptions);
         }
-        catch (LlmSamplingRejectedException) when (chatOptions.Temperature != null)
+        catch (LlmSamplingRejectedException rejection) when (chatOptions.Temperature != null)
         {
             sampling.NodeContext.Warning(
                 $"The model refused the temperature; {sampling.NodeDisplayName} asks once more without it. Remove " +
-                "the temperature from the node, the prompt template or the AiConfiguration to save the extra call.");
+                "the temperature from the node, the prompt template or the AiConfiguration to save the extra call." +
+                DescribeProviderError(rejection.ProviderError, sampling.NodeContext));
             sampling.Temperature = null;
             chatOptions.Temperature = null;
             chatOptions.AdditionalProperties?.Remove(ExactTemperatureProperty);
             return await client.GetResponseAsync(messages, chatOptions);
         }
+    }
+
+    /// <summary>The longest provider error text a warning quotes, in UTF-16 code units, after masking.</summary>
+    internal const int MaxQuotedProviderErrorChars = 300;
+
+    /// <summary>
+    ///     The provider's words for a refusal, for a log line: masked with the secret registry of the execution
+    ///     first, then put on one line and cut (never cut before masking, so no head of a secret is left).
+    /// </summary>
+    internal static string DescribeProviderError(string? providerError, INodeContext nodeContext)
+    {
+        if (string.IsNullOrWhiteSpace(providerError))
+        {
+            return string.Empty;
+        }
+
+        var masked = RedactSecrets(providerError, nodeContext).ReplaceLineEndings(" ");
+        var quoted = masked.Length > MaxQuotedProviderErrorChars
+            ? TruncateSurrogateSafe(masked, MaxQuotedProviderErrorChars) + "…"
+            : masked;
+        return $" Provider answer: {quoted}";
     }
 
     /// <summary>

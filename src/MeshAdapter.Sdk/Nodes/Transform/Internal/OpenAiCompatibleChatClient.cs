@@ -35,7 +35,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///         all its properties in <c>required</c>, the API's condition for strict mode; either way the engine
 ///         validates the answer.</item>
 ///         <item>An answer with tool calls ends with <see cref="ChatFinishReason.ToolCalls" />, whatever its
-///         <c>finish_reason</c> says (Ollama says <c>stop</c>). The assistant message keeps the library's own
+///         <c>finish_reason</c> says (Ollama says <c>stop</c>), except an answer cut at the token limit, which
+///         stays <see cref="ChatFinishReason.Length" />. The assistant message keeps the library's own
 ///         message as its <see cref="AIChatMessage.RawRepresentation" />, so the replay of a tool round sends the
 ///         arguments as the model wrote them.</item>
 ///         <item>A failure is thrown as <see cref="HttpRequestException" /> with a cause-first text and the raw
@@ -88,8 +89,10 @@ internal sealed class OpenAiCompatibleChatClient(
             throw ToProviderError(ex, options.Temperature != null);
         }
 
+        // An answer cut at the token limit stays cut, also in the middle of a tool call: its arguments are a
+        // fragment, and the engine fails it with the truncation message instead of calling the tool.
         var hasToolCalls = response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Any();
-        if (hasToolCalls)
+        if (hasToolCalls && response.FinishReason != ChatFinishReason.Length)
         {
             response.FinishReason = ChatFinishReason.ToolCalls;
         }
@@ -128,6 +131,16 @@ internal sealed class OpenAiCompatibleChatClient(
     /// <summary>The library's chat client for one call, on the adapter's transport (see the remarks).</summary>
     private ChatClient CreateChatClient(string model, HttpClient httpClient)
     {
+        var keyless = string.IsNullOrEmpty(apiKey);
+
+        // The library needs a credential; for a keyless endpoint the header policy removes the header it sets.
+        return new ChatClient(model, new ApiKeyCredential(keyless ? "keyless" : apiKey),
+            CreateClientOptions(httpClient, keyless));
+    }
+
+    /// <summary>The library's options: the adapter's transport, no retries, the timeout, no logging.</summary>
+    internal OpenAIClientOptions CreateClientOptions(HttpClient httpClient, bool keyless)
+    {
         var clientOptions = new OpenAIClientOptions
         {
             Endpoint = baseUrl,
@@ -136,11 +149,8 @@ internal sealed class OpenAiCompatibleChatClient(
             NetworkTimeout = RequestTimeout,
             ClientLoggingOptions = new ClientLoggingOptions { EnableLogging = false }
         };
-        var keyless = string.IsNullOrEmpty(apiKey);
         clientOptions.AddPolicy(new OutgoingHeadersPolicy(keyless), PipelinePosition.BeforeTransport);
-
-        // The library needs a credential; for a keyless endpoint the policy above removes the header it sets.
-        return new ChatClient(model, new ApiKeyCredential(keyless ? "keyless" : apiKey), clientOptions);
+        return clientOptions;
     }
 
     /// <summary>

@@ -1139,7 +1139,7 @@ Processes content using Claude AI API.
 | OpenAI | `OpenAiCompatible` | OpenAI .NET library with Microsoft.Extensions.AI.OpenAI | `https://api.openai.com/v1` | key (Bearer) | yes (`json_schema`, strict when every property is required) | yes | automatic on the provider side; `cacheSource` has no effect | tokens; cost null | later | done |
 | Azure OpenAI (v1 API) | `OpenAiCompatible` | same (no Azure.AI.OpenAI) | `https://<resource>.openai.azure.com/openai/v1`; `model` = deployment name | key (Bearer); Entra ID later | yes | yes | as OpenAI | tokens; cost null | later | done, live run pending |
 | Other Foundry models via `/openai/v1` | `OpenAiCompatible` | same | `https://<resource>.openai.azure.com/openai/v1` | key (Bearer) | depends on the model | depends on the model | as OpenAI | tokens; cost null | later | compatible, not live-tested |
-| Ollama, vLLM, LiteLLM (local) | `OpenAiCompatible` | same | e.g. `http://127.0.0.1:11434/v1` | keyless (no Authorization header) | `json_schema` as the server supports it; the engine validates and repairs either way | yes, as good as the model | none | tokens; cost null | later | done (Ollama checked by hand) |
+| Ollama, vLLM, LiteLLM (local) | `OpenAiCompatible` | same | e.g. `http://127.0.0.1:11434/v1` | keyless (no Authorization header) | `json_schema` as the server supports it; the engine validates and repairs either way | yes, as good as the model | none | tokens; cost null | later | done; Ollama checked by hand on `qwen2.5:7b-instruct` (keyless, JSON, `jsonSchema`, MCP tool round, usage incl. cached tokens); `maxTokens` not enforced by Ollama (below) |
 
 `estimatedCostUsd` comes from the Anthropic price table, so it is null for every non-Anthropic model (with the existing warning).
 
@@ -1155,7 +1155,12 @@ Processes content using Claude AI API.
 
 The OpenAI goldens (`Resources/GoldenRequests/LlmQuery/openai-*.txt`, `LlmQueryOpenAiGoldenRequestTests`) are compared **by meaning**: request lines in order, JSON bodies with `JsonNode.DeepEquals`, the provider requests' headers by an allowlist (`authorization` as placeholder, `content-type`, `user-agent`), everything else in full. The library writes these requests, so member order is not pinned; every member and value is. The Anthropic goldens stay byte for byte.
 
-Ollama check by hand: an AiConfiguration with `providerEndpoint` `{"baseUrl":"http://127.0.0.1:11434/v1"}` and `aiModel` e.g. `qwen2.5:7b-instruct`. Keyless plain `http` is allowed on loopback only (`LlmBaseUrl`), so an Ollama in the cluster needs https. Small local models are weak at tool calls; reasoning models spend output tokens before the answer, so keep `maxTokens` generous.
+Ollama check by hand: an AiConfiguration with `providerEndpoint` `{"baseUrl":"http://127.0.0.1:11434/v1"}` and `aiModel` e.g. `qwen2.5:7b-instruct`. Keyless plain `http` is allowed on loopback only (`LlmBaseUrl`), so an Ollama in the cluster needs https. Known limits:
+
+- **Ollama ignores `max_completion_tokens`** (the field the library sends; measured with Ollama 0.40.17: 16 sent, 257 tokens returned with `finish_reason: stop`), so `maxTokens` and the truncation error are not enforced there. There is deliberately no per-host switch to `max_tokens`.
+- Small local models are weak at tool calls and their arguments (e.g. a made-up `tenantId`); reasoning models spend output tokens before the answer, so keep `maxTokens` generous.
+- An answer cut at the token limit in the middle of a tool call stays a truncation (`Length`): the tool is not called with the fragment.
+- **Values of the AiConfiguration win over the node's own**: `aiModel`, `maxTokens`, `temperature` and `mcpServerUrl` set there (including the CK defaults of `System.Ai/AiConfiguration`, `maxTokens` 4000 and `temperature` 0.1) replace the node values, so leave them empty on the AiConfiguration when the node should decide.
 
 Differences to `AnthropicAiQuery@1`:
 

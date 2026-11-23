@@ -263,6 +263,35 @@ public class OpenAiCompatibleChatClientTests
     }
 
     [Fact]
+    public async Task AToolCallCutAtTheTokenLimit_EndsWithLength_NotWithAToolRound()
+    {
+        _wire.Answers.Enqueue(
+            """{"id":"c5","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"query\":\"of"}}]},"finish_reason":"length"}]}""");
+
+        using var client = Client();
+        var response = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChatFinishReason.Length, response.FinishReason);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheLibraryOptions_LogNothing_RetryNothing_AndWaitTenMinutes(bool keyless)
+    {
+        using var client = Client();
+        using var httpClient = new HttpClient(_wire, false);
+
+        var options = client.CreateClientOptions(httpClient, keyless);
+
+        Assert.False(options.ClientLoggingOptions!.EnableLogging);
+        Assert.Equal(TimeSpan.FromMinutes(10), options.NetworkTimeout);
+        Assert.Equal(new Uri(BaseUrl), options.Endpoint);
+        Assert.NotNull(options.RetryPolicy);
+    }
+
+    [Fact]
     public async Task AnAnswerCutAtTheTokenLimit_EndsWithLength()
     {
         _wire.Answers.Enqueue(

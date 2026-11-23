@@ -32,9 +32,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// <para>
 /// <b>Validity periods</b> (AB#9589). With <see cref="Request.Validity" /> each series is analysed once
 /// per effective period (its periods merged and cut to [From, To)), so the ranges end exactly at the
-/// validity boundaries. Reads stay inside the periods: the COUNT of a batch covers only the whole bins
-/// the union of the batch's periods touches, a bin is read for a series only when one of its periods
-/// touches it, and the remaining row reads cover only that union. Without validity periods every
+/// validity boundaries. Reads skip what lies outside every period where that saves work: the COUNT of
+/// a batch spans from the first to the last whole bin the union of the batch's periods touches, a bin
+/// is read for a series only when one of its periods touches it (then whole), and the remaining row
+/// reads cover only that union. Without validity periods every
 /// series has the single period [From, To) and the reads are exactly those described above.
 /// </para>
 /// </summary>

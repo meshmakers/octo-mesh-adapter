@@ -281,6 +281,21 @@ public class DetectStreamDataGapsNodeIntegrationTests(StreamDataFixture fixture)
                 $"{validityDetector.RowQueries} row queries, {validityDetector.RowsRead} rows read; " +
                 $"{validityResult!.MissingCount} missing slots");
             Trace($"validity {label}: median {validityTimings[1]:F2} s");
+
+            // No regression against AB#9588: validity periods never add reads; covering the whole
+            // period they read exactly the same.
+            validityDetector.CountQueries.Should().Be(detector.CountQueries);
+            if (validFrom == from)
+            {
+                validityDetector.RowQueries.Should().Be(detector.RowQueries);
+                validityDetector.RowsRead.Should().Be(detector.RowsRead);
+                validityResult!.MissingCount.Should().Be(direct.MissingCount);
+            }
+            else
+            {
+                validityDetector.RowQueries.Should().BeLessThan(detector.RowQueries);
+                validityDetector.RowsRead.Should().BeLessThan(detector.RowsRead);
+            }
         }
     }
 

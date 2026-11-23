@@ -30,15 +30,17 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   limit (internal batching, per-day COUNT on the storage path of AB#7360, paged row reads). The offset of
   `from`/`to` sets the day boundary; there is no time zone, day start or per-day option.
 - `DetectStreamDataGaps@1` validity periods per series (AB#9589): `validityPeriods` (inline list of
-  `{rtId, from, to}`) or `validityPeriodsPath` (JSONPath to such objects; the inline list wins). Each period is
+  `{rtId, from, to}`) or `validityPeriodsPath` (JSONPath to such objects; a non-empty inline list wins). Each period is
   half-open `[from, to)`, `to` unset is an open end; a series may have several, overlapping or touching ones are
   merged. Only the slots inside `[from, to)` AND inside a series' periods are checked: ranges are cut exactly at
   the validity boundaries (so each range can be re-requested as one valid request, e.g. one EDA CR_REQ_PT), a gap
   across a hole between periods becomes two ranges, and the counts cover only those slots. A series without an
   entry is neither checked nor reported (one info line names how many); a path resolving to nothing warns naming
-  the path and reports no series; an entry with `from >= to` fails naming the entry. Nothing outside every period
-  is read: the per-day COUNT covers only the bins a batch's periods touch, and rows are read only inside the
-  periods. Without validity periods the node reads and reports exactly as before.
+  the path and reports no series; an empty inline list counts as not set; an entry with `from >= to` fails naming
+  the entry. `expectedCount` stays the slot count of `[from, to)`. Stretches outside every period are not read
+  where that saves work: series without a period are not queried, the per-day COUNT spans from the first to the
+  last bin a batch's periods touch, and the remaining row reads cover only the union of the batch's periods
+  (partly filled bins are read whole). Without validity periods the node reads and reports exactly as before.
 - Sample method pipeline `docs/examples/slot-booking-method.yaml`: book a slot with a unique index and answer
   the declared method error `CONCURRENT_CHANGE` (AB#9466). Integration tests `SlotBookingConflictTests` run it
   against MongoDB (Testcontainers).

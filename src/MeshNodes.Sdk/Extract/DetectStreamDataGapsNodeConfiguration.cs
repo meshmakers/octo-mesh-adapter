@@ -92,7 +92,9 @@ public record DetectStreamDataGapsNodeConfiguration : TargetPathNodeConfiguratio
     /// and the counts cover only those slots. A series with several periods lists one entry per
     /// period; overlapping or touching periods of one series are merged. A series without any entry
     /// is not checked and not reported (one info line names how many). Stretches outside every
-    /// period are not read. An entry with from &gt;= to fails the node naming the entry.
+    /// period are not read where that saves work. An empty list counts as not set (like an empty
+    /// <see cref="RtIds" />), so <see cref="ValidityPeriodsPath" /> applies. An entry with
+    /// from &gt;= to fails the node naming the entry.
     /// </summary>
     [PropertyGroup("Validity", 0)]
     public ICollection<ValidityPeriodDto>? ValidityPeriods { get; init; }
@@ -100,9 +102,9 @@ public record DetectStreamDataGapsNodeConfiguration : TargetPathNodeConfiguratio
     /// <summary>
     /// Optional JSONPath to read the validity periods from the pipeline data: an array of objects
     /// with the fields <c>rtId</c>, <c>from</c> and optionally <c>to</c> (ISO-8601 timestamps with
-    /// offset), or a multi-match path of such objects. <see cref="ValidityPeriods" /> takes
-    /// precedence. A path resolving to no entry reports no series and writes a warning naming the
-    /// path.
+    /// offset), or a multi-match path of such objects. A non-empty <see cref="ValidityPeriods" />
+    /// takes precedence. A path resolving to no entry reports no series and writes a warning naming
+    /// the path.
     /// </summary>
     [PropertyGroup("Validity", 1, "jsonpath")]
     public string? ValidityPeriodsPath { get; init; }

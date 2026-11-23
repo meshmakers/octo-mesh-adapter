@@ -21,7 +21,9 @@ internal static class StreamDataValidityPeriods
     /// <summary>
     /// The validity periods per series, or null when neither <paramref name="configured" /> nor
     /// <paramref name="path" /> is set (the node then checks the whole period for every series).
-    /// The inline list takes precedence. A path resolving to no entry gives an empty map and a
+    /// A non-empty inline list takes precedence; an empty one counts as not set, like an empty
+    /// RtIds list (a pipeline editor may write empty lists for unset options). A path resolving to
+    /// no entry gives an empty map and a
     /// warning naming the path, so every series counts as without a period. An entry without a
     /// valid runtime id or start, with an unreadable timestamp, or with from &gt;= to fails the node
     /// naming the entry.
@@ -68,7 +70,7 @@ internal static class StreamDataValidityPeriods
             else if (match.GetKind("$") is not (DataKind.Null or DataKind.Undefined))
             {
                 throw MeshAdapterPipelineExecutionException.DetectGapsValidityEntryInvalid(nodeContext,
-                    $"{pathPropertyName} '{path}' entry {entries}", "the value is not an object or an array of objects.");
+                    $"{pathPropertyName} '{path}' entry {entries++}", "the value is not an object or an array of objects.");
             }
         }
 

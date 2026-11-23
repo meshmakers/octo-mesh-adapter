@@ -897,6 +897,24 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task AnEmptyInlineList_CountsAsNotSet_SoThePathApplies()
+    {
+        // A pipeline editor may write an empty list for an unset option, like an empty RtIds list.
+        var data = JsonNode.Parse("""
+            { "periods": [ { "rtId": "0000000000000000000000a1", "from": "2026-07-01T20:00:00+02:00" } ] }
+            """)!;
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with
+        {
+            ValidityPeriods = [],
+            ValidityPeriodsPath = "$.periods"
+        };
+
+        var (result, _) = await RunWithDataAsync(config, data);
+
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), Day1.AddHours(20), Day1.AddDays(1), 16);
+    }
+
+    [Fact]
     public async Task AnEntryWithFromNotBeforeTo_FailsNamingTheEntry()
     {
         var config = Config(Day1, Day1.AddDays(1), SeriesA) with

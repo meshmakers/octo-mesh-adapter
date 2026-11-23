@@ -1,5 +1,6 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -31,9 +32,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///         <item>The text parts of a message are sent as one text; cache breakpoints have no meaning here.</item>
 ///         <item>Tools and a JSON schema answer format are handed to the library as written
 ///         (<see cref="ChatOptions.RawRepresentationFactory" />), so the schemas go out unchanged and no
-///         <c>tool_choice</c> is sent. <c>strict</c> is true only when every object of the answer schema lists
-///         all its properties in <c>required</c>, the API's condition for strict mode; either way the engine
-///         validates the answer.</item>
+///         <c>tool_choice</c> is sent. <c>strict</c> is true only when strict mode accepts the answer schema
+///         (<see cref="IsStrictCompatible" />); either way the engine validates the answer.</item>
 ///         <item>An answer with tool calls ends with <see cref="ChatFinishReason.ToolCalls" />, whatever its
 ///         <c>finish_reason</c> says (Ollama says <c>stop</c>), except an answer cut at the token limit, which
 ///         stays <see cref="ChatFinishReason.Length" />. The assistant message keeps the library's own
@@ -41,7 +41,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 ///         arguments as the model wrote them.</item>
 ///         <item>A failure is thrown as <see cref="HttpRequestException" /> with a cause-first text and the raw
 ///         answer, or as <see cref="LlmSamplingRejectedException" /> when an HTTP 400 refuses a temperature that
-///         was sent. The library's exception is not kept as inner exception.</item>
+///         was sent. A request over the network timeout is an <see cref="HttpRequestException" /> with
+///         <see cref="BuildTimeoutMessage" />, not the library's cancellation; a cancellation of the caller stays
+///         one. The library's exception is not kept as inner exception.</item>
 ///         <item>The exact temperature of the engine (<see cref="LlmQueryEngine.ExactTemperatureProperty" />) is
 ///         not used: the library carries the temperature as a <see cref="float" />, sent as its shortest decimal
 ///         text (0.1 stays 0.1).</item>
@@ -88,6 +90,12 @@ internal sealed class OpenAiCompatibleChatClient(
         {
             throw ToProviderError(ex, options.Temperature != null);
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The library ends a request over its network timeout with a cancellation whose text points to
+            // its constructor options; the caller did not cancel, so it is a provider failure like any other.
+            throw new HttpRequestException(BuildTimeoutMessage(RequestTimeout));
+        }
 
         // An answer cut at the token limit stays cut, also in the middle of a tool call: its arguments are a
         // fragment, and the engine fails it with the truncation message instead of calling the tool.
@@ -95,11 +103,12 @@ internal sealed class OpenAiCompatibleChatClient(
         if (calls.Count > 0 && response.FinishReason != ChatFinishReason.Length)
         {
             // Arguments that are no JSON object never reach a tool: the server would run it with its defaults.
-            if (calls.FirstOrDefault(call => call.Exception != null) is { } malformed)
+            // The JSON literal null parses without an exception and leaves no arguments, so it counts too.
+            if (calls.FirstOrDefault(call => call.Exception != null || call.Arguments == null) is { } malformed)
             {
-                throw new InvalidOperationException(
+                throw new LlmAnswerRejectedException(
                     $"The model asked for the tool '{malformed.Name}' with arguments that are not a JSON object; " +
-                    "no tool was called.");
+                    "no tool was called.", response.Usage);
             }
 
             response.FinishReason = ChatFinishReason.ToolCalls;
@@ -211,39 +220,84 @@ internal sealed class OpenAiCompatibleChatClient(
     }
 
     /// <summary>
-    ///     True when strict mode can hold the schema: every object schema with <c>properties</c> lists each of
-    ///     them in <c>required</c> and sets <c>additionalProperties: false</c>, and no keyword strict mode refuses
-    ///     (<c>allOf</c>, <c>oneOf</c>, <c>not</c>, conditionals) appears. Otherwise the API would refuse the
-    ///     request in strict mode, so it goes out with strict false and the engine validates the answer.
+    ///     True when strict mode can hold the answer schema, by the "Supported schemas" rules of OpenAI's
+    ///     structured outputs guide: the root is an object schema (<c>type: object</c>, not <c>anyOf</c>), every
+    ///     object schema sets <c>additionalProperties: false</c> and lists each of its <c>properties</c> in
+    ///     <c>required</c>, and no keyword of <see cref="StrictUnsupportedKeywords" /> appears.
+    ///     Otherwise the API would refuse the request in strict mode, so it goes out with strict false and the
+    ///     engine validates the answer.
     /// </summary>
-    internal static bool IsStrictCompatible(JsonNode? node)
+    internal static bool IsStrictCompatible(JsonNode? root)
+    {
+        return root is JsonObject obj && obj["type"] is JsonValue type &&
+               type.TryGetValue<string>(out var name) && name == "object" && !obj.ContainsKey("anyOf") &&
+               IsStrictCompatibleSchema(obj);
+    }
+
+    /// <summary>One (sub)schema: its own keywords, then the schemas inside it.</summary>
+    private static bool IsStrictCompatibleSchema(JsonNode? node)
     {
         switch (node)
         {
             case JsonObject obj:
-                return RequiresEveryProperty(obj) && !obj.Any(property => StrictUnsupportedKeywords.Contains(property.Key)) &&
-                       obj.All(property => IsStrictCompatible(property.Value));
+                return RequiresEveryProperty(obj) &&
+                       !obj.Any(property => StrictUnsupportedKeywords.Contains(property.Key)) &&
+                       obj.All(property => IsStrictCompatibleMember(property.Key, property.Value));
             case JsonArray array:
-                return array.All(IsStrictCompatible);
+                return array.All(IsStrictCompatibleSchema);
             default:
                 return true;
         }
     }
 
-    /// <summary>Keywords strict mode does not accept; a schema with one of them goes out with strict false.</summary>
-    private static readonly HashSet<string> StrictUnsupportedKeywords = new(StringComparer.Ordinal)
+    /// <summary>
+    ///     A member of a schema. The maps <c>properties</c> and <c>$defs</c> hold schemas under names the
+    ///     author chose, so a property called <c>contains</c> is no keyword; values such as <c>enum</c> and
+    ///     <c>const</c> are data, not schemas.
+    /// </summary>
+    private static bool IsStrictCompatibleMember(string keyword, JsonNode? value)
     {
-        "allOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas",
-        "patternProperties", "unevaluatedProperties"
+        return keyword switch
+        {
+            "properties" or "$defs" or "definitions" when value is JsonObject map =>
+                map.All(entry => IsStrictCompatibleSchema(entry.Value)),
+            "enum" or "const" or "default" or "examples" => true,
+            _ => IsStrictCompatibleSchema(value)
+        };
+    }
+
+    /// <summary>
+    ///     Keywords strict mode does not accept; a schema with one of them goes out with strict false. Taken from
+    ///     "Supported schemas" in OpenAI's structured outputs guide
+    ///     (https://developers.openai.com/api/docs/guides/structured-outputs): the composition keywords it names
+    ///     as unsupported, and the type-specific keywords that are not among the supported ones (strings:
+    ///     <c>pattern</c>, <c>format</c>; numbers: <c>multipleOf</c>, <c>minimum</c>, <c>maximum</c> and their
+    ///     exclusive forms; arrays: <c>items</c>, <c>minItems</c>, <c>maxItems</c>; objects: none). <c>oneOf</c>
+    ///     is not named there; only <c>anyOf</c> is supported, so it counts as unsupported, and so do the tuple
+    ///     keywords <c>prefixItems</c>/<c>additionalItems</c> and draft-07 <c>dependencies</c>, the older form of
+    ///     <c>dependentRequired</c>/<c>dependentSchemas</c>.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> StrictUnsupportedKeywords = new HashSet<string>(StringComparer.Ordinal)
+    {
+        // Composition and conditionals.
+        "allOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas", "dependencies",
+        // Strings.
+        "minLength", "maxLength",
+        // Objects.
+        "patternProperties", "unevaluatedProperties", "propertyNames", "minProperties", "maxProperties",
+        // Arrays.
+        "unevaluatedItems", "contains", "minContains", "maxContains", "uniqueItems", "prefixItems", "additionalItems"
     };
 
     /// <summary>
-    ///     True when the object schema has no <c>properties</c>, or lists each of them in <c>required</c> and
-    ///     forbids other properties (<c>additionalProperties: false</c>), as strict mode demands.
+    ///     True when the schema is no object schema, or forbids other properties (<c>additionalProperties:
+    ///     false</c>) and lists each of its <c>properties</c> in <c>required</c>, as strict mode demands of every
+    ///     object. An object schema is one with <c>type: object</c> (also in a type list) or with
+    ///     <c>properties</c>.
     /// </summary>
     private static bool RequiresEveryProperty(JsonObject schema)
     {
-        if (schema["properties"] is not JsonObject properties)
+        if (!IsObjectSchema(schema))
         {
             return true;
         }
@@ -254,6 +308,11 @@ internal sealed class OpenAiCompatibleChatClient(
             return false;
         }
 
+        if (schema["properties"] is not JsonObject properties)
+        {
+            return true;
+        }
+
         var required = schema["required"] is JsonArray list
             ? list.Select(item => item is JsonValue value && value.TryGetValue<string>(out var name) ? name : null)
                 .ToHashSet(StringComparer.Ordinal)
@@ -261,12 +320,31 @@ internal sealed class OpenAiCompatibleChatClient(
         return properties.All(property => required.Contains(property.Key));
     }
 
+    private static bool IsObjectSchema(JsonObject schema)
+    {
+        return schema.ContainsKey("properties") || schema["type"] switch
+        {
+            JsonValue value => value.TryGetValue<string>(out var name) && name == "object",
+            JsonArray list => list.Any(item => item is JsonValue value && value.TryGetValue<string>(out var name) &&
+                                               name == "object"),
+            _ => false
+        };
+    }
+
+    /// <summary>The message of a request that got no answer within <paramref name="timeout" />.</summary>
+    internal static string BuildTimeoutMessage(TimeSpan timeout)
+    {
+        return string.Create(CultureInfo.InvariantCulture,
+            $"The provider did not answer within the network timeout of {timeout.TotalSeconds:0.###} s. ") +
+               "No answer was produced; retry later or reduce the request size.";
+    }
+
     /// <summary>The library's failure as the engine expects it (see the remarks).</summary>
     private static HttpRequestException ToProviderError(ClientResultException ex, bool temperatureSent)
     {
         if (ex.Status == 0)
         {
-            // No answer at all (connection refused, timeout): the library's text names the cause.
+            // No answer at all (e.g. connection refused): the library's text names the cause.
             return new HttpRequestException(ex.Message);
         }
 

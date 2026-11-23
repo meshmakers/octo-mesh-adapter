@@ -355,7 +355,7 @@ public class LlmQueryNodeTests
     }
 
     [Fact]
-    public async Task OpenAiCompatible_ARefusedTemperature_IsAskedOnceMoreWithoutIt()
+    public async Task OpenAiCompatible_ARefusedTemperature_IsAskedOnceMoreWithoutIt_AndOnlyTheAnsweredCallCounts()
     {
         _aiConfiguration = new JsonObject
         {
@@ -367,10 +367,15 @@ public class LlmQueryNodeTests
             """{"error":{"message":"Unsupported value: 'temperature' does not support 0.3 with this model.","type":"invalid_request_error","param":"temperature","code":"unsupported_value"}}"""));
         _wire.Answers.Enqueue(ProviderWire.OpenAiTextAnswer("the answer"));
 
-        var data = await RunAsync(Config() with { Provider = LlmProvider.OpenAiCompatible });
+        var data = await RunAsync(Config() with
+        {
+            Provider = LlmProvider.OpenAiCompatible, UsageOutputPath = "$.usage"
+        });
 
         Assert.Equal("the answer", data["out"]!.GetValue<string>());
         Assert.Equal(2, _wire.Requests.Count);
+        // Two requests went out; the refused one returned no usage and is not billed, so calls is 1.
+        Assert.Equal(1, data["usage"]!["calls"]!.GetValue<int>());
         Assert.True(JsonNode.Parse(_wire.Requests[0].Body)!.AsObject().ContainsKey("temperature"));
         Assert.False(JsonNode.Parse(_wire.Requests[1].Body)!.AsObject().ContainsKey("temperature"));
         Assert.Single(Warnings(), w => w.Contains("refused the temperature", StringComparison.Ordinal));

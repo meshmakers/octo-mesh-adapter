@@ -700,7 +700,18 @@ internal sealed class LlmQueryEngine(
 
         for (var round = 0; round < (options.MaxToolRounds + 1); round++)
         {
-            var response = await SendAsync(client, messages, chatOptions, sampling);
+            ChatResponse response;
+            try
+            {
+                response = await SendAsync(client, messages, chatOptions, sampling);
+            }
+            catch (LlmAnswerRejectedException rejected)
+            {
+                // The provider answered and billed the call; the client refused the answer.
+                usage.Add(rejected.Usage);
+                throw;
+            }
+
             usage.Add(response.Usage);
 
             if (response.FinishReason == ChatFinishReason.ToolCalls)

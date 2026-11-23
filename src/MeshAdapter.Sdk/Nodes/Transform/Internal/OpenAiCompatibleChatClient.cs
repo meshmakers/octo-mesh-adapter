@@ -106,9 +106,9 @@ internal sealed class OpenAiCompatibleChatClient(
             // The JSON literal null parses without an exception and leaves no arguments, so it counts too.
             if (calls.FirstOrDefault(call => call.Exception != null || call.Arguments == null) is { } malformed)
             {
-                throw new InvalidOperationException(
+                throw new LlmAnswerRejectedException(
                     $"The model asked for the tool '{malformed.Name}' with arguments that are not a JSON object; " +
-                    "no tool was called.");
+                    "no tool was called.", response.Usage);
             }
 
             response.FinishReason = ChatFinishReason.ToolCalls;
@@ -222,8 +222,8 @@ internal sealed class OpenAiCompatibleChatClient(
     /// <summary>
     ///     True when strict mode can hold the answer schema, by the "Supported schemas" rules of OpenAI's
     ///     structured outputs guide: the root is an object schema (<c>type: object</c>, not <c>anyOf</c>), every
-    ///     object schema with <c>properties</c> lists each of them in <c>required</c> and sets
-    ///     <c>additionalProperties: false</c>, and no keyword of <see cref="StrictUnsupportedKeywords" /> appears.
+    ///     object schema sets <c>additionalProperties: false</c> and lists each of its <c>properties</c> in
+    ///     <c>required</c>, and no keyword of <see cref="StrictUnsupportedKeywords" /> appears.
     ///     Otherwise the API would refuse the request in strict mode, so it goes out with strict false and the
     ///     engine validates the answer.
     /// </summary>
@@ -272,28 +272,32 @@ internal sealed class OpenAiCompatibleChatClient(
     ///     (https://developers.openai.com/api/docs/guides/structured-outputs): the composition keywords it names
     ///     as unsupported, and the type-specific keywords that are not among the supported ones (strings:
     ///     <c>pattern</c>, <c>format</c>; numbers: <c>multipleOf</c>, <c>minimum</c>, <c>maximum</c> and their
-    ///     exclusive forms; arrays: <c>minItems</c>, <c>maxItems</c>; objects: none). <c>oneOf</c> is not
-    ///     named there; only <c>anyOf</c> is supported, so it counts as unsupported.
+    ///     exclusive forms; arrays: <c>items</c>, <c>minItems</c>, <c>maxItems</c>; objects: none). <c>oneOf</c>
+    ///     is not named there; only <c>anyOf</c> is supported, so it counts as unsupported, and so do the tuple
+    ///     keywords <c>prefixItems</c>/<c>additionalItems</c> and draft-07 <c>dependencies</c>, the older form of
+    ///     <c>dependentRequired</c>/<c>dependentSchemas</c>.
     /// </summary>
     internal static readonly IReadOnlySet<string> StrictUnsupportedKeywords = new HashSet<string>(StringComparer.Ordinal)
     {
         // Composition and conditionals.
-        "allOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas",
+        "allOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas", "dependencies",
         // Strings.
         "minLength", "maxLength",
         // Objects.
         "patternProperties", "unevaluatedProperties", "propertyNames", "minProperties", "maxProperties",
         // Arrays.
-        "unevaluatedItems", "contains", "minContains", "maxContains", "uniqueItems"
+        "unevaluatedItems", "contains", "minContains", "maxContains", "uniqueItems", "prefixItems", "additionalItems"
     };
 
     /// <summary>
-    ///     True when the object schema has no <c>properties</c>, or lists each of them in <c>required</c> and
-    ///     forbids other properties (<c>additionalProperties: false</c>), as strict mode demands.
+    ///     True when the schema is no object schema, or forbids other properties (<c>additionalProperties:
+    ///     false</c>) and lists each of its <c>properties</c> in <c>required</c>, as strict mode demands of every
+    ///     object. An object schema is one with <c>type: object</c> (also in a type list) or with
+    ///     <c>properties</c>.
     /// </summary>
     private static bool RequiresEveryProperty(JsonObject schema)
     {
-        if (schema["properties"] is not JsonObject properties)
+        if (!IsObjectSchema(schema))
         {
             return true;
         }
@@ -304,11 +308,27 @@ internal sealed class OpenAiCompatibleChatClient(
             return false;
         }
 
+        if (schema["properties"] is not JsonObject properties)
+        {
+            return true;
+        }
+
         var required = schema["required"] is JsonArray list
             ? list.Select(item => item is JsonValue value && value.TryGetValue<string>(out var name) ? name : null)
                 .ToHashSet(StringComparer.Ordinal)
             : [];
         return properties.All(property => required.Contains(property.Key));
+    }
+
+    private static bool IsObjectSchema(JsonObject schema)
+    {
+        return schema.ContainsKey("properties") || schema["type"] switch
+        {
+            JsonValue value => value.TryGetValue<string>(out var name) && name == "object",
+            JsonArray list => list.Any(item => item is JsonValue value && value.TryGetValue<string>(out var name) &&
+                                               name == "object"),
+            _ => false
+        };
     }
 
     /// <summary>The message of a request that got no answer within <paramref name="timeout" />.</summary>

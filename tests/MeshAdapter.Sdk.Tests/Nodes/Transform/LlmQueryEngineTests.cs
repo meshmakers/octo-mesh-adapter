@@ -570,6 +570,20 @@ public class LlmQueryEngineTests
         Assert.Equal(1, data["usage"]!["calls"]!.GetValue<int>());
     }
 
+    [Fact]
+    public async Task AnAnswerTheClientRefuses_IsCountedInTheUsage_BecauseItWasBilled()
+    {
+        _chat.Refusals.Enqueue(new LlmAnswerRejectedException("refused",
+            new UsageDetails { InputTokenCount = 30, OutputTokenCount = 7 }));
+
+        var data = await RunAsync(Options() with { UsageOutputPath = "$.usage", ContinueOnError = true });
+
+        Assert.Single(_chat.Calls);
+        Assert.Equal(1, data["usage"]!["calls"]!.GetValue<int>());
+        Assert.Equal(30, data["usage"]!["inputTokens"]!.GetValue<long>());
+        Assert.Equal(7, data["usage"]!["outputTokens"]!.GetValue<long>());
+    }
+
     /// <summary>One call as the chat client saw it; the options are copied, the engine changes its instance.</summary>
     private sealed record ChatCall(List<ChatMessage> Messages, ChatOptions Options, float? Temperature,
         object? ExactTemperature);

@@ -181,6 +181,13 @@ public class OpenAiCompatibleChatClientTests
     [InlineData("""{"type":"object","properties":{"l":{"type":"array","items":{"type":"string"},"minContains":1}},"required":["l"],"additionalProperties":false}""", false)]
     [InlineData("""{"type":"object","properties":{"l":{"type":"array","items":{"type":"string"},"maxContains":1}},"required":["l"],"additionalProperties":false}""", false)]
     [InlineData("""{"type":"object","properties":{"l":{"type":"array","prefixItems":[{"type":"string"}],"unevaluatedItems":false}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","prefixItems":[{"type":"string"}],"additionalItems":false}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","items":[{"type":"string"}],"additionalItems":false}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false,"dependencies":{"a":["b"]}}""", false)]
+    [InlineData("""{"type":"object","properties":{"meta":{"type":"object"}},"required":["meta"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"meta":{"type":["object","null"],"additionalProperties":{"type":"string"}}},"required":["meta"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"meta":{"type":"object","properties":{},"required":[],"additionalProperties":false}},"required":["meta"],"additionalProperties":false}""", true)]
+    [InlineData("""{"type":"object"}""", false)]
     [InlineData("""{"type":"array","items":{"type":"string"}}""", false)]
     [InlineData("""{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}]}""", false)]
     [InlineData("""{"type":"object","anyOf":[{"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}]}""", false)]
@@ -274,18 +281,21 @@ public class OpenAiCompatibleChatClientTests
     public async Task ArgumentsThatAreNoJsonObject_FailTheCall_AndNoToolIsCalled(string arguments)
     {
         var answer = JsonNode.Parse(
-            """{"id":"c3","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":""}}]},"finish_reason":"tool_calls"}]}""")!;
+            """{"id":"c3","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":""}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":30,"completion_tokens":7,"total_tokens":37}}""")!;
         answer["choices"]![0]!["message"]!["tool_calls"]![0]!["function"]!["arguments"] = arguments;
         _wire.Answers.Enqueue(answer.ToJsonString());
 
         using var client = Client();
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var exception = await Assert.ThrowsAsync<LlmAnswerRejectedException>(() =>
             client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
                 TestContext.Current.CancellationToken));
 
         Assert.Equal(
             "The model asked for the tool 'search' with arguments that are not a JSON object; no tool was called.",
             exception.Message);
+        // The answer was billed: its usage travels with the refusal.
+        Assert.Equal(30, exception.Usage?.InputTokenCount);
+        Assert.Equal(7, exception.Usage?.OutputTokenCount);
     }
 
     [Fact]

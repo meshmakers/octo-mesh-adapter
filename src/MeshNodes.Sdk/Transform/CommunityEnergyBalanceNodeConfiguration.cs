@@ -24,6 +24,12 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// consumption), <c>reported</c> (<c>expected</c>, <c>received</c>, <c>simulated</c>) and, when a
 /// metering point filter is given, <c>meteringPoints</c>.
 /// </para>
+/// <para>
+/// <c>simulatedIncluded</c> (BAL-02) is true only when at least one participating metering point has
+/// the <see cref="SimulatedDataSource"/> and every such point has a value in at least one returned
+/// slot. It is false when a simulated point has no value yet, and also when no participating metering
+/// point is simulated.
+/// </para>
 /// </remarks>
 [NodeName("CommunityEnergyBalance", 1)]
 public record CommunityEnergyBalanceNodeConfiguration : NodeConfiguration

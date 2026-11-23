@@ -310,6 +310,23 @@ public class CommunityEnergyBalanceNodeTests : CommunityNodeTestBase
     }
 
     [Fact]
+    public async Task NoSimulatedMember_SimulatedIncludedIsFalse()
+    {
+        AddConsumer(C1, NC1, dataSource: 2);
+        AddProducer(P1, NP1, dataSource: 2);
+        Fill(C1, ConsumerIn, _ => 0.2m);
+        Fill(P1, ProducerIn, _ => 0.1m);
+
+        var balance = await RunAsync(Config(), DayStartUtc.AddHours(10));
+
+        Assert.Equal("ok", balance["status"]!.GetValue<string>());
+        var slot = balance["slots"]!.AsArray()[0]!;
+        Assert.Equal(2, slot["reported"]!["received"]!.GetValue<int>());
+        Assert.Equal(0, slot["reported"]!["simulated"]!.GetValue<int>());
+        Assert.False(balance["simulatedIncluded"]!.GetValue<bool>());
+    }
+
+    [Fact]
     public async Task NoConsumption_GivesCoverageZero()
     {
         AddProducer(P1, NP1);

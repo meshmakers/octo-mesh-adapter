@@ -135,7 +135,6 @@ public class LlmQueryNodeTests
     [InlineData(false, null)]
     [InlineData(true, null)]
     [InlineData(true, "")]
-    [InlineData(true, "  ")]
     public async Task WithoutAProviderEndpoint_TheConfigurationKeyGoesToThePublicApi(bool present, string? value)
     {
         if (present)
@@ -209,7 +208,12 @@ public class LlmQueryNodeTests
         { "{\"baseUrl\":\"" + FoundryUrl + "\",\"baseUrl\":\"https://evil.example\",\"apiKey\":\"test-key-sealed-0002\"}", "given twice" },
         // the base URL rule
         { "{\"baseUrl\":\"http://llm.example.test\",\"apiKey\":\"test-key-sealed-0002\"}", "without TLS" },
-        { "{\"baseUrl\":\"https://llm.example.test/v1?key=test-key-sealed-0002\",\"apiKey\":\"test-key-sealed-0002\"}", "query" }
+        { "{\"baseUrl\":\"https://llm.example.test/v1?key=test-key-sealed-0002\",\"apiKey\":\"test-key-sealed-0002\"}", "query" },
+        // the key pasted into the wrong field: it is not registered as a secret, so it must not be quoted
+        { "{\"baseUrl\":\"test-key-sealed-0002\",\"apiKey\":\"" + FoundryUrl + "\"}", "not an absolute URL" },
+        { "{\"baseUrl\":\"test-key-sealed-0002\"}", "not an absolute URL" },
+        // white space is set, not unset
+        { "   ", "not valid JSON" }
     };
 
     [Theory]

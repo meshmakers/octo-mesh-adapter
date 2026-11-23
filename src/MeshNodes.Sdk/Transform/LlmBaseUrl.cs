@@ -19,36 +19,57 @@ public static class LlmBaseUrl
     /// <exception cref="ArgumentException">The value is set and breaks the rule.</exception>
     public static Uri? Parse(string? value)
     {
+        if (!TryParse(value, out var uri, out var rule))
+        {
+            throw Invalid(value!, rule!);
+        }
+
+        return uri;
+    }
+
+    /// <summary>
+    ///     The rule without the value: <c>true</c> with the URL (or <c>null</c> when none is set), or <c>false</c>
+    ///     with the rule the value breaks. The rule text never contains a part of the value, so a caller whose value
+    ///     may be a secret (a key pasted into the wrong field) can report it.
+    /// </summary>
+    public static bool TryParse(string? value, out Uri? uri, out string? rule)
+    {
+        uri = null;
+        rule = null;
         if (string.IsNullOrWhiteSpace(value))
         {
-            return null;
+            return true;
         }
 
         // Checked on the text as well: on Unix a path such as "/v1" parses as an absolute file URI.
         if (!value.Contains("://", StringComparison.Ordinal) ||
-            !Uri.TryCreate(value, UriKind.Absolute, out var uri))
+            !Uri.TryCreate(value, UriKind.Absolute, out var parsed))
         {
-            throw Invalid(value, "it is not an absolute URL");
+            rule = "it is not an absolute URL";
+            return false;
         }
 
-        if (uri.Scheme != Uri.UriSchemeHttps && !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback))
+        if (parsed.Scheme != Uri.UriSchemeHttps && !(parsed.Scheme == Uri.UriSchemeHttp && parsed.IsLoopback))
         {
-            throw Invalid(value,
-                "the API key would leave the adapter without TLS. Use https, or http only on a loopback address");
+            rule = "the API key would leave the adapter without TLS. Use https, or http only on a loopback address";
+            return false;
         }
 
-        if (!string.IsNullOrEmpty(uri.UserInfo))
+        if (!string.IsNullOrEmpty(parsed.UserInfo))
         {
-            throw Invalid(value, "it carries user info");
+            rule = "it carries user info";
+            return false;
         }
 
-        if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) ||
+        if (!string.IsNullOrEmpty(parsed.Query) || !string.IsNullOrEmpty(parsed.Fragment) ||
             value.Contains('?', StringComparison.Ordinal) || value.Contains('#', StringComparison.Ordinal))
         {
-            throw Invalid(value, "it carries a query or a fragment");
+            rule = "it carries a query or a fragment";
+            return false;
         }
 
-        return uri;
+        uri = parsed;
+        return true;
     }
 
     private static ArgumentException Invalid(string value, string reason, string paramName = "value")

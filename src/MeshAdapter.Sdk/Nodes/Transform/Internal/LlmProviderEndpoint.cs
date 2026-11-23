@@ -20,7 +20,7 @@ internal sealed record LlmProviderEndpoint(Uri BaseUrl, string? ApiKey)
 
     /// <summary>
     ///     The sealed endpoint of the AiConfiguration, or <c>null</c> when none is set (absent, JSON null or empty
-    ///     text). The whole value and the key are registered as secrets of the execution before anything else is
+    ///     text; white space is set and fails as not valid JSON). The whole value and the key are registered as secrets of the execution before anything else is
     ///     logged. A value that is set but not valid fails with a message that names only the position or the
     ///     rule, never a part of the value.
     /// </summary>
@@ -40,7 +40,7 @@ internal sealed record LlmProviderEndpoint(Uri BaseUrl, string? ApiKey)
         }
 
         var raw = node.GetValue<string>();
-        if (string.IsNullOrWhiteSpace(raw))
+        if (string.IsNullOrEmpty(raw))
         {
             return null;
         }
@@ -104,14 +104,10 @@ internal sealed record LlmProviderEndpoint(Uri BaseUrl, string? ApiKey)
             nodeContext.RegisterSecret(apiKey);
         }
 
-        Uri? baseUrl;
-        try
+        // The rule only, never the value: a key pasted into 'baseUrl' is not registered as a secret.
+        if (!LlmBaseUrl.TryParse(baseUrlText, out var baseUrl, out var rule))
         {
-            baseUrl = LlmBaseUrl.Parse(baseUrlText);
-        }
-        catch (ArgumentException ex)
-        {
-            throw Invalid(configurationName, nodeContext, ex.Message);
+            throw Invalid(configurationName, nodeContext, $"'baseUrl' is not allowed: {rule}");
         }
 
         if (baseUrl == null)

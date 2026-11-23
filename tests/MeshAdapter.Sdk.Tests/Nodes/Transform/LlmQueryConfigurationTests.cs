@@ -75,6 +75,18 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     }
 
     [Theory]
+    [InlineData("test-key-pasted-here")]
+    [InlineData("http://remote.example.test/test-key-pasted-here")]
+    [InlineData("https://user:test-key-pasted-here@llm.example.test")]
+    public void TheRuleWithoutTheValue_NamesNoPartOfTheValue(string baseUrl)
+    {
+        Assert.False(LlmBaseUrl.TryParse(baseUrl, out var uri, out var rule));
+        Assert.Null(uri);
+        Assert.False(string.IsNullOrEmpty(rule));
+        Assert.DoesNotContain("test-key", rule, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("  ")]

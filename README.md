@@ -57,7 +57,7 @@ The adapter provides four categories of pipeline nodes:
 | Category      | Purpose             | Examples                                                        |
 |---------------|---------------------|-----------------------------------------------------------------|
 | **Extract**   | Data retrieval      | GetRtEntitiesById, GetRtEntitiesByType, GetAssociationTargets   |
-| **Transform** | Data processing     | DataMapping, MakeHttpRequest, PdfOcrExtraction, AnthropicAiQuery|
+| **Transform** | Data processing     | DataMapping, MakeHttpRequest, PdfOcrExtraction, AnthropicAiQuery, LlmQuery|
 | **Load**      | Data persistence    | ApplyChanges, SaveStreamDataInArchive, EMailSender                     |
 | **Trigger**   | Pipeline initiation | FromHttpRequest, FromWatchRtEntity, FromEmail                   |
 

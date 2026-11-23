@@ -15,6 +15,7 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.ExcelImport;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
@@ -112,6 +113,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<GenerateAndStoreReportNode>()
             .RegisterNode<PdfOcrExtractionNode>()
             .RegisterNode<AnthropicAiQueryNode>()
+            .RegisterNode<LlmQueryNode>()
             .RegisterNode<McpToolCallNode>()
             .RegisterNode<StatisticalAnomalyNode>()
             .RegisterNode<MachineLearningAnomalyNode>()
@@ -245,10 +247,27 @@ public static class ServiceCollectionExtensions
         // some MCP tool calls (e.g. tree queries) can take a while.
         services.AddHttpClient("OctoMcp", c => c.Timeout = TimeSpan.FromMinutes(5));
 
-        // Named HttpClient for Anthropic API — long-running tool-use loops with
-        // multiple MCP tool rounds can easily exceed the default 100s HttpClient timeout.
-        services.AddHttpClient("Anthropic", c => c.Timeout = TimeSpan.FromMinutes(10));
+        services.AddLlmProviderHttpClient();
 
         return dataPipelineBuilder;
+    }
+
+    /// <summary>
+    ///     The HTTP client of the LLM providers (<c>AnthropicAiQuery@1</c>, <c>LlmQuery@1</c>). Long-running
+    ///     tool-use loops with several MCP tool rounds exceed the default 100 s timeout, hence 10 minutes.
+    ///     Redirects are not followed: the API key travels in a custom header (<c>x-api-key</c>), which the
+    ///     handler would send on to whatever origin a redirect names. No cookies are kept: the factory pools
+    ///     handlers, so a cookie one configured endpoint sets would otherwise go to another endpoint on that host.
+    /// </summary>
+    internal static IServiceCollection AddLlmProviderHttpClient(this IServiceCollection services)
+    {
+        services.AddHttpClient(AnthropicMessagesChatClient.HttpClientName, c => c.Timeout = TimeSpan.FromMinutes(10))
+            .UseSocketsHttpHandler((handler, _) =>
+            {
+                handler.AllowAutoRedirect = false;
+                // Pooled handlers share their cookie container: a cookie one endpoint sets must not reach another.
+                handler.UseCookies = false;
+            });
+        return services;
     }
 }

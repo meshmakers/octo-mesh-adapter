@@ -64,13 +64,16 @@ internal sealed class LlmQueryEngine(
         try
         {
             // Resolve API key: prefer ApiKeyConfigurationName over direct ApiKey
-            var apiKey = ResolveApiKey(options, etlContext, nodeContext);
+            var apiKey = ResolveApiKey(options, etlContext, nodeContext) ?? string.Empty;
             // AB#5538: the API key is masked in every diagnostic output of this execution.
             nodeContext.RegisterSecret(apiKey);
-            if (string.IsNullOrEmpty(apiKey))
+            if (string.IsNullOrEmpty(apiKey) && !options.HasSealedProviderEndpoint)
             {
                 throw new ArgumentException(
-                    "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node.",
+                    options.HasInlineApiKeyOption
+                        ? "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node."
+                        : "API key is required. Set 'apiKeyConfigurationName' to an AiConfiguration that holds an " +
+                          "'apiKey' or a 'providerEndpoint'.",
                     nameof(options.ApiKey));
             }
 
@@ -106,7 +109,8 @@ internal sealed class LlmQueryEngine(
 
             // Resolve max tokens and temperature: template -> AiConfiguration -> node config
             var maxTokens = ResolveMaxTokens(options, etlContext, nodeContext, template);
-            var temperature = ResolveTemperature(options, etlContext, nodeContext, template);
+            var sampling = new RunSampling(ResolveTemperature(options, etlContext, nodeContext, template),
+                options.NodeDisplayName, nodeContext, options.TemperatureIsOptional);
 
             nodeContext.Debug("Starting Anthropic AI query");
 
@@ -309,7 +313,7 @@ internal sealed class LlmQueryEngine(
                 LlmPromptBuilder.LoadHistory(options.ConversationHistoryPath, dataContext, nodeContext);
 
             // Execute the chat (with optional tool use loop)
-            var aiResponse = await ExecuteChatAsync(options, apiKey, model, maxTokens, temperature, systemPrompt,
+            var aiResponse = await ExecuteChatAsync(options, apiKey, model, maxTokens, sampling, systemPrompt,
                 mcpNotCalled ? null : mcpServerUrl, userMessage, mcpTools, nodeContext, usage, historyMessages,
                 responseFormat);
 
@@ -335,8 +339,8 @@ internal sealed class LlmQueryEngine(
             object processedResponse = jsonSchemaMode
                 ? await AiJsonSchemaResponseProcessor.ProcessAsync(aiResponse, options.JsonSchema!, schema!,
                     options.MaxJsonRepairAttempts,
-                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, repairPrompt, responseFormat!,
-                        usage),
+                    repairPrompt => ExecuteJsonRepairCallAsync(apiKey, model, maxTokens, sampling, repairPrompt,
+                        responseFormat!, usage),
                     nodeContext)
                 : LlmResponseProcessor.ProcessResponse(aiResponse, options.ResponseFormat, nodeContext);
 
@@ -466,6 +470,12 @@ internal sealed class LlmQueryEngine(
     private static string? ResolveApiKey(LlmQueryOptions options, IMeshEtlContext etlContext,
         INodeContext nodeContext)
     {
+        // A sealed endpoint brings its own key, or none: the configuration's key never goes to its URL.
+        if (options.HasSealedProviderEndpoint)
+        {
+            return options.SealedProviderApiKey ?? string.Empty;
+        }
+
         if (!string.IsNullOrEmpty(options.ApiKeyConfigurationName))
         {
             var key = ReadAiConfigurationString(options.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext);
@@ -559,7 +569,11 @@ internal sealed class LlmQueryEngine(
         return options.MaxTokens;
     }
 
-    internal static double ResolveTemperature(LlmQueryOptions options,
+    /// <summary>
+    ///     The temperature of the run: prompt template, then AiConfiguration, then the node. <c>null</c> when
+    ///     none of them sets one; the request then carries none and the model's default applies.
+    /// </summary>
+    internal static double? ResolveTemperature(LlmQueryOptions options,
         IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
     {
         // AB#8498: the prompt template's Temperature (already range-checked) wins over the AiConfiguration.
@@ -594,7 +608,7 @@ internal sealed class LlmQueryEngine(
     ///     documented fallback (warning, node default) rather than a parse exception. The warning names
     ///     the position of the defect, never a part of the payload: the payload holds the API key.
     /// </summary>
-    private static JsonNode? ReadAiConfigurationProperty(string? configurationName, string property,
+    internal static JsonNode? ReadAiConfigurationProperty(string? configurationName, string property,
         IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         if (string.IsNullOrEmpty(configurationName) ||
@@ -632,7 +646,7 @@ internal sealed class LlmQueryEngine(
     ///     A text value of the AiConfiguration. A value of another type is no usable setting and ends in the
     ///     caller's fallback, like a missing one.
     /// </summary>
-    private static string? ReadAiConfigurationString(string? configurationName, string property,
+    internal static string? ReadAiConfigurationString(string? configurationName, string property,
         IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         return ReadAiConfigurationProperty(configurationName, property, etlContext, nodeContext) is JsonValue value &&
@@ -647,7 +661,7 @@ internal sealed class LlmQueryEngine(
     ///     results. Returns the text of the answer.
     /// </summary>
     private async Task<string> ExecuteChatAsync(LlmQueryOptions options, string apiKey, string model, int maxTokens,
-        double temperature, string systemPrompt, string? mcpServerUrl, ChatMessage userMessage,
+        RunSampling sampling, string systemPrompt, string? mcpServerUrl, ChatMessage userMessage,
         List<AITool>? mcpTools, INodeContext nodeContext, AiUsageAccumulator usage,
         List<ChatMessage>? historyMessages = null, ChatResponseFormat? responseFormat = null)
     {
@@ -667,12 +681,18 @@ internal sealed class LlmQueryEngine(
         {
             ModelId = model,
             MaxOutputTokens = maxTokens,
-            Temperature = (float)temperature,
             Instructions = systemPrompt,
             Tools = mcpTools,
-            ResponseFormat = responseFormat,
-            AdditionalProperties = new AdditionalPropertiesDictionary { [ExactTemperatureProperty] = temperature }
+            ResponseFormat = responseFormat
         };
+        if (sampling.Temperature is { } temperature)
+        {
+            chatOptions.Temperature = (float)temperature;
+            chatOptions.AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                [ExactTemperatureProperty] = temperature
+            };
+        }
 
         // What the model may call is what it was offered. The allowlist of the node must hold for the calls
         // the model asks for, not only for the list it is shown.
@@ -680,7 +700,7 @@ internal sealed class LlmQueryEngine(
 
         for (var round = 0; round < (options.MaxToolRounds + 1); round++)
         {
-            var response = await client.GetResponseAsync(messages, chatOptions);
+            var response = await SendAsync(client, messages, chatOptions, sampling);
             usage.Add(response.Usage);
 
             if (response.FinishReason == ChatFinishReason.ToolCalls)
@@ -767,22 +787,24 @@ internal sealed class LlmQueryEngine(
     /// <summary>
     ///     One repair call of the jsonSchema mode (AB#8498): a fresh single-turn request with the
     ///     repair system prompt and the repair prompt only — no history, no tools, no original
-    ///     content — at temperature 0 and with the same constrained-decoding schema.
+    ///     content — with the same constrained-decoding schema, at temperature 0 when the run sends a
+    ///     temperature and without one when it does not (a model that refused the temperature is not asked
+    ///     with one again).
     /// </summary>
     private async Task<string> ExecuteJsonRepairCallAsync(string apiKey, string model, int maxTokens,
-        string repairPrompt, ChatResponseFormat responseFormat, AiUsageAccumulator usage)
+        RunSampling sampling, string repairPrompt, ChatResponseFormat responseFormat, AiUsageAccumulator usage)
     {
         using var client = chatClientFactory(apiKey);
 
-        var response = await client.GetResponseAsync([new ChatMessage(ChatRole.User, repairPrompt)],
+        var response = await SendAsync(client, [new ChatMessage(ChatRole.User, repairPrompt)],
             new ChatOptions
             {
                 ModelId = model,
                 MaxOutputTokens = maxTokens,
-                Temperature = 0f,
+                Temperature = sampling.Temperature == null ? null : 0f,
                 Instructions = AiJsonSchemaResponseProcessor.RepairSystemPrompt,
                 ResponseFormat = responseFormat
-            });
+            }, sampling);
         usage.Add(response.Usage);
 
         if (response.FinishReason == ChatFinishReason.Length)
@@ -791,6 +813,69 @@ internal sealed class LlmQueryEngine(
         }
 
         return FirstText(response) ?? string.Empty;
+    }
+
+    /// <summary>
+    ///     One call of the chat client. When the provider refuses the temperature, the call is made once more
+    ///     without it, with one warning; the run then stays without a temperature (later tool rounds and repair
+    ///     calls included). A second refusal is not caught.
+    /// </summary>
+    private static async Task<ChatResponse> SendAsync(IChatClient client, IList<ChatMessage> messages,
+        ChatOptions chatOptions, RunSampling sampling)
+    {
+        try
+        {
+            return await client.GetResponseAsync(messages, chatOptions);
+        }
+        catch (LlmSamplingRejectedException rejection) when (chatOptions.Temperature != null)
+        {
+            sampling.NodeContext.Warning(
+                $"The model refused the temperature; {sampling.NodeDisplayName} asks once more without it. " +
+                (sampling.TemperatureIsOptional
+                    ? "Remove the temperature from the node, the prompt template or the AiConfiguration to save the " +
+                      "extra call."
+                    : "Remove it from the prompt template and the AiConfiguration, or move to LlmQuery@1, where the " +
+                      "temperature is optional, to save the extra call.") +
+                DescribeProviderError(rejection.ProviderError, sampling.NodeContext));
+            sampling.Temperature = null;
+            chatOptions.Temperature = null;
+            chatOptions.AdditionalProperties?.Remove(ExactTemperatureProperty);
+            return await client.GetResponseAsync(messages, chatOptions);
+        }
+    }
+
+    /// <summary>The longest provider error text a warning quotes, in UTF-16 code units, after masking.</summary>
+    internal const int MaxQuotedProviderErrorChars = 300;
+
+    /// <summary>
+    ///     The provider's words for a refusal, for a log line: masked with the secret registry of the execution
+    ///     first, then put on one line and cut (never cut before masking, so no head of a secret is left).
+    /// </summary>
+    internal static string DescribeProviderError(string? providerError, INodeContext nodeContext)
+    {
+        if (string.IsNullOrWhiteSpace(providerError))
+        {
+            return string.Empty;
+        }
+
+        var masked = RedactSecrets(providerError, nodeContext).ReplaceLineEndings(" ");
+        var quoted = masked.Length > MaxQuotedProviderErrorChars
+            ? TruncateSurrogateSafe(masked, MaxQuotedProviderErrorChars) + "…"
+            : masked;
+        return $" Provider answer: {quoted}";
+    }
+
+    /// <summary>
+    ///     The temperature of one run, cleared when the provider refused it, and what the warning about that
+    ///     needs: the node's name and its context.
+    /// </summary>
+    private sealed class RunSampling(double? temperature, string nodeDisplayName, INodeContext nodeContext,
+        bool temperatureIsOptional)
+    {
+        public double? Temperature { get; set; } = temperature;
+        public string NodeDisplayName { get; } = nodeDisplayName;
+        public INodeContext NodeContext { get; } = nodeContext;
+        public bool TemperatureIsOptional { get; } = temperatureIsOptional;
     }
 
     /// <summary>The first text part of an answer; further text parts are not part of the result.</summary>

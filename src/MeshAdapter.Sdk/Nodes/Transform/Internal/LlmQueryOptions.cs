@@ -57,8 +57,8 @@ internal sealed record LlmQueryOptions
     /// <summary>Output-token limit set on the node.</summary>
     public int MaxTokens { get; init; }
 
-    /// <summary>Temperature set on the node.</summary>
-    public double Temperature { get; init; }
+    /// <summary>Temperature set on the node; <c>null</c> sends none unless a template or AiConfiguration sets one.</summary>
+    public double? Temperature { get; init; }
 
     /// <summary><c>json</c> or <c>text</c>.</summary>
     public string ResponseFormat { get; init; } = "json";
@@ -68,6 +68,18 @@ internal sealed record LlmQueryOptions
 
     /// <summary>JSON path of the unprocessed answer.</summary>
     public string? RawResponseOutputPath { get; init; }
+
+    /// <summary>
+    ///     Whether the node has an inline <c>apiKey</c> option. A node without one is pointed to the AiConfiguration
+    ///     when no key is found.
+    /// </summary>
+    public bool HasInlineApiKeyOption { get; init; } = true;
+
+    /// <summary>
+    ///     Whether the node can leave the temperature unset. The warning about a refused temperature then advises to
+    ///     remove it from the node; otherwise it advises a node where the temperature is optional.
+    /// </summary>
+    public bool TemperatureIsOptional { get; init; }
 
     /// <summary>Whether a failed query is logged and the pipeline continues.</summary>
     public bool ContinueOnError { get; init; }
@@ -112,4 +124,14 @@ internal sealed record LlmQueryOptions
     ///     The longest tool result, in UTF-16 code units, that enters the conversation uncut.
     /// </summary>
     public int MaxToolResultChars { get; init; } = LlmQueryEngine.DefaultMaxToolResultChars;
+
+    /// <summary>
+    ///     Whether the node resolved a sealed provider endpoint (endpoint and key configured together). Then
+    ///     <see cref="SealedProviderApiKey" /> is the key of the run and the AiConfiguration's <c>apiKey</c> and
+    ///     <see cref="ApiKey" /> are never used, not even when the sealed endpoint has no key.
+    /// </summary>
+    public bool HasSealedProviderEndpoint { get; init; }
+
+    /// <summary>The key of the sealed endpoint; <c>null</c> for a keyless one (no key header is sent).</summary>
+    public string? SealedProviderApiKey { get; init; }
 }

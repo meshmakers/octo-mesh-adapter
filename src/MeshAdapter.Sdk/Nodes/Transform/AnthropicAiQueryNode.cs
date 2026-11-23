@@ -175,7 +175,8 @@ internal class AnthropicAiQueryNode(
     internal static double ResolveTemperature(AnthropicAiQueryNodeConfiguration config,
         IMeshEtlContext etlContext, INodeContext nodeContext, AiPromptTemplateSettings? template = null)
     {
-        return LlmQueryEngine.ResolveTemperature(ToOptions(config), etlContext, nodeContext, template);
+        return LlmQueryEngine.ResolveTemperature(ToOptions(config), etlContext, nodeContext, template) ??
+               config.Temperature;
     }
 
     /// <inheritdoc cref="AnthropicMessagesChatClient.BuildRequestBody" />

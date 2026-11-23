@@ -79,6 +79,7 @@ public static class DataPipelineBuilderExtensions
         pipelineBuilder.RegisterNodeConfiguration<MinMaxNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<PdfOcrExtractionNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<LlmQueryNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<McpToolCallNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<ReplyToTeamsChannelNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<TeamsBotReplyNodeConfiguration>();

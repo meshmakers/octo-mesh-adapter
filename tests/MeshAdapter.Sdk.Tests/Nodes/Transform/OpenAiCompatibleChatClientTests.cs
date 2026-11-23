@@ -167,7 +167,24 @@ public class OpenAiCompatibleChatClientTests
     [InlineData("""{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"allOf":[{"required":["a"]}]}""", false)]
     [InlineData("""{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["a"],"additionalProperties":false}""", true)]
     [InlineData("""{"type":"object","properties":{"x":{"$ref":"#/$defs/d"}},"required":["x"],"$defs":{"d":{"type":"object","properties":{"k":{"type":"string"}}}}}""", false)]
-    public async Task AJsonSchema_GoesOutUnchanged_StrictOnlyWhenEveryPropertyIsRequired(string schema, bool strict)
+    [InlineData("""{"type":"object","properties":{"x":{"$ref":"#/$defs/d"}},"required":["x"],"additionalProperties":false,"$defs":{"d":{"type":"object","properties":{"k":{"type":"string"}},"required":["k"],"additionalProperties":false}}}""", true)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string","pattern":"^[A-Z]+$","format":"date"},"n":{"type":"number","minimum":0,"exclusiveMaximum":10,"multipleOf":0.5},"l":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3}},"required":["a","n","l"],"additionalProperties":false}""", true)]
+    [InlineData("""{"type":"object","properties":{"contains":{"type":"string"},"uniqueItems":{"type":"boolean"}},"required":["contains","uniqueItems"],"additionalProperties":false}""", true)]
+    [InlineData("""{"type":"object","properties":{"s":{"type":"string","enum":["minLength","oneOf"]}},"required":["s"],"additionalProperties":false}""", true)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string","minLength":1}},"required":["a"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string","maxLength":9}},"required":["a"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"object","properties":{},"required":[],"additionalProperties":false,"propertyNames":{"pattern":"^a"}}},"required":["a"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"minProperties":1}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"maxProperties":1}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","contains":{"type":"string"}}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","items":{"type":"string"},"minContains":1}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","items":{"type":"string"},"maxContains":1}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"l":{"type":"array","prefixItems":[{"type":"string"}],"unevaluatedItems":false}},"required":["l"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"array","items":{"type":"string"}}""", false)]
+    [InlineData("""{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}]}""", false)]
+    [InlineData("""{"type":"object","anyOf":[{"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}]}""", false)]
+    public async Task AJsonSchema_GoesOutUnchanged_StrictOnlyWhenStrictModeAcceptsIt(string schema, bool strict)
     {
         _wire.Answers.Enqueue(TextAnswer);
         var options = Options();
@@ -250,11 +267,16 @@ public class OpenAiCompatibleChatClientTests
         AssertJson("""{"role":"tool","tool_call_id":"call_2","content":"Error: boom"}""", replayed[3]!.ToJsonString());
     }
 
-    [Fact]
-    public async Task ArgumentsThatAreNoJsonObject_FailTheCall_AndNoToolIsCalled()
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("[1,2]")]
+    [InlineData("null")]
+    public async Task ArgumentsThatAreNoJsonObject_FailTheCall_AndNoToolIsCalled(string arguments)
     {
-        _wire.Answers.Enqueue(
-            """{"id":"c3","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{not json"}}]},"finish_reason":"tool_calls"}]}""");
+        var answer = JsonNode.Parse(
+            """{"id":"c3","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":""}}]},"finish_reason":"tool_calls"}]}""")!;
+        answer["choices"]![0]!["message"]!["tool_calls"]![0]!["function"]!["arguments"] = arguments;
+        _wire.Answers.Enqueue(answer.ToJsonString());
 
         using var client = Client();
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -459,13 +481,31 @@ public class OpenAiCompatibleChatClientTests
             RequestTimeout = TimeSpan.FromMilliseconds(200)
         };
         var started = DateTime.UtcNow;
-        await Assert.ThrowsAnyAsync<Exception>(() =>
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
             client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
                 TestContext.Current.CancellationToken));
+
+        Assert.Equal(
+            "The provider did not answer within the network timeout of 0.2 s. No answer was produced; retry later " +
+            "or reduce the request size.", exception.Message);
+        Assert.Null(exception.InnerException);
 
         Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(10));
         Assert.Single(_wire.Requests);
         Assert.Equal(TimeSpan.FromMinutes(10), OpenAiCompatibleChatClient.NetworkTimeout);
+    }
+
+    [Fact]
+    public async Task ACancellationOfTheCaller_StaysACancellation()
+    {
+        _wire.Delay = TimeSpan.FromSeconds(30);
+        _wire.Answers.Enqueue(TextAnswer);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancellation.CancelAfter(TimeSpan.FromMilliseconds(200));
+
+        using var client = Client();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(), cancellation.Token));
     }
 
     [Fact]

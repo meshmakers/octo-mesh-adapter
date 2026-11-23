@@ -91,9 +91,17 @@ internal sealed class OpenAiCompatibleChatClient(
 
         // An answer cut at the token limit stays cut, also in the middle of a tool call: its arguments are a
         // fragment, and the engine fails it with the truncation message instead of calling the tool.
-        var hasToolCalls = response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Any();
-        if (hasToolCalls && response.FinishReason != ChatFinishReason.Length)
+        var calls = response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>().ToList();
+        if (calls.Count > 0 && response.FinishReason != ChatFinishReason.Length)
         {
+            // Arguments that are no JSON object never reach a tool: the server would run it with its defaults.
+            if (calls.FirstOrDefault(call => call.Exception != null) is { } malformed)
+            {
+                throw new InvalidOperationException(
+                    $"The model asked for the tool '{malformed.Name}' with arguments that are not a JSON object; " +
+                    "no tool was called.");
+            }
+
             response.FinishReason = ChatFinishReason.ToolCalls;
         }
 
@@ -204,14 +212,17 @@ internal sealed class OpenAiCompatibleChatClient(
 
     /// <summary>
     ///     True when strict mode can hold the schema: every object schema with <c>properties</c> lists each of
-    ///     them in <c>required</c>. With an optional property the API would refuse the request in strict mode.
+    ///     them in <c>required</c> and sets <c>additionalProperties: false</c>, and no keyword strict mode refuses
+    ///     (<c>allOf</c>, <c>oneOf</c>, <c>not</c>, conditionals) appears. Otherwise the API would refuse the
+    ///     request in strict mode, so it goes out with strict false and the engine validates the answer.
     /// </summary>
     internal static bool IsStrictCompatible(JsonNode? node)
     {
         switch (node)
         {
             case JsonObject obj:
-                return RequiresEveryProperty(obj) && obj.All(property => IsStrictCompatible(property.Value));
+                return RequiresEveryProperty(obj) && !obj.Any(property => StrictUnsupportedKeywords.Contains(property.Key)) &&
+                       obj.All(property => IsStrictCompatible(property.Value));
             case JsonArray array:
                 return array.All(IsStrictCompatible);
             default:
@@ -219,12 +230,28 @@ internal sealed class OpenAiCompatibleChatClient(
         }
     }
 
-    /// <summary>True when the object schema has no <c>properties</c>, or lists each of them in <c>required</c>.</summary>
+    /// <summary>Keywords strict mode does not accept; a schema with one of them goes out with strict false.</summary>
+    private static readonly HashSet<string> StrictUnsupportedKeywords = new(StringComparer.Ordinal)
+    {
+        "allOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas",
+        "patternProperties", "unevaluatedProperties"
+    };
+
+    /// <summary>
+    ///     True when the object schema has no <c>properties</c>, or lists each of them in <c>required</c> and
+    ///     forbids other properties (<c>additionalProperties: false</c>), as strict mode demands.
+    /// </summary>
     private static bool RequiresEveryProperty(JsonObject schema)
     {
         if (schema["properties"] is not JsonObject properties)
         {
             return true;
+        }
+
+        if (schema["additionalProperties"] is not JsonValue additional ||
+            !additional.TryGetValue<bool>(out var allowed) || allowed)
+        {
+            return false;
         }
 
         var required = schema["required"] is JsonArray list
@@ -266,8 +293,8 @@ internal sealed class OpenAiCompatibleChatClient(
                    "No answer was produced and nothing could be processed — retry later, lower the " +
                    "request frequency, or reduce the request size.",
             >= 300 and < 400 =>
-                $"The provider answered with a redirect (HTTP {code}). Redirects are not followed, because the " +
-                "API key would go along; configure the endpoint that answers.",
+                $"The provider answered with a redirect (HTTP {code}). Redirects are not followed, so neither " +
+                "the request nor its data go to another origin; configure the endpoint that answers.",
             400 when IsContextLengthError(responseBody) =>
                 "The provider rejected the request because the input exceeds the model's context window " +
                 "(HTTP 400). Reduce the input size (e.g. a smaller batch or less context) and retry.",
@@ -309,9 +336,13 @@ internal sealed class OpenAiCompatibleChatClient(
             var error = root.TryGetProperty("error", out var nested) && nested.ValueKind == JsonValueKind.Object
                 ? nested
                 : root;
+            // An explicit param decides; the message counts only when the provider names no param.
             var message = ReadString(error, "message");
-            if (ReadString(error, "param") != "temperature" &&
-                !(message?.Contains("temperature", StringComparison.OrdinalIgnoreCase) ?? false))
+            var param = ReadString(error, "param");
+            var namesTemperature = param != null
+                ? param == "temperature"
+                : message?.Contains("temperature", StringComparison.OrdinalIgnoreCase) ?? false;
+            if (!namesTemperature)
             {
                 return false;
             }

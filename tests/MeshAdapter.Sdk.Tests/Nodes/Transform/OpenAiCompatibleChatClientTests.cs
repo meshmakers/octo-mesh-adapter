@@ -162,7 +162,10 @@ public class OpenAiCompatibleChatClientTests
     [InlineData("""{"type":"object","properties":{"total":{"type":"number"}},"required":["total"],"additionalProperties":false}""", true)]
     [InlineData("""{"type":"object","properties":{"total":{"type":"number"},"note":{"type":"string"}},"required":["total"],"additionalProperties":false}""", false)]
     [InlineData("""{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"a":{"type":"string"}}}}},"required":["items"]}""", false)]
-    [InlineData("""{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}}},"required":["items"]}""", true)]
+    [InlineData("""{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}},"required":["items"],"additionalProperties":false}""", true)]
+    [InlineData("""{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}}},"required":["items"],"additionalProperties":false}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"allOf":[{"required":["a"]}]}""", false)]
+    [InlineData("""{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["a"],"additionalProperties":false}""", true)]
     [InlineData("""{"type":"object","properties":{"x":{"$ref":"#/$defs/d"}},"required":["x"],"$defs":{"d":{"type":"object","properties":{"k":{"type":"string"}}}}}""", false)]
     public async Task AJsonSchema_GoesOutUnchanged_StrictOnlyWhenEveryPropertyIsRequired(string schema, bool strict)
     {
@@ -248,18 +251,19 @@ public class OpenAiCompatibleChatClientTests
     }
 
     [Fact]
-    public async Task ArgumentsThatAreNoJsonObject_ArePassedOnAsNone()
+    public async Task ArgumentsThatAreNoJsonObject_FailTheCall_AndNoToolIsCalled()
     {
         _wire.Answers.Enqueue(
             """{"id":"c3","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{not json"}}]},"finish_reason":"tool_calls"}]}""");
 
         using var client = Client();
-        var response = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
-            TestContext.Current.CancellationToken);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")], Options(),
+                TestContext.Current.CancellationToken));
 
-        Assert.Equal(ChatFinishReason.ToolCalls, response.FinishReason);
-        var call = Assert.Single(response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>());
-        Assert.True(call.Arguments == null || call.Arguments.Count == 0);
+        Assert.Equal(
+            "The model asked for the tool 'search' with arguments that are not a JSON object; no tool was called.",
+            exception.Message);
     }
 
     [Fact]
@@ -389,6 +393,7 @@ public class OpenAiCompatibleChatClientTests
     [Theory]
     [InlineData("""{"object":"error","message":"temperature must be within [0, 2]","type":"BadRequestError","param":null,"code":400}""", "BadRequestError: temperature must be within [0, 2]")]
     [InlineData("""{"error":{"message":"bad","param":"temperature"}}""", "bad")]
+    [InlineData("""{"error":{"message":"temperature must be within [0, 2]"}}""", "temperature must be within [0, 2]")]
     public void TheRefusalOfOtherServers_IsReadToo(string body, string providerError)
     {
         Assert.True(OpenAiCompatibleChatClient.TryReadSamplingRejection(HttpStatusCode.BadRequest, body,
@@ -399,6 +404,7 @@ public class OpenAiCompatibleChatClientTests
     [Theory]
     [InlineData("""{"error":{"message":"messages: roles must alternate","type":"invalid_request_error"}}""")]
     [InlineData("temperature is not supported")]
+    [InlineData("""{"error":{"message":"Invalid schema: property 'temperature' is not allowed","type":"invalid_request_error","param":"response_format"}}""")]
     [InlineData("")]
     public void AnyOtherBadRequest_IsNoSamplingRejection(string body)
     {

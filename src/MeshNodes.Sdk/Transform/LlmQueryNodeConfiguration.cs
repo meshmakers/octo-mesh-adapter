@@ -54,8 +54,9 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// Well-known name of the AiConfiguration entity that holds the API key and, optionally, the
-    /// sealed provider endpoint (providerEndpoint: URL and its own key; unset = https://api.anthropic.com with
-    /// apiKey, only for provider Anthropic). An aiModel, maxTokens,
+    /// sealed provider endpoint (providerEndpoint: URL and its own key), which both providers use and
+    /// OpenAiCompatible requires. Only Anthropic falls back to https://api.anthropic.com with apiKey when it
+    /// is unset. An aiModel, maxTokens,
     /// temperature or mcpServerUrl set there wins over the node's own value.
     /// </summary>
     [PropertyGroup("Connection", 1)]

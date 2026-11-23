@@ -255,9 +255,9 @@ public static class ServiceCollectionExtensions
     /// <summary>
     ///     The HTTP client of the LLM providers (<c>AnthropicAiQuery@1</c>, <c>LlmQuery@1</c>). Long-running
     ///     tool-use loops with several MCP tool rounds exceed the default 100 s timeout, hence 10 minutes.
-    ///     Redirects are not followed: the API key travels in <c>x-api-key</c> (Anthropic) or <c>Authorization</c>
-    ///     (OpenAI-compatible), and a handler that follows redirects sends a custom header on to whatever origin a
-    ///     redirect names. No cookies are kept: the factory pools
+    ///     Redirects are not followed: a handler that follows them sends the request and its data to whatever
+    ///     origin a redirect names, and with it the custom header <c>x-api-key</c> (Anthropic; .NET drops
+    ///     <c>Authorization</c> on a redirect to another origin, not custom headers). No cookies are kept: the factory pools
     ///     handlers, so a cookie one configured endpoint sets would otherwise go to another endpoint on that host.
     /// </summary>
     internal static IServiceCollection AddLlmProviderHttpClient(this IServiceCollection services)

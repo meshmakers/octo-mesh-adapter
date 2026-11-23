@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
@@ -14,6 +16,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
@@ -636,6 +639,350 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
                                           || n.Contains("MaxGapScanRows", StringComparison.OrdinalIgnoreCase));
     }
 
+    // ------------------------------------------------------------------ validity periods (AB#9589)
+
+    // July 2026 local (UTC+2): 2026-07-01T00:00:00+02:00 .. 2026-08-01T00:00:00+02:00.
+    private static readonly DateTime July = Day1;
+    private static readonly DateTime August = new(2026, 7, 31, 22, 0, 0, DateTimeKind.Utc);
+
+    private static ValidityPeriodDto Valid(OctoObjectId rtId, DateTime from, DateTime? to = null)
+        => new() { RtId = rtId.ToString(), From = from, To = to };
+
+    private static bool HasLog(IPipelineLogger logger, string method, string fragment)
+        => Fake.GetCalls(logger).Any(call => call.Method.Name == method
+                                             && call.Arguments.OfType<string>().Any(a => a.Contains(fragment)));
+
+    private async Task<(StreamDataGapDetectionResult Result, IPipelineLogger Logger)> RunWithDataAsync(
+        DetectStreamDataGapsNodeConfiguration config, JsonNode data)
+    {
+        // A real data context over the test data, so the JSONPath is resolved for real.
+        var logger = A.Fake<IPipelineLogger>();
+        IDataContext real = new DataContextImpl(JsonDocument.Parse(data.ToJsonString()));
+        var dataContext = A.Fake<IDataContext>(o => o.Wrapping(real));
+        StreamDataGapDetectionResult? captured = null;
+        A.CallTo(dataContext)
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
+            .Invokes(call =>
+            {
+                if (call.Arguments[1] is StreamDataGapDetectionResult r) captured = r;
+            });
+        var root = NodeContext.CreateRootNodeContext(new ServiceCollection().BuildServiceProvider(), logger,
+            dataContext);
+        var nodeContext = root.RegisterChildNode("DetectStreamDataGaps", 0, config, dataContext);
+        var next = A.Fake<NodeDelegate>();
+
+        await new DetectStreamDataGapsNode(next, _etlContext, _systemContext).ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        return (captured ?? throw new InvalidOperationException("No result written."), logger);
+    }
+
+    [Fact]
+    public async Task AValidityStartingInsideThePeriod_ReportsNothingBefore_AndTheGapStartsAtTheValidityStart()
+    {
+        // Valid from 2026-07-15T00:00:00+02:00, no data at all.
+        var validFrom = new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc);
+        var config = Config(July, August, SeriesA) with { ValidityPeriods = [Valid(SeriesA, validFrom)] };
+
+        var (result, _) = await RunAsync(config);
+
+        var series = Assert.Single(result.Series);
+        AssertRange(Assert.Single(series.Ranges), validFrom, August, 17 * 96);
+        Assert.Equal(17 * 96, series.MissingCount);
+        Assert.Equal(17 * 96, result.MissingCount);
+        // Nothing before the validity start is counted or read.
+        Assert.All(_archive.CountRanges, r => Assert.True(r.From >= validFrom));
+        Assert.All(_archive.RowQueryRanges, r => Assert.True(r.From >= validFrom));
+    }
+
+    [Fact]
+    public async Task AValidityStartingInsideThePeriod_WithDataUpToADay_StartsTheGapThere()
+    {
+        var validFrom = new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc);
+        var dataEnd = validFrom.AddDays(3);
+        _archive.AddSlots(SeriesA, July, dataEnd, Quarter);
+        var config = Config(July, August, SeriesA) with { ValidityPeriods = [Valid(SeriesA, validFrom)] };
+
+        var (result, _) = await RunAsync(config);
+
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), dataEnd, August, 14 * 96);
+    }
+
+    [Fact]
+    public async Task AValidityEndingInsideThePeriod_EndsTheRangeAtTheValidityEnd()
+    {
+        // Valid until 2026-07-20T00:00:00+02:00, data only until 2026-07-18T00:00:00+02:00.
+        var validTo = new DateTime(2026, 7, 19, 22, 0, 0, DateTimeKind.Utc);
+        var dataEnd = new DateTime(2026, 7, 17, 22, 0, 0, DateTimeKind.Utc);
+        _archive.AddSlots(SeriesA, July, dataEnd, Quarter);
+        var config = Config(July, August, SeriesA) with { ValidityPeriods = [Valid(SeriesA, July, validTo)] };
+
+        var (result, _) = await RunAsync(config);
+
+        var series = Assert.Single(result.Series);
+        AssertRange(Assert.Single(series.Ranges), dataEnd, validTo, 2 * 96);
+        // Nothing after the validity end is counted or read.
+        Assert.All(_archive.CountRanges, r => Assert.True(r.To <= validTo));
+        Assert.All(_archive.RowQueryRanges, r => Assert.True(r.To <= validTo));
+    }
+
+    [Fact]
+    public async Task AGapEndingExactlyAtTheValidityEnd_StopsThere_AndTheSlotAtTheEndIsNotCounted()
+    {
+        // Valid [00:00, 12:00) local; data 00:00-06:00 and again from 12:00 (outside the validity).
+        var validTo = Day1.AddHours(12);
+        _archive.AddSlots(SeriesA, Day1, Day1.AddHours(6), Quarter);
+        _archive.AddSlots(SeriesA, validTo, Day1.AddDays(1), Quarter);
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with { ValidityPeriods = [Valid(SeriesA, Day1, validTo)] };
+
+        var (result, _) = await RunAsync(config);
+
+        var series = Assert.Single(result.Series);
+        AssertRange(Assert.Single(series.Ranges), Day1.AddHours(6), validTo, 24);
+        Assert.Equal(24, series.MissingCount);
+    }
+
+    [Fact]
+    public async Task AValidityNotAlignedToASlot_CutsTheRangeAtTheValidityStart_AndRoundsThePartSlotUp()
+    {
+        // Valid from 10:07 local; 10:00-11:00 missing, the rest of the day present.
+        var validFrom = Day1.AddHours(10).AddMinutes(7);
+        _archive.AddSlots(SeriesA, Day1, Day1.AddHours(10), Quarter);
+        _archive.AddSlots(SeriesA, Day1.AddHours(11), Day1.AddDays(1), Quarter);
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with { ValidityPeriods = [Valid(SeriesA, validFrom)] };
+
+        var (result, _) = await RunAsync(config);
+
+        // 53 minutes: three full quarter hours and a part one.
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), validFrom, Day1.AddHours(11), 4);
+    }
+
+    [Fact]
+    public async Task TwoPeriodsWithAHole_SplitAGapAcrossTheHole_AndTheHoleIsNeitherReportedNorRead()
+    {
+        // Valid days 1-2 and 4-5; data only on day 1 and day 5.
+        _archive.AddSlots(SeriesA, Day1, Day1.AddDays(1), Quarter);
+        _archive.AddSlots(SeriesA, Day1.AddDays(4), Day1.AddDays(5), Quarter);
+        var config = Config(Day1, Day1.AddDays(5), SeriesA) with
+        {
+            ValidityPeriods =
+            [
+                Valid(SeriesA, Day1, Day1.AddDays(2)),
+                Valid(SeriesA, Day1.AddDays(3), Day1.AddDays(5))
+            ]
+        };
+
+        var (result, _) = await RunAsync(config);
+
+        var series = Assert.Single(result.Series);
+        Assert.Equal(2, series.Ranges.Count);
+        AssertRange(series.Ranges[0], Day1.AddDays(1), Day1.AddDays(2), 96);
+        AssertRange(series.Ranges[1], Day1.AddDays(3), Day1.AddDays(4), 96);
+        Assert.Equal(192, series.MissingCount);
+        Assert.All(_archive.RowQueryRanges, r => Assert.False(r.From < Day1.AddDays(3) && r.To > Day1.AddDays(2)));
+    }
+
+    [Fact]
+    public async Task OverlappingAndTouchingPeriods_AreMerged_IntoOneRange()
+    {
+        var config = Config(Day1, Day1.AddDays(4), SeriesA) with
+        {
+            ValidityPeriods =
+            [
+                Valid(SeriesA, Day1.AddDays(1), Day1.AddDays(2).AddHours(6)),
+                Valid(SeriesA, Day1.AddDays(2), Day1.AddDays(3)),
+                Valid(SeriesA, Day1.AddDays(3), Day1.AddDays(3).AddHours(12))
+            ]
+        };
+
+        var (result, _) = await RunAsync(config);
+
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), Day1.AddDays(1),
+            Day1.AddDays(3).AddHours(12), 240);
+    }
+
+    [Fact]
+    public async Task AnOpenEnd_RunsToTheEndOfThePeriod()
+    {
+        var config = Config(Day1, Day1.AddDays(3), SeriesA) with { ValidityPeriods = [Valid(SeriesA, Day1.AddDays(1))] };
+
+        var (result, _) = await RunAsync(config);
+
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), Day1.AddDays(1), Day1.AddDays(3), 192);
+    }
+
+    [Fact]
+    public async Task APeriodEntirelyOutsideThePeriod_ReportsNothing_AndQueriesNothing()
+    {
+        var config = Config(Day1, Day1.AddDays(2), SeriesA) with
+        {
+            ValidityPeriods = [Valid(SeriesA, Day1.AddDays(-10), Day1.AddDays(-5)), Valid(SeriesA, Day1.AddDays(2))]
+        };
+
+        var (result, _) = await RunAsync(config);
+
+        Assert.Empty(result.Series);
+        Assert.Equal(1, result.SeriesCount);
+        Assert.Equal(0, result.MissingCount);
+        Assert.Equal(0, _archive.CountQueries);
+        Assert.Empty(_archive.RowQueryRanges);
+    }
+
+    [Fact]
+    public async Task ASeriesWithoutAPeriod_IsNotReported_AndOneInfoLineNamesHowMany()
+    {
+        // B and C have no data and no period; only A's gap is reported.
+        var config = Config(Day1, Day1.AddDays(1), SeriesA, SeriesB, SeriesC) with
+        {
+            ValidityPeriods = [Valid(SeriesA, Day1.AddHours(12))]
+        };
+
+        var (result, logger) = await RunAsync(config);
+
+        var series = Assert.Single(result.Series);
+        Assert.Equal(SeriesA.ToString(), series.RtId);
+        AssertRange(Assert.Single(series.Ranges), Day1.AddHours(12), Day1.AddDays(1), 48);
+        Assert.Equal(1, result.SeriesCount);
+        Assert.Equal(1, Fake.GetCalls(logger).Count(call => call.Method.Name == nameof(IPipelineLogger.Info)
+            && call.Arguments.OfType<string>().Any(a => a.Contains("2 of 3 series have no validity period"))));
+        Assert.All(_archive.CountBatchSizes, size => Assert.Equal(1, size));
+    }
+
+    [Fact]
+    public async Task ValidityPeriodsFromADataContextPath_AreRead_WithOffsetsAndAnOpenEnd()
+    {
+        var data = JsonNode.Parse("""
+            {
+              "periods": [
+                { "rtId": "0000000000000000000000a1", "from": "2026-07-01T12:00:00+02:00", "to": "2026-07-02T00:00:00+02:00" },
+                { "rtId": "0000000000000000000000b2", "from": "2026-07-01T18:00:00+02:00" }
+              ]
+            }
+            """)!;
+        var config = Config(Day1, Day1.AddDays(1), SeriesA, SeriesB, SeriesC) with { ValidityPeriodsPath = "$.periods" };
+
+        var (result, logger) = await RunWithDataAsync(config, data);
+
+        Assert.Equal(2, result.Series.Count);
+        AssertRange(Assert.Single(result.Series[0].Ranges), Day1.AddHours(12), Day1.AddDays(1), 48);
+        AssertRange(Assert.Single(result.Series[1].Ranges), Day1.AddHours(18), Day1.AddDays(1), 24);
+        Assert.True(HasLog(logger, nameof(IPipelineLogger.Info), "1 of 3 series have no validity period"));
+    }
+
+    [Fact]
+    public async Task AValidityPeriodsPathResolvingToNothing_ReportsNoSeries_AndWarnsNamingThePath()
+    {
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with { ValidityPeriodsPath = "$.noSuchPeriods" };
+
+        var (result, logger) = await RunWithDataAsync(config, new JsonObject());
+
+        Assert.Empty(result.Series);
+        Assert.True(HasLog(logger, nameof(IPipelineLogger.Warning), "$.noSuchPeriods"));
+        Assert.Equal(0, _archive.CountQueries);
+        Assert.Empty(_archive.RowQueryRanges);
+    }
+
+    [Fact]
+    public async Task InlinePeriods_WinOverThePath()
+    {
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with
+        {
+            ValidityPeriods = [Valid(SeriesA, Day1.AddHours(20))],
+            ValidityPeriodsPath = "$.periods"
+        };
+
+        var (result, _) = await RunWithDataAsync(config, new JsonObject());
+
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), Day1.AddHours(20), Day1.AddDays(1), 16);
+    }
+
+    [Fact]
+    public async Task AnEmptyInlineList_CountsAsNotSet_SoThePathApplies()
+    {
+        // A pipeline editor may write an empty list for an unset option, like an empty RtIds list.
+        var data = JsonNode.Parse("""
+            { "periods": [ { "rtId": "0000000000000000000000a1", "from": "2026-07-01T20:00:00+02:00" } ] }
+            """)!;
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with
+        {
+            ValidityPeriods = [],
+            ValidityPeriodsPath = "$.periods"
+        };
+
+        var (result, _) = await RunWithDataAsync(config, data);
+
+        AssertRange(Assert.Single(Assert.Single(result.Series).Ranges), Day1.AddHours(20), Day1.AddDays(1), 16);
+    }
+
+    [Fact]
+    public async Task AnEntryWithFromNotBeforeTo_FailsNamingTheEntry()
+    {
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with
+        {
+            ValidityPeriods = [Valid(SeriesA, Day1), Valid(SeriesB, Day1.AddHours(5), Day1.AddHours(5))]
+        };
+
+        var message = await RunExpectingErrorAsync(config);
+
+        Assert.Contains("ValidityPeriods[1]", message);
+        Assert.Contains(SeriesB.ToString(), message);
+        Assert.Contains("is not before", message);
+    }
+
+    [Fact]
+    public async Task AnEntryWithAnInvalidRtIdFromThePath_FailsNamingTheEntry()
+    {
+        var data = JsonNode.Parse("""{ "periods": [ { "rtId": "nope", "from": "2026-07-01T00:00:00+02:00" } ] }""")!;
+        var config = Config(Day1, Day1.AddDays(1), SeriesA) with { ValidityPeriodsPath = "$.periods" };
+
+        var ex = await Assert.ThrowsAsync<MeshAdapterPipelineExecutionException>(() => RunWithDataAsync(config, data));
+
+        Assert.Contains("ValidityPeriodsPath '$.periods' entry 0", ex.Message);
+        Assert.Contains("'nope' is not a valid runtime id", ex.Message);
+    }
+
+    [Fact]
+    public async Task ManySeriesWithShortValidities_CountOnlyTheBinsTheirPeriodsTouch()
+    {
+        // A month of 200 series, each valid for two days in the middle: the count covers those days only.
+        var series = Enumerable.Range(0, 200).Select(i => new OctoObjectId($"{i:x24}")).ToArray();
+        var validFrom = July.AddDays(10);
+        var config = Config(July, August, series) with
+        {
+            ValidityPeriods = series.Select(s => Valid(s, validFrom, validFrom.AddDays(2))).ToList()
+        };
+
+        var (result, _) = await RunAsync(config);
+
+        Assert.Equal(200, result.Series.Count);
+        Assert.All(result.Series, s => AssertRange(Assert.Single(s.Ranges), validFrom, validFrom.AddDays(2), 192));
+        var count = Assert.Single(_archive.CountRanges);
+        Assert.Equal((validFrom, validFrom.AddDays(2)), count);
+        Assert.Empty(_archive.RowQueryRanges);
+    }
+
+    // ------------------------------------------------------------------ AB#9588 follow-ups
+
+    [Fact]
+    public async Task TheRowRead_SortsByTheFullRowKey_ThatItsOffsetPagingReliesOn()
+    {
+        // Offset paging is stable only over a total order: window_start, window_end, rtId. If this
+        // key changes, the paging must be re-checked (Ariadne's AB#9588 check, comment 6689227).
+        _archive.AddSlots(SeriesA, Day1, Day1.AddHours(6), Quarter);
+
+        await RunAsync(Config(Day1, Day1.AddHours(12), SeriesA));
+
+        var sort = _archive.LastRowOptions!.SortOrders!.Select(s => (s.AttributePath, s.SortOrder)).ToList();
+        Assert.Equal(new List<(string, SortOrders)>
+        {
+            ("window_start", SortOrders.Ascending),
+            ("window_end", SortOrders.Ascending),
+            ("rtId", SortOrders.Ascending)
+        }, sort);
+        Assert.Equal(0, _archive.LastRowOptions.Offset);
+        Assert.NotNull(_archive.LastRowOptions.PageSize);
+    }
+
     // ------------------------------------------------------------------ in-memory archive
 
     /// <summary>
@@ -658,6 +1005,7 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
         public long RowsReturned { get; private set; }
         public StreamDataDownsamplingQueryOptions? LastCountOptions { get; private set; }
         public StreamDataQueryOptions? LastRowOptions { get; private set; }
+        public List<(DateTime From, DateTime To)> CountRanges { get; } = [];
 
         public InMemoryWindowedArchive()
         {
@@ -717,6 +1065,7 @@ public class DetectStreamDataGapsNodeTests : NodeTestBase
         {
             CountQueries++;
             LastCountOptions = o;
+            CountRanges.Add((o.From!.Value, o.To!.Value));
             CountBatchSizes.Add(o.RtIds?.Count ?? 0);
             if (CountFailure != null) throw CountFailure;
 

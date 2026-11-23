@@ -1140,6 +1140,29 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "or more, more than the slot counts can hold. Use a longer ExpectedInterval or a shorter period.");
     }
 
+    public static Exception DetectGapsValidityPeriodInvalid(INodeContext nodeContext, string entry,
+        DateTime from, DateTime to)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {entry}: from '{from:O}' is not before to '{to:O}'. A validity " +
+            "period is the half-open range [from, to); leave 'to' unset for an open end.");
+    }
+
+    public static Exception DetectGapsValidityEntryInvalid(INodeContext nodeContext, string entry,
+        string reason)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: {entry}: {reason} A validity period needs 'rtId' (a runtime id), " +
+            "'from' and optionally 'to' (ISO-8601 timestamps with UTC offset).");
+    }
+
+    public static Exception DetectGapsMissingCountTooLarge(INodeContext nodeContext, string rtId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: The missing slots of series '{rtId}' exceed what a count can hold. " +
+            "Use a longer ExpectedInterval or a shorter period.");
+    }
+
     public static Exception InvalidRtId(INodeContext nodeContext, string value)
     {
         return new MeshAdapterPipelineExecutionException(

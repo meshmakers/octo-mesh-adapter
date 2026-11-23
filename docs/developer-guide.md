@@ -609,8 +609,38 @@ can then be requested again as one request.
 | `From` / `To` (+ `…Path`) | DateTime? / string | The period, half-open. Both required; give them with their UTC offset, a value without offset is UTC |
 | `ExpectedInterval` | TimeSpan? | Length of one slot; defaults to the archive's period. Must be positive; the period may hold fewer than int.MaxValue / 2 slots |
 | `FieldFilters` | collection | Only rows matching every filter count as present |
+| `ValidityPeriods` / `ValidityPeriodsPath` | collection\<{rtId, from, to}\> / string | Optional validity periods per series (AB#9589), see below. A non-empty inline list wins over the path |
 
-**Result** (`TargetPath`): `from`, `to`, `interval` (ISO-8601), `expectedCount` (slots per series),
+**Validity periods** (AB#9589): each entry is the half-open range `[from, to)` of one series (timestamps with
+UTC offset; `to` unset is an open end). A series may have several entries; overlapping or touching ones are
+merged. With validity periods set, a series is checked only inside its periods cut to `[from, to)` of the
+node: every range is cut exactly at a validity boundary (not rounded to a slot), a gap across a hole between
+two periods is reported as two ranges, and the counts cover only those slots (a part slot rounds up, as
+everywhere). A series without an entry is neither checked nor reported, and one info line names how many
+there were; `seriesCount` counts the series with an entry. A `ValidityPeriodsPath` (an array of objects with
+`rtId`, `from`, `to`, or a multi-match path of such objects) that resolves to no entry writes a warning naming
+the path and reports no series. An empty inline list counts as not set (like an empty `RtIds`), so the path,
+or no validity at all, applies. An entry with `from >= to`, an invalid runtime id or an unreadable timestamp
+fails the node naming the entry. Stretches outside every period are not read where that saves work: series
+without a period in `[from, to)` are not queried; the per-day COUNT of a batch spans from the first to the
+last whole bin the batch's periods touch (bins in a hole between periods included); a bin outside every
+period of a series is not read for it, while a partly filled bin is read whole; and the remaining row reads
+cover only the union of the batch's periods (so also other series' periods of the same batch). Without
+validity periods the node reads and reports exactly as without the option.
+
+```yaml
+- type: DetectStreamDataGaps@1
+  archiveRtId: <archiveRtId>
+  rtIdsPath: $.meteringPoints[*].rtId
+  from: 2026-07-01T00:00:00+02:00
+  to:   2026-08-01T00:00:00+02:00
+  validityPeriodsPath: $.participations   # [{ rtId, from, to? }, ...]
+  targetPath: $.gaps
+```
+
+**Result** (`TargetPath`): `from`, `to`, `interval` (ISO-8601), `expectedCount` (slots of `[from, to)`;
+it does not reflect validity periods, so a completeness ratio of a series valid only part of the period
+needs that series' own slot count),
 `seriesCount`, `seriesWithGapsCount`, `missingCount` and `series` — only the series with gaps, sorted by
 runtime id (ordinal), each with `rtId`, `missingCount`, `hasOverlaps` and `ranges` (`start`, `end`,
 `missingCount`, sorted by start). Touching ranges are merged; a series without any data is one range

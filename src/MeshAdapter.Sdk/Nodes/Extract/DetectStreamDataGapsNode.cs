@@ -77,9 +77,14 @@ public class DetectStreamDataGapsNode(
             throw MeshAdapterPipelineExecutionException.DetectGapsIntervalUnknown(nodeContext, c.ArchiveRtId);
         }
 
-        // The slot counts are ints (shared with GetStreamData@1's report). Each missing range rounds
-        // up by less than one slot and there are never more ranges than slots, so a series' sum stays
-        // below twice the period's slots; a period that could exceed int is refused up front.
+        // The slot counts are ints (shared with GetStreamData@1's report). The expected slots of the
+        // period, and every single range's count (at most the period's slots plus one), must fit, so
+        // a period with that many slots is refused up front. A series' sum is its missing slots plus
+        // less than one slot per range (each range rounds up), so it stays within int as long as a
+        // series has fewer ranges than about int.MaxValue / 2. Ranges lie between windows the node
+        // holds in memory, so reaching that would need about a billion windows of one series, which
+        // the adapter cannot hold. Even then nothing wraps: the analyzer's sum is checked and the
+        // detector sums in long and fails the node (DetectGapsMissingCountTooLarge).
         if ((to - from).Ticks / interval.Value.Ticks >= MaxSlotsPerPeriod)
         {
             throw MeshAdapterPipelineExecutionException.DetectGapsTooManySlots(nodeContext, interval.Value,
@@ -91,10 +96,12 @@ public class DetectStreamDataGapsNode(
         var fieldFilters = StreamDataNodeHelpers.BuildFieldFilters(null, null, c.FieldFilters, snapshot,
             StreamDataNodeHelpers.CreateFieldResolver(snapshot), dataContext, nodeContext,
             nameof(c.FieldFilters));
+        var validity = StreamDataValidityPeriods.Resolve(c.ValidityPeriods, c.ValidityPeriodsPath, dataContext,
+            nodeContext, nameof(c.ValidityPeriods), nameof(c.ValidityPeriodsPath));
 
         var detector = new StreamDataGapDetector(repository, snapshot, c.ArchiveRtId, nodeContext);
         var result = await detector.DetectAsync(
-            new StreamDataGapDetector.Request(from, to, interval.Value, rtIds, fieldFilters));
+            new StreamDataGapDetector.Request(from, to, interval.Value, rtIds, fieldFilters, validity));
 
         dataContext.Set(c.TargetPath, result, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 

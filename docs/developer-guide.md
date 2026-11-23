@@ -1,3 +1,8 @@
+---
+description: Comprehensive developer guide of the adapter: architecture, every pipeline node, execution flow, configuration and HTTP handling.
+background: true
+---
+
 # Octo Mesh Adapter - Developer Documentation
 
 This document provides comprehensive documentation of the Octo Mesh Adapter's functionality, architecture, and configuration options for developers.

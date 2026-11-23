@@ -1,3 +1,8 @@
+---
+description: Concept for the integration tests of the adapter, with a focus on extract nodes such as GetQueryById.
+background: true
+---
+
 # Octo Mesh Adapter - Integration Test Concept
 
 Dieses Dokument beschreibt das Konzept für Integrationstests im Mesh Adapter, mit besonderem Fokus auf Extract-Nodes wie `GetQueryByIdNode`.

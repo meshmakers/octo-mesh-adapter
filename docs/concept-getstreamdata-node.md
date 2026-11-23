@@ -1,3 +1,8 @@
+---
+description: Concept and implementation notes of GetStreamData@1, AggregateStreamData@1 and the gap detection of stream data archives.
+applies_to: src/MeshAdapter.Sdk/Nodes/Extract/GetStreamDataNode.cs, src/MeshAdapter.Sdk/Nodes/Extract/AggregateStreamDataNode.cs, src/MeshAdapter.Sdk/Nodes/StreamData*.cs
+---
+
 # Concept: `GetStreamData@1` / `AggregateStreamData@1` — Extract-Nodes für Stream Data Archives
 
 > Status: **vollständig implementiert** — AB#4726 (§5), AB#4728 (§6) und AB#4752 (§7).

@@ -1,3 +1,8 @@
+---
+description: Testing strategy of the adapter: unit and integration tests for pipeline nodes and services.
+background: true
+---
+
 # Octo Mesh Adapter - Test Concept
 
 This document describes the testing strategy for the Octo Mesh Adapter, covering unit tests and integration tests for pipeline nodes and services.

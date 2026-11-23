@@ -1,3 +1,8 @@
+---
+description: Configuration and behaviour of the PDF OCR extraction node: text layer, OCR, tables, barcodes and confidence.
+applies_to: src/MeshAdapter.Sdk/Nodes/Transform/PdfOcrExtractionNode.cs, src/MeshAdapter.Sdk/Nodes/Transform/OcrNativeMemoryCoordinator.cs
+---
+
 # PDF OCR Extraction Node Documentation
 
 ## Overview

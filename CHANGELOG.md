@@ -41,6 +41,12 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   where that saves work: series without a period are not queried, the per-day COUNT spans from the first to the
   last bin a batch's periods touch, and the remaining row reads cover only the union of the batch's periods
   (partly filled bins are read whole). Without validity periods the node reads and reports exactly as before.
+- Release note for `DetectStreamDataGaps@1` (AB#9590): the node ships in the package
+  `Meshmakers.Octo.Sdk.MeshAdapter` and in the mesh adapter image. The EDA adapter (`octo-adapter-eda`, where the
+  energy pipelines run) does not get it with the mesh adapter release: it references that package
+  (`$(OctoCommVersion)`, set by its pipeline) and has the node only after its own build against the new package
+  version and its own CD, which needs an approval per stage. Pipelines that use the node on an EDA adapter wait for
+  that rollout; the user documentation is the node page `DetectStreamDataGaps@1` in the OctoMesh documentation.
 - Sample method pipeline `docs/examples/slot-booking-method.yaml`: book a slot with a unique index and answer
   the declared method error `CONCURRENT_CHANGE` (AB#9466). Integration tests `SlotBookingConflictTests` run it
   against MongoDB (Testcontainers).

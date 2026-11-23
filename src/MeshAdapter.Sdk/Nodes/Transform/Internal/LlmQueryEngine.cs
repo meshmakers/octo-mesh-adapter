@@ -64,10 +64,10 @@ internal sealed class LlmQueryEngine(
         try
         {
             // Resolve API key: prefer ApiKeyConfigurationName over direct ApiKey
-            var apiKey = ResolveApiKey(options, etlContext, nodeContext);
+            var apiKey = ResolveApiKey(options, etlContext, nodeContext) ?? string.Empty;
             // AB#5538: the API key is masked in every diagnostic output of this execution.
             nodeContext.RegisterSecret(apiKey);
-            if (string.IsNullOrEmpty(apiKey))
+            if (string.IsNullOrEmpty(apiKey) && !options.HasSealedProviderEndpoint)
             {
                 throw new ArgumentException(
                     "API key is required. Set either 'apiKeyConfigurationName' (recommended) or 'apiKey' on the node.",
@@ -467,6 +467,12 @@ internal sealed class LlmQueryEngine(
     private static string? ResolveApiKey(LlmQueryOptions options, IMeshEtlContext etlContext,
         INodeContext nodeContext)
     {
+        // A sealed endpoint brings its own key, or none: the configuration's key never goes to its URL.
+        if (options.HasSealedProviderEndpoint)
+        {
+            return options.SealedProviderApiKey ?? string.Empty;
+        }
+
         if (!string.IsNullOrEmpty(options.ApiKeyConfigurationName))
         {
             var key = ReadAiConfigurationString(options.ApiKeyConfigurationName, "apiKey", etlContext, nodeContext);
@@ -599,7 +605,7 @@ internal sealed class LlmQueryEngine(
     ///     documented fallback (warning, node default) rather than a parse exception. The warning names
     ///     the position of the defect, never a part of the payload: the payload holds the API key.
     /// </summary>
-    private static JsonNode? ReadAiConfigurationProperty(string? configurationName, string property,
+    internal static JsonNode? ReadAiConfigurationProperty(string? configurationName, string property,
         IMeshEtlContext etlContext, INodeContext nodeContext)
     {
         if (string.IsNullOrEmpty(configurationName) ||

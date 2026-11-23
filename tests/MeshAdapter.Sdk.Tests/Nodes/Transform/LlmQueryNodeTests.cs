@@ -110,15 +110,37 @@ public class LlmQueryNodeTests
         Assert.Null(LlmQueryNode.ToOptions(Config()).Temperature);
     }
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("\"\"")]
-    [InlineData("\"  \"")]
-    public async Task WithoutABaseUrlInTheAiConfiguration_TheRequestGoesToThePublicApi(string? baseUrlJson)
-    {
-        if (baseUrlJson != null)
+    private const string SealedKey = "test-key-sealed-0002";
+    private const string FoundryUrl = "https://my-resource.services.ai.azure.com/anthropic";
+
+    /// <summary>The AiConfiguration with the configuration key and a sealed endpoint holding the given text.</summary>
+    private static string WithProviderEndpoint(JsonNode? providerEndpoint) =>
+        new JsonObject
         {
-            _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":{{baseUrlJson}}}""";
+            ["apiKey"] = ApiKey,
+            ["aiModel"] = "claude-test",
+            ["providerEndpoint"] = providerEndpoint
+        }.ToJsonString();
+
+    private static string Sealed(string baseUrl, string? apiKey) =>
+        apiKey == null
+            ? new JsonObject { ["baseUrl"] = baseUrl }.ToJsonString()
+            : new JsonObject { ["baseUrl"] = baseUrl, ["apiKey"] = apiKey }.ToJsonString();
+
+    private string EverythingLogged() =>
+        string.Join("\n", Fake.GetCalls(_logger).SelectMany(c => c.Arguments)
+            .SelectMany(a => a is object?[] values ? values : new[] { a }).Select(a => a?.ToString()));
+
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(true, "")]
+    [InlineData(true, "  ")]
+    public async Task WithoutAProviderEndpoint_TheConfigurationKeyGoesToThePublicApi(bool present, string? value)
+    {
+        if (present)
+        {
+            _aiConfiguration = WithProviderEndpoint(value == null ? null : JsonValue.Create(value));
         }
 
         _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
@@ -132,50 +154,89 @@ public class LlmQueryNodeTests
     }
 
     [Theory]
-    [InlineData("https://my-resource.services.ai.azure.com/anthropic")]
-    [InlineData("https://my-resource.services.ai.azure.com/anthropic/")]
-    public async Task WithABaseUrlInTheAiConfiguration_TheRequestGoesThere_WithTheKey_AndNothingToThePublicApi(
-        string baseUrl)
+    [InlineData(FoundryUrl)]
+    [InlineData(FoundryUrl + "/")]
+    public async Task ASealedEndpointWithAKey_GetsOnePostWithItsOwnKey_AndNeverTheConfigurationKey(string baseUrl)
     {
-        _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":"{{baseUrl}}"}""";
+        _aiConfiguration = WithProviderEndpoint(Sealed(baseUrl, SealedKey));
         _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
 
         var data = await RunAsync(Config());
 
         Assert.Equal("the answer", data["out"]!.GetValue<string>());
         var request = Assert.Single(_wire.Requests);
-        Assert.Equal("POST https://my-resource.services.ai.azure.com/anthropic/v1/messages", request.Line);
-        Assert.Equal(ApiKey, request.ApiKey);
-        Assert.DoesNotContain(_wire.Requests, r => r.Line.Contains("api.anthropic.com", StringComparison.Ordinal));
+        Assert.Equal($"POST {FoundryUrl}/v1/messages", request.Line);
+        Assert.Equal(SealedKey, request.ApiKey);
+        Assert.DoesNotContain(_wire.Requests, r => r.ApiKey == ApiKey);
+        // The endpoint is logged, its key is not.
+        var logged = EverythingLogged();
+        Assert.Contains($"Provider endpoint {FoundryUrl} from the providerEndpoint of AiConfiguration '{AiConfigName}'",
+            logged, StringComparison.Ordinal);
+        Assert.DoesNotContain(SealedKey, logged, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData("http://llm.example.test", "TLS")]
-    [InlineData("/v1", "not an absolute URL")]
-    [InlineData("https://llm.example.test/v1?key=secret-in-query", "query")]
-    public async Task ABaseUrlInTheAiConfigurationThatBreaksTheRule_FailsTheNode_AndNothingIsSent(string baseUrl,
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task AKeylessSealedEndpoint_GetsNoKeyHeader_AndTheConfigurationKeyIsIgnored(string? sealedKey)
+    {
+        _aiConfiguration = WithProviderEndpoint(Sealed("http://localhost:11434", sealedKey));
+        _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
+
+        var data = await RunAsync(Config());
+
+        Assert.Equal("the answer", data["out"]!.GetValue<string>());
+        var request = Assert.Single(_wire.Requests);
+        Assert.Equal("POST http://localhost:11434/v1/messages", request.Line);
+        Assert.Null(request.ApiKey);
+        Assert.Contains("(no key)", EverythingLogged(), StringComparison.Ordinal);
+    }
+
+    public static TheoryData<string, string> MalformedEndpoints => new()
+    {
+        // not JSON
+        { "{\"baseUrl\": test-key-sealed-0002", "not valid JSON (line" },
+        // another JSON shape
+        { "[\"" + FoundryUrl + "\"]", "not a JSON object" },
+        { "\"" + FoundryUrl + "\"", "not a JSON object" },
+        // missing or wrong members
+        { "{\"apiKey\":\"test-key-sealed-0002\"}", "'baseUrl' is missing or empty" },
+        { "{\"baseUrl\":\"\",\"apiKey\":\"test-key-sealed-0002\"}", "'baseUrl' is missing or empty" },
+        { "{\"baseUrl\":42,\"apiKey\":\"test-key-sealed-0002\"}", "'baseUrl' is not a JSON text" },
+        { "{\"baseUrl\":\"" + FoundryUrl + "\",\"apiKey\":7}", "'apiKey' is not a JSON text" },
+        { "{\"baseUrl\":\"" + FoundryUrl + "\",\"apiKey\":null}", "'apiKey' is not a JSON text" },
+        { "{\"baseUrl\":\"" + FoundryUrl + "\",\"apiKey\":\"test-key-sealed-0002\",\"token\":\"x\"}", "a member other than" },
+        { "{\"baseUrl\":\"" + FoundryUrl + "\",\"baseUrl\":\"https://evil.example\",\"apiKey\":\"test-key-sealed-0002\"}", "given twice" },
+        // the base URL rule
+        { "{\"baseUrl\":\"http://llm.example.test\",\"apiKey\":\"test-key-sealed-0002\"}", "without TLS" },
+        { "{\"baseUrl\":\"https://llm.example.test/v1?key=test-key-sealed-0002\",\"apiKey\":\"test-key-sealed-0002\"}", "query" }
+    };
+
+    [Theory]
+    [MemberData(nameof(MalformedEndpoints))]
+    public async Task AMalformedSealedEndpoint_FailsTheNode_WithoutARequest_AndWithoutAPartOfTheValue(string value,
         string reason)
     {
-        _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":"{{baseUrl}}"}""";
+        _aiConfiguration = WithProviderEndpoint(value);
 
-        // continueOnError does not turn a wrong endpoint into a skipped query.
+        // continueOnError does not turn a broken endpoint into a skipped query.
         var ex = await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(Config() with { ContinueOnError = true }));
 
         Assert.Empty(_wire.Requests);
-        Assert.Contains($"AiConfiguration '{AiConfigName}'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains($"providerEndpoint of AiConfiguration '{AiConfigName}'", ex.Message, StringComparison.Ordinal);
         Assert.Contains(reason, ex.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("secret-in-query", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(SealedKey, ex.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(SealedKey, EverythingLogged(), StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task ABaseUrlOfAnotherTypeThanText_IsNoBaseUrl()
+    public async Task AProviderEndpointThatIsNoText_FailsTheNode_InsteadOfFallingBackToThePublicApi()
     {
-        _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":42}""";
-        _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
+        _aiConfiguration = WithProviderEndpoint(new JsonObject { ["baseUrl"] = FoundryUrl, ["apiKey"] = SealedKey });
 
-        await RunAsync(Config());
+        await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(Config()));
 
-        Assert.Equal("POST https://api.anthropic.com/v1/messages", Assert.Single(_wire.Requests).Line);
+        Assert.Empty(_wire.Requests);
     }
 
     [Fact]

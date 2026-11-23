@@ -1,7 +1,7 @@
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 
 /// <summary>
-///     The rule for the <c>baseUrl</c> of the AiConfiguration <c>LlmQuery@1</c> uses. The provider receives the API key, so the URL
+///     The rule for the <c>baseUrl</c> of the sealed <c>providerEndpoint</c> of the AiConfiguration <c>LlmQuery@1</c> uses. The provider receives the API key, so the URL
 ///     must be one the key may travel to: absolute, https (plain http only on a loopback address, for a
 ///     local gateway during development), and without user info, query or fragment, which would either
 ///     carry a second credential or be cut off when the endpoint path is appended.

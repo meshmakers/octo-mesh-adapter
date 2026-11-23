@@ -112,4 +112,14 @@ internal sealed record LlmQueryOptions
     ///     The longest tool result, in UTF-16 code units, that enters the conversation uncut.
     /// </summary>
     public int MaxToolResultChars { get; init; } = LlmQueryEngine.DefaultMaxToolResultChars;
+
+    /// <summary>
+    ///     Whether the node resolved a sealed provider endpoint (endpoint and key configured together). Then
+    ///     <see cref="SealedProviderApiKey" /> is the key of the run and the AiConfiguration's <c>apiKey</c> and
+    ///     <see cref="ApiKey" /> are never used, not even when the sealed endpoint has no key.
+    /// </summary>
+    public bool HasSealedProviderEndpoint { get; init; }
+
+    /// <summary>The key of the sealed endpoint; <c>null</c> for a keyless one (no key header is sent).</summary>
+    public string? SealedProviderApiKey { get; init; }
 }

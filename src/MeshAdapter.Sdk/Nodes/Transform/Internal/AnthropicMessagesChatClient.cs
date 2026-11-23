@@ -100,7 +100,11 @@ internal sealed class AnthropicMessagesChatClient(
             Content = new StringContent(jsonRequest, Encoding.UTF8, "application/json")
         };
 
-        request.Headers.Add("x-api-key", apiKey);
+        // A keyless endpoint (a sealed provider endpoint without a key) gets no key header.
+        if (!string.IsNullOrEmpty(apiKey))
+        {
+            request.Headers.Add("x-api-key", apiKey);
+        }
         request.Headers.Add("anthropic-version", ApiVersion);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -449,7 +453,7 @@ internal sealed class AnthropicMessagesChatClient(
                    "retry later.",
             >= 300 and < 400 =>
                 $"The provider answered with a redirect (HTTP {code}). Redirects are not followed, because the " +
-                "API key would go along; set the baseUrl of the AiConfiguration to the endpoint that answers.",
+                "API key would go along; configure the endpoint that answers.",
             400 when IsContextLengthError(responseBody) =>
                 "Anthropic rejected the request because the input exceeds the model's context window " +
                 "(HTTP 400). Reduce the input size (e.g. a smaller batch or less context) and retry.",

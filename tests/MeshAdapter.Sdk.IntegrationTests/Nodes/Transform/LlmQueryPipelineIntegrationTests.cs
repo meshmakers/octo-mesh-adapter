@@ -17,8 +17,9 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Transform;
 ///     <c>LlmQuery@1</c> as a pipeline: the YAML is read by the adapter's serializer, run by the real
 ///     orchestrator, and the node is built by the adapter's own container with its provider HTTP client.
 ///     A pipeline that moves from <c>AnthropicAiQuery@1</c> sends the recorded requests byte for byte; with a
-///     base URL in the AiConfiguration the request goes to that host only; a base URL that breaks the rule fails
-///     the node before any request, and an unknown provider fails when the pipeline is read.
+///     sealed provider endpoint in the AiConfiguration the request goes to that host only, with that endpoint's
+///     key; a sealed endpoint that breaks the rule fails the node before any request, and an unknown provider
+///     fails when the pipeline is read.
 /// </summary>
 [Collection("Sequential")]
 public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
@@ -62,13 +63,13 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
     }
 
     [Fact]
-    public async Task DocumentAnalysis_WithABaseUrlInTheAiConfiguration_PostsOnceToThatHost_AndNothingToThePublicApi()
+    public async Task DocumentAnalysis_WithASealedProviderEndpoint_PostsOnceToThatHost_WithItsKey_AndNothingToThePublicApi()
     {
         var (scenario, _) = AnthropicAiQueryGoldenScenario.DocumentAnalysis();
         scenario.ProviderHost = "my-resource.services.ai.azure.com";
         scenario.Configuration[AnthropicAiQueryGoldenScenario.AiConfigName] =
         (
-            """{"apiKey":"test-key-golden-0001","aiModel":"claude-sonnet-4-6","baseUrl":"https://my-resource.services.ai.azure.com/anthropic"}""",
+            """{"apiKey":"test-key-configuration-never-sent","aiModel":"claude-sonnet-4-6","providerEndpoint":"{\"baseUrl\":\"https://my-resource.services.ai.azure.com/anthropic\",\"apiKey\":\"test-key-golden-0001\"}"}""",
             null);
 
         await RunAsync(scenario, $"""
@@ -85,12 +86,12 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
     }
 
     [Fact]
-    public async Task ABaseUrlInTheAiConfigurationThatBreaksTheRule_FailsTheNode_AndNothingIsSent()
+    public async Task ASealedProviderEndpointThatBreaksTheRule_FailsTheNode_AndNothingIsSent()
     {
         var (scenario, _) = AnthropicAiQueryGoldenScenario.DocumentAnalysis();
         scenario.Configuration[AnthropicAiQueryGoldenScenario.AiConfigName] =
         (
-            """{"apiKey":"test-key-golden-0001","aiModel":"claude-sonnet-4-6","baseUrl":"http://llm.example.test"}""",
+            """{"apiKey":"test-key-golden-0001","aiModel":"claude-sonnet-4-6","providerEndpoint":"{\"baseUrl\":\"http://llm.example.test\",\"apiKey\":\"test-key-golden-0001\"}"}""",
             null);
 
         // The node runs with continueOnError: true; a wrong endpoint still fails it.
@@ -100,7 +101,7 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
                 {DocumentAnalysisNode}
             """));
 
-        Assert.Contains($"AiConfiguration '{AnthropicAiQueryGoldenScenario.AiConfigName}'", ex.ToString(),
+        Assert.Contains($"providerEndpoint of AiConfiguration '{AnthropicAiQueryGoldenScenario.AiConfigName}'", ex.ToString(),
             StringComparison.Ordinal);
         Assert.Empty(scenario.Transcript);
     }

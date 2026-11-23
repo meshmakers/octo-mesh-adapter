@@ -37,11 +37,11 @@ internal class LlmQueryNode(
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<LlmQueryNodeConfiguration>();
-        // Before any request: a base URL that breaks the rule fails the node, whatever continueOnError says.
-        var baseUrl = ResolveBaseUrl(config, etlContext, nodeContext);
+        // Before any request: a sealed endpoint that is not valid fails the node, whatever continueOnError says.
+        var endpoint = ResolveProviderEndpoint(config, etlContext, nodeContext);
         var engine = new LlmQueryEngine(etlContext, httpClientFactory, serviceAccountTokenService,
-            CreateChatClientFactory(config, httpClientFactory, baseUrl));
-        await engine.RunAsync(ToOptions(config), dataContext, nodeContext, next);
+            CreateChatClientFactory(config, httpClientFactory, endpoint?.BaseUrl));
+        await engine.RunAsync(ToOptions(config, endpoint), dataContext, nodeContext, next);
     }
 
     /// <summary>The chat client of the configured provider at the resolved base URL, for an API key.</summary>
@@ -56,40 +56,31 @@ internal class LlmQueryNode(
     }
 
     /// <summary>
-    ///     The one place that decides where the provider is reached: the <c>baseUrl</c> of the AiConfiguration
-    ///     named by <c>apiKeyConfigurationName</c> (the one that holds the key), read with the engine's guarded
-    ///     read and checked by the rule of <see cref="LlmBaseUrl" />. <c>null</c> (the provider's public endpoint)
-    ///     when it is absent or empty.
+    ///     The one place that decides where the provider is reached: the sealed <c>providerEndpoint</c> of the
+    ///     AiConfiguration named by <c>apiKeyConfigurationName</c> (<see cref="LlmProviderEndpoint" />: the endpoint
+    ///     and its own key, set together), or <c>null</c> for the provider's public endpoint with the
+    ///     configuration's <c>apiKey</c>. The endpoint URL is logged; its key never.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The value breaks the rule; nothing has been sent.</exception>
-    internal static Uri? ResolveBaseUrl(LlmQueryNodeConfiguration config, IMeshEtlContext etlContext,
-        INodeContext nodeContext)
+    /// <exception cref="InvalidOperationException">The value is set and not valid; nothing has been sent.</exception>
+    internal static LlmProviderEndpoint? ResolveProviderEndpoint(LlmQueryNodeConfiguration config,
+        IMeshEtlContext etlContext, INodeContext nodeContext)
     {
-        var value = LlmQueryEngine.ReadAiConfigurationString(config.ApiKeyConfigurationName, BaseUrlProperty,
-            etlContext, nodeContext);
-        try
+        var endpoint = LlmProviderEndpoint.Resolve(config.ApiKeyConfigurationName, etlContext, nodeContext);
+        if (endpoint != null)
         {
-            var baseUrl = LlmBaseUrl.Parse(value);
-            if (baseUrl != null)
-            {
-                nodeContext.Debug($"Provider base URL loaded from configuration '{config.ApiKeyConfigurationName}'");
-            }
+            nodeContext.Info(
+                $"Provider endpoint {endpoint.BaseUrl.AbsoluteUri.TrimEnd('/')} from the providerEndpoint of AiConfiguration " +
+                $"'{config.ApiKeyConfigurationName}'" + (endpoint.ApiKey == null ? " (no key)" : string.Empty));
+        }
 
-            return baseUrl;
-        }
-        catch (ArgumentException ex)
-        {
-            throw new InvalidOperationException(
-                $"[{nodeContext.NodePath}]: AiConfiguration '{config.ApiKeyConfigurationName}': {ex.Message} " +
-                "No request was sent.", ex);
-        }
+        return endpoint;
     }
 
-    /// <summary>The key of the provider's endpoint in the AiConfiguration payload.</summary>
-    internal const string BaseUrlProperty = "baseUrl";
-
-    /// <summary>The node's configuration as the engine reads it.</summary>
-    internal static LlmQueryOptions ToOptions(LlmQueryNodeConfiguration config)
+    /// <summary>
+    ///     The node's configuration as the engine reads it. With a sealed endpoint the engine uses that endpoint's
+    ///     key (none for a keyless one) and never the <c>apiKey</c> of the AiConfiguration.
+    /// </summary>
+    internal static LlmQueryOptions ToOptions(LlmQueryNodeConfiguration config, LlmProviderEndpoint? endpoint = null)
     {
         var delegatesToCaller = config.Identity == NodeExecutionIdentity.Caller;
         return new LlmQueryOptions
@@ -128,7 +119,9 @@ internal class LlmQueryNode(
             MaxJsonRepairAttempts = config.MaxJsonRepairAttempts,
             UsageOutputPath = config.UsageOutputPath,
             CacheSource = config.CacheSource,
-            MaxToolResultChars = config.MaxToolResultChars ?? LlmQueryNodeConfiguration.DefaultMaxToolResultChars
+            MaxToolResultChars = config.MaxToolResultChars ?? LlmQueryNodeConfiguration.DefaultMaxToolResultChars,
+            HasSealedProviderEndpoint = endpoint != null,
+            SealedProviderApiKey = endpoint?.ApiKey
         };
     }
 }

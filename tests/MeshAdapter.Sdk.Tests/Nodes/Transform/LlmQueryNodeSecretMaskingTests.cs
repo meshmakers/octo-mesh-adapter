@@ -17,10 +17,11 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 
 /// <summary>
 ///     The credentials <c>LlmQuery@1</c> handles never reach a diagnostic output, also when the provider sits
-///     at the base URL of the AiConfiguration.
+///     at the sealed endpoint (<c>providerEndpoint</c>) of the AiConfiguration.
 ///     <para>
-///         Invariant: the API key and every MCP token are registered secrets of the execution before the
-///         first request; the execution log, the error of the execution and the data show the mask.
+///         Invariant: the sealed endpoint value, its key and every MCP token are registered secrets of the
+///         execution before the first request; the execution log, the error of the execution and the data show
+///         the mask.
 ///     </para>
 ///     <para>
 ///         Abuse cases, one test each: a provider at the base URL that answers 401 and echoes the
@@ -38,6 +39,10 @@ public class LlmQueryNodeSecretMaskingTests
     private const string DelegatedToken = "test-token-delegated-eyJhbGciOiJub25lIn0.delegated";
     private const string BaseUrl = "https://my-resource.services.ai.azure.com/anthropic";
 
+    /// <summary>The sealed endpoint as the AiConfiguration hands it over: a JSON text with URL and key.</summary>
+    private static readonly string SealedValue =
+        new JsonObject { ["baseUrl"] = BaseUrl, ["apiKey"] = ApiKey }.ToJsonString();
+
     private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
     private readonly ITenantRepository _tenantRepository = A.Fake<ITenantRepository>();
     private readonly IServiceAccountTokenService _tokenService = A.Fake<IServiceAccountTokenService>();
@@ -49,7 +54,12 @@ public class LlmQueryNodeSecretMaskingTests
         var configuration = A.Fake<IGlobalConfiguration>();
         A.CallTo(() => configuration.IsDefined(AiConfigName)).Returns(true);
         A.CallTo(() => configuration.GetRawJson(AiConfigName))
-            .Returns($$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","baseUrl":"{{BaseUrl}}"}""");
+            .Returns(new JsonObject
+            {
+                ["apiKey"] = "test-key-configuration-never-sent",
+                ["aiModel"] = "claude-test",
+                ["providerEndpoint"] = SealedValue
+            }.ToJsonString());
         A.CallTo(() => _etlContext.TenantId).Returns("testTenant");
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _etlContext.VerifiedPrincipal).Returns(null);
@@ -162,6 +172,7 @@ public class LlmQueryNodeSecretMaskingTests
         Assert.Contains($"subscription key '{PipelineSecretRegistry.Mask}'", logged);
         Assert.DoesNotContain(ApiKey, logged);
         Assert.DoesNotContain(ApiKey, dataContext.Get<JsonNode>("$")!.ToJsonString());
+        Assert.Equal(PipelineSecretRegistry.Mask, nodeContext.SecretRegistry!.Redact(SealedValue));
     }
 
     [Fact]

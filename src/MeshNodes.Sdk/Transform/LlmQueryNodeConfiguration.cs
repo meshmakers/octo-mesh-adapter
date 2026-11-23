@@ -7,7 +7,8 @@ namespace Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 /// providers available today are listed in <see cref="LlmProvider"/>. Settings that fail their rule
 /// (response format, temperature, tool-result cap) are refused when the pipeline definition is read.
 /// The provider's endpoint is not a node setting: it comes with the API key from the AiConfiguration
-/// (its optional baseUrl), so the key and the place it is sent to are configured together.
+/// (its optional sealed providerEndpoint: URL and key), so the key and the place it is sent to are
+/// configured together.
 /// </summary>
 /// <remarks>
 /// The configuration shape is lifted from the LlmQuery prototype by Philipp Schwaab and carries the
@@ -52,7 +53,8 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// Well-known name of the AiConfiguration entity that holds the API key and, optionally, the
-    /// provider's endpoint (baseUrl; unset = https://api.anthropic.com). An aiModel, maxTokens,
+    /// sealed provider endpoint (providerEndpoint: URL and its own key; unset = https://api.anthropic.com with
+    /// apiKey). An aiModel, maxTokens,
     /// temperature or mcpServerUrl set there wins over the node's own value.
     /// </summary>
     [PropertyGroup("Connection", 1)]

@@ -399,7 +399,7 @@ public class AnthropicMessagesChatClientTests
 
         Assert.Contains("redirect", message);
         Assert.Contains($"HTTP {(int)status}", message);
-        Assert.Contains("baseUrl of the AiConfiguration", message);
+        Assert.Contains("configure the endpoint that answers", message);
     }
 
     [Fact]

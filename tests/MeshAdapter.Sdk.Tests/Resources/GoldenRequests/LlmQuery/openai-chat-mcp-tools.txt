@@ -1,0 +1,49 @@
+=== request 1: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 170
+content-type: application/json; charset=utf-8
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"OctoMesh-LlmQueryNode","version":"1.0.0"}}}
+
+=== request 2: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 46
+content-type: application/json; charset=utf-8
+mcp-session-id: golden-session-1
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+
+=== request 3: POST https://llm.example.test/v1/chat/completions ===
+accept: application/json
+authorization: Bearer <the key of the sealed provider endpoint>
+content-length: 1405
+content-type: application/json
+user-agent: OctoMesh-MeshAdapter
+{"temperature":0.2,"messages":[{"role":"system","content":"You are the accounting assistant of the tenant. Answer in the user's language."},{"role":"user","content":"Hallo"},{"role":"assistant","content":"Guten Tag, wie kann ich helfen?"},{"role":"user","content":"Please analyze the following content and answer the question provided.\n\nCONTENT:\n---\nAdditional Context:\nData from $.input.message:\nWelche Rechnungen sind offen?\n\nCalling user (the verified identity of the person you are talking to — address them personally, treat \"ich\"/\"meine\" as this user, and answer any question about who they are, their name, username or e-mail directly from here, never via tools. The data you can query is already scoped to what this user may see):\n  name: Erika Mustermann\n  email: erika@example.test\n  roles: Accountant, Reader\n  tenant: goldenTenant\n\n\n---\n\nQUESTION:\nAnswer the user's message. Use the tools for every figure you state.\n\n"}],"max_completion_tokens":4000,"tools":[{"type":"function","function":{"description":"Queries runtime entities — „Rechnungen“ <all>","name":"query_entities","parameters":{"type":"object","properties":{"ckTypeId":{"type":"string"},"take":{"type":"integer","default":50}},"required":["ckTypeId"]}}},{"type":"function","function":{"description":"","name":"get_entity","parameters":{"type":"object","properties":{}}}}],"model":"claude-opus-4-8"}
+
+=== request 4: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 143
+content-type: application/json; charset=utf-8
+mcp-session-id: golden-session-1
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_entities","arguments":{"ckTypeId":"Basic.Accounting/Invoice","take":10}}}
+
+=== request 5: POST https://mcp.example.test/goldenTenant/mcp ===
+accept: application/json, text/event-stream
+authorization: Bearer <the delegated token of the caller>
+content-length: 125
+content-type: application/json; charset=utf-8
+mcp-session-id: golden-session-1
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_entity","arguments":{"rtId":"650000000000000000000009"}}}
+
+=== request 6: POST https://llm.example.test/v1/chat/completions ===
+accept: application/json
+authorization: Bearer <the key of the sealed provider endpoint>
+content-length: 1926
+content-type: application/json
+user-agent: OctoMesh-MeshAdapter
+{"temperature":0.2,"messages":[{"role":"system","content":"You are the accounting assistant of the tenant. Answer in the user's language."},{"role":"user","content":"Hallo"},{"role":"assistant","content":"Guten Tag, wie kann ich helfen?"},{"role":"user","content":"Please analyze the following content and answer the question provided.\n\nCONTENT:\n---\nAdditional Context:\nData from $.input.message:\nWelche Rechnungen sind offen?\n\nCalling user (the verified identity of the person you are talking to — address them personally, treat \"ich\"/\"meine\" as this user, and answer any question about who they are, their name, username or e-mail directly from here, never via tools. The data you can query is already scoped to what this user may see):\n  name: Erika Mustermann\n  email: erika@example.test\n  roles: Accountant, Reader\n  tenant: goldenTenant\n\n\n---\n\nQUESTION:\nAnswer the user's message. Use the tools for every figure you state.\n\n"},{"role":"assistant","content":"Ich sehe nach.","tool_calls":[{"id":"call_01","type":"function","function":{"name":"query_entities","arguments":"{\"ckTypeId\":\"Basic.Accounting/Invoice\",\"take\":10}"}},{"id":"call_02","type":"function","function":{"name":"get_entity","arguments":"{\"rtId\":\"650000000000000000000009\"}"}}]},{"role":"tool","tool_call_id":"call_01","content":"[{\"number\":\"RE-1\",\"open\":120.5}]\n1 row\n"},{"role":"tool","tool_call_id":"call_02","content":"Error: MCP tool error: Entity not found"}],"max_completion_tokens":4000,"tools":[{"type":"function","function":{"description":"Queries runtime entities — „Rechnungen“ <all>","name":"query_entities","parameters":{"type":"object","properties":{"ckTypeId":{"type":"string"},"take":{"type":"integer","default":50}},"required":["ckTypeId"]}}},{"type":"function","function":{"description":"","name":"get_entity","parameters":{"type":"object","properties":{}}}}],"model":"claude-opus-4-8"}
+
+=== data context after the node ===
+{"input":{"message":"Welche Rechnungen sind offen?","history":[{"role":"user","content":"Hallo"},{"role":"assistant","content":"Guten Tag, wie kann ich helfen?"},{"role":"","content":"dropped: no role"},{"role":"user","content":""}]},"answer":"Offen ist RE-1 mit 120,50 \u20AC."}

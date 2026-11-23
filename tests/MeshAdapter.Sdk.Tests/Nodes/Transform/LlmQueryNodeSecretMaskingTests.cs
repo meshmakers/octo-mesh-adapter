@@ -49,17 +49,21 @@ public class LlmQueryNodeSecretMaskingTests
     private readonly IPipelineLogger _logger = A.Fake<IPipelineLogger>();
     private readonly EchoingWire _wire = new();
 
+    /// <summary>The endpoint of the OpenAI-compatible tests, sealed with the same key.</summary>
+    private const string OpenAiBaseUrl = "https://my-resource.openai.azure.com/openai/v1";
+
+    private string _aiConfiguration = new JsonObject
+    {
+        ["apiKey"] = "test-key-configuration-never-sent",
+        ["aiModel"] = "claude-test",
+        ["providerEndpoint"] = SealedValue
+    }.ToJsonString();
+
     public LlmQueryNodeSecretMaskingTests()
     {
         var configuration = A.Fake<IGlobalConfiguration>();
         A.CallTo(() => configuration.IsDefined(AiConfigName)).Returns(true);
-        A.CallTo(() => configuration.GetRawJson(AiConfigName))
-            .Returns(new JsonObject
-            {
-                ["apiKey"] = "test-key-configuration-never-sent",
-                ["aiModel"] = "claude-test",
-                ["providerEndpoint"] = SealedValue
-            }.ToJsonString());
+        A.CallTo(() => configuration.GetRawJson(AiConfigName)).ReturnsLazily(() => _aiConfiguration);
         A.CallTo(() => _etlContext.TenantId).Returns("testTenant");
         A.CallTo(() => _etlContext.TenantRepository).Returns(_tenantRepository);
         A.CallTo(() => _etlContext.VerifiedPrincipal).Returns(null);
@@ -96,6 +100,18 @@ public class LlmQueryNodeSecretMaskingTests
                             """{"stop_reason":"end_turn","content":[{"type":"text","text":"the answer"}]}""",
                             Encoding.UTF8, "application/json")
                     });
+            }
+
+            if (request.RequestUri.AbsoluteUri.StartsWith(OpenAiBaseUrl, StringComparison.Ordinal))
+            {
+                var bearer = request.Headers.Authorization?.Parameter ?? string.Empty;
+                ProviderKeys.Add(bearer);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent(
+                        $$$"""{"error":{"message":"Incorrect API key provided: {{{bearer}}}.","type":"invalid_request_error","code":"invalid_api_key"}}""",
+                        Encoding.UTF8, "application/json")
+                });
             }
 
             McpCredentials.Add(request.Headers.Authorization?.ToString());
@@ -188,6 +204,42 @@ public class LlmQueryNodeSecretMaskingTests
         Assert.Contains("HTTP 401", recorded);
         Assert.DoesNotContain(ApiKey, recorded);
         Assert.DoesNotContain(ApiKey, EverythingLogged());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnOpenAiCompatibleProviderEchoingTheKey_IsMaskedInTheLogAndInTheErrorOfTheExecution(
+        bool continueOnError)
+    {
+        _aiConfiguration = new JsonObject
+        {
+            ["apiKey"] = "test-key-configuration-never-sent",
+            ["aiModel"] = "gpt-test",
+            ["providerEndpoint"] = new JsonObject { ["baseUrl"] = OpenAiBaseUrl, ["apiKey"] = ApiKey }.ToJsonString()
+        }.ToJsonString();
+        var (node, dataContext, nodeContext) =
+            Prepare(Config(continueOnError) with { Provider = LlmProvider.OpenAiCompatible });
+
+        var recorded = string.Empty;
+        try
+        {
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+            Assert.True(continueOnError);
+        }
+        catch (Exception thrown) when (!continueOnError)
+        {
+            recorded = nodeContext.SecretRegistry!.RedactException(thrown).ToString();
+            Assert.Contains("HTTP 401", recorded);
+        }
+
+        // The provider must have received the key, or its echo would prove nothing.
+        Assert.Equal([ApiKey], _wire.ProviderKeys);
+        var logged = EverythingLogged();
+        Assert.Contains("HTTP 401", logged + recorded);
+        Assert.DoesNotContain(ApiKey, logged);
+        Assert.DoesNotContain(ApiKey, recorded);
+        Assert.DoesNotContain(ApiKey, dataContext.Get<JsonNode>("$")!.ToJsonString());
     }
 
     [Fact]

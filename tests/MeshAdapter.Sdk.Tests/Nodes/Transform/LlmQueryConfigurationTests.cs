@@ -233,10 +233,31 @@ public class LlmQueryConfigurationTests(PipelineSchemaFixture schema)
     }
 
     [Theory]
+    [InlineData("provider: OpenAiCompatible", LlmProvider.OpenAiCompatible)]
+    [InlineData("provider: Anthropic", LlmProvider.Anthropic)]
+    [InlineData("", LlmProvider.Anthropic)]
+    public async Task TheProvider_IsReadByName_AndAnthropicIsTheDefault(string line, LlmProvider expected)
+    {
+        var yaml = $"""
+                    transformations:
+                      - type: LlmQuery@1
+                        apiKeyConfigurationName: ai
+                        {line}
+                    """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        Assert.Equal(expected, Assert.IsType<LlmQueryNodeConfiguration>(Assert.Single(root.Transformations!)).Provider);
+        // The numbers are part of stored pipelines: Anthropic stays 0.
+        Assert.Equal(0, (int)LlmProvider.Anthropic);
+        Assert.Equal(1, (int)LlmProvider.OpenAiCompatible);
+    }
+
+    [Theory]
     [InlineData("responseFormat: jsno", "responseFormat")]
     [InlineData("maxToolResultChars: 0", "maxToolResultChars")]
     [InlineData("temperature: 1.5", "temperature")]
-    [InlineData("provider: OpenAiCompatible", "OpenAiCompatible")]
+    [InlineData("provider: OpenAi", "OpenAi")]
     public async Task ARefusedValue_FailsWhenThePipelineIsRead_NamingIt(string line, string named)
     {
         var yaml = $"""

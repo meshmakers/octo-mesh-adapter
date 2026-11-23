@@ -19,7 +19,9 @@ namespace MeshAdapter.Sdk.IntegrationTests.Nodes.Transform;
 ///     A pipeline that moves from <c>AnthropicAiQuery@1</c> sends the recorded requests byte for byte; with a
 ///     sealed provider endpoint in the AiConfiguration the request goes to that host only, with that endpoint's
 ///     key; a sealed endpoint that breaks the rule fails the node before any request, and an unknown provider
-///     fails when the pipeline is read.
+///     fails when the pipeline is read. With provider <c>OpenAiCompatible</c> the Chat Completions requests go to
+///     the sealed endpoint only (keyless: without an Authorization header), and a tool round runs through the
+///     real orchestrator as the OpenAI golden records it.
 /// </summary>
 [Collection("Sequential")]
 public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
@@ -117,12 +119,74 @@ public class LlmQueryPipelineIntegrationTests(AiQueryPipelineFixture fixture)
             fixture.GetService<IPipelineConfigurationSerializer>().DeserializeAsync($"""
                 transformations:
                   - type: LlmQuery@1
-                    provider: OpenAiCompatible
+                    provider: OpenAi
                     {DocumentAnalysisNode}
                 """));
 
-        Assert.Contains("OpenAiCompatible", ex.ToString(), StringComparison.Ordinal);
+        Assert.Contains("OpenAi", ex.ToString(), StringComparison.Ordinal);
         Assert.Empty(scenario.Transcript);
+    }
+
+    [Fact]
+    public async Task OpenAiCompatible_AtAKeylessSealedEndpoint_PostsOnceToThatHost_WithoutAuthorization()
+    {
+        var (scenario, _) = AnthropicAiQueryGoldenScenario.DocumentAnalysis();
+        scenario.ProviderHost = "127.0.0.1";
+        scenario.Configuration[AnthropicAiQueryGoldenScenario.AiConfigName] =
+        (
+            """{"apiKey":"test-key-configuration-never-sent","aiModel":"qwen2.5:7b-instruct","providerEndpoint":"{\"baseUrl\":\"http://127.0.0.1:11434/v1\"}"}""",
+            null);
+        scenario.AnthropicAnswers.Clear();
+        scenario.AnthropicAnswers.Enqueue(AnthropicAiQueryGoldenScenario.OpenAiText(
+            """{"invoiceNumber":"RE-2026-0815","grossTotal":1190.00}""", 812, 41));
+
+        await RunAsync(scenario, $"""
+            transformations:
+              - type: LlmQuery@1
+                provider: OpenAiCompatible
+                {DocumentAnalysisNode}
+            """);
+
+        var transcript = scenario.Transcript;
+        Assert.Single(transcript.Split("=== request ").Skip(1));
+        Assert.Contains("POST http://127.0.0.1:11434/v1/chat/completions ===", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("authorization:", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-key-configuration-never-sent", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("api.anthropic.com", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("api.openai.com", transcript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpenAiCompatible_ChatWithMcpTools_RunsOneToolRound_AsTheGoldenRecordsIt()
+    {
+        var (scenario, _) = AnthropicAiQueryGoldenScenario.ChatWithMcpTools();
+        scenario.UseOpenAiCompatibleEndpoint(
+            """{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-golden","choices":[{"index":0,"message":{"role":"assistant","content":"Ich sehe nach.","tool_calls":[{"id":"call_01","type":"function","function":{"name":"query_entities","arguments":"{\"ckTypeId\":\"Basic.Accounting/Invoice\",\"take\":10}"}},{"id":"call_02","type":"function","function":{"name":"get_entity","arguments":"{\"rtId\":\"650000000000000000000009\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1500,"completion_tokens":90,"total_tokens":1590}}""",
+            AnthropicAiQueryGoldenScenario.OpenAiText("Offen ist RE-1 mit 120,50 €.", 1700, 25, cached: 1280));
+
+        await RunAsync(scenario, """
+            transformations:
+              - type: LlmQuery@1
+                provider: OpenAiCompatible
+                apiKeyConfigurationName: AnthropicAiConfig
+                question: "Answer the user's message. Use the tools for every figure you state."
+                systemPrompt: "You are the accounting assistant of the tenant. Answer in the user's language."
+                dataPaths:
+                  - $.input.message
+                conversationHistoryPath: $.input.history
+                responseFormat: text
+                maxTokens: 500
+                temperature: 0.3
+                maxToolRounds: 6
+                mcpServiceAccountConfigName: McpServiceAccount
+                identity: Caller
+                mcpToolNames:
+                  - query_entities
+                  - get_entity
+                targetPath: $.answer
+            """);
+
+        scenario.AssertMatchesGoldenByMeaning("LlmQuery", "openai-chat-mcp-tools");
     }
 
     private async Task RunAsync(AnthropicAiQueryGoldenScenario scenario, string yaml)

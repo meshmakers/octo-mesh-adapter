@@ -37,6 +37,10 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     internal const string DelegatedToken = "test-token-delegated-0002";
     internal const string CallerToken = "test-token-caller-0003";
     private const string McpServerUrl = "https://mcp.example.test";
+    private const string SealedApiKey = "test-key-sealed-golden-0004";
+
+    /// <summary>The sealed endpoint of the OpenAI-compatible runs.</summary>
+    internal const string OpenAiBaseUrl = "https://llm.example.test/v1";
 
     /// <summary>Document analysis: a JSON answer without a schema.</summary>
     internal static (AnthropicAiQueryGoldenScenario Scenario, AnthropicAiQueryNodeConfiguration Config)
@@ -192,6 +196,48 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
         return (scenario, config);
     }
 
+    /// <summary>
+    ///     Turns the scenario into an <c>LlmQuery@1</c> run with provider <c>OpenAiCompatible</c>: the
+    ///     AiConfiguration gets the sealed endpoint <see cref="OpenAiBaseUrl" /> with its own key, and the scripted
+    ///     provider answers there with the given Chat Completions answers instead of the Anthropic ones.
+    /// </summary>
+    internal void UseOpenAiCompatibleEndpoint(params string[] answers)
+    {
+        var aiConfiguration = JsonNode.Parse(Configuration[AiConfigName].Json)!.AsObject();
+        aiConfiguration["providerEndpoint"] =
+            new JsonObject { ["baseUrl"] = OpenAiBaseUrl, ["apiKey"] = SealedApiKey }.ToJsonString();
+        Configuration[AiConfigName] = (aiConfiguration.ToJsonString(), null);
+        ProviderHost = new Uri(OpenAiBaseUrl).Host;
+        AnthropicAnswers.Clear();
+        foreach (var answer in answers)
+        {
+            AnthropicAnswers.Enqueue(answer);
+        }
+    }
+
+    /// <summary>A Chat Completions answer with text.</summary>
+    internal static string OpenAiText(string text, int prompt, int completion, int cached = 0) =>
+        new JsonObject
+        {
+            ["id"] = "chatcmpl-golden",
+            ["object"] = "chat.completion",
+            ["created"] = 1,
+            ["model"] = "gpt-golden",
+            ["choices"] = new JsonArray(new JsonObject
+            {
+                ["index"] = 0,
+                ["message"] = new JsonObject { ["role"] = "assistant", ["content"] = text },
+                ["finish_reason"] = "stop"
+            }),
+            ["usage"] = new JsonObject
+            {
+                ["prompt_tokens"] = prompt,
+                ["completion_tokens"] = completion,
+                ["total_tokens"] = prompt + completion,
+                ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
+            }
+        }.ToJsonString();
+
     private static string AnthropicText(string text, int input, int output, int cacheRead = 0,
         int cacheCreation = 0) =>
         new JsonObject
@@ -274,9 +320,10 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     ///     Runs <c>LlmQuery@1</c> with the same settings as the given <c>AnthropicAiQuery@1</c> configuration
     ///     (see <see cref="ToLlmQuery" />), on the same scripted wire.
     /// </summary>
-    public Task RunLlmQueryAsync(AnthropicAiQueryNodeConfiguration config)
+    public Task RunLlmQueryAsync(AnthropicAiQueryNodeConfiguration config,
+        LlmProvider provider = LlmProvider.Anthropic)
     {
-        return RunNodeAsync(ToLlmQuery(config), "LlmQueryNode",
+        return RunNodeAsync(ToLlmQuery(config) with { Provider = provider }, "LlmQueryNode",
             (etlContext, factory, tokenService) =>
                 new LlmQueryNode(A.Fake<NodeDelegate>(), etlContext, factory, tokenService));
     }
@@ -362,6 +409,89 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     /// </summary>
     public void AssertMatchesGolden(string folder, string name, bool mayRecord)
     {
+        var (actual, expected) = ReadGolden(folder, name, mayRecord);
+        if (expected != null)
+        {
+            Assert.Equal(expected, actual);
+        }
+    }
+
+    /// <summary>
+    ///     The comparison of the OpenAI-compatible goldens. Their requests are written by the OpenAI library, so
+    ///     they are compared by meaning, not byte for byte: request lines in order, every JSON body as JSON
+    ///     (<see cref="JsonNode.DeepEquals" />: member order and spacing do not count, every value does), the
+    ///     headers of the provider requests by an allowlist (<see cref="ProviderHeaders" />; the credential as
+    ///     its placeholder), every other request with all its headers, and the data context after the node.
+    ///     A new library version that only reorders members needs no new recording; one that adds or changes a
+    ///     member fails here. The Anthropic goldens stay byte for byte.
+    /// </summary>
+    public void AssertMatchesGoldenByMeaning(string folder, string name)
+    {
+        var (actual, expected) = ReadGolden(folder, name, mayRecord: true);
+        if (expected == null)
+        {
+            return;
+        }
+
+        var actualSections = ParseTranscript(actual);
+        var expectedSections = ParseTranscript(expected);
+        Assert.Equal(expectedSections.Select(r => r.Line), actualSections.Select(r => r.Line));
+        for (var i = 0; i < expectedSections.Count; i++)
+        {
+            var (line, expectedHeaders, expectedBody) = expectedSections[i];
+            var (_, actualHeaders, actualBody) = actualSections[i];
+            var toProvider = line.Contains($"://{ProviderHost}/", StringComparison.Ordinal);
+            Assert.Equal(Select(expectedHeaders, toProvider), Select(actualHeaders, toProvider));
+            Assert.True(SameJson(expectedBody, actualBody),
+                $"Section {i + 1} ({line}) differs.\nexpected: {expectedBody}\nactual:   {actualBody}");
+        }
+
+        static IEnumerable<string> Select(List<string> headers, bool toProvider) =>
+            toProvider
+                ? headers.Where(h => ProviderHeaders.Any(p => h.StartsWith(p + ": ", StringComparison.Ordinal)))
+                : headers;
+
+        static bool SameJson(string expected, string actual)
+        {
+            try
+            {
+                return JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(actual));
+            }
+            catch (JsonException)
+            {
+                return expected == actual;
+            }
+        }
+    }
+
+    /// <summary>The headers of a provider request the OpenAI goldens compare.</summary>
+    internal static readonly string[] ProviderHeaders = ["authorization", "content-type", "user-agent"];
+
+    /// <summary>One section of a transcript: the request line (or the data context), its headers and its body.</summary>
+    private static List<(string Line, List<string> Headers, string Body)> ParseTranscript(string transcript)
+    {
+        var sections = new List<(string Line, List<string> Headers, string Body)>();
+        foreach (var block in transcript.Split("=== ", StringSplitOptions.RemoveEmptyEntries))
+        {
+            // A request is "line\nheaders…\nbody\n\n", the data context "line\njson\n"; the body may be empty.
+            var lines = block.TrimEnd('\n').Split('\n');
+            if (lines[0].StartsWith("data context", StringComparison.Ordinal))
+            {
+                sections.Add((lines[0], [], string.Join("\n", lines[1..])));
+                continue;
+            }
+
+            var withEmptyBody = block.EndsWith("\n\n\n", StringComparison.Ordinal);
+            var body = withEmptyBody ? string.Empty : lines[^1];
+            var headers = lines[1..(withEmptyBody ? lines.Length : lines.Length - 1)].ToList();
+            sections.Add((lines[0], headers, body));
+        }
+
+        return sections;
+    }
+
+    private (string Actual, string? Expected) ReadGolden(string folder, string name, bool mayRecord)
+    {
         var actual = _transcript + "=== data context after the node ===\n" + _finalData + "\n";
         var relativePath = Path.Combine("Resources", "GoldenRequests", folder, name + ".txt");
 
@@ -372,7 +502,7 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
             var target = Path.Combine(projectDirectory, relativePath);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.WriteAllText(target, actual, new UTF8Encoding(false));
-            return;
+            return (actual, null);
         }
 
         var goldenPath = Path.Combine(AppContext.BaseDirectory, relativePath);
@@ -380,8 +510,7 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
             $"Golden file '{relativePath}' is missing. Record it with OCTO_UPDATE_GOLDEN_REQUESTS=1.");
 
         // A checkout may convert the line ends of the file; the request bodies are single lines.
-        var expected = File.ReadAllText(goldenPath, Encoding.UTF8).Replace("\r\n", "\n");
-        Assert.Equal(expected, actual);
+        return (actual, File.ReadAllText(goldenPath, Encoding.UTF8).Replace("\r\n", "\n"));
     }
 
     private static string ThisFilePath([CallerFilePath] string path = "") => path;
@@ -402,6 +531,7 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
         return value switch
         {
             ApiKey => "<the api key of the AiConfiguration>",
+            "Bearer " + SealedApiKey => "Bearer <the key of the sealed provider endpoint>",
             "Bearer " + DelegatedToken => "Bearer <the delegated token of the caller>",
             "Bearer " + CallerToken => "Bearer <THE CALLER'S OWN TOKEN - must never be sent>",
             _ => "<AN UNEXPECTED CREDENTIAL>"

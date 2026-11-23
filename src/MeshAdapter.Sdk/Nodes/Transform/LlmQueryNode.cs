@@ -39,6 +39,7 @@ internal class LlmQueryNode(
         var config = nodeContext.GetNodeConfiguration<LlmQueryNodeConfiguration>();
         // Before any request: a sealed endpoint that is not valid fails the node, whatever continueOnError says.
         var endpoint = ResolveProviderEndpoint(config, etlContext, nodeContext);
+        RequireEndpointOfProvider(config, endpoint, nodeContext);
         var engine = new LlmQueryEngine(etlContext, httpClientFactory, serviceAccountTokenService,
             CreateChatClientFactory(config, httpClientFactory, endpoint?.BaseUrl));
         await engine.RunAsync(ToOptions(config, endpoint), dataContext, nodeContext, next);
@@ -51,6 +52,8 @@ internal class LlmQueryNode(
         return config.Provider switch
         {
             LlmProvider.Anthropic => apiKey => new AnthropicMessagesChatClient(httpClientFactory, apiKey, baseUrl),
+            LlmProvider.OpenAiCompatible when baseUrl != null => apiKey =>
+                new OpenAiCompatibleChatClient(httpClientFactory, apiKey, baseUrl),
             _ => throw new NotSupportedException($"Provider '{config.Provider}' is not supported.")
         };
     }
@@ -74,6 +77,23 @@ internal class LlmQueryNode(
         }
 
         return endpoint;
+    }
+
+    /// <summary>
+    ///     A provider without a public default endpoint needs the sealed one: <c>OpenAiCompatible</c> without a
+    ///     <c>providerEndpoint</c> fails the node before any request, whatever <c>continueOnError</c> says, so the
+    ///     <c>apiKey</c> of the AiConfiguration never goes to an endpoint nobody configured.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The provider needs an endpoint and none is set.</exception>
+    internal static void RequireEndpointOfProvider(LlmQueryNodeConfiguration config, LlmProviderEndpoint? endpoint,
+        INodeContext nodeContext)
+    {
+        if (config.Provider == LlmProvider.OpenAiCompatible && endpoint == null)
+        {
+            throw new InvalidOperationException(
+                $"[{nodeContext.NodePath}]: {NodeDisplayName} with provider {LlmProvider.OpenAiCompatible} needs the " +
+                $"providerEndpoint of AiConfiguration '{config.ApiKeyConfigurationName}'. No request was sent.");
+        }
     }
 
     /// <summary>

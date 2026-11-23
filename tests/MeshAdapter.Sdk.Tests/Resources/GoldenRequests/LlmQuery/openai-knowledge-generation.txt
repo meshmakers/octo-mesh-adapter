@@ -1,0 +1,18 @@
+=== request 1: POST https://llm.example.test/v1/chat/completions ===
+accept: application/json
+authorization: Bearer <the key of the sealed provider endpoint>
+content-length: 1312
+content-type: application/json
+user-agent: OctoMesh-MeshAdapter
+{"temperature":0.3,"messages":[{"role":"system","content":"You turn source documents into knowledge entries.\n\n<examples>\n<example>{\"title\":\"Adapters\",\"facts\":[\"An adapter executes pipelines.\"]}</example>\n</examples>"},{"role":"user","content":"Please analyze the following content and answer the question provided.\n\nCONTENT:\n---\nMain Content:\nOctoMesh pipelines are YAML-defined ETL data flows executed by adapters.\n\nAdditional Context:\nData from $.draft:\n{\n  \"title\": \"Pipelines\",\n  \"facts\": []\n}\n\n\n---\n\nQUESTION:\nWrite the knowledge entry for the source.\n\nPlease provide your response as JSON that satisfies this JSON Schema:\n{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"title\": { \"type\": \"string\", \"minLength\": 3 },\n    \"facts\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"maxItems\": 5 }\n  },\n  \"required\": [\"title\", \"facts\"]\n}\n"}],"max_completion_tokens":4000,"response_format":{"type":"json_schema","json_schema":{"name":"response","schema":{"type":"object","properties":{"title":{"type":"string"},"facts":{"type":"array","items":{"type":"string"}}},"required":["title","facts"],"additionalProperties":false},"strict":true}},"model":"claude-sonnet-4-6"}
+
+=== request 2: POST https://llm.example.test/v1/chat/completions ===
+accept: application/json
+authorization: Bearer <the key of the sealed provider endpoint>
+content-length: 1172
+content-type: application/json
+user-agent: OctoMesh-MeshAdapter
+{"temperature":0,"messages":[{"role":"system","content":"You repair a JSON document. Return ONLY the corrected JSON document - no prose, no code fences. It must be valid JSON and satisfy the given JSON Schema. Preserve the content; change only what the listed errors require (syntax, missing or misnamed properties, wrong types, values outside the allowed set)."},{"role":"user","content":"The following JSON document is invalid.\n\nERRORS:\n- $.facts: PropertyRequired\n\nJSON SCHEMA:\n{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"title\": { \"type\": \"string\", \"minLength\": 3 },\n    \"facts\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"maxItems\": 5 }\n  },\n  \"required\": [\"title\", \"facts\"]\n}\n\nDOCUMENT:\n{\"title\":\"Pipelines\"}\n"}],"max_completion_tokens":4000,"response_format":{"type":"json_schema","json_schema":{"name":"response","schema":{"type":"object","properties":{"title":{"type":"string"},"facts":{"type":"array","items":{"type":"string"}}},"required":["title","facts"],"additionalProperties":false},"strict":true}},"model":"claude-sonnet-4-6"}
+
+=== data context after the node ===
+{"source":{"text":"OctoMesh pipelines are YAML-defined ETL data flows executed by adapters."},"draft":{"title":"Pipelines","facts":[]},"knowledge":{"title":"Pipelines","facts":["Pipelines are YAML-defined."]},"usage":{"model":"claude-sonnet-4-6","calls":2,"inputTokens":1336,"outputTokens":34,"cacheReadInputTokens":1024,"cacheCreationInputTokens":0,"estimatedCostUsd":0.004825,"priceListDate":"2026-10"}}

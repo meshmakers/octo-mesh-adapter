@@ -32,7 +32,8 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     // ---- Connection group ----
 
     /// <summary>
-    /// LLM provider. Anthropic (default) uses the Anthropic Messages API.
+    /// LLM provider. Anthropic (default) uses the Anthropic Messages API; OpenAiCompatible uses the OpenAI
+    /// Chat Completions API and needs the providerEndpoint of the AiConfiguration.
     /// </summary>
     [PropertyGroup("Connection")]
     public LlmProvider Provider
@@ -53,8 +54,9 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// Well-known name of the AiConfiguration entity that holds the API key and, optionally, the
-    /// sealed provider endpoint (providerEndpoint: URL and its own key; unset = https://api.anthropic.com with
-    /// apiKey). An aiModel, maxTokens,
+    /// sealed provider endpoint (providerEndpoint: URL and its own key), which both providers use and
+    /// OpenAiCompatible requires. Only Anthropic falls back to https://api.anthropic.com with apiKey when it
+    /// is unset. An aiModel, maxTokens,
     /// temperature or mcpServerUrl set there wins over the node's own value.
     /// </summary>
     [PropertyGroup("Connection", 1)]
@@ -63,7 +65,8 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     // ---- AI Configuration group ----
 
     /// <summary>
-    /// Model identifier as the provider expects it (on Microsoft Foundry the deployment name). A prompt
+    /// Model identifier as the provider expects it (on Microsoft Foundry and Azure OpenAI the deployment
+    /// name). A prompt
     /// template's model and the AiConfiguration's aiModel win over it.
     /// </summary>
     [PropertyGroup("AI Configuration")]
@@ -116,7 +119,8 @@ public record LlmQueryNodeConfiguration : SourceTargetPathNodeConfiguration
     }
 
     /// <summary>
-    /// Sends the main content (path) as its own block with a prompt-cache breakpoint.
+    /// Sends the main content (path) as its own block with a prompt-cache breakpoint. Anthropic only; no
+    /// effect with OpenAiCompatible.
     /// </summary>
     [PropertyGroup("AI Configuration", 6)]
     public bool CacheSource { get; set; }

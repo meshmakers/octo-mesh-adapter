@@ -302,11 +302,101 @@ public class LlmQueryNodeTests
                 StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OpenAiCompatibleWithoutAProviderEndpoint_FailsBeforeAnyRequest_WhateverContinueOnErrorSays(
+        bool continueOnError)
+    {
+        // The AiConfiguration has an apiKey: it must not go to an endpoint nobody configured.
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(Config() with
+        {
+            Provider = LlmProvider.OpenAiCompatible,
+            ContinueOnError = continueOnError
+        }));
+
+        Assert.Empty(_wire.Requests);
+        Assert.Contains($"LlmQuery@1 with provider OpenAiCompatible needs the providerEndpoint of AiConfiguration '{AiConfigName}'",
+            ex.Message, StringComparison.Ordinal);
+        Assert.Contains("No request was sent.", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(ApiKey, ex.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("https://api.openai.com/v1")]
+    [InlineData("https://my-resource.openai.azure.com/openai/v1/")]
+    public async Task OpenAiCompatibleWithASealedEndpoint_PostsToChatCompletions_WithItsOwnKeyAsBearer(string baseUrl)
+    {
+        _aiConfiguration = WithProviderEndpoint(Sealed(baseUrl, SealedKey));
+        _wire.Answers.Enqueue(ProviderWire.OpenAiTextAnswer("the answer"));
+
+        var data = await RunAsync(Config() with { Provider = LlmProvider.OpenAiCompatible });
+
+        Assert.Equal("the answer", data["out"]!.GetValue<string>());
+        var request = Assert.Single(_wire.Requests);
+        Assert.Equal($"POST {baseUrl.TrimEnd('/')}/chat/completions", request.Line);
+        Assert.Equal($"Bearer {SealedKey}", Assert.Single(_wire.Authorizations));
+        Assert.Null(request.ApiKey);
+        Assert.DoesNotContain(ApiKey, request.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain(SealedKey, EverythingLogged(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpenAiCompatibleWithAKeylessSealedEndpoint_SendsNoAuthorization()
+    {
+        _aiConfiguration = WithProviderEndpoint(Sealed("http://127.0.0.1:11434/v1", null));
+        _wire.Answers.Enqueue(ProviderWire.OpenAiTextAnswer("the answer"));
+
+        var data = await RunAsync(Config() with { Provider = LlmProvider.OpenAiCompatible });
+
+        Assert.Equal("the answer", data["out"]!.GetValue<string>());
+        Assert.Equal("POST http://127.0.0.1:11434/v1/chat/completions", Assert.Single(_wire.Requests).Line);
+        Assert.Null(Assert.Single(_wire.Authorizations));
+    }
+
+    [Fact]
+    public async Task OpenAiCompatible_ARefusedTemperature_IsAskedOnceMoreWithoutIt()
+    {
+        _aiConfiguration = new JsonObject
+        {
+            ["aiModel"] = "gpt-test",
+            ["temperature"] = 0.3,
+            ["providerEndpoint"] = Sealed("https://api.openai.com/v1", SealedKey)
+        }.ToJsonString();
+        _wire.Answers.Enqueue((HttpStatusCode.BadRequest,
+            """{"error":{"message":"Unsupported value: 'temperature' does not support 0.3 with this model.","type":"invalid_request_error","param":"temperature","code":"unsupported_value"}}"""));
+        _wire.Answers.Enqueue(ProviderWire.OpenAiTextAnswer("the answer"));
+
+        var data = await RunAsync(Config() with { Provider = LlmProvider.OpenAiCompatible });
+
+        Assert.Equal("the answer", data["out"]!.GetValue<string>());
+        Assert.Equal(2, _wire.Requests.Count);
+        Assert.True(JsonNode.Parse(_wire.Requests[0].Body)!.AsObject().ContainsKey("temperature"));
+        Assert.False(JsonNode.Parse(_wire.Requests[1].Body)!.AsObject().ContainsKey("temperature"));
+        Assert.Single(Warnings(), w => w.Contains("refused the temperature", StringComparison.Ordinal));
+    }
+
     /// <summary>The provider: answers from a script and keeps every request.</summary>
     internal sealed class ProviderWire : HttpMessageHandler
     {
         public Queue<(HttpStatusCode Status, string Body)> Answers { get; } = new();
         public List<(string Line, string? ApiKey, string Body)> Requests { get; } = [];
+        public List<string?> Authorizations { get; } = [];
+
+        public static (HttpStatusCode, string) OpenAiTextAnswer(string text) =>
+            (HttpStatusCode.OK, new JsonObject
+            {
+                ["id"] = "c1",
+                ["object"] = "chat.completion",
+                ["created"] = 1,
+                ["model"] = "gpt-test",
+                ["choices"] = new JsonArray(new JsonObject
+                {
+                    ["index"] = 0,
+                    ["message"] = new JsonObject { ["role"] = "assistant", ["content"] = text },
+                    ["finish_reason"] = "stop"
+                })
+            }.ToJsonString());
 
         public static (HttpStatusCode, string) TextAnswer(string text) =>
             (HttpStatusCode.OK, new JsonObject
@@ -323,6 +413,9 @@ public class LlmQueryNodeTests
                 : await request.Content.ReadAsStringAsync(cancellationToken);
             Requests.Add(($"{request.Method} {request.RequestUri}",
                 request.Headers.TryGetValues("x-api-key", out var keys) ? string.Join(", ", keys) : null, body));
+            Authorizations.Add(request.Headers.TryGetValues("Authorization", out var authorization)
+                ? string.Join(", ", authorization)
+                : null);
             var (status, answer) = Answers.Dequeue();
             return new HttpResponseMessage(status)
             {

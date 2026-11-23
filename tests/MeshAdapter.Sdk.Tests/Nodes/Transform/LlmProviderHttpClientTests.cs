@@ -9,7 +9,8 @@ namespace MeshAdapter.Sdk.Tests.Nodes.Transform;
 
 /// <summary>
 ///     The HTTP client the adapter registers for the LLM providers follows no redirect: the API key travels
-///     in <c>x-api-key</c>, a custom header the handler would send on to the origin a redirect names.
+///     in <c>x-api-key</c> (Anthropic) or <c>Authorization</c> (OpenAI-compatible), and a handler that follows
+///     redirects would send a custom header on to the origin a redirect names.
 ///     Real sockets on loopback, the client as the adapter registers it.
 /// </summary>
 public class LlmProviderHttpClientTests
@@ -57,6 +58,59 @@ public class LlmProviderHttpClientTests
         {
             using var client = new AnthropicMessagesChatClient(factory, "the-api-key",
                 new Uri($"http://127.0.0.1:{provider.Port}"));
+            await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")],
+                new ChatOptions { ModelId = "m", MaxOutputTokens = 10 }, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(2, provider.Requests.Count);
+        Assert.All(provider.Requests, head =>
+            Assert.DoesNotContain("cookie:", head, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task TheOpenAiCompatibleClient_FollowsNoRedirect_AndTheKeyGoesNowhereElse()
+    {
+        using var target = new LoopbackServer(_ => "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        using var redirecting = new LoopbackServer(_ =>
+            $"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:{target.Port}/v1/chat/completions\r\n" +
+            "Content-Length: 0\r\nConnection: close\r\n\r\n");
+
+        var services = new ServiceCollection();
+        services.AddLlmProviderHttpClient();
+        await using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+
+        using var client = new OpenAiCompatibleChatClient(factory, "the-api-key",
+            new Uri($"http://127.0.0.1:{redirecting.Port}/v1"));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Q")],
+            new ChatOptions { ModelId = "m", MaxOutputTokens = 10 }, TestContext.Current.CancellationToken));
+
+        Assert.Contains("HTTP 307", exception.Message);
+        Assert.Contains("redirect", exception.Message);
+        Assert.Contains("authorization: Bearer the-api-key", Assert.Single(redirecting.Requests),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(target.Requests);
+    }
+
+    [Fact]
+    public async Task TheOpenAiCompatibleClient_SendsNoCookieTheProviderSet()
+    {
+        const string body =
+            """{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"a"},"finish_reason":"stop"}]}""";
+        using var provider = new LoopbackServer(_ =>
+            "HTTP/1.1 200 OK\r\nSet-Cookie: session=from-the-provider; Path=/\r\nContent-Type: application/json\r\n" +
+            $"Content-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}");
+
+        var services = new ServiceCollection();
+        services.AddLlmProviderHttpClient();
+        await using var container = services.BuildServiceProvider();
+        var factory = container.GetRequiredService<IHttpClientFactory>();
+
+        for (var i = 0; i < 2; i++)
+        {
+            using var client = new OpenAiCompatibleChatClient(factory, "the-api-key",
+                new Uri($"http://127.0.0.1:{provider.Port}/v1"));
             await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Q")],
                 new ChatOptions { ModelId = "m", MaxOutputTokens = 10 }, TestContext.Current.CancellationToken);
         }

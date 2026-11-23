@@ -19,7 +19,7 @@ public class AnthropicMessagesChatClientTests
         """{"content":[{"type":"text","text":"Hello"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}""";
 
     private const string SamplingRefusal =
-        """{"type":"error","error":{"type":"invalid_request_error","message":"temperature: this model does not support a custom temperature"}}""";
+        """{"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."}}""";
 
     private readonly Wire _wire = new();
     private readonly IHttpClientFactory _factory = A.Fake<IHttpClientFactory>();
@@ -351,7 +351,7 @@ public class AnthropicMessagesChatClientTests
 
         Assert.IsType<HttpRequestException>(exception, exactMatch: false);
         Assert.Contains("HTTP 400", exception.Message);
-        Assert.Equal("invalid_request_error: temperature: this model does not support a custom temperature",
+        Assert.Equal("invalid_request_error: `temperature` is deprecated for this model.",
             exception.ProviderError);
     }
 

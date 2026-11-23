@@ -508,7 +508,7 @@ public class LlmQueryEngineTests
 
     private static LlmSamplingRejectedException SamplingRefusal(string? providerError = null) =>
         new("Anthropic API error (HTTP 400 BadRequest). Response body: temperature is not supported",
-            providerError ?? "invalid_request_error: temperature is not supported for this model");
+            providerError ?? "invalid_request_error: `temperature` is deprecated for this model.");
 
     [Fact]
     public async Task TheRefusalWarning_QuotesTheProvidersWords_OnOneLine()

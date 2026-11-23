@@ -265,7 +265,7 @@ public class LlmQueryNodeTests
     {
         _aiConfiguration = $$"""{"apiKey":"{{ApiKey}}","aiModel":"claude-test","temperature":0.3}""";
         _wire.Answers.Enqueue((HttpStatusCode.BadRequest,
-            """{"type":"error","error":{"type":"invalid_request_error","message":"temperature: not supported for this model"}}"""));
+            """{"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"""));
         _wire.Answers.Enqueue(ProviderWire.TextAnswer("the answer"));
 
         var data = await RunAsync(Config());
@@ -278,7 +278,9 @@ public class LlmQueryNodeTests
         Assert.False(second.ContainsKey("temperature"));
         first.Remove("temperature");
         Assert.Equal(first.ToJsonString(), second.ToJsonString());
-        Assert.Single(Warnings(), w => w.Contains("refused the temperature; LlmQuery@1", StringComparison.Ordinal));
+        Assert.Single(Warnings(), w => w.Contains("refused the temperature; LlmQuery@1", StringComparison.Ordinal) &&
+            w.EndsWith("Provider answer: invalid_request_error: `temperature` is deprecated for this model.",
+                StringComparison.Ordinal));
     }
 
     /// <summary>The provider: answers from a script and keeps every request.</summary>

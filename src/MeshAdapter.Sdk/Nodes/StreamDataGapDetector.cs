@@ -29,6 +29,14 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// length (shorter, longer or overlapping ones) inside a bin whose window count happens to equal its
 /// slot count hides a hole there: such a bin is not read, so the hole is neither seen nor flagged.
 /// </para>
+/// <para>
+/// <b>Validity periods</b> (AB#9589). With <see cref="Request.Validity" /> each series is analysed once
+/// per effective period (its periods merged and cut to [From, To)), so the ranges end exactly at the
+/// validity boundaries. Reads stay inside the periods: the COUNT of a batch covers only the whole bins
+/// the union of the batch's periods touches, a bin is read for a series only when one of its periods
+/// touches it, and the remaining row reads cover only that union. Without validity periods every
+/// series has the single period [From, To) and the reads are exactly those described above.
+/// </para>
 /// </summary>
 internal sealed class StreamDataGapDetector
 {
@@ -68,12 +76,18 @@ internal sealed class StreamDataGapDetector
     /// <param name="Interval">Slot length, positive.</param>
     /// <param name="RtIds">The series to check.</param>
     /// <param name="FieldFilters">Filters a row must match to count as present.</param>
+    /// <param name="Validity">
+    /// Validity periods per series (AB#9589), or null to check the whole period for every series.
+    /// When set, a series is checked only inside its periods cut to [From, To), a series without an
+    /// entry is neither checked nor reported, and nothing outside every period is read.
+    /// </param>
     internal readonly record struct Request(
         DateTime From,
         DateTime To,
         TimeSpan Interval,
         IReadOnlyList<OctoObjectId> RtIds,
-        IReadOnlyList<FieldFilter>? FieldFilters);
+        IReadOnlyList<FieldFilter>? FieldFilters,
+        IReadOnlyDictionary<OctoObjectId, List<StreamDataValidityPeriods.Period>>? Validity = null);
 
     internal StreamDataGapDetector(IStreamDataRepository repository, ArchiveSnapshot snapshot,
         OctoObjectId archiveRtId, INodeContext nodeContext, int maxSeriesPerBatch = DefaultMaxSeriesPerBatch,
@@ -106,6 +120,45 @@ internal sealed class StreamDataGapDetector
             .OrderBy(id => id.ToString(), StringComparer.Ordinal)
             .ToList();
 
+        // The periods each series is checked in; without validity periods that is the whole period.
+        var effective = new Dictionary<OctoObjectId, List<StreamDataGapAnalyzer.Window>>();
+        if (request.Validity is { } validity)
+        {
+            var withoutPeriod = 0;
+            foreach (var rtId in series)
+            {
+                if (validity.TryGetValue(rtId, out var periods))
+                {
+                    effective[rtId] = StreamDataValidityPeriods.Effective(periods, request.From, request.To);
+                }
+                else
+                {
+                    withoutPeriod++;
+                }
+            }
+
+            if (withoutPeriod != 0)
+            {
+                _nodeContext.Info(
+                    $"DetectStreamDataGaps: {withoutPeriod} of {series.Count} series have no validity period " +
+                    "and are neither checked nor reported.");
+            }
+
+            // A series with an entry counts as checked; one whose periods lie outside [From, To) has
+            // no slot to check and is never queried.
+            series = series.Where(effective.ContainsKey).ToList();
+        }
+        else
+        {
+            var whole = new StreamDataGapAnalyzer.Window(request.From, request.To);
+            foreach (var rtId in series)
+            {
+                effective[rtId] = [whole];
+            }
+        }
+
+        var queried = series.Where(id => effective[id].Count != 0).ToList();
+
         var plan = CountPlan.Create(request, _snapshot.Period);
         var batchSize = plan.Usable
             ? Math.Max(1, Math.Min(_maxSeriesPerBatch, MaxCountRowsPerQuery / plan.Days))
@@ -115,44 +168,66 @@ internal sealed class StreamDataGapDetector
         var overlapping = new List<string>();
         long missingTotal = 0;
 
-        for (var offset = 0; offset < series.Count; offset += batchSize)
+        for (var offset = 0; offset < queried.Count; offset += batchSize)
         {
-            var batch = series.GetRange(offset, Math.Min(batchSize, series.Count - offset));
+            var batch = queried.GetRange(offset, Math.Min(batchSize, queried.Count - offset));
             var windows = batch.ToDictionary(id => id, _ => new HashSet<StreamDataGapAnalyzer.Window>());
 
-            await CollectWindowsAsync(batch, windows, request, plan);
+            await CollectWindowsAsync(batch, windows, effective, request, plan);
 
             foreach (var rtId in batch)
             {
-                var analysed = StreamDataGapAnalyzer.AnalyseSeries(
-                    new StreamDataGapAnalyzer.Series { RtId = rtId, Windows = windows[rtId].ToList() },
-                    request.From, request.To, request.Interval);
+                var seriesWindows = windows[rtId].ToList();
+                var ranges = new List<StreamDataGapDetectionRange>();
+                var hasOverlaps = false;
+                long missing = 0;
 
-                if (analysed.HasOverlaps)
+                // One analysis per effective period, so every range is cut at the validity
+                // boundaries and a gap across a hole between two periods becomes two ranges. Without
+                // validity periods this is the single analysis over [From, To) of AB#9588.
+                foreach (var period in effective[rtId])
+                {
+                    var analysed = StreamDataGapAnalyzer.AnalyseSeries(
+                        new StreamDataGapAnalyzer.Series { RtId = rtId, Windows = seriesWindows },
+                        period.Start, period.End, request.Interval);
+
+                    hasOverlaps |= analysed.HasOverlaps;
+                    foreach (var gap in analysed.Gaps)
+                    {
+                        var count = gap.MissingIntervals ?? 0;
+                        missing += count;
+                        ranges.Add(new StreamDataGapDetectionRange
+                        {
+                            Start = gap.From,
+                            End = gap.To,
+                            MissingCount = count
+                        });
+                    }
+                }
+
+                if (hasOverlaps)
                 {
                     overlapping.Add(rtId.ToString());
                 }
 
-                if (analysed.Gaps.Count == 0)
+                if (ranges.Count == 0)
                 {
                     continue;
                 }
 
-                var missing = analysed.MissingIntervals ?? 0;
+                if (missing > int.MaxValue)
+                {
+                    throw MeshAdapterPipelineExecutionException.DetectGapsMissingCountTooLarge(_nodeContext,
+                        rtId.ToString());
+                }
+
                 missingTotal += missing;
                 withGaps.Add(new StreamDataGapDetectionSeries
                 {
                     RtId = rtId.ToString(),
-                    MissingCount = missing,
-                    HasOverlaps = analysed.HasOverlaps,
-                    Ranges = analysed.Gaps
-                        .Select(g => new StreamDataGapDetectionRange
-                        {
-                            Start = g.From,
-                            End = g.To,
-                            MissingCount = g.MissingIntervals ?? 0
-                        })
-                        .ToList()
+                    MissingCount = (int)missing,
+                    HasOverlaps = hasOverlaps,
+                    Ranges = ranges
                 });
             }
         }
@@ -185,61 +260,99 @@ internal sealed class StreamDataGapDetector
     }
 
     private async Task CollectWindowsAsync(IReadOnlyList<OctoObjectId> batch,
-        Dictionary<OctoObjectId, HashSet<StreamDataGapAnalyzer.Window>> windows, Request request, CountPlan plan)
+        Dictionary<OctoObjectId, HashSet<StreamDataGapAnalyzer.Window>> windows,
+        IReadOnlyDictionary<OctoObjectId, List<StreamDataGapAnalyzer.Window>> effective, Request request,
+        CountPlan plan)
     {
+        // Only the union of the batch's effective periods is read: without validity periods that is
+        // [From, To), with them nothing outside every period of the batch.
+        var union = StreamDataValidityPeriods.Merge(batch.SelectMany(id => effective[id]));
+        if (union.Count == 0)
+        {
+            return;
+        }
+
         var rowReadFrom = request.From;
 
-        if (plan.Usable && await TryCountAsync(batch, request, plan) is { } counts)
+        if (plan.Usable)
         {
-            var partialBins = new SortedDictionary<DateTime, List<OctoObjectId>>();
+            // The whole bins the union touches; outside them nothing is counted.
+            var firstBin = (int)Math.Min(plan.Days, (union[0].Start - request.From).Ticks / Bin.Ticks);
+            var lastBin = (int)Math.Min(plan.Days, CeilDiv((union[^1].End - request.From).Ticks, Bin.Ticks));
 
-            foreach (var rtId in batch)
+            if (firstBin >= lastBin)
             {
-                for (var day = 0; day < plan.Days; day++)
-                {
-                    var binStart = request.From + Bin * day;
-                    var count = counts.GetValueOrDefault((rtId, binStart));
+                // The union lies wholly in the remainder after the last whole bin.
+                rowReadFrom = plan.CountEnd;
+            }
+            else if (await TryCountAsync(batch, request, plan, firstBin, lastBin) is { } counts)
+            {
+                var partialBins = new SortedDictionary<DateTime, List<OctoObjectId>>();
 
-                    if (count == plan.SlotsPerBin)
+                foreach (var rtId in batch)
+                {
+                    var periods = effective[rtId];
+                    for (var day = firstBin; day < lastBin; day++)
                     {
-                        // Complete: stands in for the windows it holds, which are never read.
-                        windows[rtId].Add(new StreamDataGapAnalyzer.Window(binStart, binStart + Bin));
-                    }
-                    else if (count != 0)
-                    {
-                        // Partly filled, or more windows than slots (overlaps): read row by row.
-                        if (!partialBins.TryGetValue(binStart, out var ids))
+                        var binStart = request.From + Bin * day;
+                        if (!StreamDataValidityPeriods.Overlaps(periods, binStart, binStart + Bin))
                         {
-                            ids = [];
-                            partialBins[binStart] = ids;
+                            // Outside every period of this series: never checked, so never read.
+                            continue;
                         }
 
-                        ids.Add(rtId);
+                        var count = counts.GetValueOrDefault((rtId, binStart));
+
+                        if (count == plan.SlotsPerBin)
+                        {
+                            // Complete: stands in for the windows it holds, which are never read.
+                            windows[rtId].Add(new StreamDataGapAnalyzer.Window(binStart, binStart + Bin));
+                        }
+                        else if (count != 0)
+                        {
+                            // Partly filled, or more windows than slots (overlaps): read row by row.
+                            if (!partialBins.TryGetValue(binStart, out var ids))
+                            {
+                                ids = [];
+                                partialBins[binStart] = ids;
+                            }
+
+                            ids.Add(rtId);
+                        }
+                        // count == 0: no window in the bin, the analysis reports it as missing.
                     }
-                    // count == 0: no window in the bin, the analysis reports it as missing.
                 }
-            }
 
-            foreach (var (binStart, ids) in partialBins)
-            {
-                await ReadWindowsAsync(ids, binStart, binStart + Bin, request, windows);
-            }
+                foreach (var (binStart, ids) in partialBins)
+                {
+                    await ReadWindowsAsync(ids, binStart, binStart + Bin, request, windows);
+                }
 
-            rowReadFrom = plan.CountEnd;
+                rowReadFrom = plan.CountEnd;
+            }
         }
 
-        if (rowReadFrom < request.To)
+        // The rest (the remainder after the counted bins, or everything when the count is not
+        // usable or was refused), cut to the union of the batch's periods.
+        foreach (var period in union)
         {
-            await ReadWindowsAsync(batch, rowReadFrom, request.To, request, windows);
+            var readFrom = period.Start > rowReadFrom ? period.Start : rowReadFrom;
+            if (readFrom < period.End)
+            {
+                await ReadWindowsAsync(batch, readFrom, period.End, request, windows);
+            }
         }
     }
+
+    /// <summary>Division rounded up, for a non-negative dividend.</summary>
+    private static long CeilDiv(long value, long divisor) => (value + divisor - 1) / divisor;
 
     /// <summary>
     /// Windows per series and bin, or null when the storage refused the bins (the caller then reads
     /// the batch row by row). Any other failure fails the node with the storage message.
     /// </summary>
     private async Task<Dictionary<(OctoObjectId RtId, DateTime Bin), long>?> TryCountAsync(
-        IReadOnlyList<OctoObjectId> batch, Request request, CountPlan plan)
+        IReadOnlyList<OctoObjectId> batch, Request request, CountPlan plan, int firstBin, int lastBin)
     {
         var options = StreamDataDownsamplingQueryOptions.Create()
             .WithCkTypeId(_snapshot.TargetCkTypeId)
@@ -247,7 +360,9 @@ internal sealed class StreamDataGapDetector
             .WithGroupByColumns([RtIdColumn])
             .WithRtIds(batch)
             .WithFieldFilters(request.FieldFilters)
-            .WithTimeRange(request.From, plan.CountEnd)
+            // Whole bins only, so the bins stay anchored at From: without validity periods the
+            // range is From..CountEnd as in AB#9588, with them only the bins the batch's periods touch.
+            .WithTimeRange(request.From + Bin * firstBin, request.From + Bin * lastBin)
             // No zone: fixed 24-hour bins in UTC, starting at From's instant. Counting is by
             // instants, so a DST change in the caller's zone needs no special case.
             .WithBinOrigin(request.From.TimeOfDay)

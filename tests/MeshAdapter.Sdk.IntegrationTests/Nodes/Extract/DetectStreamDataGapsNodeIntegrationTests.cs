@@ -97,6 +97,53 @@ public class DetectStreamDataGapsNodeIntegrationTests(StreamDataFixture fixture)
     }
 
     [Fact]
+    public async Task ValidityPeriods_CutTheRangesAtTheirBoundaries_AndTheDayCountCoversOnlyTheirBins()
+    {
+        fixture.EnsureInitialized();
+        var (partly, empty) = await SeedTwoDaysAsync();
+
+        // Partly: valid 05:00-13:00 local on day 1 and from 03:00 on day 2; empty: from 03:00 on day 2.
+        var config = NewConfig(partly, empty) with
+        {
+            ValidityPeriods =
+            [
+                new ValidityPeriodDto { RtId = partly.ToString(), From = From.AddHours(5), To = From.AddHours(13) },
+                new ValidityPeriodDto { RtId = partly.ToString(), From = From.AddDays(1).AddHours(3) },
+                new ValidityPeriodDto { RtId = empty.ToString(), From = From.AddDays(1).AddHours(3), To = To }
+            ]
+        };
+
+        var result = await ExecuteAsync(config);
+
+        result.Should().NotBeNull();
+        var p = result!.Series.Single(s => s.RtId == partly.ToString());
+        p.Ranges.Select(r => (r.Start, r.End, r.MissingCount)).Should().Equal(
+            (From.AddHours(6), From.AddHours(7), 4),
+            (From.AddHours(12), From.AddHours(13), 4));
+        var e = result.Series.Single(s => s.RtId == empty.ToString());
+        e.Ranges.Select(r => (r.Start, r.End, r.MissingCount)).Should().Equal(
+            (From.AddDays(1).AddHours(3), To, 84));
+
+        // Only day 2 valid: the day count starts at the second bin and the real storage accepts it.
+        var (repository, snapshot) = await ResolveArchiveAsync();
+        var detector = new StreamDataGapDetector(repository, snapshot, fixture.TimeRangeArchiveRtId,
+            NodeContextFor(config));
+        var validity = new Dictionary<OctoObjectId, List<StreamDataValidityPeriods.Period>>
+        {
+            [partly] = [new StreamDataValidityPeriods.Period(From.AddDays(1).AddHours(3), null)],
+            [empty] = [new StreamDataValidityPeriods.Period(From.AddDays(1).AddHours(3), null)]
+        };
+        var dayTwo = await detector.DetectAsync(
+            new StreamDataGapDetector.Request(From, To, Quarter, [partly, empty], null, validity));
+
+        detector.CountQueries.Should().Be(1);
+        detector.CountFallbacks.Should().Be(0, "the storage must accept bins that start one day after From");
+        detector.RowsRead.Should().Be(0, "day 2 of the partly filled series is complete and day 1 is outside");
+        dayTwo.Series.Should().ContainSingle(s => s.RtId == empty.ToString());
+        dayTwo.MissingCount.Should().Be(84);
+    }
+
+    [Fact]
     public async Task Parity_TheSameRangesAndCountsAsGetStreamDataGapsOnly()
     {
         fixture.EnsureInitialized();
@@ -200,6 +247,41 @@ public class DetectStreamDataGapsNodeIntegrationTests(StreamDataFixture fixture)
 
         result!.SeriesCount.Should().Be(seriesCount);
         result.MissingCount.Should().Be((long)seriesCount * slots / 1000);
+
+        // AB#9589: the same month with validity periods - every series valid the whole month (the
+        // same reads as without), and every series valid only from the 16th (half the bins).
+        var middle = from.AddDays(15);
+        foreach (var (label, validFrom) in new[] { ("whole month", from), ("from the 16th", middle) })
+        {
+            var withValidity = config with
+            {
+                ValidityPeriods = series.Select(s => new ValidityPeriodDto { RtId = s.ToString(), From = validFrom })
+                    .ToList()
+            };
+            await ExecuteAsync(withValidity); // warm-up
+            var validityTimings = new List<double>();
+            StreamDataGapDetectionResult? validityResult = null;
+            for (var i = 0; i < 3; i++)
+            {
+                var watch = Stopwatch.StartNew();
+                validityResult = await ExecuteAsync(withValidity);
+                validityTimings.Add(watch.Elapsed.TotalSeconds);
+            }
+
+            validityTimings.Sort();
+            var validityDetector = new StreamDataGapDetector(repository, snapshot, fixture.TimeRangeArchiveRtId,
+                NodeContextFor(withValidity));
+            var validity = series.ToDictionary(s => s,
+                _ => new List<StreamDataValidityPeriods.Period> { new(validFrom, null) });
+            await validityDetector.DetectAsync(
+                new StreamDataGapDetector.Request(from, to, Quarter, series, null, validity));
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"AB#9589 perf, validity {label}: median {validityTimings[1]:F2} s, min {validityTimings[0]:F2} s, " +
+                $"max {validityTimings[2]:F2} s; {validityDetector.CountQueries} count queries, " +
+                $"{validityDetector.RowQueries} row queries, {validityDetector.RowsRead} rows read; " +
+                $"{validityResult!.MissingCount} missing slots");
+            Trace($"validity {label}: median {validityTimings[1]:F2} s");
+        }
     }
 
     // ------------------------------------------------------------------ seeding

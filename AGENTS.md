@@ -45,7 +45,7 @@ execution flow, HTTP handling), the [unit test concept](docs/test-concept.md), t
 dotnet build -c DebugL
 
 # Run the adapter
-dotnet run --project src/MeshAdapter/MeshAdapter.csproj
+dotnet run -c DebugL --project src/MeshAdapter/MeshAdapter.csproj
 
 # All tests: unit and integration (the integration tests need Docker for the MongoDB Testcontainer)
 dotnet test -c DebugL
@@ -90,7 +90,10 @@ These rules bind new and changed code. Known exceptions in existing code are nam
   ([docs/core-services.md](docs/core-services.md), [docs/nodes-transform.md](docs/nodes-transform.md)).
 - **No credential in a node's output, an error message or a log line.** New or changed code never puts an SFTP, IMAP or
   HTTP credential, an AI key or a token into the data a node emits, into an exception or error text, or into a log
-  property; exception text from a call that handled a credential is not passed on unredacted.
+  property; exception text from a call that handled a credential is not passed on unredacted. The one named exception
+  is a node whose purpose is to reveal a secret (`RevealSecret@1`): it writes the value only to its configured target
+  path, behind the platform-only check and the allow-list below; a new node of that kind is a named decision, never a
+  side effect.
 - **No pipeline reveals a platform-only secret.** New code that decrypts a secret (`.Unprotect(`, `.RevealOrNull(`)
   consults `PlatformOnlySecrets` and goes on the allow-list of `SecretDecryptionCallSiteArchitectureTests`
   ([docs/secrets-and-write-guards.md](docs/secrets-and-write-guards.md)).

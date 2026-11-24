@@ -1,5 +1,5 @@
 ---
-description: Testing strategy of the adapter: unit and integration tests for pipeline nodes and services.
+description: "Testing strategy of the adapter: unit and integration tests for pipeline nodes and services."
 background: true
 ---
 

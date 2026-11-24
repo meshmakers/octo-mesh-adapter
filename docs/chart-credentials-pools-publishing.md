@@ -1,5 +1,5 @@
 ---
-description: The Helm chart: the adapter credential, tenant isolation, pool membership and chart publishing per branch.
+description: "The Helm chart: the adapter credential, tenant isolation, pool membership and chart publishing per branch."
 applies_to: src/charts/**, tests/chart/**, src/MeshAdapter.Sdk/Leasing/**, src/MeshAdapter.Sdk/Configuration/**
 ---
 

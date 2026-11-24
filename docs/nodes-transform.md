@@ -1,5 +1,5 @@
 ---
-description: Reference for the Transform nodes of the adapter: behaviour, rules and tests of each node that processes data.
+description: "Reference for the Transform nodes of the adapter: behaviour, rules and tests of each node that processes data."
 applies_to: src/MeshAdapter.Sdk/Nodes/Transform/**
 ---
 

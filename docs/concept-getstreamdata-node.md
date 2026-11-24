@@ -5,9 +5,9 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Extract/{GetStreamData,AggregateStreamData
 
 # Concept: `GetStreamData@1` / `AggregateStreamData@1` — Extract-Nodes für Stream Data Archives
 
-> Status: **vollständig implementiert** — Basisfunktionalität (§5), Gap-Detection (§6) und Spalten-Aggregation (§7).
-> Die Umsetzung gliederte sich in drei Teile: die Basisfunktionalität von `GetStreamData@1` (erledigt),
-> die Gap-Detection (erledigt) und die Spalten-Aggregation `AggregateStreamData@1` (erledigt).
+> Status: **fully implemented** — base functionality (§5), gap detection (§6) and column aggregation (§7).
+> The work had three parts: the base functionality of `GetStreamData@1` (done),
+> the gap detection (done) and the column aggregation `AggregateStreamData@1` (done).
 >
 > **Geteilt zwischen beiden Nodes** (`Nodes/`): `StreamDataNodeHelpers` (UTC, JSONPath-Grenzen,
 > Spaltennamen-Übersetzung, RtId- und Filter-Auflösung, Wertauflösung), `StreamDataGapAnalyzer`
@@ -779,7 +779,8 @@ Eigener DTO statt direkter Nutzung von `AggregationColumn`: Config-Typen leben i
 wird bereits von `GetQueryByIdNodeConfiguration` genutzt.
 
 **Unterstützte Funktionen: `Count`, `Minimum`, `Maximum`, `Average`, `Sum`** — genau die fünf, die
-`StreamDataNodeHelpers.MapStreamAggregation` kennt. `None` wird abgelehnt, ebenso
+`StreamDataNodeHelpers.MapStreamAggregation` kennt; dazu kommt `Integral`, das der Node in seiner eigenen
+`MapFunction` abbildet (Ergebnisschlüssel `{Spalte}_integral`). `None` wird abgelehnt, ebenso
 `TimeWeightedAverage` und `StateDuration`: sie brauchen Metadaten pro Spalte, die dieser Node nicht
 tragen kann (`StateDuration` einen Vergleichswert, `TimeWeightedAverage` auf einem Raw-Archiv den
 LOCF-Sonderpfad `ExecuteRawTimeWeightedAggregationAsync`), und ihre Ergebnisschlüssel folgen anderen

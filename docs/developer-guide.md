@@ -1,5 +1,5 @@
 ---
-description: Comprehensive developer guide of the adapter: architecture, every pipeline node, execution flow, configuration and HTTP handling.
+description: "Comprehensive developer guide of the adapter: architecture, every pipeline node, execution flow, configuration and HTTP handling."
 background: true
 ---
 

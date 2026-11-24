@@ -1,5 +1,5 @@
 ---
-description: The adapter core services: startup, ETL context, HTTP routing, service account tokens and event writing.
+description: "The adapter core services: startup, ETL context, HTTP routing, service account tokens and event writing."
 applies_to: src/MeshAdapter.Sdk/Services/**, src/MeshAdapter/**
 ---
 

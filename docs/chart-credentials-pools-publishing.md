@@ -44,8 +44,7 @@ context values layer (`OPERATOR__ADDITIONALVALIDISSUERS__<n>`, see octo-communic
 
 The controller side of the wire (which `ValueOverride` paths are projected, why they are not gated on
 `ReceivesClusterSecrets`, and why provisioning had to move before the deploy notification) is
-documented in the `octo-communication-controller-services` repository, section "Phase 4 — the credentials reach
-the adapter pod".
+documented in the `octo-communication-controller-services` repository.
 
 ## Tenant isolation — `AdapterOptions.TenantId` is gone (increment 3)
 

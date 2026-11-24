@@ -2072,7 +2072,7 @@ registers one Hangfire recurring send per (trigger, pipeline); each tick lands i
 
 **Backlog coalescing and no overlap.** The queue keeps buffering while the adapter is down or
 hibernated (OnDemand), and the consumer used to take the whole backlog at MassTransit's default prefetch
-(processor count × 2) — on test-2 an hourly "Recompute Category Actuals" ran 20× in parallel after a
+(processor count × 2) — in a test environment an hourly "Recompute Category Actuals" ran 20× in parallel after a
 ~20 h outage. The node now registers its consumer with `RoutedEventConsumerOptions.LatestOnly`
 (DistributionEventHub): prefetch 1, concurrency 1, and a delivery is only acknowledged while newer ticks
 are waiting (passive queue declare → `message-count`). Result: a backlog of N ticks → one run with the

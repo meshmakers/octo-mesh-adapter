@@ -5,16 +5,16 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Extract/{GetStreamData,AggregateStreamData
 
 # Concept: `GetStreamData@1` / `AggregateStreamData@1` — Extract-Nodes für Stream Data Archives
 
-> Status: **vollständig implementiert** — AB#4726 (§5), AB#4728 (§6) und AB#4752 (§7).
-> Azure DevOps: **AB#4722** (Issue) mit den Tasks **AB#4726** (Basisfunktionalität, erledigt),
-> **AB#4728** (Gap-Detection, erledigt) und **AB#4752** (Spalten-Aggregation, erledigt).
+> Status: **vollständig implementiert** — Basisfunktionalität (§5), Gap-Detection (§6) und Spalten-Aggregation (§7).
+> Die Umsetzung gliederte sich in drei Teile: die Basisfunktionalität von `GetStreamData@1` (erledigt),
+> die Gap-Detection (erledigt) und die Spalten-Aggregation `AggregateStreamData@1` (erledigt).
 >
 > **Geteilt zwischen beiden Nodes** (`Nodes/`): `StreamDataNodeHelpers` (UTC, JSONPath-Grenzen,
 > Spaltennamen-Übersetzung, RtId- und Filter-Auflösung, Wertauflösung), `StreamDataGapAnalyzer`
 > (reine Coverage-Analyse) und `StreamDataGapScanner` (Scan-Query samt Row-Cap, Intervall-Fallback
 > und Überlappungs-Warnung). Letzterer wurde für §7 aus `GetStreamDataNode` herausgezogen.
-> **AB#4727 (Downsampling) ist bewusst nicht Teil dieses Features** — siehe §2.
-> Epic: AB#3364 „Stream Data v2: deep system integration on an archive-based foundation".
+> **Downsampling ist bewusst nicht Teil dieses Features** — siehe §2.
+> Einordnung: Teil der Stream-Data-v2-Linie „deep system integration on an archive-based foundation".
 >
 > **Ablage der geteilten Helfer:** abweichend vom ursprünglichen Entwurf liegen sie flach in
 > `src/MeshAdapter.Sdk/Nodes/` statt in einem Unterordner `Nodes/StreamData/` — konsistent mit den
@@ -41,7 +41,7 @@ werden können. §5–§7 sind je ein Task; §4 beschreibt die gemeinsamen Grund
 einem Archiv lesen will, muss also erst eine Query-Entität anlegen.
 
 Die beiden neuen Nodes sind das **konfigurationsgetriebene Gegenstück**: Archiv, Spalten, Zeitraum
-und Filter stehen direkt am Node. Anforderung aus AB#4722:
+und Filter stehen direkt am Node. Ursprüngliche Anforderung:
 
 > It should be possible to query data from a stream data archive with the possibility to filter for
 > wellKnownName. It should also be possible to filter for time range (from, to, limit) and define a
@@ -142,7 +142,7 @@ Leicht zu verwechseln, deshalb explizit:
 
 ### Nicht-Ziele
 
-* **Kein Downsampling (AB#4727 gestrichen).** In diesem Feature geht es um exakte Daten und um die
+* **Kein Downsampling (gestrichen).** In diesem Feature geht es um exakte Daten und um die
   Lückenerkennung — eine Verdichtung in Bins verwischt genau die Information, die hier gebraucht
   wird. Downsampling-Queries sind über `GetQueryById@1` mit einer persistierten
   `RtDownsamplingSdQuery` vollständig abgedeckt (inkl. resolution-aware Rollup-Auswahl); das genügt.
@@ -180,8 +180,8 @@ stillschweigend breiter und genau die Lücken verschwinden. Der Clamp ist für C
 
 **Konsequenz:** Gap-Detection scannt über `ExecuteQueryAsync` die tatsächlichen Fenster (§6).
 
-**Addendum AB#9588:** The clamp only affects the bins derived from the range and `Limit`. The local-day
-bins of AB#7360 (`BinOrigin`/`BinInterval`, no `Limit`) have a fixed axis without a clamp.
+**Addendum:** The clamp only affects the bins derived from the range and `Limit`. The local-day
+bins (`BinOrigin`/`BinInterval`, no `Limit`) have a fixed axis without a clamp.
 `DetectStreamDataGaps@1` uses them only as a pre-filter: one COUNT per series and 24-hour bin from `From`;
 complete bins are not read, every other bin is still read row by row through `ExecuteQueryAsync`. The
 gaps themselves still come from the actual windows; details in the developer guide, section
@@ -301,7 +301,7 @@ Verschärfend war damals: Die Storage-Schicht **verwarf einen nicht auflösbaren
 Sortierung lieferte damit still Storage-Reihenfolge, ein vertippter Filter still **zu viele** Zeilen.
 Der Filterfall ist der gefährlichere: das Ergebnis wird breiter statt schmaler, ohne jeden Hinweis.
 
-Dieses Verwerfen ist inzwischen behoben — **AB#4765** validiert in der Engine
+Dieses Verwerfen ist behoben — die Engine validiert
 (`StreamDataQueryColumnValidator`) und weist die Query zurück, für alle Konsumenten. Die Übersetzung
 im Node bleibt davon unberührt und wird dadurch sogar wichtiger: Was vorher still verworfen wurde,
 ist jetzt ein harter Fehler — ein Node, der `WindowStart` nicht mehr übersetzt, würde sein eigenes
@@ -320,7 +320,7 @@ lehnen ab, was sie nicht zuordnen können:
 | Spalte des Archivs (Path bzw. Name) | unverändert | unverändert |
 | alles andere | **Fehler**, mit Liste der gültigen Namen | dito |
 
-Die Engine-seitige Ursache ist als eigener Bug erfasst (**AB#4765**) — jeder andere Konsument der
+Die Engine-seitige Ursache ist in der Engine behoben (siehe oben) — für ältere Engine-Stände läuft jeder andere Konsument der
 Stream-Data-Query-API läuft weiterhin hinein. **§7 muss dieselbe Übersetzung anwenden**, für
 `FieldFilters` und für `groupBy`.
 
@@ -358,7 +358,7 @@ Doku-Oberfläche im Pipeline-Editor.
 
 ---
 
-## 5. Task AB#4726 — `GetStreamData@1`, Basisfunktionalität
+## 5. `GetStreamData@1` — Basisfunktionalität
 
 Eigenständig lieferbar; ergibt einen vollständig nutzbaren Node. §6 und §7 bauen darauf auf.
 
@@ -520,7 +520,7 @@ das bestehende `RtRawArchive` der `StreamDataFixture`. Harness wie
 
 ---
 
-## 6. Task AB#4728 — Gap-Detection
+## 6. Gap-Detection
 
 Additiv auf §5. Liefert außerdem den `StreamDataGapAnalyzer`, den §7 für `requireGapFree` nutzt.
 
@@ -684,9 +684,9 @@ wird von §7 mitgenutzt.
 
 ---
 
-## 7. Neuer Task — `AggregateStreamData@1`, Spalten-Aggregation
+## 7. `AggregateStreamData@1` — Spalten-Aggregation
 
-> Work Item in Azure DevOps noch anzulegen, als Kind von AB#4722.
+> Eigener Lieferumfang, aufbauend auf §5 und §6.
 
 Hängt von §5 ab (Helfer, Archiv-/Filter-Auflösung). `requireGapFree` hängt zusätzlich von §6 ab
 (`StreamDataGapAnalyzer`) — ohne §6 lässt sich der Node ohne diese eine Property ausliefern.
@@ -746,7 +746,7 @@ ohne Bedeutung (siehe §2.1).
 **Spaltennamen übersetzen (§4).** `FieldFilters`, `GroupBy` und die `attributePath`-Werte in
 `Aggregations` laufen durch `StreamDataNodeHelpers.ResolveQueryableColumn` — nötig, weil die
 Storage-Schicht nur die physischen Namen kennt, und weil eine Formel-Spalte ihren Storage-Key erst
-über den Resolver hergibt. Vor **AB#4765** verwarf die Storage-Schicht einen nicht
+über den Resolver hergibt. Vor der Engine-Validierung verwarf die Storage-Schicht einen nicht
 auflösbaren Namen zusätzlich stillschweigend — bei einem Filter ein zu breites Ergebnis, bei einer
 Aggregation also eine **zu hohe Summe**, ohne jeden Hinweis; genau der Fehler, der bei
 `GetStreamData@1` im Feld auftrat. Inzwischen weist die Engine solche Namen selbst zurück, die
@@ -957,12 +957,12 @@ mit Energiesumme und maximaler Datenqualität.
 
 ---
 
-## 9. Dateien je Task
+## 9. Dateien je Teil
 
-| Task | Neu | Geändert |
+| Teil | Neu | Geändert |
 |---|---|---|
-| **AB#4726**<br>Basis | `MeshNodes.Sdk/Extract/GetStreamDataNodeConfiguration.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/GetStreamDataNode.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataNodeHelpers.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/GetStreamDataNodeIntegrationTests.cs` | `MeshAdapter.Sdk/Nodes/Extract/GetQueryByIdNode.cs` (Helfer)<br>`ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
-| **AB#4728**<br>Gaps | `MeshAdapter.Sdk/Nodes/StreamDataGapAnalyzer.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataGapReport.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/StreamDataGapAnalyzerTests.cs` | `GetStreamDataNodeConfiguration.cs` + `GetStreamDataNode.cs` (Gap-Zweig)<br>`MeshAdapterPipelineExecutionException.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Fixtures/StreamDataFixture.cs` (TimeRange-Archiv)<br>Tests<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
+| **§5**<br>Basis | `MeshNodes.Sdk/Extract/GetStreamDataNodeConfiguration.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/GetStreamDataNode.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataNodeHelpers.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/GetStreamDataNodeIntegrationTests.cs` | `MeshAdapter.Sdk/Nodes/Extract/GetQueryByIdNode.cs` (Helfer)<br>`ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
+| **§6**<br>Gaps | `MeshAdapter.Sdk/Nodes/StreamDataGapAnalyzer.cs`<br>`MeshAdapter.Sdk/Nodes/StreamDataGapReport.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/StreamDataGapAnalyzerTests.cs` | `GetStreamDataNodeConfiguration.cs` + `GetStreamDataNode.cs` (Gap-Zweig)<br>`MeshAdapterPipelineExecutionException.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Fixtures/StreamDataFixture.cs` (TimeRange-Archiv)<br>Tests<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
 | **neu**<br>Aggregation | `MeshNodes.Sdk/Extract/AggregateStreamDataNodeConfiguration.cs`<br>`MeshNodes.Sdk/PipelineDataTransferObjects/AggregationColumnDto.cs`<br>`MeshAdapter.Sdk/Nodes/Extract/AggregateStreamDataNode.cs`<br>`tests/MeshAdapter.Sdk.Tests/Nodes/Extract/AggregateStreamDataNodeTests.cs`<br>`tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/AggregateStreamDataNodeIntegrationTests.cs` | `ServiceCollectionExtensions.cs`<br>`DataPipelineBuilderExtensions.cs`<br>`MeshAdapterPipelineExecutionException.cs`<br>`StreamDataNodeHelpers.cs` (Aggregations-Helfer, falls nicht in §5 mitgezogen)<br>`docs/nodes-extract.md`, `docs/developer-guide.md` |
 
 **Abhängigkeiten:** §6 und §7 setzen §5 voraus. `requireGapFree` (§7) setzt zusätzlich den

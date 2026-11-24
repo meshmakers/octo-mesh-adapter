@@ -7,13 +7,13 @@ code it covers.
 
 The Octo Mesh Adapter is a .NET 10 service that manages and executes mesh pipelines: it registers the pipelines of a
 tenant, starts them through triggers (HTTP, mail, chat, schedule, events) and runs their ETL nodes (extract, transform,
-load). The repository is MIT licensed and consists of three projects:
+load). The repository is MIT licensed and consists of three projects, plus the chart, the tests and the pipeline:
 
 - `src/MeshAdapter`: the main executable service.
 - `src/MeshAdapter.Sdk`: the SDK with the pipeline nodes (`Nodes/Extract|Transform|Load|Trigger`) and the services
   (`Services/`), published as a NuGet package.
 - `src/MeshNodes.Sdk`: the node configuration definitions, from which the pipeline schema is generated.
-- Also: `src/charts/octo-mesh-adapter` (the Helm chart), `tests/` (unit, integration and chart tests) and
+- Beyond the projects: `src/charts/octo-mesh-adapter` (the Helm chart), `tests/` (unit, integration and chart tests) and
   `azure-pipelines.yml`.
 
 ## Read before you change
@@ -88,6 +88,9 @@ These rules bind new and changed code. Known exceptions in existing code are nam
   from `IServiceAccountTokenService`, which returns it, fails closed when there is none, and registers every token it
   holds with `INodeContext.RegisterSecret` before any log line or call
   ([docs/core-services.md](docs/core-services.md), [docs/nodes-transform.md](docs/nodes-transform.md)).
+- **No credential in a node's output, an error message or a log line.** New or changed code never puts an SFTP, IMAP or
+  HTTP credential, an AI key or a token into the data a node emits, into an exception or error text, or into a log
+  property; exception text from a call that handled a credential is not passed on unredacted.
 - **No pipeline reveals a platform-only secret.** New code that decrypts a secret (`.Unprotect(`, `.RevealOrNull(`)
   consults `PlatformOnlySecrets` and goes on the allow-list of `SecretDecryptionCallSiteArchitectureTests`
   ([docs/secrets-and-write-guards.md](docs/secrets-and-write-guards.md)).
@@ -95,15 +98,14 @@ These rules bind new and changed code. Known exceptions in existing code are nam
   one that reads or writes attributes applies the attribute access rules (Hidden, MethodOnly, ReadOnly), wired like the
   nodes in the tables of [docs/secrets-and-write-guards.md](docs/secrets-and-write-guards.md).
 - **A released node version keeps its behaviour.** A change that alters what `Name@N` does ships as `Name@N+1`; a new
-  option on an existing version is optional and inert unless configured
+  option on an existing version is optional with a neutral default and inert unless configured
   ([docs/nodes-transform.md](docs/nodes-transform.md), "MakeHttpRequestNode").
 - **Pipeline data is System.Text.Json and path-only.** Nodes use `IDataContext`, no Newtonsoft and no
-  `JsonSerializerOptions` on the data path. A new optional node setting is nullable with its default resolved where it
-  is read, because the YAML deserializer lets an explicit null overwrite an initializer and does not enforce `required`
+  `JsonSerializerOptions` on the data path. Where a value must be boxed to a CLR object, box only through
+  `JsonScalar.ToClr` and keep parity with the Newtonsoft behaviour of the node's released version
   ([docs/serialization-and-build.md](docs/serialization-and-build.md)).
 - **A Load node honours the dry run**: it writes nothing, reports its intent and is listed in
   `DryRunHonouredLoadNodes` ([docs/nodes-load.md](docs/nodes-load.md)).
-- **A new node has its schema test and its documentation.** A test class that reads the pipeline schema joins
-  `PipelineSchemaCollection`; the node gets its entry in the matching `docs/nodes-*.md` and in the developer guide.
+- **A test class that reads the pipeline schema joins `PipelineSchemaCollection`.**
 - **The chart gives a pool member no installation-wide credential**, and `tests/chart/test-chart.sh` pins it
   ([docs/chart-credentials-pools-publishing.md](docs/chart-credentials-pools-publishing.md)).

@@ -25,6 +25,15 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- Cross-tenant access guard (AB#9767, design AB#9766, Feature AB#8673): `IMeshEtlContext.OpenTenantAsync` is the
+  one door for a node to reach its parent, a sibling or a child tenant (`TenantTargetConfiguration`, relations
+  `Parent`, `Sibling`, `Child`). The guard checks the relation on the tenant registry, refuses the system identity
+  and the fallback to it, proves the executing identity's right in the target through the identity service (RFC 8693
+  exchange for a user caller; the service-account exchange follows), checks tenant and generation of the proof and
+  only then opens the target's repository; every refusal is `CROSS_TENANT_FORBIDDEN` with one uniform message and the
+  reason code in the log. No node uses it yet; the read and write nodes follow. An architecture test lists every call
+  site that opens a tenant. Design and abuse cases: `docs/cross-tenant-access.md`.
+
 - `DetectStreamDataGaps@1` (AB#9588, PR #129): the missing time ranges `[start, end)` and missing slot counts
   of many series in one windowed stream-data archive over the half-open period `[from, to)`, without a row
   limit (internal batching, per-day COUNT on the storage path of AB#7360, paged row reads). The offset of

@@ -1,10 +1,12 @@
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 
@@ -14,6 +16,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
 {
     private readonly IPipelineIdentityResolver? _identityResolver;
+    private readonly ICrossTenantAccessGuard? _crossTenantAccessGuard;
+
+    // Proofs for other tenants live and die with this execution (never shared with another run or caller).
+    private readonly CrossTenantProofCache _crossTenantProofs = new();
 
     /// <summary>
     /// Create a new instance of <see cref="MeshEtlContext"/>
@@ -48,6 +54,9 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     /// Marker of a run started by a Construction Kit method invocation (AB#7462); <c>null</c> for
     /// every other run. A per-execution side channel, never part of <c>properties</c>.
     /// </param>
+    /// <param name="crossTenantAccessGuard">
+    /// The guard <see cref="OpenTenantAsync" /> delegates to; <c>null</c> refuses every cross-tenant access.
+    /// </param>
     public MeshEtlContext(string tenantId, ITenantRepository tenantRepository,
         OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime adapterReceivedDateTime, DateTime? externalReceivedDateTime,
         IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties,
@@ -55,12 +64,14 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
         string? callerAccessToken = null,
         IPipelineIdentityResolver? identityResolver = null,
         Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel callerTrust = Meshmakers.Octo.Sdk.Common.Services.CallerTrustLevel.None,
-        ExecutePipelineMethodInvocation? methodInvocation = null)
+        ExecutePipelineMethodInvocation? methodInvocation = null,
+        ICrossTenantAccessGuard? crossTenantAccessGuard = null)
         : base(tenantId, dataFlowRtId, pipelineExecutionId, pipelineRtEntityId, adapterReceivedDateTime, externalReceivedDateTime, globalConfiguration, properties, verifiedPrincipal, callerAccessToken, callerTrust)
     {
         TenantRepository = tenantRepository;
         _identityResolver = identityResolver;
         MethodInvocation = methodInvocation;
+        _crossTenantAccessGuard = crossTenantAccessGuard;
     }
 
     /// <inheritdoc />
@@ -118,6 +129,25 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
     public IOctoSession GetSystemSession()
     {
         return TenantRepository.GetSession(RtSecurityContext.System);
+    }
+
+    /// <inheritdoc />
+    public Task<ICrossTenantAccess> OpenTenantAsync(TenantTargetConfiguration target, NodeExecutionIdentity identity,
+        IDataContext dataContext, INodeContext nodeContext)
+    {
+        if (_crossTenantAccessGuard == null)
+        {
+            // Not wired (a hand-built context): never open another tenant.
+            return Task.FromException<ICrossTenantAccess>(CrossTenantAccessDeniedException.Forbidden(
+                nodeContext.NodePath.ToString(), target.Relation.ToString(),
+                CrossTenantRefusalReason.TargetUnverifiable));
+        }
+
+        // The source is the registration's tenant (TenantId), never the adapter's own one: a pool member executes
+        // pipelines of many tenants.
+        return _crossTenantAccessGuard.OpenAsync(new CrossTenantAccessRequest(TenantId, target, identity, dataContext,
+            nodeContext.NodePath.ToString(), VerifiedPrincipal, CallerAccessToken, _identityResolver,
+            GlobalConfiguration, _crossTenantProofs));
     }
 
     private ValueTask<RtSecurityContext> ResolveSecurityContextAsync()

@@ -54,6 +54,7 @@ effect after the pipeline / data flow is redeployed.
 |---|---|
 | `GetScopedSessionAsync()` / `GetScopedSession()` | The effective identity. Stamps `RtCreatedBy`, subject to data permissions. |
 | `GetSystemSessionAsync()` / `GetSystemSession()` | **Explicitly** `RtSecurityContext.System`. |
+| `OpenTenantAsync(target, identity, …)` | Another tenant of the subtree (parent, sibling, child) through the cross-tenant guard: a session only under an identity the identity service proved for that tenant, never the system context ([cross-tenant-access.md](cross-tenant-access.md)). |
 
 The second is the more important one. Its existence is what turns "which identity does this node use"
 from an accident of who last touched the call site into a decision written down in the code: a node

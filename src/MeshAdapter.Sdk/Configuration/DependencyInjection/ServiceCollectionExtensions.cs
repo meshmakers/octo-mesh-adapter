@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -148,6 +149,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
+        // Cross-tenant access within a tenant subtree: the registry (relation), the identity proof and the guard that
+        // combines them. TryAdd, so a host can wire another identity provider.
+        services.TryAddSingleton<ITenantRegistryReader, TenantRegistryReader>();
+        services.TryAddSingleton<ICrossTenantIdentityProvider, IdentityServiceCrossTenantIdentityProvider>();
+        services.TryAddSingleton<ICrossTenantAccessGuard, CrossTenantAccessGuard>();
         // AB#5538: configurations copied into the data context register their Secret values by CK type.
         services.Replace(ServiceDescriptor
             .Singleton<IConfigurationSecretAttributeResolver, CkConfigurationSecretAttributeResolver>());

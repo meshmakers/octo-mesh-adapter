@@ -44,7 +44,7 @@ public class IdentityServiceCrossTenantIdentityProviderTests
     {
         var identity = new ScriptedIdentity(HttpStatusCode.OK, JsonSerializer.Serialize(new
         {
-            access_token = Jwt(new { sub = "xt_a_user-1", tenant_id = "b", tenant_gen = "gen-7", role = new[] { "ReaderInB" } }),
+            access_token = Jwt(new { iss = Issuer, sub = "xt_a_user-1", tenant_id = "b", tenant_gen = "gen-7", role = new[] { "ReaderInB" } }),
             token_type = "Bearer",
             expires_in = 300
         }));
@@ -71,7 +71,7 @@ public class IdentityServiceCrossTenantIdentityProviderTests
     {
         var identity = new ScriptedIdentity(HttpStatusCode.OK, JsonSerializer.Serialize(new
         {
-            access_token = Jwt(new { sub = "s", tenant_id = "b", tenant_gen = 638700000000000000L, role = "OnlyRole" }),
+            access_token = Jwt(new { iss = Issuer, sub = "s", tenant_id = "b", tenant_gen = 638700000000000000L, role = "OnlyRole" }),
             token_type = "Bearer"
         }));
 
@@ -79,6 +79,25 @@ public class IdentityServiceCrossTenantIdentityProviderTests
 
         Assert.Equal("638700000000000000", proof!.Generation);
         Assert.Equal(["OnlyRole"], proof.SecurityContext.Roles);
+    }
+
+    [Theory]
+    [InlineData("https://foreign-identity.test")]
+    [InlineData(null)]
+    public async Task ExchangedTokenFromAnotherIssuer_IsNoProof(string? issuer)
+    {
+        // AB#9776 own issuer only, applied to the exchange: a token whose iss is not one of the adapter's own names
+        // is never used for the target tenant, even when it names the target and carries roles.
+        var identity = new ScriptedIdentity(HttpStatusCode.OK, JsonSerializer.Serialize(new
+        {
+            access_token = Jwt(new { iss = issuer, sub = "xt_a_user-1", tenant_id = "b", tenant_gen = "gen-7", role = "AdminOfB" }),
+            token_type = "Bearer"
+        }));
+
+        var proof = await CreateProvider(identity).ProveAsync(UserRequest(), TestContext.Current.CancellationToken);
+
+        Assert.Null(proof);
+        AssertNoCredentialLogged();
     }
 
     [Theory]
@@ -121,7 +140,7 @@ public class IdentityServiceCrossTenantIdentityProviderTests
     {
         var identity = new ScriptedIdentity(HttpStatusCode.OK, JsonSerializer.Serialize(new
         {
-            access_token = Jwt(new { sub = "s", role = "R" }),
+            access_token = Jwt(new { iss = Issuer, sub = "s", role = "R" }),
             token_type = "Bearer"
         }));
 

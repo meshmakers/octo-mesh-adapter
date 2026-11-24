@@ -70,7 +70,10 @@ internal static class JwtPayloadReader
             ReadString(payload, "tenant_id"),
             // AB#9776: the issuer that minted the token — compared with the adapter's own issuer
             // before any other claim of a service-account token is used.
-            ReadString(payload, "iss"));
+            ReadString(payload, "iss"),
+            // AB#9767: the generation of the tenant the token was issued for — the cross-tenant guard compares it
+            // with the target tenant's current generation. Emitted as a string or a number.
+            ReadStringOrNumber(payload, "tenant_gen"));
         return true;
     }
 
@@ -97,6 +100,21 @@ internal static class JwtPayloadReader
         return payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+    }
+
+    private static string? ReadStringOrNumber(JsonElement payload, string name)
+    {
+        if (!payload.TryGetProperty(name, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null
+        };
     }
 
     /// <summary>
@@ -144,13 +162,15 @@ internal static class JwtPayloadReader
     ///     <c>acr_values=tenant:X</c>, in which case the identity service issued for the system tenant.
     /// </param>
     /// <param name="Issuer"><c>iss</c> — the issuer that minted the token (AB#9776).</param>
+    /// <param name="TenantGeneration"><c>tenant_gen</c> — the generation of the token's tenant (AB#9767).</param>
     internal sealed record JwtClaims(
         string? Subject,
         string? ClientId,
         IReadOnlyList<string> Roles,
         DateTime? ExpiresAtUtc,
         string? TenantId = null,
-        string? Issuer = null)
+        string? Issuer = null,
+        string? TenantGeneration = null)
     {
         internal static readonly JwtClaims Empty = new(null, null, [], null);
     }

@@ -1,5 +1,3 @@
-using System.Text;
-using System.Text.Json;
 using Duende.IdentityModel;
 using Duende.IdentityModel.Client;
 using Meshmakers.Octo.Communication.Contracts;
@@ -30,9 +28,10 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 ///         source tenant.
 ///     </para>
 ///     <para>
-///         The issued token is read locally without signature validation: it comes straight from the trusted issuer's
-///         token endpoint over TLS (same reasoning as <see cref="JwtPayloadReader" />). It is not returned, cached or
-///         logged; only subject, roles, tenant and generation leave this class.
+///         The issued token is read with <see cref="JwtPayloadReader" /> and its <c>iss</c> must be one of the
+///         adapter's own names (<see cref="OwnIssuerPolicy" />, AB#9776). Its signature is not verified here: the token
+///         comes straight from the own issuer's token endpoint over TLS, in answer to a request this class made. It is
+///         not returned, cached or logged; only subject, roles, tenant and generation leave this class.
 ///     </para>
 /// </remarks>
 internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantIdentityProvider
@@ -47,7 +46,7 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
 
     private readonly HttpClient _httpClient;
     private readonly AdapterOptions _adapterOptions;
-    private readonly MeshAdapterConfiguration _meshAdapterConfiguration;
+    private readonly OwnIssuerPolicy _ownIssuer;
     private readonly ILogger<IdentityServiceCrossTenantIdentityProvider> _logger;
 
     public IdentityServiceCrossTenantIdentityProvider(IOptions<AdapterOptions> adapterOptions,
@@ -63,7 +62,7 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
     {
         _httpClient = httpClient;
         _adapterOptions = adapterOptions;
-        _meshAdapterConfiguration = meshAdapterConfiguration;
+        _ownIssuer = new OwnIssuerPolicy(adapterOptions, meshAdapterConfiguration);
         _logger = logger;
     }
 
@@ -93,10 +92,9 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
                 "The adapter has no own client credentials (Adapter:ClientId/ClientSecret) for the token exchange.");
         }
 
-        // Own issuer only: Adapter:IssuerUri, else the bearer-validation authority. Never a configured foreign issuer.
-        var issuerUri = !string.IsNullOrWhiteSpace(_adapterOptions.IssuerUri)
-            ? _adapterOptions.IssuerUri
-            : _meshAdapterConfiguration.AuthorityUrl;
+        // Own issuer only (AB#9776, the same policy as the service-account token path): Adapter:IssuerUri, else the
+        // bearer-validation authority. Never a configured foreign issuer.
+        var issuerUri = _ownIssuer.Endpoint;
         if (string.IsNullOrWhiteSpace(issuerUri))
         {
             throw new CrossTenantIdentityUnavailableException(
@@ -165,6 +163,14 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
             throw new CrossTenantIdentityUnavailableException("The exchanged token could not be read.");
         }
 
+        if (!_ownIssuer.IsOwnIssuer(claims.Issuer))
+        {
+            _logger.LogWarning(
+                "[{SourceTenantId}] Exchanged token for '{TargetTenantId}' names the issuer '{Issuer}', which is not this adapter's own identity service; refused",
+                request.SourceTenantId, request.TargetTenantId, claims.Issuer ?? "(none)");
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(claims.Subject) || string.IsNullOrWhiteSpace(claims.TenantId))
         {
             _logger.LogWarning(
@@ -178,43 +184,21 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
     }
 
     internal sealed record ExchangedTokenClaims(string? Subject, string? TenantId, string? Generation,
-        IReadOnlyList<string> Roles);
+        IReadOnlyList<string> Roles, string? Issuer);
 
-    /// <summary>Reads subject, tenant, generation and roles of an issued token (payload only).</summary>
+    /// <summary>
+    ///     Reads subject, tenant, generation, roles and issuer of an issued token (payload only), with the reader the
+    ///     service-account token path uses (<see cref="JwtPayloadReader" />).
+    /// </summary>
     internal static bool TryReadClaims(string? token, out ExchangedTokenClaims claims)
     {
-        claims = new ExchangedTokenClaims(null, null, null, []);
+        claims = new ExchangedTokenClaims(null, null, null, [], null);
         if (!JwtPayloadReader.TryRead(token, out var jwt))
         {
             return false;
         }
 
-        claims = new ExchangedTokenClaims(jwt.Subject, jwt.TenantId, ReadGeneration(token!), jwt.Roles);
+        claims = new ExchangedTokenClaims(jwt.Subject, jwt.TenantId, jwt.TenantGeneration, jwt.Roles, jwt.Issuer);
         return true;
-    }
-
-    private static string? ReadGeneration(string token)
-    {
-        try
-        {
-            var segment = token.Split('.')[1].Replace('-', '+').Replace('_', '/');
-            segment += new string('=', (4 - segment.Length % 4) % 4);
-            using var document = JsonDocument.Parse(Encoding.UTF8.GetString(Convert.FromBase64String(segment)));
-            if (!document.RootElement.TryGetProperty("tenant_gen", out var value))
-            {
-                return null;
-            }
-
-            return value.ValueKind switch
-            {
-                JsonValueKind.String => value.GetString(),
-                JsonValueKind.Number => value.GetRawText(),
-                _ => null
-            };
-        }
-        catch (Exception ex) when (ex is FormatException or JsonException or IndexOutOfRangeException)
-        {
-            return null;
-        }
     }
 }

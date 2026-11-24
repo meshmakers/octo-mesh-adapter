@@ -12,6 +12,8 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 
@@ -64,9 +66,9 @@ public interface IServiceAccountTokenService
     /// <remarks>
     ///     <b>Roles only exist on the token.</b> They are assigned to the client in the identity
     ///     service and are not part of the <c>ServiceAccountConfiguration</c> entity, so the only way
-    ///     to learn them is to request a token and read its <c>role</c> claims. The token is parsed
-    ///     locally without signature validation — see <see cref="JwtPayloadReader" /> for why that is
-    ///     sound here — and is neither returned nor written into
+    ///     to learn them is to request a token and read its <c>role</c> claims. The request goes only to
+    ///     the adapter's own identity service, and the token's signature, issuer and tenant are verified
+    ///     before a claim is read (AB#9776, <see cref="OwnIssuerPolicy" />). It is neither returned nor written into
     ///     <see cref="IServiceClientAccessToken" />: this call answers an identity question, it does
     ///     not hand out a credential.
     ///     <para>
@@ -134,7 +136,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     ///     "use the adapter's own installation" (AB#5115) — so it is treated exactly like one.
     ///     Compared case-insensitively.
     /// </summary>
-    internal const string UnresolvedAuthorityTemplateToken = "{{service.authority}}";
+    internal const string UnresolvedAuthorityTemplateToken = OwnIssuerPolicy.UnresolvedAuthorityTemplateToken;
 
     /// <summary>RFC 8693 token type identifier for an access token, sent as <c>subject_token_type</c>.</summary>
     internal const string AccessTokenTypeIdentifier = "urn:ietf:params:oauth:token-type:access_token";
@@ -152,6 +154,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     private readonly AdapterOptions _adapterOptions;
     private readonly MeshAdapterConfiguration _meshAdapterConfiguration;
     private readonly ISecretAttributeProtector? _secretAttributeProtector;
+    private readonly OwnIssuerPolicy _ownIssuer;
 
     /// <summary>
     ///     Cached service-account identities, keyed by <c>(TenantId, ClientId)</c> — the pair that
@@ -166,8 +169,9 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     /// <summary>
     ///     Service-account tokens handed out by <see cref="AcquireServiceAccountTokenAsync" />, keyed by
-    ///     <c>(TenantId, ClientId, IssuerUri)</c> (AB#8658) — the issuer is part of the key because a
-    ///     configuration may name a foreign identity target with the same tenant and client id. Separate from <see cref="_identityCache" /> because that
+    ///     <c>(TenantId, ClientId, IssuerUri)</c> (AB#8658). Since AB#9776 the issuer is always the adapter's
+    ///     own identity service, so it no longer distinguishes entries; it stays in the key so a changed
+    ///     Adapter:IssuerUri can never serve a token of the previous one. Separate from <see cref="_identityCache" /> because that
     ///     one deliberately never holds a credential, and from the process-wide <c>IServiceClientAccessToken</c>
     ///     singleton because that is the adapter's own identity.
     /// </summary>
@@ -192,6 +196,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         _tokenHttpClient = tokenHttpClient;
         _adapterOptions = adapterOptions ?? new AdapterOptions();
         _meshAdapterConfiguration = meshAdapterConfiguration ?? new MeshAdapterConfiguration();
+        _ownIssuer = new OwnIssuerPolicy(_adapterOptions, _meshAdapterConfiguration);
     }
 
     /// <summary>
@@ -247,7 +252,12 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        if (!TryResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName,
+                out var tenantId))
+        {
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(tenantId))
         {
             // The grant is same-tenant and the identity service requires acr_values=tenant:X to wire
@@ -359,6 +369,11 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             _logger.LogError(
                 "Delegation via ServiceAccountConfiguration '{WellKnownName}' succeeded but returned no access token",
                 wellKnownName);
+            return null;
+        }
+
+        if (await ValidateIssuedTokenAsync(response.AccessToken, disco, tenantId, wellKnownName) == null)
+        {
             return null;
         }
 
@@ -507,18 +522,26 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     public async Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(
         ServiceAccountCredentials credentials, CancellationToken cancellationToken = default)
     {
-        var tenantId = ResolveTenantId(credentials.TenantId, adapterTenantId: null, credentials.ClientId);
+        // The pipeline's tenant is already in credentials.TenantId: PipelineIdentityResolver refuses a
+        // configuration naming another tenant before it gets here (AB#9776).
+        if (!TryResolveTenantId(credentials.TenantId, pipelineTenantId: null, credentials.ClientId,
+                out var tenantId))
+        {
+            return null;
+        }
+
+        // Checked BEFORE the cache: a configuration naming a foreign issuer is refused even when an
+        // identity for the same (tenant, client) is cached (AB#9776).
+        var issuerUri = ResolveIssuerUri(credentials.IssuerUri, credentials.ClientId);
+        if (issuerUri == null)
+        {
+            return null;
+        }
 
         var cacheKey = (tenantId ?? string.Empty, credentials.ClientId);
         if (_identityCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
         {
             return cached;
-        }
-
-        var issuerUri = ResolveIssuerUri(credentials.IssuerUri, credentials.ClientId);
-        if (issuerUri == null)
-        {
-            return null;
         }
 
         var mode = SelectAcquisitionMode(credentials, credentials.ClientId);
@@ -575,13 +598,15 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        if (!JwtPayloadReader.TryRead(response.AccessToken, out var claims))
+        // AB#9776: signature, issuer and tenant are verified before a single claim is used. An opaque
+        // (reference) token carries no readable claims and is refused as well: reporting no identity is
+        // the only honest answer — inventing an empty-role one would look like a correctly resolved
+        // account with no permissions, which fails silently everywhere downstream.
+        var claims = await ValidateIssuedTokenAsync(response.AccessToken, disco, tenantId, credentials.ClientId);
+        if (claims == null)
         {
-            // An opaque (reference) token carries no readable claims. Reporting no identity is the
-            // only honest answer — inventing an empty-role one would look like a correctly resolved
-            // account with no permissions, which fails silently everywhere downstream.
             _logger.LogError(
-                "The token issued for service account client {ClientId} is not a readable JWT; its identity cannot be resolved",
+                "The identity of service account client {ClientId} cannot be resolved: the issued token was refused",
                 credentials.ClientId);
             return null;
         }
@@ -636,7 +661,12 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        var tenantId = ResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName);
+        if (!TryResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName,
+                out var tenantId))
+        {
+            return null;
+        }
+
         var cacheKey = (tenantId ?? string.Empty, configuration.ClientId, issuerUri);
         if (_accountTokenCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
         {
@@ -696,10 +726,15 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
+        // AB#9776: only a verified token of the own issuer for the pipeline's tenant is handed out.
+        var claims = await ValidateIssuedTokenAsync(response.AccessToken, disco, tenantId, wellKnownName);
+        if (claims == null)
+        {
+            return null;
+        }
+
         // The token's own exp is the truth; expires_in is the fallback. Never logged — only the fact.
-        var expiresAt = (JwtPayloadReader.TryRead(response.AccessToken, out var claims) && claims.ExpiresAtUtc.HasValue
-            ? claims.ExpiresAtUtc.Value
-            : DateTime.UtcNow.AddSeconds(response.ExpiresIn)) - IdentityCacheSkew;
+        var expiresAt = (claims.ExpiresAtUtc ?? DateTime.UtcNow.AddSeconds(response.ExpiresIn)) - IdentityCacheSkew;
         _accountTokenCache[cacheKey] = (response.AccessToken, expiresAt);
 
         _logger.LogInformation(
@@ -793,79 +828,176 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     }
 
     /// <summary>
-    ///     Resolves the issuer every token request goes to (AB#5115). An explicit URL on the
-    ///     configuration wins — that is the deliberate foreign/pinned-installation case. An EMPTY
-    ///     value (or the unresolved <c>{{service.authority}}</c> deploy-time token an older
-    ///     controller leaves behind) is the DEFAULT, not damage: it means "this adapter's own
-    ///     installation", answered by <c>Adapter:IssuerUri</c> (the adapter's own identity,
-    ///     AB#5072) and finally <c>Adapter:AuthorityUrl</c> — which on this adapter is also the
-    ///     authority incoming bearers are validated against, so the two chain entries of the design
-    ///     collapse into one key here. Returns null (after logging every place that was empty) when
-    ///     nothing is configured anywhere.
+    ///     Resolves the address every token request goes to: always the adapter's OWN identity service
+    ///     (AB#9776, decision "own issuer only"). The <c>IssuerUri</c> of the configuration is only
+    ///     CHECKED — empty, the unresolved <c>{{service.authority}}</c> token (AB#5115) or one of the
+    ///     own names (<see cref="OwnIssuerPolicy" />) — and never used as the address, so neither the
+    ///     service account's secret nor the adapter's own client credentials can reach another issuer.
+    ///     A configuration naming any other issuer is refused here, before any request leaves the
+    ///     adapter. Returns null (after logging) when it is refused or when no own issuer is configured.
     /// </summary>
     private string? ResolveIssuerUri(string? configuredIssuerUri, string configurationName)
     {
-        if (!string.IsNullOrWhiteSpace(configuredIssuerUri)
-            && !string.Equals(configuredIssuerUri.Trim(), UnresolvedAuthorityTemplateToken,
-                StringComparison.OrdinalIgnoreCase))
+        if (!_ownIssuer.IsOwnConfiguredIssuer(configuredIssuerUri))
         {
-            _logger.LogDebug(
-                "Issuer for service account configuration '{ConfigurationName}' comes from the configuration itself: {IssuerUri}",
+            _logger.LogError(
+                "ServiceAccountConfiguration '{ConfigurationName}' names the issuer '{IssuerUri}', which is not this adapter's own identity service (Adapter:IssuerUri, Adapter:AuthorityUrl, Adapter:AdditionalValidIssuers). Service-account tokens are accepted only from the own issuer; no request was sent. Leave IssuerUri empty or set it to {{{{service.authority}}}} (AB#9776)",
                 configurationName, configuredIssuerUri);
-            return configuredIssuerUri;
+            return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(_adapterOptions.IssuerUri))
+        if (_ownIssuer.Endpoint == null)
         {
-            _logger.LogDebug(
-                "Issuer for service account configuration '{ConfigurationName}' comes from Adapter:IssuerUri: {IssuerUri}",
-                configurationName, _adapterOptions.IssuerUri);
-            return _adapterOptions.IssuerUri;
+            _logger.LogError(
+                "No issuer for service account configuration '{ConfigurationName}': its IssuerUri means 'the adapter's own installation' (AB#5115), but Adapter:IssuerUri (the adapter's own identity, AB#5072) and Adapter:AuthorityUrl (the bearer-validation authority) are empty. Configure one of them",
+                configurationName);
+            return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(_meshAdapterConfiguration.AuthorityUrl))
-        {
-            _logger.LogDebug(
-                "Issuer for service account configuration '{ConfigurationName}' comes from Adapter:AuthorityUrl (the bearer-validation authority): {IssuerUri}",
-                configurationName, _meshAdapterConfiguration.AuthorityUrl);
-            return _meshAdapterConfiguration.AuthorityUrl;
-        }
-
-        _logger.LogError(
-            "No issuer for service account configuration '{ConfigurationName}': its IssuerUri is empty (which means 'the adapter's own installation', AB#5115), but Adapter:IssuerUri (the adapter's own identity, AB#5072) and Adapter:AuthorityUrl (the bearer-validation authority) are empty too. Configure one of them",
-            configurationName);
-        return null;
+        _logger.LogDebug(
+            "Issuer for service account configuration '{ConfigurationName}' is the adapter's own identity service: {IssuerUri}",
+            configurationName, _ownIssuer.Endpoint);
+        return _ownIssuer.Endpoint;
     }
 
     /// <summary>
-    ///     Resolves the tenant a token request acts in (AB#5115): the configuration's own
-    ///     <c>TenantId</c> when set, otherwise the tenant the adapter is running for. Null only when
-    ///     both are empty — the caller decides whether that is fatal (it is for the delegation
-    ///     grant, which hard-requires <c>acr_values=tenant:X</c>).
+    ///     Resolves the tenant a token request acts in (AB#5115, AB#9776): the tenant of the pipeline
+    ///     (<paramref name="pipelineTenantId" />) when it is known, else the configuration's own
+    ///     <c>TenantId</c>, else the adapter's own tenant. A configured <c>TenantId</c> other than the
+    ///     pipeline's tenant is refused (returns <c>false</c> after logging): its roles would be applied
+    ///     to the pipeline's repository (until a cross-tenant exchange exists, AB#9777). The comparison
+    ///     ignores case and surrounding blanks, as tenant ids do elsewhere in the adapter; on a match the
+    ///     pipeline's own spelling is used. <paramref name="tenantId" /> is null only when no tenant is
+    ///     known at all — the caller decides whether that is fatal (it is for every grant path).
     /// </summary>
-    private string? ResolveTenantId(string? configuredTenantId, string? adapterTenantId, string configurationName)
+    private bool TryResolveTenantId(string? configuredTenantId, string? pipelineTenantId, string configurationName,
+        out string? tenantId)
     {
+        if (!string.IsNullOrWhiteSpace(pipelineTenantId))
+        {
+            if (!string.IsNullOrWhiteSpace(configuredTenantId)
+                && !string.Equals(configuredTenantId.Trim(), pipelineTenantId.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogError(
+                    "ServiceAccountConfiguration '{ConfigurationName}' names the tenant '{ConfiguredTenantId}', but the pipeline runs in tenant '{PipelineTenantId}'. A service account acts only in the pipeline's own tenant; no request was sent. Leave TenantId empty or set it to the pipeline's tenant (AB#9776)",
+                    configurationName, configuredTenantId, pipelineTenantId);
+                tenantId = null;
+                return false;
+            }
+
+            tenantId = pipelineTenantId;
+            return true;
+        }
+
         if (!string.IsNullOrWhiteSpace(configuredTenantId))
         {
-            return configuredTenantId;
+            tenantId = configuredTenantId;
+            return true;
         }
 
         // AB#4924: the adapter's OWN tenant, which is a process-level fact — this is the
         // AB#5115 fallback for a service-account configuration that names no tenant, not the
         // tenant of any execution. Null on a pool member, which has no tenant of its own, so the
         // fallback below correctly declines rather than silently picking somebody else's tenant.
-        var ownTenantId = !string.IsNullOrWhiteSpace(adapterTenantId)
-            ? adapterTenantId
+        tenantId = string.IsNullOrWhiteSpace(_adapterOptions.DedicatedTenantId)
+            ? null
             : _adapterOptions.DedicatedTenantId;
-        if (!string.IsNullOrWhiteSpace(ownTenantId))
+        if (tenantId != null)
         {
             _logger.LogDebug(
                 "Service account configuration '{ConfigurationName}' carries no TenantId; using the adapter's own tenant '{TenantId}' (AB#5115)",
-                configurationName, ownTenantId);
-            return ownTenantId;
+                configurationName, tenantId);
         }
 
-        return null;
+        return true;
+    }
+
+    /// <summary>
+    ///     Checks a token the own identity service issued before any of its claims is used or the token
+    ///     is handed out (AB#9776): it must be a JWS whose signature verifies against the signing keys of
+    ///     the discovery document the request was made with, its <c>iss</c> must be one of the own names
+    ///     (<see cref="OwnIssuerPolicy" />) and its <c>tenant_id</c> must equal <paramref name="tenantId" />.
+    ///     Returns null (after logging; the token itself is never logged) when any check fails.
+    /// </summary>
+    /// <remarks>
+    ///     The keys come with the discovery document IdentityModel fetches for every request anyway
+    ///     (<c>jwks_uri</c>), so the check costs no extra round trip and follows key rotation. Lifetime
+    ///     and audience are not checked: the token is minutes old, and the audience is the downstream
+    ///     service's business.
+    /// </remarks>
+    private async Task<JwtPayloadReader.JwtClaims?> ValidateIssuedTokenAsync(string accessToken,
+        DiscoveryDocumentResponse discovery, string? tenantId, string configurationName)
+    {
+        var rawKeySet = discovery.KeySet?.RawData;
+        if (string.IsNullOrWhiteSpace(rawKeySet))
+        {
+            _logger.LogError(
+                "The token issued for service account configuration '{ConfigurationName}' cannot be verified: the identity service published no signing keys (jwks_uri); the token is refused (AB#9776)",
+                configurationName);
+            return null;
+        }
+
+        TokenValidationResult result;
+        try
+        {
+            var signingKeys = new JsonWebKeySet(rawKeySet).GetSigningKeys();
+            result = await new JsonWebTokenHandler().ValidateTokenAsync(accessToken,
+                new TokenValidationParameters
+                {
+                    IssuerSigningKeys = signingKeys,
+                    RequireSignedTokens = true,
+                    TryAllIssuerSigningKeys = true,
+                    ValidateIssuerSigningKey = false,
+                    // Compared below with the own-issuer normalization (trailing slash, case of host).
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ValidateLifetime = false
+                });
+        }
+        catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException
+                                       or SecurityTokenException)
+        {
+            _logger.LogError(
+                "The token issued for service account configuration '{ConfigurationName}' cannot be verified ({Reason}); the token is refused (AB#9776)",
+                configurationName, ex.GetType().Name);
+            return null;
+        }
+
+        if (!result.IsValid)
+        {
+            _logger.LogError(
+                "The token issued for service account configuration '{ConfigurationName}' failed signature verification ({Reason}); the token is refused (AB#9776)",
+                configurationName, result.Exception?.GetType().Name ?? "invalid");
+            return null;
+        }
+
+        if (!JwtPayloadReader.TryRead(accessToken, out var claims))
+        {
+            _logger.LogError(
+                "The token issued for service account configuration '{ConfigurationName}' is not a readable JWT; the token is refused",
+                configurationName);
+            return null;
+        }
+
+        if (!_ownIssuer.IsOwnIssuer(claims.Issuer))
+        {
+            _logger.LogError(
+                "The token issued for service account configuration '{ConfigurationName}' names the issuer '{Issuer}', which is not this adapter's own identity service; the token is refused (AB#9776)",
+                configurationName, claims.Issuer ?? "(none)");
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(tenantId)
+            || !string.Equals(claims.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "The token issued for service account configuration '{ConfigurationName}' is for tenant '{TokenTenantId}', not for the pipeline's tenant '{TenantId}'; the token is refused (AB#9776)",
+                configurationName, claims.TenantId ?? "(none)", tenantId ?? "(unknown)");
+            return null;
+        }
+
+        return claims;
     }
 
     /// <summary>

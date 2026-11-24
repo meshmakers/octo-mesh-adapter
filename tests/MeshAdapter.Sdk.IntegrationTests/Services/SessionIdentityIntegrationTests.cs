@@ -119,7 +119,7 @@ public class SessionIdentityIntegrationTests(SystemFixture fixture) : IClassFixt
                   "issuerUri": "https://identity.example.com",
                   "clientId": "octo-pipeline-sa-integration",
                   "clientSecret": "s3cr3t",
-                  "tenantId": "system"
+                  "tenantId": null
                 }
                 """
             ]);
@@ -270,7 +270,7 @@ public class SessionIdentityIntegrationTests(SystemFixture fixture) : IClassFixt
                     "issuerUri": "https://identity.example.com",
                     "clientId": "{{clientId}}",
                     "clientSecret": "s3cr3t",
-                    "tenantId": "system"
+                    "tenantId": null
                   }
                   """
             ]);

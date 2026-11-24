@@ -1,5 +1,6 @@
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using FakeItEasy;
 using Meshmakers.Octo.Runtime.Contracts.Secrets;
@@ -87,8 +88,12 @@ public class ServiceAccountTokenServiceTests
         AdapterOptions? adapterOptions = null, MeshAdapterConfiguration? meshConfiguration = null,
         ILogger<ServiceAccountTokenService>? logger = null, ISecretAttributeProtector? protector = null)
     {
+        // AB#9776: the stub identity service IS the adapter's own one by default - its issuer is the
+        // bearer-validation authority - so the token requests of a test reach it only through the own-issuer
+        // path. Tests of the refusal pass their own MeshAdapterConfiguration.
         return new ServiceAccountTokenService(logger ?? NullLogger<ServiceAccountTokenService>.Instance,
-            new HttpClient(handler, disposeHandler: false), adapterOptions, meshConfiguration, protector);
+            new HttpClient(handler, disposeHandler: false), adapterOptions,
+            meshConfiguration ?? new MeshAdapterConfiguration { AuthorityUrl = Issuer }, protector);
     }
 
     /// <summary>The adapter's OWN confidential client (AB#5072) — what the impersonation path runs on.</summary>
@@ -116,7 +121,7 @@ public class ServiceAccountTokenServiceTests
         var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("delegated-access-token", token);
+        Assert.Equal("delegated-access-token", TestJwt.LabelOf(token));
 
         var form = handler.LastTokenForm;
         Assert.NotNull(form);
@@ -146,7 +151,7 @@ public class ServiceAccountTokenServiceTests
         var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("delegated-access-token", token);
+        Assert.Equal("delegated-access-token", TestJwt.LabelOf(token));
     }
 
     [Fact]
@@ -220,7 +225,7 @@ public class ServiceAccountTokenServiceTests
         var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("delegated-access-token", token);
+        Assert.Equal("delegated-access-token", TestJwt.LabelOf(token));
         Assert.Equal("tenant:adapter-tenant", handler.LastTokenForm!["acr_values"]);
     }
 
@@ -313,16 +318,18 @@ public class ServiceAccountTokenServiceTests
             TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
         var service = CreateService(handler);
 
-        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
-            TestContext.Current.CancellationToken);
-        var callsAfterFirst = handler.CallCount;
+        Assert.NotNull(await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken));
+        var requestsAfterFirst = handler.RequestUris.Count;
 
-        // Same tenant and client id, but a foreign identity target: must ask that issuer, not reuse.
+        // Same tenant and client id, but a foreign identity target (AB#9776): neither asked nor served the
+        // cached token of the own issuer.
         SetupConfiguration(tenantId: TenantId, issuer: "https://other-identity.example.com");
-        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+        var second = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
             TestContext.Current.CancellationToken);
 
-        Assert.True(handler.CallCount > callsAfterFirst);
+        Assert.Null(second);
+        Assert.Equal(requestsAfterFirst, handler.RequestUris.Count);
     }
 
     [Fact]
@@ -484,7 +491,7 @@ public class ServiceAccountTokenServiceTests
         // Inventing an empty-role identity would look like a correctly resolved account with no
         // permissions — the failure mode that goes unnoticed everywhere downstream.
         var handler = new IdentityEndpointHandler(
-            IdentityEndpointHandler.TokenResponse("an-opaque-reference-token", expiresIn: 3600));
+            IdentityEndpointHandler.RawTokenResponse("an-opaque-reference-token", expiresIn: 3600));
 
         Assert.Null(await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
             TestContext.Current.CancellationToken));
@@ -598,21 +605,6 @@ public class ServiceAccountTokenServiceTests
     // ---------------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task IssuerResolution_AnExplicitIssuerOnTheConfigurationWins()
-    {
-        // A real URL on the configuration is the deliberate foreign/pinned-installation case; the
-        // adapter's own authority must not override it.
-        var handler = new IdentityEndpointHandler(
-            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
-        var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
-
-        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
-            TestContext.Current.CancellationToken);
-
-        Assert.Equal("identity.example.com", handler.LastTokenRequestUri!.Host);
-    }
-
-    [Fact]
     public async Task IssuerResolution_AnEmptyIssuerMeansTheAdaptersOwnInstallation()
     {
         SetupConfiguration(tenantId: TenantId, issuer: "");
@@ -624,7 +616,7 @@ public class ServiceAccountTokenServiceTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
-        Assert.Equal("service-account-token", token);
+        Assert.Equal("service-account-token", TestJwt.LabelOf(token));
     }
 
     [Fact]
@@ -703,13 +695,13 @@ public class ServiceAccountTokenServiceTests
         var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("service-account-token", token);
+        Assert.Equal("service-account-token", TestJwt.LabelOf(token));
     }
 
     [Fact]
-    public async Task TenantResolution_TheConfigurationsOwnTenantWins()
+    public async Task TenantResolution_TheConfigurationsOwnTenantIsUsedWhenItIsThePipelinesTenant()
     {
-        A.CallTo(() => _tenantRepository.TenantId).Returns("adapter-tenant");
+        A.CallTo(() => _tenantRepository.TenantId).Returns(TenantId);
         var handler = new IdentityEndpointHandler(
             IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
 
@@ -791,7 +783,7 @@ public class ServiceAccountTokenServiceTests
         AssertClientAuthentication(handler, form, OwnClientId, OwnClientSecret);
 
         // The response is CC-shaped for the service account, so it IS the service identity.
-        Assert.Equal("impersonated-token", token);
+        Assert.Equal("impersonated-token", TestJwt.LabelOf(token));
     }
 
     [Fact]
@@ -997,7 +989,7 @@ public class ServiceAccountTokenServiceTests
         var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("delegated-access-token", token);
+        Assert.Equal("delegated-access-token", TestJwt.LabelOf(token));
 
         var form = handler.LastTokenForm!;
         Assert.Equal("urn:meshmakers:params:oauth:grant-type:on-behalf-of", form["grant_type"]);
@@ -1025,15 +1017,306 @@ public class ServiceAccountTokenServiceTests
         Assert.Contains(logger.Messages, m => m.Contains("MayActAs"));
     }
 
-    /// <summary>Builds the compact-serialisation JWTs the identity stub hands out.</summary>
+    // ---------------------------------------------------------------------------------------------
+    // AB#9776: own issuer only. The IssuerUri and TenantId of a ServiceAccountConfiguration are
+    // tenant-editable, so they may never decide where credentials go or whose roles a pipeline gets.
+    // Each test is one abuse case; the stub answers EVERY host, so a request to a foreign issuer would
+    // succeed - the assertions on RequestUris prove that none left the adapter.
+    // ---------------------------------------------------------------------------------------------
+
+    private const string ForeignIssuer = "https://evil.example.net";
+
+    [Theory]
+    [InlineData(ForeignIssuer)]
+    [InlineData("http://identity.example.com")] // scheme downgrade of the own name
+    [InlineData("https://identity.example.com:8443")] // another port on the own host
+    [InlineData("https://attacker@identity.example.com")] // user info
+    [InlineData("https://identity.example.com.evil.example.net")] // own name as a prefix of another host
+    [InlineData("https://identity.example.com/other-tenant-issuer")] // another path on the own host
+    [InlineData("https://identity.example.com/?redirect=evil")] // query
+    [InlineData("{{service.identity}}")] // another template the controller could not resolve
+    [InlineData("{{service.authority}}.evil.example.net")]
+    [InlineData("identity.example.com")] // not an absolute URL
+    public async Task OwnIssuerOnly_AConfigurationNamingAnotherIssuerIsRefusedBeforeAnyRequest(string issuer)
+    {
+        SetupConfiguration(tenantId: TenantId, issuer: issuer);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, logger: logger);
+
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Empty(handler.RequestUris);
+        Assert.Contains(logger.Messages, m => m.Contains("not this adapter's own identity service"));
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_WithoutASecretTheAdaptersOwnCredentialsNeverReachAForeignIssuer()
+    {
+        // The impersonation path (AB#5114) authenticates with the ADAPTER's client secret. Before AB#9776 a
+        // configuration with an empty ClientSecret and a foreign IssuerUri made the adapter present that secret
+        // to the foreign issuer.
+        SetupConfiguration(tenantId: TenantId, issuer: ForeignIssuer, secret: null);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity());
+
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.DoesNotContain(handler.RequestUris, u => u.Host == "evil.example.net");
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_TheIdentityPathRefusesAForeignIssuerWithoutSendingTheAdaptersCredentials()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: 3600, issuer: ForeignIssuer), expiresIn: 3600));
+        var service = CreateService(handler, OwnIdentity());
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(
+            Credentials with { IssuerUri = ForeignIssuer, ClientSecret = null },
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+        Assert.Empty(handler.RequestUris);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_TheDelegationPathRefusesAForeignIssuer()
+    {
+        SetupConfiguration(tenantId: TenantId, issuer: ForeignIssuer, secret: null);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity());
+
+        var token = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Empty(handler.RequestUris);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_AForeignIssuerIsRefusedEvenWhenTheIdentityIsCached()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600),
+            expiresIn: 3600));
+        var service = CreateService(handler);
+        Assert.NotNull(await service.AcquireServiceAccountIdentityAsync(Credentials,
+            TestContext.Current.CancellationToken));
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(
+            Credentials with { IssuerUri = ForeignIssuer }, TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+    }
+
+    [Theory]
+    [InlineData("https://identity.example.com/")] // trailing slash, as the identity service emits its issuer
+    [InlineData("https://IDENTITY.example.com")] // host case
+    [InlineData("https://identity.example.com:443")] // explicit default port
+    [InlineData("  https://identity.example.com  ")] // surrounding blanks
+    [InlineData("https://public.example.com")] // split-horizon name (Adapter:AdditionalValidIssuers)
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("{{service.authority}}")]
+    [InlineData(" {{SERVICE.AUTHORITY}} ")]
+    [InlineData("{{ service.authority }}")]
+    public async Task OwnIssuerOnly_EveryNameOfTheOwnIssuerIsAcceptedAndTheRequestGoesToTheOwnEndpoint(
+        string issuer)
+    {
+        SetupConfiguration(tenantId: TenantId, issuer: issuer);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"),
+            new MeshAdapterConfiguration
+            {
+                AuthorityUrl = Issuer, AdditionalValidIssuers = ["https://public.example.com/"]
+            });
+
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("service-account-token", TestJwt.LabelOf(token));
+        // The configured value is checked, never used as the address: every request went to Adapter:IssuerUri.
+        Assert.All(handler.RequestUris, u => Assert.Equal("own.example.com", u.Host));
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_AnUnsignedTokenIsRefusedAndItsRolesAreNeverUsed()
+    {
+        // The AB#9776 reproduction: the token's claims were read without a signature check, so whoever answered
+        // the token request chose the pipeline's roles.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: 3600, unsigned: true), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_ATokenSignedWithAnUnpublishedKeyIsRefused()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: 3600, signWith: TestJwt.ForeignKey), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
+            TestContext.Current.CancellationToken);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+        Assert.Null(token);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_ATokenNamingAnotherIssuerIsRefused()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600,
+                issuer: ForeignIssuer), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+    }
+
+    [Theory]
+    [InlineData("otherTenant")]
+    [InlineData(null)] // issued for the system tenant
+    public async Task OwnIssuerOnly_ATokenForAnotherTenantIsRefused(string? tokenTenant)
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: 3600, tenantId: tokenTenant), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_AConfiguredTenantOtherThanThePipelinesIsRefusedBeforeAnyRequest()
+    {
+        A.CallTo(() => _tenantRepository.TenantId).Returns("pipeline-tenant");
+        SetupConfiguration(tenantId: "otherTenant");
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("must-not-be-issued", expiresIn: 300));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, logger: logger);
+
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+        var delegated = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Null(delegated);
+        Assert.Empty(handler.RequestUris);
+        Assert.Contains(logger.Messages, m => m.Contains("acts only in the pipeline's own tenant"));
+    }
+
+    [Theory]
+    [InlineData("PIPELINE-TENANT")]
+    [InlineData(" pipeline-tenant ")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task OwnIssuerOnly_TheTenantIsAlwaysThePipelinesOwnSpelling(string configuredTenant)
+    {
+        A.CallTo(() => _tenantRepository.TenantId).Returns("pipeline-tenant");
+        SetupConfiguration(tenantId: configuredTenant);
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+
+        var token = await CreateService(handler).AcquireServiceAccountTokenAsync(_tenantRepository,
+            WellKnownName, TestContext.Current.CancellationToken);
+
+        Assert.Equal("service-account-token", TestJwt.LabelOf(token));
+        Assert.Equal("tenant:pipeline-tenant", handler.LastTokenForm!["acr_values"]);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_NoTokenOrSecretAppearsInTheLog()
+    {
+        var unsigned = TestJwt.Create(subject: null, clientId: ClientId, roles: ["TenantAdministrator"],
+            expiresInSeconds: 3600, unsigned: true);
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(unsigned, expiresIn: 3600));
+        var logger = new CapturingLogger();
+        var service = CreateService(handler, OwnIdentity(), logger: logger);
+
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+        SetupConfiguration(tenantId: TenantId, issuer: ForeignIssuer, secret: null);
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotEmpty(logger.Messages);
+        Assert.DoesNotContain(logger.Messages, m => m.Contains(unsigned.Split('.')[1]));
+        Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret) || m.Contains(OwnClientSecret));
+    }
+
+    /// <summary>
+    ///     Builds the compact-serialisation JWTs the identity stub hands out, signed RS256 with
+    ///     <see cref="SigningKey" />, whose public half the stub publishes as its JWKS (AB#9776: the
+    ///     adapter verifies the signature of every service-account token).
+    /// </summary>
     private static class TestJwt
     {
-        public static string Create(string? subject, string? clientId, string[] roles, int expiresInSeconds)
+        public const string KeyId = "test-signing-key";
+
+        /// <summary>The stub identity service's signing key.</summary>
+        public static readonly RSA SigningKey = RSA.Create(2048);
+
+        /// <summary>A key the stub does NOT publish - a token signed with it is a forgery.</summary>
+        public static readonly RSA ForeignKey = RSA.Create(2048);
+
+        public static string Jwks()
+        {
+            var parameters = SigningKey.ExportParameters(false);
+            return $$"""{"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"{{KeyId}}","n":"{{Segment(parameters.Modulus!)}}","e":"{{Segment(parameters.Exponent!)}}"}]}""";
+        }
+
+        public static string Create(string? subject, string? clientId, string[] roles, int expiresInSeconds,
+            string? issuer = Issuer, string? tenantId = TenantId, string? label = null, RSA? signWith = null,
+            bool unsigned = false)
         {
             var claims = new List<string>
             {
                 $"\"exp\":{DateTimeOffset.UtcNow.AddSeconds(expiresInSeconds).ToUnixTimeSeconds()}"
             };
+
+            if (issuer != null)
+            {
+                claims.Add($"\"iss\":\"{issuer}\"");
+            }
+
+            if (tenantId != null)
+            {
+                claims.Add($"\"tenant_id\":\"{tenantId}\"");
+            }
+
+            if (label != null)
+            {
+                claims.Add($"\"jti\":\"{label}\"");
+            }
 
             if (subject != null)
             {
@@ -1054,16 +1337,41 @@ public class ServiceAccountTokenServiceTests
                 claims.Add($"\"role\":[{string.Join(",", roles.Select(r => $"\"{r}\""))}]");
             }
 
-            return $"{Segment("{\"alg\":\"RS256\",\"typ\":\"JWT\"}")}."
-                   + $"{Segment("{" + string.Join(",", claims) + "}")}.signature-not-verified";
+            var signingInput = $"{Segment($$"""{"alg":"RS256","typ":"JWT","kid":"{{KeyId}}"}""")}."
+                               + Segment("{" + string.Join(",", claims) + "}");
+            if (unsigned)
+            {
+                // The AB#9776 reproduction: a token whose claims anybody can write.
+                return signingInput + ".signature-not-verified";
+            }
+
+            var signature = (signWith ?? SigningKey).SignData(Encoding.ASCII.GetBytes(signingInput),
+                HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            return signingInput + "." + Segment(signature);
         }
 
-        private static string Segment(string json)
+        /// <summary>The <c>jti</c> a minted token carries - the label a test asked the stub for.</summary>
+        public static string? LabelOf(string? token)
         {
-            return Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
-                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            if (token == null)
+            {
+                return null;
+            }
+
+            var payload = token.Split('.')[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+            using var document = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(payload));
+            return document.RootElement.TryGetProperty("jti", out var jti) ? jti.GetString() : null;
+        }
+
+        private static string Segment(string json) => Segment(Encoding.UTF8.GetBytes(json));
+
+        private static string Segment(byte[] bytes)
+        {
+            return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         }
     }
+
     /// <summary>
     /// Asserts that the request carried the service account's own client credentials, whichever of
     /// the two OAuth-sanctioned places IdentityModel put them in (Basic header or post body).
@@ -1116,6 +1424,9 @@ public class ServiceAccountTokenServiceTests
     {
         public Dictionary<string, string>? LastTokenForm { get; private set; }
 
+        /// <summary>Every request the adapter sent, discovery and JWKS included (AB#9776).</summary>
+        public List<Uri> RequestUris { get; } = [];
+
         /// <summary>Where the last token request went — its host names the issuer that won (AB#5115).</summary>
         public Uri? LastTokenRequestUri { get; private set; }
 
@@ -1134,15 +1445,63 @@ public class ServiceAccountTokenServiceTests
         /// </summary>
         public bool MixedHostDiscovery { get; init; }
 
+        /// <summary>
+        ///     Answers like the real identity service: a JWT given by the test is returned as it is; a plain
+        ///     label is minted into a signed token of the stub's issuer for the requested tenant
+        ///     (<c>acr_values=tenant:X</c>) and client, carrying the label as <c>jti</c>
+        ///     (<see cref="TestJwt.LabelOf" />).
+        /// </summary>
         public static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> TokenResponse(
             string accessToken, int expiresIn)
         {
-            return (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return async (request, cancellationToken) =>
+            {
+                var token = accessToken;
+                if (!accessToken.Contains('.'))
+                {
+                    var form = await ReadFormAsync(request, cancellationToken);
+                    var tenant = form.TryGetValue("acr_values", out var acr) && acr.StartsWith("tenant:")
+                        ? acr["tenant:".Length..]
+                        : null;
+                    var client = form.TryGetValue("requested_client_id", out var requested)
+                        ? requested
+                        : form.GetValueOrDefault("client_id", ClientId);
+                    token = TestJwt.Create(subject: null, clientId: client, roles: [], expiresInSeconds: expiresIn,
+                        tenantId: tenant, label: accessToken);
+                }
+
+                return RawTokenBody(token, expiresIn);
+            };
+        }
+
+        /// <summary>Returns <paramref name="accessToken" /> verbatim - an opaque reference token.</summary>
+        public static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> RawTokenResponse(
+            string accessToken, int expiresIn)
+        {
+            return (_, _) => Task.FromResult(RawTokenBody(accessToken, expiresIn));
+        }
+
+        private static HttpResponseMessage RawTokenBody(string accessToken, int expiresIn) =>
+            new(HttpStatusCode.OK)
             {
                 Content = new StringContent(
                     $$"""{"access_token":"{{accessToken}}","token_type":"Bearer","expires_in":{{expiresIn}}}""",
                     Encoding.UTF8, "application/json")
-            });
+            };
+
+        private static async Task<Dictionary<string, string>> ReadFormAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Content == null)
+            {
+                return new Dictionary<string, string>();
+            }
+
+            var body = await request.Content.ReadAsStringAsync(cancellationToken);
+            return body.Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Select(pair => pair.Split('=', 2))
+                .ToDictionary(parts => Uri.UnescapeDataString(parts[0]),
+                    parts => parts.Length > 1 ? Uri.UnescapeDataString(parts[1].Replace('+', ' ')) : string.Empty);
         }
 
         public static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> TokenError(
@@ -1157,6 +1516,7 @@ public class ServiceAccountTokenServiceTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            RequestUris.Add(request.RequestUri!);
             var path = request.RequestUri!.AbsolutePath;
 
             if (path.Contains("/.well-known/openid-configuration", StringComparison.Ordinal))
@@ -1168,7 +1528,7 @@ public class ServiceAccountTokenServiceTests
 
                 if (path.EndsWith("/jwks", StringComparison.Ordinal))
                 {
-                    return Json("""{"keys":[]}""");
+                    return Json(TestJwt.Jwks());
                 }
 
                 // The endpoints are derived from the ADDRESS the service asked, not pinned to

@@ -14,6 +14,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
@@ -70,8 +71,10 @@ public class AnthropicAiQueryNodeServiceAccountIsolationTests : NodeTestBase
         AddConfiguration("AccountA", "client-a");
         AddConfiguration("AccountB", "client-b");
 
+        // AB#9776: the stub identity service is the adapter's own one (its authority).
         _tokenService = new ServiceAccountTokenService(NullLogger<ServiceAccountTokenService>.Instance,
-            new HttpClient(_http, disposeHandler: false));
+            new HttpClient(_http, disposeHandler: false),
+            meshAdapterConfiguration: new MeshAdapterConfiguration { AuthorityUrl = $"https://{IdentityHost}" });
     }
 
     private void AddConfiguration(string wellKnownName, string clientId, string? tenantId = AdapterTenant)
@@ -130,7 +133,7 @@ public class AnthropicAiQueryNodeServiceAccountIsolationTests : NodeTestBase
             {
                 if (uri.AbsolutePath.EndsWith("/jwks", StringComparison.Ordinal))
                 {
-                    return Json("""{"keys":[]}""");
+                    return Json(SignedTestJwt.Jwks());
                 }
 
                 if (uri.AbsolutePath.Contains("/.well-known/openid-configuration", StringComparison.Ordinal))
@@ -174,7 +177,9 @@ public class AnthropicAiQueryNodeServiceAccountIsolationTests : NodeTestBase
             new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     }
 
-    private static string TokenFor(string clientId, string acrTenant) => $"sa-token|{clientId}|{acrTenant}";
+    private static string TokenFor(string clientId, string acrTenant) =>
+        SignedTestJwt.Create($"https://{IdentityHost}", acrTenant["tenant:".Length..], clientId,
+            $"sa-token|{clientId}|{acrTenant}");
 
     private (AnthropicAiQueryNode Node, IDataContext DataContext, INodeContext NodeContext, IPipelineLogger Logger)
         Prepare(string serviceAccountConfigName)
@@ -272,7 +277,8 @@ public class AnthropicAiQueryNodeServiceAccountIsolationTests : NodeTestBase
     [Fact]
     public async Task CaseC_AForeignTenantConfiguration_IsKeyedByTenant_AndNeverReachesTheAdapterIdentity()
     {
-        // Same client id as AccountA, different tenant: a different identity, so a different token.
+        // Same client id as AccountA, different tenant. Since AB#9776 a configuration naming another tenant than
+        // the pipeline's is refused outright: no token, so no MCP call at all.
         AddConfiguration("AccountForeign", "client-a", tenantId: "other-tenant");
         _adapterIdentity.AccessToken = AdapterOwnToken;
 
@@ -280,7 +286,8 @@ public class AnthropicAiQueryNodeServiceAccountIsolationTests : NodeTestBase
         var foreign = await RunAsync("AccountForeign");
 
         Assert.All(own.McpBearers, bearer => Assert.Equal(TokenFor("client-a", $"tenant:{AdapterTenant}"), bearer));
-        Assert.All(foreign.McpBearers, bearer => Assert.Equal(TokenFor("client-a", "tenant:other-tenant"), bearer));
+        Assert.NotEmpty(own.McpBearers);
+        Assert.Empty(foreign.McpBearers);
         Assert.Equal(AdapterOwnToken, _adapterIdentity.AccessToken);
     }
 

@@ -15,6 +15,15 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Fixed
 
+- Service-account tokens are accepted only from the adapter's own identity service (AB#9776). The `IssuerUri` and
+  `TenantId` of a `ServiceAccountConfiguration` are tenant-editable, and the adapter used to send the service
+  account's secret — or, without one, its own client credentials — to whatever issuer was configured, and applied
+  the unverified `role` claims of the answer to the pipeline's repository. Now every grant (identity, token,
+  delegation) goes to `Adapter:IssuerUri` / `Adapter:AuthorityUrl`; a configured issuer other than empty,
+  `{{service.authority}}` or an own name (`Adapter:AdditionalValidIssuers` included) and a `TenantId` other than
+  the pipeline's tenant are refused before any request; the issued token's signature is verified against the own
+  JWKS and its `iss` and `tenant_id` are checked before any claim is used. Configurations with an empty or own
+  issuer and an empty or own tenant work as before.
 - `ApplyChanges@2`: concurrent writers across adapter replicas end in one stored write and a reported conflict
   (AB#9466). A MongoDB WriteConflict (112) is now recognised anywhere in the exception chain (the repository
   wraps it), the transaction is aborted and the write retried up to six times with a short jittered backoff

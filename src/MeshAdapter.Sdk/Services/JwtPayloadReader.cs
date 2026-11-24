@@ -7,12 +7,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 ///     Reads the claims the adapter needs out of a JWT it has just fetched itself.
 /// </summary>
 /// <remarks>
-///     <b>The signature is deliberately not verified.</b> The token arrives as the direct answer to
-///     this process's own client-credentials request, over TLS, and never passes through a caller — so
-///     there is no party between issuer and reader whose tampering a signature check could catch.
-///     Verifying it would mean fetching and caching the issuer's JWKS on a path that runs inside
-///     pipeline execution, for no security gain. The same reasoning is written down for the MCP
-///     server's exchanged tokens in <c>octo-mcp-service</c>.
+///     <b>This reader does not verify the signature.</b> Service-account tokens are verified before it is called:
+///     <c>ServiceAccountTokenService</c> sends every request to the adapter's own identity service only, checks the
+///     signature against that service's published keys and compares <c>iss</c> and <c>tenant_id</c> (AB#9776).
+///     Until AB#9776 the configured issuer was tenant-editable, so "the answer to our own request" was no proof of
+///     origin. Other callers (the borrower token of a lease) read a token the adapter requested from its own,
+///     configured identity service with its own credentials.
 ///     <para>
 ///         Written by hand rather than with <c>JwtSecurityTokenHandler</c>: the adapter does not
 ///         reference a JWT package outside the ASP.NET bearer handler, and reading three claims out of
@@ -67,7 +67,10 @@ internal static class JwtPayloadReader
             // verify it before acting as a borrower — since AB#5077 a request without acr_values is
             // issued for the SYSTEM tenant, which is a 403 if you are lucky and a cross-tenant read if
             // you are not.
-            ReadString(payload, "tenant_id"));
+            ReadString(payload, "tenant_id"),
+            // AB#9776: the issuer that minted the token — compared with the adapter's own issuer
+            // before any other claim of a service-account token is used.
+            ReadString(payload, "iss"));
         return true;
     }
 
@@ -140,12 +143,14 @@ internal static class JwtPayloadReader
     ///     client-credentials tokens too). Absent when the request carried no
     ///     <c>acr_values=tenant:X</c>, in which case the identity service issued for the system tenant.
     /// </param>
+    /// <param name="Issuer"><c>iss</c> — the issuer that minted the token (AB#9776).</param>
     internal sealed record JwtClaims(
         string? Subject,
         string? ClientId,
         IReadOnlyList<string> Roles,
         DateTime? ExpiresAtUtc,
-        string? TenantId = null)
+        string? TenantId = null,
+        string? Issuer = null)
     {
         internal static readonly JwtClaims Empty = new(null, null, [], null);
     }

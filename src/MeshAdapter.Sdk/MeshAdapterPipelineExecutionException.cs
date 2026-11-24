@@ -1531,6 +1531,20 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     ///     rights than the operator granted, and nothing downstream could tell that apart from a
     ///     correctly restricted run.
     /// </summary>
+    /// <summary>
+    ///     AB#9776: the pipeline's service account configuration names a tenant other than the pipeline's own. Its
+    ///     roles would be applied to the pipeline's repository, so the execution is refused instead of continued as
+    ///     the system context.
+    /// </summary>
+    public static Exception ServiceAccountTenantMismatch(string tenantId, string clientId, string configuredTenantId)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{tenantId}]: The pipeline runs under service account client '{clientId}', whose configuration names " +
+            $"the tenant '{configuredTenantId}'. A service account acts only in the pipeline's own tenant, so the " +
+            "execution is refused. Leave TenantId of the ServiceAccountConfiguration empty or set it to the " +
+            "pipeline's tenant.");
+    }
+
     public static Exception ServiceAccountIdentityUnavailable(string tenantId, string clientId)
     {
         return new MeshAdapterPipelineExecutionException(

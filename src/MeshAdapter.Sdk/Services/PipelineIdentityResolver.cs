@@ -267,12 +267,22 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
             return null;
         }
 
-        // The grant needs acr_values=tenant:X; the configuration's own TenantId is authoritative, and
-        // the pipeline's tenant is the only sane default when the attribute was never filled in.
-        var tenantId = string.IsNullOrWhiteSpace(payload.TenantId) ? _tenantId : payload.TenantId;
+        // The grant needs acr_values=tenant:X, and it is always the PIPELINE's tenant (AB#9776): the roles
+        // of the token are applied to this pipeline's repository, so a configuration naming another tenant
+        // is refused — thrown, never skipped, because skipping it could widen the execution to System.
+        // Case and surrounding blanks are ignored like everywhere tenant ids are compared in the adapter.
+        if (!string.IsNullOrWhiteSpace(payload.TenantId)
+            && !string.Equals(payload.TenantId.Trim(), _tenantId.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "[{TenantId}] Service account configuration of client '{ClientId}' names the tenant '{ConfiguredTenantId}'; a service account acts only in the pipeline's own tenant (AB#9776)",
+                _tenantId, payload.ClientId, payload.TenantId);
+            throw MeshAdapterPipelineExecutionException.ServiceAccountTenantMismatch(_tenantId, payload.ClientId!,
+                payload.TenantId);
+        }
 
         return new ServiceAccountCredentials(payload.IssuerUri ?? string.Empty, payload.ClientId!,
-            payload.ClientSecret, tenantId);
+            payload.ClientSecret, _tenantId);
     }
 
     /// <summary>

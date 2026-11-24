@@ -161,14 +161,29 @@ names the refused target.
 
 ### 4.4 Deploy-time gate (communication controller)
 
-Two rules in `PipelineElevationInspector`:
+Rules in `PipelineElevationInspector`, applied by `AdapterService.EnsureCrossTenantNodesAllowedAsync` on every deploy
+path before anything is stored. They hold whoever deploys and also with `ServiceAccountGuard:CheckElevation` off: they
+are about the pipeline, not about the deployer.
 
-1. `identity: System` on a node with `targetTenant` (or a set of targets) → deploy refused.
-2. `tenantIdPath` is a target-selecting property: an elevated node (`identity: ServiceAccount`) whose target tenant
-   comes from a caller-controlled root (`$.body`, `$.query`, `$.files`, `$.headers`, …) is refused like every confused
-   deputy.
+1. `identity: System` on a node with `targetTenant` or `targetTenants` → deploy refused (`FindSystemCrossTenantNodes`).
+2. A **caller-controlled** `tenantIdPath`/`tenantIdsPath` (rooted in `$.body`, `$.query`, `$.files` or `$.headers`, also
+   under `$.full.`) depends on who acts in the target tenant:
 
-The run-time guard enforces both again; the deploy gate only reports early.
+   | Node identity | Deploy |
+   |---|---|
+   | `ServiceAccount` | refused: the caller would choose the tenant the service account acts in |
+   | `Caller` (or no identity) in a pipeline that can run without a verified caller | refused: without a caller the node falls back to the service account (section 3) |
+   | `Caller` (or no identity) in a pipeline whose every trigger requires a verified caller | allowed, with a deploy warning: the adapter proves the caller's own right in the target before it reads or writes |
+
+   A pipeline requires a verified caller only when it has at least one trigger and every trigger is
+   `FromHttpRequest@2` without `allowAnonymous: true`. Every other trigger fails closed: schedules, watches and
+   events run without a caller, `FromHttpRequest@1` and `FromTeamsBot@1` publish anonymous routes, and an unreadable
+   `allowAnonymous` value counts as anonymous.
+3. A `tenantIdPath` the pipeline controls (any other path, e.g. `$.invoice.recipientTenantId`) stays allowed without a
+   warning; the guard checks the tenant it yields at run time (abuse case 3).
+
+The run-time guard enforces the relation, the identity proof and the system refusal again; the deploy gate reports
+early and closes the caller-steered service-account case, which the run-time guard cannot tell from a data-driven one.
 
 ## 5. Abuse cases
 
@@ -202,6 +217,7 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 22 | Proof reuse across executions or callers | proofs are cached per execution only | — |
 | 23 | Watch trigger in T on U's data | not offered; triggers stay on the own tenant | — |
 | 24 | Pool adapter (no own tenant) executes T's pipeline | the relation is computed from T (the registration's tenant), never from the adapter's tenant | — |
+| 25 | Caller input chooses the tenant a service account acts in (`tenantIdPath` into `$.body`/`$.query`/`$.files`/`$.headers` with `ServiceAccount`, or `Caller` in a pipeline that can run without a verified caller) | deploy refused (controller, section 4.4); as the pure verified caller a deploy warning | — (deploy) |
 
 Rows 9 and 15–17 belong to the write node and are tested there; row 23 is a non-feature.
 
@@ -252,7 +268,10 @@ per-execution caller, caller token, identity resolver and proof cache.
 ## 7. Tests
 
 - Unit: `CrossTenantAccessGuardTests` (one test per abuse case with a fake registry, proof provider and generation
-  reader), `TenantRelationRulesTests`, `IdentityServiceCrossTenantIdentityProviderTests` (scripted token endpoint).
+  reader), `TenantRelationRulesTests`, `IdentityServiceCrossTenantIdentityProviderTests` (scripted token endpoint; an
+  exchanged token from another or no issuer is no proof).
+- Controller: `PipelineElevationInspectorTests` (the rules of section 4.4 per identity and trigger) and
+  `DeployPipelineCrossTenantGateTests` (deploy refused or warned, one test per case of section 4.4).
 - Integration: `CrossTenantAccessGuardIntegrationTests` with real MongoDB (Testcontainers): G with children A and B,
   an outsider X under another parent, a detached child D and a grandchild; a test node opens the target through the
   guard and reads marker entities.

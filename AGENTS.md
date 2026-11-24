@@ -24,6 +24,7 @@ load). The repository is MIT licensed and consists of three projects, plus the c
 | `src/charts/**`, `tests/chart/**`, `src/MeshAdapter.Sdk/Leasing/**`, `src/MeshAdapter.Sdk/Configuration/**` | `docs/chart-credentials-pools-publishing.md` |
 | `src/MeshAdapter.Sdk/Nodes/Extract/{GetStreamData,AggregateStreamData}Node.cs`, `src/MeshAdapter.Sdk/Nodes/StreamData*.cs` | `docs/concept-getstreamdata-node.md` |
 | `src/MeshAdapter.Sdk/Services/**`, `src/MeshAdapter/**` | `docs/core-services.md` |
+| `src/MeshAdapter.Sdk/Services/CrossTenant/**`, `src/MeshNodes.Sdk/Common/TenantTargetConfiguration.cs` | `docs/cross-tenant-access.md` |
 | `src/MeshAdapter.Sdk/Nodes/Extract/**`, `src/MeshAdapter.Sdk/Nodes/MailFolders/**`, `src/MeshAdapter.Sdk/Nodes/StreamData*.cs` | `docs/nodes-extract.md` |
 | `src/MeshAdapter.Sdk/Nodes/Load/**`, `src/MeshAdapter.Sdk/Nodes/Sftp*.cs` | `docs/nodes-load.md` |
 | `src/MeshAdapter.Sdk/Nodes/Transform/**` | `docs/nodes-transform.md` |

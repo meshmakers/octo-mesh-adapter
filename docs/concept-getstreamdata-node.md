@@ -321,7 +321,7 @@ lehnen ab, was sie nicht zuordnen können:
 | alles andere | **Fehler**, mit Liste der gültigen Namen | dito |
 
 Die Engine-seitige Ursache ist in der Engine behoben (siehe oben) — für ältere Engine-Stände läuft jeder andere Konsument der
-Stream-Data-Query-API läuft weiterhin hinein. **§7 muss dieselbe Übersetzung anwenden**, für
+Stream-Data-Query-API weiterhin hinein. **§7 muss dieselbe Übersetzung anwenden**, für
 `FieldFilters` und für `groupBy`.
 
 ### UTC-Regel

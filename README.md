@@ -80,7 +80,7 @@ of `Meshmakers.Octo.MeshAdapter.Nodes` and uploads it as a build artifact. The `
 executable is deliberately not documented: it exposes no public API of its own, only the `Program`
 class the compiler generates for top-level statement apps.
 
-## Helm chart: SECRET attribute key ring (AB#5536)
+## Helm chart: SECRET attribute key ring
 
 The runtime engine binds `SecretEncryption:Keys:<kid>`, `SecretEncryption:ActiveKeyId` and
 `SecretEncryption:LegacyV1Key` (concept `octo-construction-kit-engine/docs/concept-secret-attribute-type.md`

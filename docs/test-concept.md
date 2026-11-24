@@ -1,3 +1,8 @@
+---
+description: "Testing strategy of the adapter: unit and integration tests for pipeline nodes and services."
+background: true
+---
+
 # Octo Mesh Adapter - Test Concept
 
 This document describes the testing strategy for the Octo Mesh Adapter, covering unit tests and integration tests for pipeline nodes and services.
@@ -210,7 +215,7 @@ Transform nodes process data without external dependencies. Focus on data transf
 | `ProcessObjectAsync_WithTypeConversion_ConvertsTypes` | Type conversion (Int→String) |
 | `ProcessObjectAsync_WithNullValue_HandlesNull` | Null input handling |
 
-`DataMappingNodeWildcardTests` (AB#6589, real `DataContextImpl`): wildcard / filter / recursive paths map every
+`DataMappingNodeWildcardTests` (real `DataContextImpl`): wildcard / filter / recursive paths map every
 element in place, the `GetStreamData@1` row shape with `Amount.Unit` and `DataQuality` enum keys, null and unmapped
 elements, `targetPath` omitted / same / different (rejected), no match (warning, chain continues), unreadable element
 and Secret marker, lazy conversion of the mapping entries, one debug summary, a 20,000-element array, and a regression
@@ -279,7 +284,7 @@ path resolution; writes are observed and still reach the real context). Groups:
 | Dates | Offset and offset-less input, CET/CEST, the spring gap (`02:00` does not exist) and the repeated autumn hour, invariant day/month names, non-dates fail |
 | Culture | Decimal comma on node level, column override (incl. `""` = invariant), thousands separator only when the format asks, numbers bare under `Text` quoting, comma delimiter with decimal comma quotes the number, string sources read invariant, German date names, default stays invariant, unknown culture on node or column fails (writes nothing), culture on a constant refused |
 | Output | BOM as text, base64 of the UTF-8 bytes incl. BOM, byte length written, no BOM when unset |
-| Layout | The grid-operator layout of AB#6403 byte for byte (BOM, LF, quoted text, trailing `;`, `0.546`/`0.92`/`0`, kW = 4 x kWh) |
+| Layout | The grid-operator layout byte for byte (BOM, LF, quoted text, trailing `;`, `0.546`/`0.92`/`0`, kW = 4 x kWh) |
 | Errors | Delimiter, blank paths, source not an array, record not an object, ambiguous or null column, set-selecting and unparsable value paths, unknown time zone writes nothing, `Decimals` range, undefined enums, formats on a constant |
 
 `ConvertToCsvConfigurationDeserializationTests` covers what a pipeline definition produces and a C#

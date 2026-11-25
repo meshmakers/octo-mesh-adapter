@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -38,6 +39,36 @@ public record ApplyChangesNodeConfiguration2 : NodeConfiguration
     /// </summary>
     [PropertyGroup("Execution", 100)]
     public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.Caller;
+
+    /// <summary>
+    /// Optional tenant to write into instead of the pipeline's own tenant (AB#9769): the <c>Parent</c>, a
+    /// <c>Sibling</c> or a <c>Child</c> of the pipeline's tenant in the tenant registry. Without it (the default)
+    /// the node writes its own tenant exactly as before. Every create, update and delete in the target goes through
+    /// the cross-tenant guard: the relation is checked on the registry, the node identity must hold a right in the
+    /// target that the identity service proves (<c>Caller</c> or <c>ServiceAccount</c>; <c>System</c> is always
+    /// refused), the batch is checked against the target's CK model (MethodOnly attributes, replaced creates and
+    /// identity associations are always refused there), and a refusal fails the execution with
+    /// <c>CROSS_TENANT_FORBIDDEN</c> before anything is written. ApplyChanges@1 has no such setting.
+    /// See docs/cross-tenant-access.md.
+    /// </summary>
+    [PropertyGroup("Execution", 101)]
+    public TenantTargetConfiguration? TargetTenant { get; set; }
+
+    /// <summary>
+    /// Optional one-way master-data sync into the child tenants of the pipeline's tenant (AB#9770): all registered
+    /// direct children, or the listed ones. Not together with <see cref="TargetTenant" />. Each entity update of the
+    /// batch is applied in every target as an idempotent upsert (insert, update or replace) or delete, keyed by the
+    /// source tenant and the source RtId: the copy in the target keeps the source RtId and carries the System record
+    /// <c>RtSyncOrigin</c> (source tenant, source RtId, sync time), which only this node sets. An entity of the target
+    /// without that origin, or with the origin of another tenant, is never changed or deleted. Every target goes
+    /// through the cross-tenant guard (<c>Caller</c> or <c>ServiceAccount</c>; <c>System</c> refused) and is written in
+    /// its own transaction; a refused or failed target does not stop the others, and the execution fails afterwards
+    /// with every failed target named. Association updates and <c>onDuplicateKey: Report</c> are not supported here.
+    /// See docs/cross-tenant-access.md.
+    /// </summary>
+    [PropertyGroup("Execution", 102)]
+    public TenantSetConfiguration? TargetTenants { get; set; }
+
     /// <summary>
     /// The path to the entity update
     /// </summary>

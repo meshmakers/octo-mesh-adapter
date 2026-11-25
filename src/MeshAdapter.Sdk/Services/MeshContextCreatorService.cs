@@ -4,6 +4,7 @@ using Meshmakers.Octo.Runtime.Contracts.MongoDb;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -54,7 +55,9 @@ internal class MeshContextCreatorService(IServiceProvider serviceProvider, ICkCa
             executePipelineOptions.CallerTrust,
             // AB#7462: marker of a CK method invocation, a side channel like the token above (NOT in
             // Dictionary); the generic-create guard reads it from the context.
-            executePipelineOptions.MethodInvocation);
+            executePipelineOptions.MethodInvocation,
+            // The one door to other tenants of the subtree; nodes reach it only through OpenTenantAsync.
+            serviceProvider.GetService<ICrossTenantAccessGuard>());
 
 
         var etlContext = context as TContext;

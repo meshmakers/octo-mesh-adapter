@@ -23,9 +23,22 @@ builds one `PipelineIdentityResolver` per execution and hands it to `MeshEtlCont
    out of `IGlobalConfiguration.GetAllRawJsonByCkTypeId("System.Communication/ServiceAccountConfiguration")`
    with no repository read. The **roles** are the expensive half — they are not on the entity, only
    as `role` claims on the issued token — so `IServiceAccountTokenService.AcquireServiceAccountIdentityAsync`
-   requests a client-credentials token, parses it locally (`JwtPayloadReader`, no signature check:
-   the token is the answer to our own request over TLS and never passed through a caller) and caches
-   the result per `(TenantId, ClientId)` until shortly before the token's own `exp`.
+   requests a client-credentials token, verifies it and caches the result per `(TenantId, ClientId)`
+   until shortly before the token's own `exp`. **Own issuer only (AB#9776):** every request goes to the
+   adapter's own identity service (`Adapter:IssuerUri`, else `Adapter:AuthorityUrl`), never to the
+   configured `IssuerUri`. The configured value must be empty, the `{{service.authority}}` token or one of
+   the own names (`Adapter:IssuerUri`, `Adapter:AuthorityUrl`, `Adapter:AdditionalValidIssuers`, compared
+   after normalising scheme/host case, default port and trailing slash); any other value is refused before
+   a request leaves the adapter. The configured `TenantId` must be empty or the pipeline's tenant, otherwise
+   the execution fails (`ServiceAccountTenantMismatch`). The issued token's signature is verified against
+   the keys of the discovery document of that request (`jwks_uri`, no extra round trip) with an asymmetric
+   algorithm only (RS*, PS*, ES*; `none` and `HS*` are refused), it must carry an `exp` that is not past (one
+   minute clock skew), and its `iss` must be an own name and its `tenant_id` the pipeline's tenant before a role is
+   used
+   (`OwnIssuerPolicy`, `ServiceAccountTokenService.ValidateIssuedTokenAsync`). The same checks apply to
+   `AcquireServiceAccountTokenAsync` and `AcquireDelegatedTokenAsync`. `AcquireServiceAccountIdentityAsync`
+   takes the pipeline's tenant as a required argument and refuses credentials naming another tenant, or an
+   empty pipeline tenant, itself — it does not rely on the caller having checked.
 3. Otherwise `RtSecurityContext.System`.
 
 Resolution is **lazy and memoised**: many executions never open a session at all (high-frequency
@@ -54,6 +67,7 @@ effect after the pipeline / data flow is redeployed.
 |---|---|
 | `GetScopedSessionAsync()` / `GetScopedSession()` | The effective identity. Stamps `RtCreatedBy`, subject to data permissions. |
 | `GetSystemSessionAsync()` / `GetSystemSession()` | **Explicitly** `RtSecurityContext.System`. |
+| `OpenTenantAsync(target, identity, …)` | Another tenant of the subtree (parent, sibling, child) through the cross-tenant guard: a session only under an identity the identity service proved for that tenant, never the system context ([cross-tenant-access.md](cross-tenant-access.md)). |
 
 The second is the more important one. Its existence is what turns "which identity does this node use"
 from an accident of who last touched the call site into a decision written down in the code: a node

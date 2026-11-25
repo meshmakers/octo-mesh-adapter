@@ -55,15 +55,22 @@ public class GetRtEntitiesByWellKnownNameTypeNode(NodeDelegate next, IMeshEtlCon
         var queryOptions = RtEntityQueryOptions.Create()
             .FieldIn(nameof(RtEntity.RtWellKnownName), names);
 
+        // AB#9768: the own tenant, or the target the cross-tenant guard opened (a refusal ends the node here).
+        var scope = await TenantReadScope.OpenAsync(etlContext, c.TargetTenant, c.Identity, dataContext, nodeContext);
+
         // AB#5028 — scoped: an ordinary read of tenant business data.
-        var session = await etlContext.GetSessionForAsync(c.Identity);
+        // AB#9768: with a target, the session the guard opened under the identity proven there.
+        // The session the guard opened in the target is the node's own and is disposed on every path (an open
+        // transaction is aborted with it); the own tenant's session stays as before.
+        using var targetSession = scope.IsCrossTenant ? await scope.OpenTargetSessionAsync() : null;
+        var session = targetSession ?? await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip,
+        var r = await scope.Repository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions, c.Skip,
             c.Take);
         await session.CommitTransactionAsync();
 
         // AB#7768: the attributes copied back into the items must not carry Hidden values.
-        r = await RtAttributeAccessGuard.DropHiddenAsync(etlContext, ckCacheService, r);
+        r = await scope.DropHiddenAsync(ckCacheService, r);
 
         // Build the resolution map keyed by well-known name. Matched entities resolve to an
         // Update; unmatched names (when GenerateInsertOperation) resolve to a freshly-id'd Insert.

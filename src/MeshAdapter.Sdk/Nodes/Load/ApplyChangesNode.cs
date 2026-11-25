@@ -80,9 +80,20 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICk
                         var session = await etlContext.GetSystemSessionAsync();
                         session.StartTransaction();
 
+                        // AB#9770: the engine refuses a change of synced master data (an entity carrying
+                        // RtSyncOrigin) and every write of RtSyncOrigin, also for this system session.
                         OperationResult operationResult = new();
-                        await etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,
-                            operationResult);
+                        try
+                        {
+                            await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
+                                etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,
+                                    operationResult));
+                        }
+                        catch (SyncOriginWriteRefusedException)
+                        {
+                            await session.AbortTransactionAsync();
+                            throw;
+                        }
                         if (operationResult.HasErrors || operationResult.HasFatalErrors)
                         {
                             nodeContext.Error("Error updating RtEntity");

@@ -1,8 +1,11 @@
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter;
 
@@ -108,4 +111,41 @@ public interface IMeshEtlContext : IEtlContext
     ///     blocks on nothing.
     /// </summary>
     IOctoSession GetSystemSession();
+
+    /// <summary>
+    ///     Opens <b>another tenant</b> of the pipeline's subtree for a node with a target-tenant setting: its parent, a
+    ///     sibling or a child, through the cross-tenant guard (<see cref="ICrossTenantAccessGuard" />), the only door
+    ///     to another tenant's data.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 Access needs both the relation (tenant registry) and a right of <paramref name="identity" /> in the target,
+    ///     proven by the identity service; <see cref="NodeExecutionIdentity.System" /> is always refused. A refusal is a
+    ///     <see cref="CrossTenantAccessDeniedException" /> (<c>CROSS_TENANT_FORBIDDEN</c>) before any data of the
+    ///     target is read. A node without a target-tenant setting never calls this and keeps its unchanged path.
+    ///     <para>
+    ///         The default implementation refuses: a context that does not wire the guard can never open another
+    ///         tenant (fail closed).
+    ///     </para>
+    /// </remarks>
+    /// <param name="target">The node's target-tenant setting.</param>
+    /// <param name="identity">The identity the node's configuration selected.</param>
+    /// <param name="dataContext">The data context (for a data-driven tenant id).</param>
+    /// <param name="nodeContext">The node, for messages.</param>
+    Task<ICrossTenantAccess> OpenTenantAsync(TenantTargetConfiguration target, NodeExecutionIdentity identity,
+        IDataContext dataContext, INodeContext nodeContext) =>
+        Task.FromException<ICrossTenantAccess>(CrossTenantAccessDeniedException.Forbidden(
+            nodeContext.NodePath.ToString(), target.Relation?.ToString() ?? "(none)", CrossTenantRefusalReason.TargetUnverifiable));
+
+    /// <summary>
+    ///     The registered direct children of the pipeline's tenant (AB#9770): the candidates of a master-data sync with
+    ///     <c>targetTenants</c> and no tenant list. Each one is still opened with <see cref="OpenTenantAsync" />, which
+    ///     checks relation and identity.
+    /// </summary>
+    /// <remarks>
+    ///     The default implementation refuses, like <see cref="OpenTenantAsync" /> (fail closed).
+    /// </remarks>
+    /// <param name="nodeContext">The node, for messages.</param>
+    Task<IReadOnlyList<string>> ListChildTenantsAsync(INodeContext nodeContext) =>
+        Task.FromException<IReadOnlyList<string>>(CrossTenantAccessDeniedException.Forbidden(
+            nodeContext.NodePath.ToString(), "Child", CrossTenantRefusalReason.TargetUnverifiable));
 }

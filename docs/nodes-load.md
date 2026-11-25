@@ -6,6 +6,90 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
 # Load nodes
 
 3. **Load Nodes** (`src/MeshAdapter.Sdk/Nodes/Load/`): Data persistence nodes
+   - **Writing into another tenant of the subtree** (AB#9769, Feature AB#8673): `ApplyChanges@2` takes the optional
+     `targetTenant` (`TenantTargetConfiguration`): `relation` `Parent` (no id), `Sibling` or `Child` (with `tenantId`,
+     or `tenantIdPath` for an id from the data context, e.g. the recipient of an invoice; only with a verified caller,
+     `ServiceAccount`/`System` name the target statically). Without it the node writes its
+     own tenant exactly as before (no guard call). With it the node first opens the target through
+     `IMeshEtlContext.OpenTenantAsync` (relation on the tenant registry, the node identity's right in the target proven
+     by the identity service — `Caller` or `ServiceAccount`, `System` always refused —, tenant generation); a refusal
+     fails the execution with `CROSS_TENANT_FORBIDDEN` before any check reads the target and before anything is
+     written, also in a dry run. The write checks (`GenericCreateGuard`, `RtAttributeAccessGuard`) then judge the batch
+     with the target's CK model and without the run's method marker (`Common/WriteGuardScope.cs`): MethodOnly
+     attributes, inserts of a type whose method replaces the generic create and identity association edges are always
+     refused in another tenant. Every association end must be inserted by the same batch or exist in the target (read
+     with the proven session), otherwise `CROSS_TENANT_FORBIDDEN` (`cross_tenant_association`). The batch is written in
+     one transaction of the target with the proven session; duplicate-key reporting, write-conflict retries and the merge
+     of several updates of one entity work as in the own tenant. `ApplyChanges@1` has no `targetTenant`: the key fails
+     registration. Example:
+
+     ```yaml
+     - type: ApplyChanges@2
+       entityUpdatesPath: $._inserts
+       identity: Caller            # a target from data needs a verified caller
+       targetTenant:
+         relation: Sibling
+         tenantIdPath: $.invoice.Items[0].Attributes.RecipientTenantId
+     ```
+
+     Tests: `ApplyChangesCrossTenantNodeTests`, `ApplyChangesCrossTenantIntegrationTests` (real tenant tree in MongoDB:
+     a released invoice of A becomes an incoming document in B, then update and delete; refusals leave B unchanged).
+     Design and abuse cases: `docs/cross-tenant-access.md`.
+   - **Master-data sync into the child tenants** (AB#9770, Feature AB#8673): `ApplyChanges@2` takes the optional
+     `targetTenants` (`TenantSetConfiguration`: `relation: Child`, optional `tenantIds`; not together with
+     `targetTenant`). Without `tenantIds` the targets are the registered direct children of the pipeline's tenant
+     (`IMeshEtlContext.ListChildTenantsAsync`, the guard's registry snapshot, cached up to 30 s). Every target is opened
+     through `OpenTenantAsync` as a `Child` target and written in its own transaction with the proven session: the node
+     reads the existing copies, plans an insert (missing copy) or update (this sync's copy) per entity — a replace of
+     the source replaces this sync's copy as a whole, so an attribute the replace leaves out is gone from the copy
+     too — or a delete (a delete of a missing copy writes nothing); several changes of one entity in a batch are
+     applied in order (updates merged, the later value winning; a replace or delete ends what came before), stamps `RtSyncOrigin` (source tenant = the pipeline's tenant, source
+     RtId, `SyncedAt`) and drops any origin of the input, judges the plan with the target's write guards and writes it.
+     An entity under that RtId without this origin refuses the whole target (`SYNC_OWNED_ENTITY`). Failures are
+     collected; after the last target the node throws `CrossTenantWriteFailedException` (`CROSS_TENANT_WRITE_FAILED`,
+     every failed target with its stable code, the written ones). Not supported with `targetTenants`:
+     `associationUpdatesPath`, `onDuplicateKey: Report`, record array item updates and secret clears (configuration
+     error). Dry run: nothing written, the intent lists per target the planned inserts, updates and deletes.
+     **Sync-origin write rules**: enforced by the engine (octo-construction-kit-engine-mongodb
+     `SyncOriginWriteRules`) for every writer, `ApplyChanges@1` and `ApplyChanges@2` included: a write of
+     `RtSyncOrigin` (a value, an array item update or a secret clear) and an update, replace, delete or archive of an
+     entity that carries an origin are refused before anything is written; the nodes report it as
+     `SYNC_OWNED_ENTITY` (`Common/SyncOriginGuard.cs`, `SyncOriginRefusal`). The sync writes with a sync-writer session
+     of the pipeline's tenant, which writes only that source's copies. A dry run does not judge it. Example
+     (sync pipeline of the group tenant):
+
+     ```yaml
+     triggers:
+       - type: FromWatchRtEntity@1
+         ckTypeId: Acme.Crm/Contact
+         updateTypes: Insert, Update, Replace
+     transformations:
+       - type: CreateUpdateInfo@1
+         targetPath: $._sync
+         targetValueKind: Array
+         updateKind: UPDATE
+         ckTypeId: Acme.Crm/Contact
+         rtIdPath: $.Document.RtId
+         attributeUpdates:
+           - attributeName: Name
+             attributeValueType: String
+             valuePath: $.Document.Attributes.Name
+       - type: ApplyChanges@2
+         identity: ServiceAccount
+         entityUpdatesPath: $._sync
+         targetTenants:
+           relation: Child
+     ```
+
+     Deletions: the default delete in the source archives the entity (update event, `$.Document.RtState` 1); an
+     erase is a delete event, which `FromWatchRtEntity@1` delivers only with `includeDeletes: true` (`$.UpdateType` 8,
+     `$.DocumentRtId`). Both delete the copies; the full pipeline with its `If@1` branches is in
+     `docs/cross-tenant-access.md` 4.1b. A
+     single-`targetTenant` write whose target engine refuses the batch fails with `CROSS_TENANT_WRITE_FAILED`
+     (`VALIDATION_FAILED`); own-tenant writes still only log it.
+     Tests: `ApplyChangesSyncNodeTests`, `MasterDataSyncIntegrationTests` (real tenant tree and the real change stream
+     of the group tenant: create, change and delete reach A and B within 60 s each; idempotency, owner, refusal of B,
+     local entities untouched, forged origins).
    - ApplyChangesNode/ApplyChangesNode2 — `ApplyChanges@2` merges several updates of one entity into one (later value wins; Secret clear lists reconcile). **Conflict detection is structural:** `AttributeValueComparer` compares lists, dictionaries, `RtRecord`s and `JsonElement`/`JsonNode` trees by content and numbers by value (int/long/decimal/double), so equal content never warns (it used to use reference `Equals`, ~90k false WARN/day on `Loxone/Control.States`). A real conflict logs ONE warning per entity and batch listing all conflicting attributes with compact, 200-char-truncated values; attributes named like credentials (`password`, `secret`, `token`, `apikey`, …) and `RtSecretValue`s print `<redacted>`. **Concurrent writers:** a MongoDB WriteConflict (112) is detected **anywhere in the exception chain** (`IsWriteConflict`; the repository wraps it in `OperationFailedException`, so the old unwrapped-only catch let it fail the pipeline), the transaction is aborted (`AbortQuietlyAsync`) and the write retried on a fresh session, at most `MaxWriteAttempts` = 6 with a jittered exponential wait (`WriteConflictBackoff`: ceilings 25..400 ms, half to all of it, ~0.4-0.8 s total; the semaphore is released for the wait and re-acquired before the next attempt, so other writes of the adapter go on, test `The_backoff_releases_the_process_wide_lock_so_other_writes_go_on`). 🔴 A conflict that outlasts the retries is **never a silent success** (the old loop ended without error and without flag): with `onDuplicateKey: Report` + `duplicateKeyTargetPath` it writes the flag `true` (nothing written), otherwise it rethrows. The duplicate-key filter runs before the conflict filter. The process-wide semaphore serialises only one adapter; two replicas meet 112 (cross-replica case covered by `SlotBookingConflictTests`, Testcontainers, sample method pipeline `docs/examples/slot-booking-method.yaml` with the declared method error `CONCURRENT_CHANGE`). Each attempt's session is disposed. A unique index belongs in the CK type's first version: adding one to a type with data is a Major change. Details: `docs/developer-guide.md` "Unique keys and concurrent writers".
    - **Origin of archive rows**: the three archive load nodes take `Origin` (`Automated` default / `Manual`), `ManualReason`, (raw + time-range) `ManualReasonAttributePath` and the per-row reason from the request data: `ManualReasonPath` (raw + time-range, relative to each item at `Path`) / `ManualReasonProperty` (series, on each value); order per row: request data, attribute, static `ManualReason`. `ArchiveWriteOriginStamp` validates once per node run: a manual write records as writer the verified caller's readable name (`VerifiedPrincipal.Name`, else its subject id), else the client id of the pipeline's service identity (`IMeshEtlContext.GetServiceIdentitySubjectIdAsync`), else `pipeline:<rtId>` — never refused, never empty; a reason without `Manual` is refused. Write result: `ArchiveWriteResultReporter` warns with the rows not stored per reason (only automated `CkTypeMismatch` skips are logged at Debug instead: one update list fanned out to one node per archive skips the other CK types on every run), stores `{stored, skipped, skippedByReason}` at `WriteResultPath`, and fails with `FailOnSkippedRows`. See `docs/developer-guide.md`, *Origin of archive rows*.
    - SaveStreamDataInArchive — writes instant measurements to a raw archive. A record attribute is handed on as one value; the engine repository expands it into the member columns (needs engine-mongodb with that fix). Chain test against the real repository: `RawArchiveRecordMemberPipelineIntegrationTests` (`StreamDataPipelineFixture` = `StreamDataFixture` + `AddOctoMeshAdapter`).

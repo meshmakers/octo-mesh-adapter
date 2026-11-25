@@ -42,10 +42,18 @@ public static class GenericCreateGuard
     ///     The tenant CK cache is not loaded and could not be loaded; the check cannot be made, so the batch is refused
     ///     (fail closed)
     /// </exception>
-    public static async Task EnsureAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+    public static Task EnsureAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+        IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos) =>
+        EnsureAllowedAsync(WriteGuardScope.Own(etlContext), ckCacheService, updateInfos);
+
+    /// <summary>
+    ///     Same check for the tenant of <paramref name="scope" /> (AB#9769: the target of a cross-tenant write is judged
+    ///     with its own CK model and without a method run, so a replaced create there is always refused).
+    /// </summary>
+    internal static async Task EnsureAllowedAsync(WriteGuardScope scope, ICkCacheService ckCacheService,
         IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos)
     {
-        ArgumentNullException.ThrowIfNull(etlContext);
+        ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(ckCacheService);
         ArgumentNullException.ThrowIfNull(updateInfos);
 
@@ -56,7 +64,7 @@ public static class GenericCreateGuard
             return;
         }
 
-        await EnsureTenantCacheLoadedAsync(etlContext, ckCacheService);
+        await EnsureTenantCacheLoadedAsync(scope, ckCacheService);
 
         // type -> qualified id of the replacing method, null when the generic create is allowed
         var replacingMethodByType = new Dictionary<RtCkId<CkTypeId>, string?>();
@@ -68,7 +76,7 @@ public static class GenericCreateGuard
             if (!replacingMethodByType.TryGetValue(ckTypeId, out var replacingMethodId))
             {
                 replacingMethodId =
-                    GenericCreateReplacement.TryGetReplacingMethod(ckCacheService, etlContext.TenantId, ckTypeId,
+                    GenericCreateReplacement.TryGetReplacingMethod(ckCacheService, scope.TenantId, ckTypeId,
                         out var method)
                         ? method.QualifiedMethodId
                         : null;
@@ -80,7 +88,7 @@ public static class GenericCreateGuard
                 continue;
             }
 
-            var cause = GetRefusalCause(etlContext, replacingMethodId);
+            var cause = GetRefusalCause(scope, replacingMethodId);
             if (cause != null)
             {
                 (refusals ??= []).Add(new GenericCreateRefusal(ckTypeId.FullName, replacingMethodId, cause));
@@ -99,31 +107,31 @@ public static class GenericCreateGuard
     ///     in the middle of a run (lease leave, CkModelChanged), so the guard loads it first and fails closed when that
     ///     does not work.
     /// </summary>
-    private static async Task EnsureTenantCacheLoadedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    private static async Task EnsureTenantCacheLoadedAsync(WriteGuardScope scope, ICkCacheService ckCacheService)
     {
-        if (ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        if (ckCacheService.IsTenantLoaded(scope.TenantId))
         {
             return;
         }
 
         try
         {
-            await etlContext.TenantRepository.LoadCacheForTenantAsync(ckCacheService);
+            await scope.Repository.LoadCacheForTenantAsync(ckCacheService);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            throw new GenericCreateCheckUnavailableException(etlContext.TenantId, e);
+            throw new GenericCreateCheckUnavailableException(scope.TenantId, e);
         }
 
-        if (!ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        if (!ckCacheService.IsTenantLoaded(scope.TenantId))
         {
-            throw new GenericCreateCheckUnavailableException(etlContext.TenantId, null);
+            throw new GenericCreateCheckUnavailableException(scope.TenantId, null);
         }
     }
 
-    private static string? GetRefusalCause(IMeshEtlContext etlContext, string replacingMethodId)
+    private static string? GetRefusalCause(WriteGuardScope scope, string replacingMethodId)
     {
-        var marker = etlContext.MethodInvocation;
+        var marker = scope.MethodInvocation;
         if (marker == null)
         {
             return GenericCreateRefusalCause.MissingMarker;
@@ -135,8 +143,7 @@ public static class GenericCreateGuard
         }
 
         // The pipeline id is an ObjectId hex string; compare it the way ids are compared, not as a secret.
-        if (!string.Equals(marker.PipelineRtId, etlContext.PipelineRtEntityId.RtId.ToString(),
-                StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(marker.PipelineRtId, scope.PipelineRtId, StringComparison.OrdinalIgnoreCase))
         {
             return GenericCreateRefusalCause.PipelineMismatch;
         }

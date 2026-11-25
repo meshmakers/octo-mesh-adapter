@@ -1,0 +1,7 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # AB#9770 (SyncedContact)
+  - id: ContactName
+    valueType: String
+  - id: ContactEmail
+    valueType: String

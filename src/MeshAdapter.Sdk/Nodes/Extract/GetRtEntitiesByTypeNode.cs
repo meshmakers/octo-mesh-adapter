@@ -31,7 +31,6 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
 
         // Everything that can be decided from the configuration is decided before a session is opened.
-        Func<IOctoSession, Task<IResultSet<RtEntity>>> query;
         if (c.CkInterfaceId == null && c.CkTypeId == null && c.CkTypeIdPath == null)
         {
             var node = nodeContext.NodePath.ToString();
@@ -39,6 +38,35 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
                 $"[{node}]: CkTypeId is not set. Please set ckTypeId or ckTypeIdPath, or ckInterfaceId to select by CK interface.");
         }
 
+        // AB#9771: several child tenants, each opened by the cross-tenant guard; the result names the source tenant of
+        // every item.
+        if (c.TargetTenants != null)
+        {
+            var consolidated = await MultiTenantRead.ReadAsync(etlContext, c.TargetTenant, c.TargetTenants,
+                c.Identity, dataContext, nodeContext, s => ReadAsync(s, c, dataContext, nodeContext));
+            dataContext.Set(c.TargetPath, consolidated, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        // AB#9768: the own tenant, or the target the cross-tenant guard opened (a refusal ends the node here).
+        var scope = await TenantReadScope.OpenAsync(etlContext, c.TargetTenant, c.Identity, dataContext, nodeContext);
+
+        var r = await ReadAsync(scope, c, dataContext, nodeContext);
+
+        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+
+        await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Reads the selection from one tenant: the own one or one the cross-tenant guard opened. Hidden attributes are
+    /// checked and dropped with the CK model of that tenant.
+    /// </summary>
+    private async Task<IResultSet<RtEntity>> ReadAsync(TenantReadScope scope, GetRtEntitiesByTypeNodeConfiguration c,
+        IDataContext dataContext, INodeContext nodeContext)
+    {
+        Func<IOctoSession, Task<IResultSet<RtEntity>>> query;
         var queryOptions = RtEntityQueryOptions.Create();
         if (c.CkInterfaceId != null)
         {
@@ -47,13 +75,13 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
             // security filter lives in the engine method and acts on the session of the node's identity.
             var ckInterfaceId = ValidateInterfaceSelection(c, nodeContext, out var skip, out var take);
             // AB#7768: no filter or sort on a Hidden attribute of any implementing type.
-            await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
+            await scope.EnsureCacheLoadedAsync(ckCacheService);
             var implementingTypes =
-                RtAttributeAccessGuard.TypesOfInterface(ckCacheService, etlContext.TenantId, ckInterfaceId);
-            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+                RtAttributeAccessGuard.TypesOfInterface(ckCacheService, scope.TenantId, ckInterfaceId);
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, scope.TenantId,
                 nodeContext.NodePath.ToString(), implementingTypes,
                 (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
-            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, scope.TenantId,
                 nodeContext.NodePath.ToString(), implementingTypes,
                 (c.SortOrders ?? []).Select(s => s.AttributeName), "sort order");
             c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
@@ -63,7 +91,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
                 try
                 {
                     // The count is always requested so that the output has the shape of the type variant (TotalCount).
-                    var result = await etlContext.TenantRepository.GetRtEntitiesByInterfaceAsync(session, ckInterfaceId,
+                    var result = await scope.Repository.GetRtEntitiesByInterfaceAsync(session, ckInterfaceId,
                         queryOptions, skip, take, includeTotalCount: true);
                     return new ResultSet<RtEntity>(result.Items, result.TotalCount ?? result.Items.Count, null, null);
                 }
@@ -77,21 +105,25 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         {
             var ckTypeId = CkTypeIdHelper.ResolveRtCkTypeId(c.CkTypeId, c.CkTypeIdPath, dataContext, nodeContext);
             // AB#7768: no filter or sort on a Hidden attribute.
-            await RtAttributeAccessGuard.EnsureCacheLoadedAsync(etlContext, ckCacheService);
-            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+            await scope.EnsureCacheLoadedAsync(ckCacheService);
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, scope.TenantId,
                 nodeContext.NodePath.ToString(), [ckTypeId],
                 (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
-            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, etlContext.TenantId,
+            RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, scope.TenantId,
                 nodeContext.NodePath.ToString(), [ckTypeId],
                 (c.SortOrders ?? []).Select(s => s.AttributeName), "sort order");
             c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
             c.SortOrders.GetSortOrders(queryOptions);
-            query = session => etlContext.TenantRepository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions,
+            query = session => scope.Repository.GetRtEntitiesByTypeAsync(session, ckTypeId, queryOptions,
                 c.Skip, c.Take);
         }
 
-        // AB#5028 — scoped: an ordinary read of tenant business data.
-        var session = await etlContext.GetSessionForAsync(c.Identity);
+        // AB#5028 — scoped: an ordinary read of tenant business data. AB#9768: with a target, the session the guard
+        // opened under the identity proven there (never this node's own session).
+        // The session the guard opened in the target is the node's own and is disposed on every path (an open
+        // transaction is aborted with it); the own tenant's session stays as before.
+        using var targetSession = scope.IsCrossTenant ? await scope.OpenTargetSessionAsync() : null;
+        var session = targetSession ?? await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         IResultSet<RtEntity> r;
         try
@@ -106,11 +138,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         }
 
         // AB#7768: Hidden values never enter the data context.
-        r = await RtAttributeAccessGuard.DropHiddenAsync(etlContext, ckCacheService, r);
-
-        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-
-        await next(dataContext, nodeContext);
+        return await scope.DropHiddenAsync(ckCacheService, r);
     }
 
     private static RtCkId<CkInterfaceId> ValidateInterfaceSelection(GetRtEntitiesByTypeNodeConfiguration c,

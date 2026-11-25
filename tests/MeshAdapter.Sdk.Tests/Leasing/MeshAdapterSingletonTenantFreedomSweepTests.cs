@@ -180,6 +180,15 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 + "registration lookup (cleared above) and a logger; the tenant list is a method "
                 + "argument and the result is returned, not kept. Admin operation "
                 + "(ISystemContext.ReviewTenantOwnershipAsync), not reached by a lease.",
+            ["TenantRegistryReader"] =
+                "Cross-tenant guard. Caches one snapshot of the platform tenant REGISTRY (tenant id and parent "
+                + "of every registered tenant) for at most 30 s - the same answer for every process and every "
+                + "lease, no tenant data and no credential. Nothing a lease owns.",
+            ["CrossTenantAccessGuard"] =
+                "Cross-tenant guard. Stateless: its fields are the system context, the CK cache service, the "
+                + "registry reader and the generation reader (each cleared here), the identity provider and a "
+                + "logger. Source tenant, caller, token and the per-execution proof cache are arguments of every "
+                + "call and live on the execution's context; the returned access is not kept.",
             ["TenantGenerationReader"] =
                 "AB#9022 (common-services AB#8999). DOES retain per-tenant state: the current generation "
                 + "of each tenant id it was asked for (the creation time of the tenant's lifecycle record), "

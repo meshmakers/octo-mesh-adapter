@@ -1,14 +1,17 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Messages;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 using MongoDB.Driver;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
@@ -33,6 +36,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
     /// <summary>MongoDB's error code for a WriteConflict in a transaction.</summary>
     private const int WriteConflictCode = 112;
 
+    /// <summary>The failure code of a target whose engine validation refused the batch (AB#9770).</summary>
+    internal const string ValidationFailedCode = "VALIDATION_FAILED";
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -51,13 +57,41 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                 c.AssociationUpdatesPath) ?? [];
         }
 
+        // AB#9770: the one-way master-data sync into the child tenants has its own path (one transaction per target,
+        // upsert keyed by RtSyncOrigin, fail after all targets).
+        if (c.TargetTenants != null)
+        {
+            await SyncIntoTargetsAsync(c, entityUpdates, dataContext, nodeContext);
+            await next(dataContext, nodeContext);
+            return;
+        }
+
+        // AB#9769: with a target tenant, the cross-tenant guard opens it first; a refusal (CROSS_TENANT_FORBIDDEN) ends
+        // the node here, before any check reads the target and before anything is written, also in a dry run.
+        ICrossTenantAccess? target = null;
+        if (c.TargetTenant != null)
+        {
+            target = await etlContext.OpenTenantAsync(c.TargetTenant, c.Identity, dataContext, nodeContext);
+        }
+
+        var repository = target?.Repository ?? etlContext.TenantRepository;
+
         // AB#7463: inserts of a type whose CK method replaces the generic create are refused outside that
         // method's own run. Checked on the raw entity updates (every insert is part of the later
         // resultUpdateInfos), before the dry-run branch and before any write; the whole batch is refused.
         // AB#8059: the same call refuses identity-owned User attributes and identity association edges (insert and
         // delete) outside the method run of a System.Identity type.
-        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdates,
-            associationUpdates);
+        // AB#9769: a batch for another tenant is judged with that tenant's CK model and without a method run.
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(
+            target == null ? WriteGuardScope.Own(etlContext) : WriteGuardScope.CrossTenant(etlContext, target),
+            ckCacheService, entityUpdates, associationUpdates);
+
+        // AB#9769: an association written into another tenant joins two entities of that tenant only.
+        if (target != null)
+        {
+            await EnsureAssociationEndsInTargetAsync(target, c.TargetTenant!, entityUpdates, associationUpdates,
+                nodeContext);
+        }
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {
@@ -65,6 +99,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
             {
                 entityUpdatesPath = c.EntityUpdatesPath,
                 associationUpdatesPath = c.AssociationUpdatesPath,
+                targetTenantId = target?.TenantId,
                 entityUpdateCount = entityUpdates.Count,
                 recordArrayItemUpdateCount = entityUpdates.Sum(u => u.RecordArrayItemUpdates?.Count ?? 0),
                 associationUpdateCount = associationUpdates.Count,
@@ -117,16 +152,43 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                         //
                         // Assigned rather than declared here: the catch blocks below roll the
                         // transaction back, so the session has to outlive this block (AB#3717).
-                        session = await etlContext.GetSessionForAsync(c.Identity);
+                        //
+                        // AB#9769: with a target, the session the guard opened under the identity proven there
+                        // (never this node's own session, the source identity or the system context).
+                        session = target != null
+                            ? await target.OpenSessionAsync()
+                            : await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
 
+                        // AB#9770: the engine refuses a change of synced master data (an entity carrying
+                        // RtSyncOrigin) and every write of RtSyncOrigin: only the sync of its source tenant writes them.
                         OperationResult operationResult = new();
-                        await etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,
-                            resultAssocUpdate, operationResult);
+                        try
+                        {
+                            await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
+                                repository.ApplyChangesAsync(session, resultUpdateInfos, resultAssocUpdate,
+                                    operationResult));
+                        }
+                        catch (SyncOriginWriteRefusedException)
+                        {
+                            await AbortQuietlyAsync(session, nodeContext);
+                            throw;
+                        }
                         if (operationResult.HasErrors || operationResult.HasFatalErrors)
                         {
                             nodeContext.Error("Error updating RtEntity");
                             await session.AbortTransactionAsync();
+
+                            // AB#9770 (decision 6): a write into another tenant that its engine refused fails the
+                            // execution and names the target, instead of only logging. The own tenant keeps the
+                            // logging-only behaviour it always had.
+                            if (target != null)
+                            {
+                                nodeContext.Error("The write into tenant '{0}' was refused by its validation: {1}",
+                                    target.TenantId, operationResult.GetMessages());
+                                throw CrossTenantWriteFailedException.Create(nodeContext.NodePath.ToString(), 1,
+                                    [new CrossTenantWriteFailure(target.TenantId, ValidationFailedCode)], []);
+                            }
                         }
                         else
                         {
@@ -231,6 +293,399 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 
 
         await next(dataContext, nodeContext);
+    }
+
+    // ------------------------------------------------------------------------------------------------ sync (AB#9770)
+
+    /// <summary>
+    /// AB#9770: writes the batch as a one-way master-data sync into every target tenant of
+    /// <see cref="ApplyChangesNodeConfiguration2.TargetTenants" />. Each target is opened through the cross-tenant guard
+    /// and written in its own transaction; a refused or failed target does not stop the others, and the node throws
+    /// <see cref="CrossTenantWriteFailedException" /> after the last target, naming every failed one.
+    /// </summary>
+    private async Task SyncIntoTargetsAsync(ApplyChangesNodeConfiguration2 c,
+        IReadOnlyList<EntityUpdateInfo<RtEntity>> entityUpdates, IDataContext dataContext, INodeContext nodeContext)
+    {
+        var nodePath = nodeContext.NodePath.ToString();
+        var problem = CheckSyncConfiguration(c);
+        if (problem != null)
+        {
+            throw CrossTenantAccessDeniedException.InvalidConfiguration(nodePath, problem);
+        }
+
+        var items = SyncItem.From(entityUpdates, nodePath);
+
+        IReadOnlyList<string> targets = c.TargetTenants!.TenantIds != null
+            ? c.TargetTenants.TenantIds.Select(TenantRegistrySnapshot.Normalize).OfType<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            : await etlContext.ListChildTenantsAsync(nodeContext);
+        if (targets.Count == 0)
+        {
+            nodeContext.Warning("The sync has no target tenant (the pipeline's tenant has no child tenant)");
+            return;
+        }
+
+        var sourceTenantId = etlContext.TenantId;
+        var syncedAt = DateTime.UtcNow;
+        var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
+        var failures = new List<CrossTenantWriteFailure>();
+        var written = new List<string>();
+        var dryRunPlans = new List<object>();
+
+        foreach (var tenantId in targets)
+        {
+            try
+            {
+                // Every target, also one from the registry's list of children, passes the whole guard: relation,
+                // identity proof in that tenant, generation.
+                var access = await etlContext.OpenTenantAsync(
+                    new TenantTargetConfiguration { Relation = TenantRelation.Child, TenantId = tenantId },
+                    c.Identity, dataContext, nodeContext);
+                var plan = await SyncIntoTargetAsync(access, items, sourceTenantId, syncedAt, isDryRun, nodeContext);
+                written.Add(access.TenantId);
+                if (isDryRun)
+                {
+                    dryRunPlans.Add(new
+                    {
+                        targetTenantId = access.TenantId,
+                        inserts = plan.Count(u => u.ModOption == EntityModOptions.Insert),
+                        updates = plan.Count(u => u.ModOption == EntityModOptions.Update),
+                        deletes = plan.Count(u => u.ModOption == EntityModOptions.Delete),
+                        wouldApplyEntityUpdates = plan
+                    });
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                var code = FailureCode(ex);
+                failures.Add(new CrossTenantWriteFailure(tenantId, code) { Cause = ex });
+                // The type and the stable code only: a driver message can carry a key value of the target.
+                nodeContext.Warning($"The sync into tenant '{tenantId}' failed ({code}, {ex.GetType().Name}); " +
+                                    "the other targets are written");
+            }
+        }
+
+        if (isDryRun)
+        {
+            nodeContext.RecordDryRunIntent(DryRunHonouredLoadNodes.ApplyChanges2, new
+            {
+                entityUpdatesPath = c.EntityUpdatesPath,
+                syncTargets = dryRunPlans,
+                failedTargets = failures
+            });
+        }
+
+        if (failures.Count > 0)
+        {
+            throw CrossTenantWriteFailedException.Create(nodePath, targets.Count, failures, written);
+        }
+    }
+
+    /// <summary>The static rules of a sync configuration; <c>null</c> when consistent.</summary>
+    internal static string? CheckSyncConfiguration(ApplyChangesNodeConfiguration2 c)
+    {
+        var set = c.TargetTenants!;
+        if (c.TargetTenant != null)
+        {
+            return "set either targetTenant or targetTenants, not both";
+        }
+
+        if (set.Relation == null)
+        {
+            return "targetTenants needs a relation (Child)";
+        }
+
+        if (set.Relation != TenantRelation.Child)
+        {
+            return $"targetTenants supports only the relation Child, not {set.Relation}";
+        }
+
+        if (set.TenantIds is { Count: 0 } || set.TenantIds?.All(string.IsNullOrWhiteSpace) == true)
+        {
+            return "targetTenants.tenantIds is empty; leave it out to sync into every child tenant";
+        }
+
+        if (!string.IsNullOrWhiteSpace(c.AssociationUpdatesPath))
+        {
+            return "a sync with targetTenants writes no association updates (associationUpdatesPath)";
+        }
+
+        if (c.OnDuplicateKey == DuplicateKeyHandling.Report)
+        {
+            return "onDuplicateKey: Report is not supported with targetTenants";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// One target: reads the existing copies in a transaction of the proven identity, plans the upserts and deletes,
+    /// judges the plan with the target's write guards and writes it in the same transaction (not in a dry run). A
+    /// WriteConflict is retried like the single-tenant write.
+    /// </summary>
+    private async Task<IReadOnlyList<EntityUpdateInfo<RtEntity>>> SyncIntoTargetAsync(ICrossTenantAccess access,
+        IReadOnlyList<SyncItem> items, string sourceTenantId, DateTime syncedAt, bool isDryRun,
+        INodeContext nodeContext)
+    {
+        await ApplySemaphoreSlim.WaitAsync();
+        try
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                IOctoSession? session = null;
+                try
+                {
+                    // The sync writer of the pipeline's tenant: the target's engine lets it write only the copies of
+                    // that source (and refuses every other session that touches them).
+                    session = await access.OpenSyncWriterSessionAsync(sourceTenantId);
+                    session.StartTransaction();
+
+                    var plan = await PlanSyncAsync(access, session, items, sourceTenantId, syncedAt,
+                        nodeContext.NodePath.ToString());
+                    await RtAttributeAccessGuard.EnsureWritesAllowedAsync(
+                        WriteGuardScope.CrossTenant(etlContext, access), ckCacheService, plan, []);
+
+                    if (isDryRun || plan.Count == 0)
+                    {
+                        await AbortQuietlyAsync(session, nodeContext);
+                        return plan;
+                    }
+
+                    var operationResult = new OperationResult();
+                    await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
+                        access.Repository.ApplyChangesAsync(session, plan, [], operationResult));
+                    if (operationResult.HasErrors || operationResult.HasFatalErrors)
+                    {
+                        await AbortQuietlyAsync(session, nodeContext);
+                        nodeContext.Error("The sync into tenant '{0}' was refused by its validation: {1}",
+                            access.TenantId, operationResult.GetMessages());
+                        throw new CrossTenantSyncTargetRejectedException();
+                    }
+
+                    await session.CommitTransactionAsync();
+                    return plan;
+                }
+                catch (Exception e) when (IsWriteConflict(e) && attempt < MaxWriteAttempts)
+                {
+                    await AbortQuietlyAsync(session, nodeContext);
+                    session?.Dispose();
+                    session = null;
+                    var delay = WriteConflictBackoff(attempt, Random.Shared);
+                    nodeContext.Debug(
+                        $"Write conflict in the sync into '{access.TenantId}' (attempt {attempt} of {MaxWriteAttempts}), retrying in {delay.TotalMilliseconds:F0} ms");
+                    ApplySemaphoreSlim.Release();
+                    try
+                    {
+                        await Task.Delay(delay);
+                    }
+                    finally
+                    {
+                        await ApplySemaphoreSlim.WaitAsync();
+                    }
+                }
+                catch (Exception) when (session != null)
+                {
+                    await AbortQuietlyAsync(session, nodeContext);
+                    throw;
+                }
+                finally
+                {
+                    session?.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            ApplySemaphoreSlim.Release();
+        }
+    }
+
+    /// <summary>
+    /// The writes of one target, keyed by source tenant and source RtId (the copy keeps the source RtId): an upsert
+    /// inserts a missing copy or updates the existing one and stamps <c>RtSyncOrigin</c>; a replace of the source
+    /// replaces the existing copy as a whole (an attribute the replace leaves out is gone from the copy too), with the
+    /// origin stamped again; a delete removes the copy and is a no-op when there is none. An entity with that RtId that is not this sync's copy (no origin, or the origin of
+    /// another source) refuses the whole target: the sync never touches a local entity.
+    /// </summary>
+    internal static async Task<List<EntityUpdateInfo<RtEntity>>> PlanSyncAsync(ICrossTenantAccess access,
+        IOctoSession session, IReadOnlyList<SyncItem> items, string sourceTenantId, DateTime syncedAt,
+        string nodePath)
+    {
+        var existing = new Dictionary<OctoObjectId, RtEntity>();
+        foreach (var group in items.GroupBy(i => i.CkTypeId))
+        {
+            var ids = group.Select(i => i.RtId).Distinct().ToList();
+            var found = await access.Repository.GetRtEntitiesByIdAsync(session, group.Key, ids,
+                RtEntityQueryOptions.Create(), null, null);
+            foreach (var entity in found.Items)
+            {
+                existing[entity.RtId] = entity;
+            }
+        }
+
+        var plan = new List<EntityUpdateInfo<RtEntity>>();
+        foreach (var item in items)
+        {
+            var entityId = new RtEntityId(item.CkTypeId, item.RtId);
+            existing.TryGetValue(item.RtId, out var current);
+            if (current != null && !SyncOrigin.IsCopyOf(SyncOrigin.Read(current), sourceTenantId, item.RtId))
+            {
+                throw SyncOriginWriteRefusedException.NotOwnedBySync(nodePath, access.TenantId, entityId);
+            }
+
+            if (item.IsDelete)
+            {
+                if (current != null)
+                {
+                    plan.Add(EntityUpdateInfo<RtEntity>.CreateDelete(entityId));
+                }
+
+                continue;
+            }
+
+            var attributes = SyncOrigin.WithoutOrigin(item.Attributes!);
+            attributes[SyncOrigin.AttributeName] = SyncOrigin.Create(sourceTenantId, item.RtId, syncedAt);
+            var copy = new RtEntity(item.CkTypeId, item.RtId, attributes) { RtWellKnownName = item.RtWellKnownName };
+            plan.Add(current == null
+                ? EntityUpdateInfo<RtEntity>.CreateInsert(copy)
+                : item.IsReplace
+                    ? EntityUpdateInfo<RtEntity>.CreateReplace(entityId, copy)
+                    : EntityUpdateInfo<RtEntity>.CreateUpdate(entityId, copy));
+        }
+
+        return plan;
+    }
+
+    private static string FailureCode(Exception ex) => ex switch
+    {
+        CrossTenantAccessDeniedException denied => denied.ErrorCode,
+        SyncOriginWriteRefusedException owned => owned.ErrorCode,
+        RtAttributeWriteRestrictedException => "ATTRIBUTE_WRITE_RESTRICTED",
+        CrossTenantSyncTargetRejectedException => ValidationFailedCode,
+        _ when IsWriteConflict(ex) => "WRITE_CONFLICT",
+        _ => "WRITE_FAILED"
+    };
+
+    /// <summary>The target's validation refused the planned batch; details are in the pipeline log.</summary>
+    private sealed class CrossTenantSyncTargetRejectedException() : Exception("The target refused the sync batch");
+
+    /// <summary>
+    /// One entity of a sync batch: the source entity (insert or update; <see cref="IsReplace" /> for a replace, which
+    /// replaces the copy as a whole) or its deletion.
+    /// </summary>
+    internal sealed record SyncItem(RtCkId<CkTypeId> CkTypeId, OctoObjectId RtId, bool IsDelete, bool IsReplace,
+        IReadOnlyDictionary<string, object?>? Attributes, string? RtWellKnownName)
+    {
+        /// <summary>
+        /// The items of the batch, one per entity: several changes of an entity (a change stream can carry several)
+        /// are applied in order (<see cref="Then" />), so no change is lost. Record array item updates and secret
+        /// clears are not part of a sync (the source entity is copied as it is).
+        /// </summary>
+        public static IReadOnlyList<SyncItem> From(IEnumerable<EntityUpdateInfo<RtEntity>> updates, string nodePath)
+        {
+            var items = new List<SyncItem>();
+            foreach (var update in updates)
+            {
+                if (update.RecordArrayItemUpdates is { Count: > 0 } || update.ClearSecretAttributes is { Count: > 0 })
+                {
+                    throw CrossTenantAccessDeniedException.InvalidConfiguration(nodePath,
+                        "a sync copies whole entities; record array item updates and secret clears are not supported");
+                }
+
+                var isDelete = update.ModOption == EntityModOptions.Delete;
+                var rtId = update.RtId ?? update.RtEntity?.RtId;
+                if (rtId == null || rtId == OctoObjectId.Empty || (!isDelete && update.RtEntity == null))
+                {
+                    throw CrossTenantAccessDeniedException.InvalidConfiguration(nodePath,
+                        "every entity update of a sync needs the source RtId (and the entity for an upsert)");
+                }
+
+                var item = new SyncItem(update.CkTypeId, rtId.Value, isDelete,
+                    update.ModOption == EntityModOptions.Replace, update.RtEntity?.Attributes,
+                    update.RtEntity?.RtWellKnownName);
+                var index = items.FindIndex(i => i.RtId == rtId.Value && i.CkTypeId == update.CkTypeId);
+                if (index < 0)
+                {
+                    items.Add(item);
+                }
+                else
+                {
+                    items[index] = items[index].Then(item);
+                }
+            }
+
+            return items;
+        }
+
+        /// <summary>
+        /// This change followed by <paramref name="next" /> of the same entity: a delete or a replace ends what came
+        /// before; after a delete the entity was created again, so the next upsert replaces the copy; otherwise the
+        /// next update is merged onto this one (its attributes win, the others stay).
+        /// </summary>
+        internal SyncItem Then(SyncItem next)
+        {
+            if (next.IsDelete || next.IsReplace)
+            {
+                return next;
+            }
+
+            if (IsDelete)
+            {
+                return next with { IsReplace = true };
+            }
+
+            var attributes = new Dictionary<string, object?>(Attributes ?? new Dictionary<string, object?>());
+            foreach (var (name, value) in next.Attributes ?? new Dictionary<string, object?>())
+            {
+                attributes[name] = value;
+            }
+
+            return this with { Attributes = attributes, RtWellKnownName = next.RtWellKnownName ?? RtWellKnownName };
+        }
+    }
+
+    /// <summary>
+    /// AB#9769: every end of an association change in a cross-tenant write is an entity this batch inserts or an
+    /// entity the target holds, read with the session the guard proved there. An end the target does not hold (for
+    /// example an RtId of the pipeline's own tenant, abuse case "cross-tenant association") refuses the whole batch
+    /// with CROSS_TENANT_FORBIDDEN before anything is written. Applies to creates and deletes alike.
+    /// </summary>
+    private static async Task EnsureAssociationEndsInTargetAsync(ICrossTenantAccess target,
+        TenantTargetConfiguration targetConfiguration, IReadOnlyCollection<EntityUpdateInfo<RtEntity>> entityUpdates,
+        IReadOnlyCollection<AssociationUpdateInfo> associationUpdates, INodeContext nodeContext)
+    {
+        if (associationUpdates.Count == 0)
+        {
+            return;
+        }
+
+        // An insert carries its id on the entity (the update info has none of its own for a new entity).
+        var inserted = entityUpdates.Where(u => u.ModOption == EntityModOptions.Insert && u.RtEntity != null)
+            .Select(u => u.RtEntity!.RtId).ToHashSet();
+        var ends = associationUpdates.SelectMany(a => new[] { a.Origin, a.Target })
+            .Where(end => !inserted.Contains(end.RtId)).Distinct().ToList();
+        if (ends.Count == 0)
+        {
+            return;
+        }
+
+        using var session = await target.OpenSessionAsync();
+        session.StartTransaction();
+        foreach (var group in ends.GroupBy(end => end.CkTypeId))
+        {
+            var ids = group.Select(end => end.RtId).Distinct().ToList();
+            var found = await target.Repository.GetRtEntitiesByIdAsync(session, group.Key, ids,
+                RtEntityQueryOptions.Create(), null, null);
+            var foundIds = found.Items.Select(e => e.RtId).ToHashSet();
+            if (ids.Any(id => !foundIds.Contains(id)))
+            {
+                await session.AbortTransactionAsync();
+                throw CrossTenantAccessDeniedException.Forbidden(nodeContext.NodePath.ToString(),
+                    targetConfiguration.Relation?.ToString() ?? "(none)", CrossTenantRefusalReason.CrossTenantAssociation);
+            }
+        }
+
+        await session.CommitTransactionAsync();
     }
 
     /// <summary>

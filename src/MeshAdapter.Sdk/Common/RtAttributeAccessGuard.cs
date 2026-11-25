@@ -6,6 +6,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Engine.Repositories.Query;
@@ -57,33 +58,45 @@ public static class RtAttributeAccessGuard
     ///     Loads the tenant CK cache when it is not loaded (the cache can be unloaded in the middle of a run); fails
     ///     closed with <see cref="RtAttributeAccessCheckUnavailableException" />.
     /// </summary>
-    public static async Task EnsureCacheLoadedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    public static Task EnsureCacheLoadedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService)
     {
         ArgumentNullException.ThrowIfNull(etlContext);
+        return EnsureCacheLoadedAsync(etlContext.TenantRepository, etlContext.TenantId, ckCacheService);
+    }
+
+    /// <summary>
+    ///     Same as <see cref="EnsureCacheLoadedAsync(IMeshEtlContext, ICkCacheService)" /> for the repository of
+    ///     <paramref name="tenantId" /> — the target of a cross-tenant read (AB#9768): Hidden attributes are those of
+    ///     the tenant the data comes from.
+    /// </summary>
+    public static async Task EnsureCacheLoadedAsync(ITenantRepository tenantRepository, string tenantId,
+        ICkCacheService ckCacheService)
+    {
+        ArgumentNullException.ThrowIfNull(tenantRepository);
         ArgumentNullException.ThrowIfNull(ckCacheService);
-        if (ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        if (ckCacheService.IsTenantLoaded(tenantId))
         {
             return;
         }
 
         try
         {
-            await etlContext.TenantRepository.LoadCacheForTenantAsync(ckCacheService);
+            await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            throw new RtAttributeAccessCheckUnavailableException(etlContext.TenantId, e);
+            throw new RtAttributeAccessCheckUnavailableException(tenantId, e);
         }
 
-        if (!ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        if (!ckCacheService.IsTenantLoaded(tenantId))
         {
-            throw new RtAttributeAccessCheckUnavailableException(etlContext.TenantId, null);
+            throw new RtAttributeAccessCheckUnavailableException(tenantId, null);
         }
     }
 
     /// <summary>
     ///     Returns the entity without its Hidden attributes. The same instance when nothing is hidden, otherwise a copy.
-    ///     The caller has made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync" />).
+    ///     The caller has made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync(IMeshEtlContext, ICkCacheService)" />).
     /// </summary>
     public static RtEntity DropHidden(ICkCacheService ckCacheService, string tenantId, RtEntity entity)
     {
@@ -116,13 +129,24 @@ public static class RtAttributeAccessGuard
     }
 
     /// <summary>Loads the cache if needed and drops the Hidden attributes of every entity of the result.</summary>
-    public static async Task<IResultSet<RtEntity>> DropHiddenAsync(IMeshEtlContext etlContext,
+    public static Task<IResultSet<RtEntity>> DropHiddenAsync(IMeshEtlContext etlContext,
         ICkCacheService ckCacheService, IResultSet<RtEntity> resultSet)
     {
+        ArgumentNullException.ThrowIfNull(etlContext);
+        return DropHiddenAsync(etlContext.TenantRepository, etlContext.TenantId, ckCacheService, resultSet);
+    }
+
+    /// <summary>
+    ///     Same as <see cref="DropHiddenAsync(IMeshEtlContext, ICkCacheService, IResultSet{RtEntity})" /> with the CK
+    ///     model of <paramref name="tenantId" /> (the target of a cross-tenant read, AB#9768).
+    /// </summary>
+    public static async Task<IResultSet<RtEntity>> DropHiddenAsync(ITenantRepository tenantRepository,
+        string tenantId, ICkCacheService ckCacheService, IResultSet<RtEntity> resultSet)
+    {
         ArgumentNullException.ThrowIfNull(resultSet);
-        await EnsureCacheLoadedAsync(etlContext, ckCacheService);
+        await EnsureCacheLoadedAsync(tenantRepository, tenantId, ckCacheService);
         var items = resultSet.Items.ToList();
-        var projected = items.Select(e => DropHidden(ckCacheService, etlContext.TenantId, e)).ToList();
+        var projected = items.Select(e => DropHidden(ckCacheService, tenantId, e)).ToList();
         if (projected.Where((e, i) => !ReferenceEquals(e, items[i])).Any() == false)
         {
             return resultSet;
@@ -384,7 +408,7 @@ public static class RtAttributeAccessGuard
     ///     stored filter on a hidden attribute is an oracle for its value (the number of rows answers the guess). The
     ///     paths are checked against the query type and every type derived from it; a query type the CK cache does
     ///     not know (e.g. a CK interface) is checked against every type of the tenant (fail closed). The caller has
-    ///     made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync" />).
+    ///     made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync(IMeshEtlContext, ICkCacheService)" />).
     /// </summary>
     /// <exception cref="RtAttributeHiddenException">A stored path reaches a hidden attribute</exception>
     public static void EnsureStoredQueryNotHidden(ICkCacheService ckCacheService, string tenantId, string node,
@@ -522,10 +546,19 @@ public static class RtAttributeAccessGuard
     ///     attribute access of every value the batch writes and the identity-owned attributes and associations (AB#8059).
     ///     Call it before the dry-run branch and before the first write; the whole batch is refused.
     /// </summary>
-    public static async Task EnsureWritesAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+    public static Task EnsureWritesAllowedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+        IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos, IEnumerable<AssociationUpdateInfo> associationUpdates) =>
+        EnsureWritesAllowedAsync(WriteGuardScope.Own(etlContext), ckCacheService, updateInfos, associationUpdates);
+
+    /// <summary>
+    ///     Same checks for the tenant of <paramref name="scope" />. AB#9769: the batch of a cross-tenant write is judged
+    ///     with the target's CK model and without a method run (<see cref="WriteGuardScope.CrossTenant" />), so MethodOnly
+    ///     attributes, replaced creates and identity association edges are always refused there.
+    /// </summary>
+    internal static async Task EnsureWritesAllowedAsync(WriteGuardScope scope, ICkCacheService ckCacheService,
         IEnumerable<IEntityUpdateInfo<RtEntity>> updateInfos, IEnumerable<AssociationUpdateInfo> associationUpdates)
     {
-        ArgumentNullException.ThrowIfNull(etlContext);
+        ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(ckCacheService);
         ArgumentNullException.ThrowIfNull(updateInfos);
         ArgumentNullException.ThrowIfNull(associationUpdates);
@@ -533,7 +566,7 @@ public static class RtAttributeAccessGuard
         var all = updateInfos.ToList();
 
         // AB#7462 first: an insert of a type whose method replaces the generic create.
-        await GenericCreateGuard.EnsureAllowedAsync(etlContext, ckCacheService, all);
+        await GenericCreateGuard.EnsureAllowedAsync(scope, ckCacheService, all);
 
         var updates = all.Where(u => u.ModOption != EntityModOptions.Delete).ToList();
         var identityAssociations = associationUpdates
@@ -543,7 +576,7 @@ public static class RtAttributeAccessGuard
             return;
         }
 
-        await EnsureCacheLoadedAsync(etlContext, ckCacheService);
+        await EnsureCacheLoadedAsync(scope.Repository, scope.TenantId, ckCacheService);
 
         List<RtAttributeWriteRefusal>? refusals = null;
 
@@ -551,8 +584,8 @@ public static class RtAttributeAccessGuard
         // System.Identity type at one of its ends. The message names the role and the two types, never an rtId or a value.
         foreach (var association in identityAssociations)
         {
-            if (IsIdentityMethodRunFor(etlContext, ckCacheService, association.Origin.CkTypeId) ||
-                IsIdentityMethodRunFor(etlContext, ckCacheService, association.Target.CkTypeId))
+            if (IsIdentityMethodRunFor(scope, ckCacheService, association.Origin.CkTypeId) ||
+                IsIdentityMethodRunFor(scope, ckCacheService, association.Target.CkTypeId))
             {
                 continue;
             }
@@ -564,7 +597,7 @@ public static class RtAttributeAccessGuard
 
         foreach (var update in updates)
         {
-            if (!ckCacheService.TryGetRtCkType(etlContext.TenantId, update.CkTypeId, out var graph) || graph == null)
+            if (!ckCacheService.TryGetRtCkType(scope.TenantId, update.CkTypeId, out var graph) || graph == null)
             {
                 continue;
             }
@@ -573,13 +606,13 @@ public static class RtAttributeAccessGuard
             void Report(string path, CkAttributeAccessDto access, string cause) =>
                 (refusals ??= []).Add(new RtAttributeWriteRefusal(typeName, path, access.ToString(), cause));
 
-            var methodCause = GetMethodRunCause(etlContext, graph);
+            var methodCause = GetMethodRunCause(scope, graph);
 
             // Names written by this update (top-level attributes, record members, array item updates, secret clears).
             var written = new List<(string Path, CkTypeAttributeGraph Attribute)>();
             if (update.RtEntity != null)
             {
-                CollectWritten(ckCacheService, etlContext.TenantId, graph, update.RtEntity.Attributes, string.Empty,
+                CollectWritten(ckCacheService, scope.TenantId, graph, update.RtEntity.Attributes, string.Empty,
                     0, written);
             }
 
@@ -593,7 +626,7 @@ public static class RtAttributeAccessGuard
 
                 written.Add((attribute.AttributeName, attribute));
                 if (attribute.ValueCkRecordId != null &&
-                    ckCacheService.TryGetRtCkRecord(etlContext.TenantId, attribute.ValueCkRecordId.ToRtCkId(),
+                    ckCacheService.TryGetRtCkRecord(scope.TenantId, attribute.ValueCkRecordId.ToRtCkId(),
                         out var recordGraph) && recordGraph != null)
                 {
                     foreach (var member in item.MemberUpdates.Keys.Append(item.MatchMember))
@@ -664,13 +697,13 @@ public static class RtAttributeAccessGuard
     ///     running pipeline) and the method is declared by a <c>System.Identity</c> type. A type that is not in the cache
     ///     never qualifies.
     /// </summary>
-    private static bool IsIdentityMethodRunFor(IMeshEtlContext etlContext, ICkCacheService ckCacheService,
+    private static bool IsIdentityMethodRunFor(WriteGuardScope scope, ICkCacheService ckCacheService,
         RtCkId<CkTypeId> ckTypeId)
     {
-        var marker = etlContext.MethodInvocation;
+        var marker = scope.MethodInvocation;
         if (marker == null ||
-            !ckCacheService.TryGetRtCkType(etlContext.TenantId, ckTypeId, out var graph) || graph == null ||
-            GetMethodRunCause(etlContext, graph) != null)
+            !ckCacheService.TryGetRtCkType(scope.TenantId, ckTypeId, out var graph) || graph == null ||
+            GetMethodRunCause(scope, graph) != null)
         {
             return false;
         }
@@ -687,9 +720,9 @@ public static class RtAttributeAccessGuard
     ///     Null when this run is the method run of the entity's type: the marker names a method of the type (own or
     ///     inherited) and belongs to the running pipeline. Otherwise the MethodOnly cause token.
     /// </summary>
-    private static string? GetMethodRunCause(IMeshEtlContext etlContext, CkTypeGraph graph)
+    private static string? GetMethodRunCause(WriteGuardScope scope, CkTypeGraph graph)
     {
-        var marker = etlContext.MethodInvocation;
+        var marker = scope.MethodInvocation;
         if (marker == null)
         {
             return RtAttributeWriteRefusalCause.MethodOnlyMissingMarker;
@@ -701,8 +734,7 @@ public static class RtAttributeAccessGuard
             return RtAttributeWriteRefusalCause.MethodOnlyMethodMismatch;
         }
 
-        if (!string.Equals(marker.PipelineRtId, etlContext.PipelineRtEntityId.RtId.ToString(),
-                StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(marker.PipelineRtId, scope.PipelineRtId, StringComparison.OrdinalIgnoreCase))
         {
             return RtAttributeWriteRefusalCause.MethodOnlyPipelineMismatch;
         }

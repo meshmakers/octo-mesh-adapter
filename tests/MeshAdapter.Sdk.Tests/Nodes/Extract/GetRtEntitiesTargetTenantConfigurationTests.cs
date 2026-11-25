@@ -1,0 +1,370 @@
+using MeshAdapter.Sdk.Tests.Helpers;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
+using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
+using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
+
+/// <summary>
+///     AB#9768 / AB#9769: <c>targetTenant</c> is one optional property of exactly the three read nodes and of
+///     ApplyChanges@2. The strict pipeline serializer accepts it there (with the relation as written) and refuses it on
+///     every other node (ApplyChanges@1 included), so an adapter can never load a cross-tenant setting into a node that
+///     would silently read or write its own tenant.
+/// </summary>
+[Collection(PipelineSchemaCollection.Name)]
+public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture schema)
+{
+    [Theory]
+    [InlineData("GetRtEntitiesByType@1")]
+    [InlineData("GetRtEntitiesById@1")]
+    [InlineData("GetRtEntitiesByWellKnownName@1")]
+    // AB#9769: the one write node with the setting.
+    [InlineData("ApplyChanges@2")]
+    public void Schema_TargetTenantIsOptional_OnTheReadNodesAndApplyChangesV2(string nodeType)
+    {
+        var node = schema.NodeSchema(nodeType);
+
+        Assert.Contains("targetTenant", node["properties"]!.AsObject().Select(p => p.Key));
+        var required = node["required"]?.AsArray().Select(r => r!.GetValue<string>()).ToArray() ?? [];
+        Assert.DoesNotContain("targetTenant", required);
+    }
+
+    [Theory]
+    [InlineData("ApplyChanges@1")]
+    [InlineData("CreateUpdateInfo@1")]
+    public void Schema_OtherNodesHaveNoTargetTenant(string nodeType)
+    {
+        var node = schema.NodeSchemaOrNull(nodeType);
+        if (node == null)
+        {
+            return;
+        }
+
+        Assert.DoesNotContain("targetTenant", node["properties"]!.AsObject().Select(p => p.Key));
+    }
+
+    [Fact]
+    public async Task Pipeline_WithAParentTarget_LoadsWithTheRelationAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByType@1
+                                ckTypeId: Basic/Contact
+                                identity: Caller
+                                targetTenant:
+                                  relation: Parent
+                                targetPath: $.contacts
+                              - type: GetRtEntitiesById@1
+                                ckTypeId: Basic/Contact
+                                rtIdsPath: $.ids
+                                identity: ServiceAccount
+                                targetTenant:
+                                  relation: Sibling
+                                  tenantIdPath: $.recipientTenantId
+                                targetPath: $.contact
+                              - type: GetRtEntitiesByWellKnownName@1
+                                ckTypeId: Basic/Contact
+                                path: $.items
+                                wellKnownNamePath: $.name
+                                targetTenant:
+                                  relation: Child
+                                  tenantId: companya
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var nodes = root.Transformations!.ToList();
+        Assert.Equal(TenantRelation.Parent, Assert.IsType<GetRtEntitiesByTypeNodeConfiguration>(nodes[0]).TargetTenant!.Relation);
+        var byId = Assert.IsType<GetRtEntitiesByIdNodeConfiguration>(nodes[1]).TargetTenant!;
+        Assert.Equal(TenantRelation.Sibling, byId.Relation);
+        Assert.Equal("$.recipientTenantId", byId.TenantIdPath);
+        var byName = Assert.IsType<GetRtEntitiesByWellKnownNameNodeConfiguration>(nodes[2]).TargetTenant!;
+        Assert.Equal(TenantRelation.Child, byName.Relation);
+        Assert.Equal("companya", byName.TenantId);
+    }
+
+    [Fact]
+    public async Task Pipeline_WithoutTarget_LoadsUnchanged_TargetIsNull()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByType@1
+                                ckTypeId: Basic/Contact
+                                targetPath: $.contacts
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        Assert.Null(Assert.IsType<GetRtEntitiesByTypeNodeConfiguration>(Assert.Single(root.Transformations!))
+            .TargetTenant);
+    }
+
+    [Theory]
+    [InlineData("Descendant")]
+    [InlineData("Ancestor")]
+    [InlineData("Any")]
+    public async Task Pipeline_WithAnUnknownRelation_IsRefused(string relation)
+    {
+        var yaml = $"""
+                    transformations:
+                      - type: GetRtEntitiesByType@1
+                        ckTypeId: Basic/Contact
+                        targetTenant:
+                          relation: {relation}
+                          tenantId: x
+                        targetPath: $.contacts
+                    """;
+
+        await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+    }
+
+    [Fact]
+    public async Task Pipeline_TargetWithoutRelation_NeverDefaultsToParent_TheGuardRefusesIt()
+    {
+        // The serializer does not enforce `required`: a missing relation must stay null (not the enum's first value,
+        // Parent), and the guard refuses it as a configuration error before any registry or identity call.
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByType@1
+                                ckTypeId: Basic/Contact
+                                targetTenant:
+                                  tenantId: x
+                                targetPath: $.contacts
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var target = Assert.IsType<GetRtEntitiesByTypeNodeConfiguration>(Assert.Single(root.Transformations!))
+            .TargetTenant!;
+        Assert.Null(target.Relation);
+        Assert.NotNull(CrossTenantAccessGuard.CheckConfiguration(target));
+    }
+
+    [Fact]
+    public async Task ApplyChangesV1_WithATargetTenant_IsRefusedWhenThePipelineLoads()
+    {
+        // Abuse case 9: ApplyChanges@1 gets no target setting, so the key is unknown there.
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@1
+                                path: $.updates
+                                targetTenant:
+                                  relation: Parent
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("targetTenant", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithASiblingTarget_LoadsWithTheRelationAndPathAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                                identity: ServiceAccount
+                                targetTenant:
+                                  relation: Sibling
+                                  tenantIdPath: $.recipientTenantId
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var node = Assert.IsType<ApplyChangesNodeConfiguration2>(Assert.Single(root.Transformations!));
+        Assert.Equal(TenantRelation.Sibling, node.TargetTenant!.Relation);
+        Assert.Equal("$.recipientTenantId", node.TargetTenant.TenantIdPath);
+        Assert.Null(node.TargetTenant.TenantId);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithoutTarget_LoadsWithoutTarget()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        Assert.Null(Assert.IsType<ApplyChangesNodeConfiguration2>(Assert.Single(root.Transformations!)).TargetTenant);
+    }
+
+    [Theory]
+    [InlineData("Descendant")]
+    [InlineData("Ancestor")]
+    public async Task ApplyChangesV2_WithAnUnknownRelation_IsRefusedWhenThePipelineLoads(string relation)
+    {
+        var yaml = $"""
+                    transformations:
+                      - type: ApplyChanges@2
+                        entityUpdatesPath: $.updates
+                        targetTenant:
+                          relation: {relation}
+                          tenantId: x
+                    """;
+
+        await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+    }
+
+    // ---- AB#9770: targetTenants (master-data sync) exists on ApplyChanges@2 only ---------------------------------
+
+    [Theory]
+    [InlineData("ApplyChanges@2")]
+    // AB#9771: the multi-tenant read
+    [InlineData("GetRtEntitiesByType@1")]
+    [InlineData("GetRtEntitiesById@1")]
+    public void Schema_TargetTenantsIsOptional_OnApplyChangesV2AndTheTwoListReadNodesOnly(string nodeType)
+    {
+        var node = schema.NodeSchema(nodeType);
+        Assert.Contains("targetTenants", node["properties"]!.AsObject().Select(p => p.Key));
+        var required = node["required"]?.AsArray().Select(r => r!.GetValue<string>()).ToArray() ?? [];
+        Assert.DoesNotContain("targetTenants", required);
+
+        // GetRtEntitiesByWellKnownName@1 resolves names in place, one entity per item: it has no multi-tenant read.
+        foreach (var other in new[] { "ApplyChanges@1", "GetRtEntitiesByWellKnownName@1" })
+        {
+            var otherNode = schema.NodeSchemaOrNull(other);
+            if (otherNode != null)
+            {
+                Assert.DoesNotContain("targetTenants", otherNode["properties"]!.AsObject().Select(p => p.Key));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithTargetTenants_LoadsWithTheRelationAndListAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                                identity: ServiceAccount
+                                targetTenants:
+                                  relation: Child
+                                  tenantIds: [companya, companyb]
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var node = Assert.IsType<ApplyChangesNodeConfiguration2>(Assert.Single(root.Transformations!));
+        Assert.Null(node.TargetTenant);
+        Assert.Equal(TenantRelation.Child, node.TargetTenants!.Relation);
+        Assert.Equal(new[] { "companya", "companyb" }, node.TargetTenants.TenantIds);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV1_WithTargetTenants_IsRefusedWhenThePipelineLoads()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@1
+                                path: $.updates
+                                targetTenants:
+                                  relation: Child
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("targetTenants", ex.Message, StringComparison.Ordinal);
+    }
+
+    // ---- AB#9771: targetTenants on the read nodes (multi-tenant read) -------------------------------------------
+
+    [Fact]
+    public async Task ReadNodes_WithTargetTenants_LoadWithRelationListAndOnRefusedAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByType@1
+                                ckTypeId: Basic/Invoice
+                                targetTenants:
+                                  relation: Child
+                                  onRefused: Report
+                                targetPath: $.invoices
+                              - type: GetRtEntitiesById@1
+                                ckTypeId: Basic/Invoice
+                                rtIdsPath: $.ids
+                                targetTenants:
+                                  relation: Child
+                                  tenantIds: [companya, companyb]
+                                targetPath: $.invoice
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var byType = Assert.IsType<GetRtEntitiesByTypeNodeConfiguration>(root.Transformations!.ElementAt(0));
+        Assert.Null(byType.TargetTenant);
+        Assert.Equal(TenantRelation.Child, byType.TargetTenants!.Relation);
+        Assert.Equal(CrossTenantRefusalHandling.Report, byType.TargetTenants.OnRefused);
+        Assert.Null(byType.TargetTenants.TenantIds);
+        var byId = Assert.IsType<GetRtEntitiesByIdNodeConfiguration>(root.Transformations!.ElementAt(1));
+        Assert.Equal(new[] { "companya", "companyb" }, byId.TargetTenants!.TenantIds);
+        // Left out = Fail (resolved where it is read).
+        Assert.Null(byId.TargetTenants.OnRefused);
+    }
+
+    [Theory]
+    [InlineData("Ignore")]
+    [InlineData("Skip")]
+    public async Task ReadNodes_WithAnUnknownOnRefused_AreRefusedWhenThePipelineLoads(string onRefused)
+    {
+        var yaml = $"""
+                    transformations:
+                      - type: GetRtEntitiesByType@1
+                        ckTypeId: Basic/Invoice
+                        targetTenants:
+                          relation: Child
+                          onRefused: {onRefused}
+                        targetPath: $.invoices
+                    """;
+
+        await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+    }
+
+    [Fact]
+    public async Task WellKnownNameNode_WithTargetTenants_IsRefusedWhenThePipelineLoads()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByWellKnownName@1
+                                ckTypeId: Basic/Contact
+                                path: $.items
+                                wellKnownNamePath: $.name
+                                targetTenants:
+                                  relation: Child
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("targetTenants", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithOnRefused_IsRefusedWhenThePipelineLoads()
+    {
+        // onRefused belongs to the read set only; the sync keeps "fail after all targets".
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                                targetTenants:
+                                  relation: Child
+                                  onRefused: Report
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("onRefused", ex.Message, StringComparison.Ordinal);
+    }
+
+    private static IPipelineConfigurationSerializer Serializer()
+    {
+        var services = new ServiceCollection();
+        services.AddDataPipelineSerializer().AddMeshDataPipelineNodes();
+        return services.BuildServiceProvider().GetRequiredService<IPipelineConfigurationSerializer>();
+    }
+}

@@ -164,6 +164,22 @@ public class NodeAttributeAccessMoreTests : SessionNodeTestBase
     }
 
     [Fact]
+    public void FromWatchRtEntity_TheProjection_KeepsTheDocumentRtId_SoADeleteStaysIdentifiable()
+    {
+        // AB#9770: the id of a deleted entity (no document) must survive the Hidden projection.
+        var rtId = OctoObjectId.GenerateNewId();
+        var update = A.Fake<IUpdateInfo<RtEntity>>();
+        A.CallTo(() => update.Document).Returns(UserWithSecrets());
+        A.CallTo(() => update.DocumentRtId).Returns(rtId);
+
+        var projected = new FromWatchRtEntityNode(A.Fake<ISystemContext>(), _cache)
+            .DropHidden(TenantRepository, Tenant, update);
+
+        Assert.NotSame(update, projected);
+        Assert.Equal(rtId, projected.DocumentRtId);
+    }
+
+    [Fact]
     public void FromWatchRtEntity_AnUpdateWithoutHiddenValues_IsPassedThroughUnchanged()
     {
         var update = A.Fake<IUpdateInfo<RtEntity>>();

@@ -29,6 +29,10 @@ applies_to: src/MeshAdapter.Sdk/Services/**, src/MeshAdapter/**
   adapter's), and a configuration with a foreign `TenantId` put a foreign-tenant token into the adapter
   identity. `AcquireServiceAccountTokenAsync` runs the **client-credentials** grant (or the
   impersonation grant) and **returns** the token, cached per `(TenantId, ClientId, IssuerUri)`.
+  🔴 **Own issuer only (AB#9776):** every grant goes to the adapter's own identity service; a configuration
+  naming another issuer or another tenant than the pipeline's is refused before any request, and every issued
+  token is verified (signature against the own JWKS, `iss`, `tenant_id`) before it is used or returned — see
+  `docs/pipeline-execution-identity.md`.
   `AcquireDelegatedTokenAsync` runs the OctoMesh **delegation grant**
   (`grant_type=urn:meshmakers:params:oauth:grant-type:on-behalf-of`, implemented in
   `octo-identity-services`): the service account authenticates with its own credentials and presents

@@ -75,6 +75,15 @@ communicationControllerServiceUri: ""
 # The URI of the reporting service - when possible use the internal service name of kubernetes
 reportingServiceUri: ""
 
+# Base URL of the AI service's central-key LLM gateway (AB#8691), e.g.
+# "https://octo-ai-services.octo.svc.cluster.local:5019". AnthropicAiQuery@1 with
+# keySource: Central sends every model call there with the pipeline service
+# account's token (scope ai.llm.invoke) and never an API key. Empty (default) =
+# no variable is rendered and a node asking for the central key fails before any
+# request (fail closed); nodes on the tenant's own key are unaffected. Set it per
+# adapter as a ValueOverride (Path llmGatewayUrl) on the adapter entity.
+llmGatewayUrl: ""
+
 # The public uri of the oauth service. Feeds BOTH directions (AB#5072):
 #  - OCTO_ADAPTER__AUTHORITYURL: the issuer secured trigger nodes accept on
 #    tokens presented TO the adapter (inbound),

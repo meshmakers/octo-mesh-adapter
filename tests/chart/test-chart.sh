@@ -110,6 +110,24 @@ dedicated_plain="$(render dedicated -f "$here/dedicated-values.yaml" \
 expect_contains "dedicated (plaintext shape)" "$dedicated_plain" "databaseUser: \"$(b64 SENTINEL-DATABASE-USER-PASSWORD)\""
 expect_contains "dedicated (plaintext shape)" "$dedicated_plain" "secretEncryptionKey-k1: \"$(b64 SENTINEL-KEYRING-K1)\""
 
+echo "octo-mesh-adapter chart: LLM gateway URL (AB#8691)"
+
+# 5. Default: no gateway variable, so a keySource: Central node fails closed before any request.
+expect_absent "llmGatewayUrl default" "$dedicated" "OCTO_ADAPTER__LLMGATEWAYURL"
+
+# 6. Set: rendered as a plain value on the adapter.
+with_gateway="$(render dedicated -f "$here/dedicated-values.yaml" \
+  --set llmGatewayUrl=https://octo-ai-services.octo.svc.cluster.local:5019)"
+expect_contains "llmGatewayUrl set" "$with_gateway" "OCTO_ADAPTER__LLMGATEWAYURL"
+expect_contains "llmGatewayUrl set" "$with_gateway" '"https://octo-ai-services.octo.svc.cluster.local:5019"'
+
+# 7. Not an absolute URL: the render fails instead of handing the node a broken address.
+if helm template dedicated "$chart" -f "$here/dedicated-values.yaml" --set llmGatewayUrl=octo-ai-services >/dev/null 2>&1; then
+  fail "llmGatewayUrl relative: the render must fail"
+else
+  pass
+fi
+
 echo "  $((checks - failures))/$checks checks passed"
 if ((failures > 0)); then
   exit 1

@@ -20,6 +20,9 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   and JSON repair calls go the same way. `AiSpendCapReached` and `AiMeterUnavailable` fail the node with messages that
   name cap, spent amount and UTC reset date, or the fail-closed meter. Missing gateway URL or token, or an inline
   `apiKey`, fail before any request. `keySource: Configured` (default) is unchanged.
+- Chart value `llmGatewayUrl` (AB#8691) renders `OCTO_ADAPTER__LLMGATEWAYURL`; empty by default (no variable, the
+  central-key path fails closed), a value that is not an absolute http(s) URL fails the render. Set it per adapter as a
+  ValueOverride (Path `llmGatewayUrl`). Render tests in `tests/chart/test-chart.sh`.
 
 ### Changed
 

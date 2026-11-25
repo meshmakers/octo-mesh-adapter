@@ -4,6 +4,15 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ## [Unreleased]
 
+### Breaking
+
+- `IServiceAccountTokenService.AcquireServiceAccountIdentityAsync(credentials, cancellationToken)` now requires the
+  pipeline's tenant: `AcquireServiceAccountIdentityAsync(credentials, pipelineTenantId, cancellationToken)` (AB#9776,
+  security: the roles of a foreign tenant must never be applied to the pipeline's repository; an empty value or
+  credentials naming another tenant answer `null`). Migration: pass the tenant of the pipeline the identity is
+  resolved for, e.g. `AcquireServiceAccountIdentityAsync(credentials, etlContext.TenantId, ct)`; implementations of
+  the interface add the parameter.
+
 ### Changed
 
 - NuGet packages raised to the newest version within the .NET 10 line (AB#9597): MailKit and MimeKit 5.0.0,

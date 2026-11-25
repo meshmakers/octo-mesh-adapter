@@ -1526,12 +1526,6 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
     }
 
     /// <summary>
-    ///     The pipeline has a service account but its identity could not be established (AB#5028).
-    ///     Deliberately fatal: falling back to the system context would run the pipeline with MORE
-    ///     rights than the operator granted, and nothing downstream could tell that apart from a
-    ///     correctly restricted run.
-    /// </summary>
-    /// <summary>
     ///     AB#9776: the pipeline's service account configuration names a tenant other than the pipeline's own. Its
     ///     roles would be applied to the pipeline's repository, so the execution is refused instead of continued as
     ///     the system context.
@@ -1545,6 +1539,12 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             "pipeline's tenant.");
     }
 
+    /// <summary>
+    ///     The pipeline has a service account but its identity could not be established (AB#5028).
+    ///     Deliberately fatal: falling back to the system context would run the pipeline with MORE
+    ///     rights than the operator granted, and nothing downstream could tell that apart from a
+    ///     correctly restricted run.
+    /// </summary>
     public static Exception ServiceAccountIdentityUnavailable(string tenantId, string clientId)
     {
         return new MeshAdapterPipelineExecutionException(

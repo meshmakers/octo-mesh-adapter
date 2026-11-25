@@ -122,7 +122,7 @@ public class PipelineIdentityMatrixTests
             ]);
 
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ServiceAccountClientId, roles, DateTime.UtcNow.AddMinutes(5))));
     }
@@ -149,7 +149,7 @@ public class PipelineIdentityMatrixTests
             ]);
 
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(null));
     }
 
@@ -253,7 +253,7 @@ public class PipelineIdentityMatrixTests
 
         Assert.Equal(CallerSubjectId, context.SubjectId);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     // =============================================================================================
@@ -311,7 +311,7 @@ public class PipelineIdentityMatrixTests
         await ResolverFor(TriggerKind.HttpWithVerifiedCaller).ResolveAsync(TestContext.Current.CancellationToken);
 
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
         A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId(A<string>._)).MustNotHaveHappened();
     }
 

@@ -105,7 +105,7 @@ public class SessionIdentityIntegrationTests(SystemFixture fixture) : IClassFixt
         // service account — subject AND roles, both read off its token.
         var tokenService = A.Fake<IServiceAccountTokenService>();
         A.CallTo(() => tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity("octo-pipeline-sa-integration", Roles,
                     DateTime.UtcNow.AddMinutes(5))));
@@ -187,7 +187,7 @@ public class SessionIdentityIntegrationTests(SystemFixture fixture) : IClassFixt
         // would turn the most restricted configuration into the least restricted one.
         var tokenService = A.Fake<IServiceAccountTokenService>();
         A.CallTo(() => tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity("octo-pipeline-sa-roleless", [], DateTime.UtcNow.AddMinutes(5))));
 
@@ -216,7 +216,7 @@ public class SessionIdentityIntegrationTests(SystemFixture fixture) : IClassFixt
         // every owner-scoped read would silently be about the service instead of about the user.
         var tokenService = A.Fake<IServiceAccountTokenService>();
         A.CallTo(() => tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity("octo-pipeline-sa-integration", ["CommunicationManagement"],
                     DateTime.UtcNow.AddMinutes(5))));
@@ -245,7 +245,7 @@ public class SessionIdentityIntegrationTests(SystemFixture fixture) : IClassFixt
         // usable session here that bypasses data permissions entirely (AB#4969).
         var tokenService = A.Fake<IServiceAccountTokenService>();
         A.CallTo(() => tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(null));
 
         var tenantRepository = fixture.GetSystemContext().GetSystemTenantRepository();

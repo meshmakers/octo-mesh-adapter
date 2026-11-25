@@ -59,6 +59,12 @@ public interface IServiceAccountTokenService
     ///     The account's credentials — projected into the pipeline configuration by the controller
     ///     (AB#5027), so no repository read is needed to get here.
     /// </param>
+    /// <param name="pipelineTenantId">
+    ///     The tenant of the pipeline the identity is resolved for — required (AB#9776). The token is requested
+    ///     for this tenant and must carry it; a <see cref="ServiceAccountCredentials.TenantId" /> naming another
+    ///     tenant, or an empty value here, is refused (<c>null</c>), so the roles of a foreign tenant can never
+    ///     be applied to the pipeline's repository.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The identity, or <c>null</c> when no token could be acquired.</returns>
     /// <remarks>
@@ -76,7 +82,7 @@ public interface IServiceAccountTokenService
     ///     </para>
     /// </remarks>
     Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(ServiceAccountCredentials credentials,
-        CancellationToken cancellationToken = default);
+        string pipelineTenantId, CancellationToken cancellationToken = default);
 
     /// <summary>
     ///     Acquires the service account's <b>own</b> access token (client credentials, or the
@@ -520,12 +526,19 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
 
     /// <inheritdoc />
     public async Task<ServiceAccountIdentity?> AcquireServiceAccountIdentityAsync(
-        ServiceAccountCredentials credentials, CancellationToken cancellationToken = default)
+        ServiceAccountCredentials credentials, string pipelineTenantId, CancellationToken cancellationToken = default)
     {
-        // The pipeline's tenant is already in credentials.TenantId: PipelineIdentityResolver refuses a
-        // configuration naming another tenant before it gets here (AB#9776).
-        if (!TryResolveTenantId(credentials.TenantId, pipelineTenantId: null, credentials.ClientId,
-                out var tenantId))
+        // AB#9776: the pipeline's tenant is an explicit input and the only tenant the identity is resolved for.
+        // credentials.TenantId is checked against it, never trusted on its own — fail closed when it is unknown.
+        if (string.IsNullOrWhiteSpace(pipelineTenantId))
+        {
+            _logger.LogError(
+                "The identity of service account client {ClientId} cannot be resolved: the pipeline's tenant is unknown (AB#9776)",
+                credentials.ClientId);
+            return null;
+        }
+
+        if (!TryResolveTenantId(credentials.TenantId, pipelineTenantId, credentials.ClientId, out var tenantId))
         {
             return null;
         }
@@ -642,7 +655,6 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
         return identity;
     }
 
-    /// <summary>How the token for a service account is obtained (AB#5114).</summary>
     /// <inheritdoc />
     public async Task<string?> AcquireServiceAccountTokenAsync(ITenantRepository tenantRepository,
         string wellKnownName, CancellationToken cancellationToken = default)
@@ -765,6 +777,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
         return response.AccessToken;
     }
 
+    /// <summary>How the token for a service account is obtained (AB#5114).</summary>
     internal enum AcquisitionMode
     {
         /// <summary>The account authenticates itself with the secret stored on the configuration.</summary>
@@ -938,8 +951,9 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
     /// <summary>
     ///     Checks a token the own identity service issued before any of its claims is used or the token
     ///     is handed out (AB#9776): signature against the keys of <paramref name="discovery" />, own
-    ///     issuer and <c>tenant_id</c> == <paramref name="tenantId" />. Delegates to the shared
-    ///     <see cref="IssuedTokenVerifier" /> (also used by the cross-tenant proof, AB#9767). Lifetime and
+    ///     issuer, an asymmetric signature algorithm
+    ///     (<see cref="IssuedTokenVerifier.AcceptedSigningAlgorithms" />) and <c>tenant_id</c> ==
+    ///     <paramref name="tenantId" />. Delegates to the shared <see cref="IssuedTokenVerifier" /> (also used by the cross-tenant proof, AB#9767). Lifetime and
     ///     audience are not checked here: the token is minutes old, and the audience is the downstream
     ///     service's business. Returns null (after logging; the token itself is never logged).
     /// </summary>

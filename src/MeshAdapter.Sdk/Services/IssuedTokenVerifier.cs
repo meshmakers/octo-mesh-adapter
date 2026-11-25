@@ -13,7 +13,9 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 ///     Invariants every caller relies on — a token passes only when all hold:
 ///     <list type="number">
 ///         <item>it is a JWS whose signature verifies against the signing keys (<c>jwks_uri</c>) of the discovery
-///         document the request was made with — the own issuer's keys, never keys named by the token;</item>
+///         document the request was made with — the own issuer's keys, never keys named by the token — with an
+///         asymmetric algorithm (<see cref="AcceptedSigningAlgorithms" />; <c>none</c> and <c>HS*</c> are
+///         refused);</item>
 ///         <item>its <c>iss</c> is one of the adapter's own names (<see cref="OwnIssuerPolicy" />);</item>
 ///         <item>its <c>tenant_id</c> equals the tenant the request was made for (case-insensitive);</item>
 ///         <item>with <c>validateLifetime</c>, it carries an <c>exp</c> that is not past (one minute clock skew).</item>
@@ -22,6 +24,20 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 /// </remarks>
 internal sealed class IssuedTokenVerifier
 {
+    /// <summary>
+    ///     Signature algorithms an issued token may carry (AB#9776): the asymmetric ones only, the same list
+    ///     <c>CkMethodTokenOptions.DefaultAlgorithms</c> of octo-common-services accepts. The identity service signs
+    ///     with the key of its configured certificate (RS256 for an RSA certificate, ES* for an ECDSA one), so the
+    ///     list is not narrowed to RS256; <c>none</c> and every symmetric <c>HS*</c> algorithm are refused, whatever
+    ///     keys the discovery document publishes.
+    /// </summary>
+    internal static readonly string[] AcceptedSigningAlgorithms =
+    [
+        SecurityAlgorithms.RsaSha256, SecurityAlgorithms.RsaSha384, SecurityAlgorithms.RsaSha512,
+        SecurityAlgorithms.RsaSsaPssSha256, SecurityAlgorithms.RsaSsaPssSha384, SecurityAlgorithms.RsaSsaPssSha512,
+        SecurityAlgorithms.EcdsaSha256, SecurityAlgorithms.EcdsaSha384, SecurityAlgorithms.EcdsaSha512
+    ];
+
     private static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(1);
 
     private readonly OwnIssuerPolicy _ownIssuer;
@@ -61,6 +77,7 @@ internal sealed class IssuedTokenVerifier
                 {
                     IssuerSigningKeys = signingKeys,
                     RequireSignedTokens = true,
+                    ValidAlgorithms = AcceptedSigningAlgorithms,
                     TryAllIssuerSigningKeys = true,
                     ValidateIssuerSigningKey = false,
                     // Compared below with the own-issuer normalization (trailing slash, case of host).

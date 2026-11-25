@@ -393,7 +393,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.NotNull(identity);
         // A client-credentials token carries no 'sub'; client_id is the subject the engine stamps and
@@ -414,7 +414,7 @@ public class ServiceAccountTokenServiceTests
             expiresIn: 3600));
 
         var identity = await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Equal(["Accounting"], identity!.Roles);
     }
@@ -427,7 +427,7 @@ public class ServiceAccountTokenServiceTests
             expiresIn: 3600));
 
         var identity = await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Equal("sub-42", identity!.SubjectId);
         Assert.Empty(identity.Roles);
@@ -444,9 +444,9 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         var first = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
         var second = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Equal(first!.SubjectId, second!.SubjectId);
         Assert.Equal(1, handler.CallCount);
@@ -461,9 +461,9 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
         await service.AcquireServiceAccountIdentityAsync(Credentials with { ClientId = "another-client" },
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Equal(2, handler.CallCount);
     }
@@ -477,9 +477,9 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
         await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         // The cached entry expires a minute before the token does, so a one-second token is never reused.
         Assert.Equal(2, handler.CallCount);
@@ -494,7 +494,7 @@ public class ServiceAccountTokenServiceTests
             IdentityEndpointHandler.RawTokenResponse("an-opaque-reference-token", expiresIn: 3600));
 
         Assert.Null(await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken));
+            TenantId, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -504,7 +504,7 @@ public class ServiceAccountTokenServiceTests
             HttpStatusCode.BadRequest, """{"error":"invalid_client"}"""));
 
         Assert.Null(await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken));
+            TenantId, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -517,7 +517,7 @@ public class ServiceAccountTokenServiceTests
             expiresIn: 3600));
 
         await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
     }
 
@@ -983,7 +983,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler, OwnIdentity());
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials with { ClientSecret = null },
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.NotNull(identity);
         // The issued token runs as the TARGET account, so the target is the identity — never the
@@ -1000,7 +1000,7 @@ public class ServiceAccountTokenServiceTests
         // Cached in the same (TenantId, ClientId)-keyed cache as the legacy path, keyed by the
         // target account — a second resolution costs no round trip.
         await service.AcquireServiceAccountIdentityAsync(Credentials with { ClientSecret = null },
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
         Assert.Equal(1, handler.CallCount);
     }
 
@@ -1015,7 +1015,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler, OwnIdentity(issuerUri: "https://own.example.com"));
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials with { IssuerUri = "" },
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.NotNull(identity);
         Assert.Equal("own.example.com", handler.LastTokenRequestUri!.Host);
@@ -1128,7 +1128,7 @@ public class ServiceAccountTokenServiceTests
 
         var identity = await service.AcquireServiceAccountIdentityAsync(
             Credentials with { IssuerUri = ForeignIssuer, ClientSecret = null },
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Null(identity);
         Assert.Empty(handler.RequestUris);
@@ -1157,10 +1157,10 @@ public class ServiceAccountTokenServiceTests
             expiresIn: 3600));
         var service = CreateService(handler);
         Assert.NotNull(await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken));
+            TenantId, TestContext.Current.CancellationToken));
 
         var identity = await service.AcquireServiceAccountIdentityAsync(
-            Credentials with { IssuerUri = ForeignIssuer }, TestContext.Current.CancellationToken);
+            Credentials with { IssuerUri = ForeignIssuer }, TenantId, TestContext.Current.CancellationToken);
 
         Assert.Null(identity);
     }
@@ -1207,7 +1207,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Null(identity);
     }
@@ -1221,7 +1221,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
         var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
             TestContext.Current.CancellationToken);
 
@@ -1238,7 +1238,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Null(identity);
     }
@@ -1254,7 +1254,7 @@ public class ServiceAccountTokenServiceTests
         var service = CreateService(handler);
 
         var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
-            TestContext.Current.CancellationToken);
+            TenantId, TestContext.Current.CancellationToken);
 
         Assert.Null(identity);
     }
@@ -1317,6 +1317,125 @@ public class ServiceAccountTokenServiceTests
         Assert.NotEmpty(logger.Messages);
         Assert.DoesNotContain(logger.Messages, m => m.Contains(unsigned.Split('.')[1]));
         Assert.DoesNotContain(logger.Messages, m => m.Contains(ClientSecret) || m.Contains(OwnClientSecret));
+    }
+
+    [Theory]
+    [InlineData("foreign-key")]
+    [InlineData("foreign-issuer")]
+    [InlineData("foreign-tenant")]
+    public async Task OwnIssuerOnly_ADelegatedTokenThatFailsVerificationIsNeverHandedOut(string forgery)
+    {
+        // The delegated path returns the token to the caller, who presents it to the MCP server: an unverified
+        // one would carry whatever identity the answering party chose.
+        var token = forgery switch
+        {
+            "foreign-key" => TestJwt.Create(subject: "user-42", clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: 3600, signWith: TestJwt.ForeignKey),
+            "foreign-issuer" => TestJwt.Create(subject: "user-42", clientId: ClientId,
+                roles: ["TenantAdministrator"], expiresInSeconds: 3600, issuer: ForeignIssuer),
+            _ => TestJwt.Create(subject: "user-42", clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: 3600, tenantId: "otherTenant")
+        };
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(token, expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var delegated = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, handler.CallCount);
+        Assert.Null(delegated);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_AnIdentityForATenantOtherThanThePipelinesIsRefusedBeforeAnyRequest()
+    {
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler);
+        // An identity of the account in its own tenant is cached; a caller naming that tenant from another
+        // pipeline's tenant must neither get the cached entry nor cause a request.
+        Assert.NotNull(await service.AcquireServiceAccountIdentityAsync(Credentials, TenantId,
+            TestContext.Current.CancellationToken));
+        handler.RequestUris.Clear();
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials, "pipeline-tenant",
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+        Assert.Empty(handler.RequestUris);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task OwnIssuerOnly_AnIdentityWithoutAPipelineTenantIsRefusedBeforeAnyRequest(string pipelineTenant)
+    {
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = TenantId });
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials, pipelineTenant,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+        Assert.Empty(handler.RequestUris);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_AnIdentityIsRequestedForThePipelinesTenantWhenTheConfigurationNamesNone()
+    {
+        var handler = new IdentityEndpointHandler(
+            IdentityEndpointHandler.TokenResponse("service-account-token", expiresIn: 300));
+        var service = CreateService(handler, new AdapterOptions { DedicatedTenantId = "adapter-tenant" });
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials with { TenantId = null },
+            TenantId, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(identity);
+        Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm!["acr_values"]);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_ASymmetricallySignedTokenIsRefusedEvenWhenItsKeyIsPublished()
+    {
+        // HS256 with a key the discovery document publishes as "oct": the signature verifies, so only the
+        // algorithm allow list refuses it.
+        var secret = RandomNumberGenerator.GetBytes(32);
+        var token = TestJwt.CreateWithAlgorithm("HS256", "hs-key", input => HMACSHA256.HashData(secret, input));
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(token, expiresIn: 3600))
+        {
+            Jwks = $$"""{"keys":[{"kty":"oct","use":"sig","alg":"HS256","kid":"hs-key","k":"{{TestJwt.Base64Url(secret)}}"}]}"""
+        };
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials, TenantId,
+            TestContext.Current.CancellationToken);
+        var delegated = await service.AcquireDelegatedTokenAsync(_tenantRepository, WellKnownName, SubjectToken,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+        Assert.Null(delegated);
+    }
+
+    [Fact]
+    public async Task OwnIssuerOnly_AnEcdsaSignedTokenOfThePublishedKeyIsAccepted()
+    {
+        // The identity service signs with the key of its configured certificate; an ECDSA certificate gives
+        // ES256, which stays accepted (only symmetric algorithms and none are refused).
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var parameters = ecdsa.ExportParameters(false);
+        var token = TestJwt.CreateWithAlgorithm("ES256", "ec-key",
+            input => ecdsa.SignData(input, HashAlgorithmName.SHA256));
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(token, expiresIn: 3600))
+        {
+            Jwks = $$"""{"keys":[{"kty":"EC","use":"sig","alg":"ES256","kid":"ec-key","crv":"P-256","x":"{{TestJwt.Base64Url(parameters.Q.X!)}}","y":"{{TestJwt.Base64Url(parameters.Q.Y!)}}"}]}"""
+        };
+
+        var identity = await CreateService(handler).AcquireServiceAccountIdentityAsync(Credentials, TenantId,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(identity);
+        Assert.Contains("TenantAdministrator", identity!.Roles);
     }
 
     /// <summary>
@@ -1395,6 +1514,20 @@ public class ServiceAccountTokenServiceTests
                 HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             return signingInput + "." + Segment(signature);
         }
+
+        /// <summary>
+        ///     A token of the stub's issuer for <see cref="TenantId" /> with the header algorithm
+        ///     <paramref name="algorithm" />, signed by <paramref name="sign" /> over the signing input.
+        /// </summary>
+        public static string CreateWithAlgorithm(string algorithm, string keyId, Func<byte[], byte[]> sign)
+        {
+            var exp = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
+            var signingInput = $"{Segment($$"""{"alg":"{{algorithm}}","typ":"JWT","kid":"{{keyId}}"}""")}."
+                               + Segment($$"""{"exp":{{exp}},"iss":"{{Issuer}}","tenant_id":"{{TenantId}}","client_id":"{{ClientId}}","role":"TenantAdministrator"}""");
+            return signingInput + "." + Segment(sign(Encoding.ASCII.GetBytes(signingInput)));
+        }
+
+        public static string Base64Url(byte[] bytes) => Segment(bytes);
 
         /// <summary>The <c>jti</c> a minted token carries - the label a test asked the stub for.</summary>
         public static string? LabelOf(string? token)
@@ -1481,6 +1614,9 @@ public class ServiceAccountTokenServiceTests
 
         /// <summary>Token requests only — the discovery fetch is not counted.</summary>
         public int CallCount { get; private set; }
+
+        /// <summary>The JWKS the stub publishes instead of <see cref="TestJwt.Jwks" /> (AB#9776 algorithm tests).</summary>
+        public string? Jwks { get; init; }
 
         /// <summary>Makes the discovery fetch throw the way an unreachable/malformed issuer does.</summary>
         public bool FailDiscovery { get; init; }
@@ -1574,7 +1710,7 @@ public class ServiceAccountTokenServiceTests
 
                 if (path.EndsWith("/jwks", StringComparison.Ordinal))
                 {
-                    return Json(TestJwt.Jwks());
+                    return Json(Jwks ?? TestJwt.Jwks());
                 }
 
                 // The endpoints are derived from the ADDRESS the service asked, not pinned to

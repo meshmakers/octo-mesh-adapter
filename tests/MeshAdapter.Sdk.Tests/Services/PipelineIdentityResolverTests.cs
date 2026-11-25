@@ -51,7 +51,7 @@ public class PipelineIdentityResolverTests
     private void GivenIdentity(string subjectId, params string[] roles)
     {
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(subjectId, roles, DateTime.UtcNow.AddMinutes(5))));
     }
@@ -73,7 +73,7 @@ public class PipelineIdentityResolverTests
 
         // The caller is already on the execution options; resolving them must never cost a round trip.
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -97,8 +97,8 @@ public class PipelineIdentityResolverTests
 
         ServiceAccountCredentials? captured = null;
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
-            .Invokes((ServiceAccountCredentials c, CancellationToken _) => captured = c)
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
+            .Invokes((ServiceAccountCredentials c, string _, CancellationToken _) => captured = c)
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ClientId, ["Role"], DateTime.UtcNow.AddMinutes(5))));
 
@@ -120,8 +120,8 @@ public class PipelineIdentityResolverTests
 
         ServiceAccountCredentials? captured = null;
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
-            .Invokes((ServiceAccountCredentials c, CancellationToken _) => captured = c)
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
+            .Invokes((ServiceAccountCredentials c, string _, CancellationToken _) => captured = c)
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ClientId, ["Role"], DateTime.UtcNow.AddMinutes(5))));
 
@@ -142,7 +142,7 @@ public class PipelineIdentityResolverTests
 
         Assert.Same(first, second);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustHaveHappenedOnceExactly();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public class PipelineIdentityResolverTests
 
         A.CallTo(() => _globalConfiguration.GetAllRawJsonByCkTypeId(A<string>._)).MustNotHaveHappened();
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -183,7 +183,7 @@ public class PipelineIdentityResolverTests
 
         Assert.True(context.IsSystem);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -199,8 +199,8 @@ public class PipelineIdentityResolverTests
 
         ServiceAccountCredentials? captured = null;
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
-            .Invokes((ServiceAccountCredentials c, CancellationToken _) => captured = c)
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
+            .Invokes((ServiceAccountCredentials c, string _, CancellationToken _) => captured = c)
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity(ClientId, ["Accounting"], DateTime.UtcNow.AddMinutes(5))));
 
@@ -221,7 +221,7 @@ public class PipelineIdentityResolverTests
         // every read and leave every write unstamped, indistinguishable from a correct run.
         GivenServiceAccountConfiguration(ServiceAccountJson());
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(null));
 
         var exception = await Assert.ThrowsAnyAsync<PipelineExecutionException>(
@@ -243,8 +243,8 @@ public class PipelineIdentityResolverTests
 
         ServiceAccountCredentials? captured = null;
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
-            .Invokes((ServiceAccountCredentials c, CancellationToken _) => captured = c)
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
+            .Invokes((ServiceAccountCredentials c, string _, CancellationToken _) => captured = c)
             .Returns(Task.FromResult<ServiceAccountIdentity?>(
                 new ServiceAccountIdentity("resolved", ["Role"], DateTime.UtcNow.AddMinutes(5))));
 
@@ -309,7 +309,7 @@ public class PipelineIdentityResolverTests
         // acquired throws rather than widening to the permission-bypassing system context.
         GivenServiceAccountConfiguration(ServiceAccountJson());
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>._, A<CancellationToken>._))
+                A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._))
             .Returns(Task.FromResult<ServiceAccountIdentity?>(null));
 
         var principal = new VerifiedPrincipal("user-42", TenantId, "u@example.com", "U", ["Reader"]);
@@ -347,7 +347,7 @@ public class PipelineIdentityResolverTests
 
         Assert.Contains(tenant, exception.Message, StringComparison.Ordinal);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-            A<ServiceAccountCredentials>._, A<CancellationToken>._)).MustNotHaveHappened();
+            A<ServiceAccountCredentials>._, A<string>._, A<CancellationToken>._)).MustNotHaveHappened();
     }
 
     [Theory]
@@ -366,7 +366,7 @@ public class PipelineIdentityResolverTests
 
         Assert.Equal(["Accounting"], context.Roles);
         A.CallTo(() => _tokenService.AcquireServiceAccountIdentityAsync(
-                A<ServiceAccountCredentials>.That.Matches(c => c.TenantId == TenantId), A<CancellationToken>._))
+                A<ServiceAccountCredentials>.That.Matches(c => c.TenantId == TenantId), TenantId, A<CancellationToken>._))
             .MustHaveHappenedOnceExactly();
     }
 }

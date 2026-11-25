@@ -31,10 +31,13 @@ builds one `PipelineIdentityResolver` per execution and hands it to `MeshEtlCont
    after normalising scheme/host case, default port and trailing slash); any other value is refused before
    a request leaves the adapter. The configured `TenantId` must be empty or the pipeline's tenant, otherwise
    the execution fails (`ServiceAccountTenantMismatch`). The issued token's signature is verified against
-   the keys of the discovery document of that request (`jwks_uri`, no extra round trip), and its `iss`
+   the keys of the discovery document of that request (`jwks_uri`, no extra round trip) with an asymmetric
+   algorithm only (RS*, PS*, ES*; `none` and `HS*` are refused), and its `iss`
    must be an own name and its `tenant_id` the pipeline's tenant before a role is used
    (`OwnIssuerPolicy`, `ServiceAccountTokenService.ValidateIssuedTokenAsync`). The same checks apply to
-   `AcquireServiceAccountTokenAsync` and `AcquireDelegatedTokenAsync`.
+   `AcquireServiceAccountTokenAsync` and `AcquireDelegatedTokenAsync`. `AcquireServiceAccountIdentityAsync`
+   takes the pipeline's tenant as a required argument and refuses credentials naming another tenant, or an
+   empty pipeline tenant, itself — it does not rely on the caller having checked.
 3. Otherwise `RtSecurityContext.System`.
 
 Resolution is **lazy and memoised**: many executions never open a session at all (high-frequency

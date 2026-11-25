@@ -172,7 +172,7 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
         }
 
         var identity = await _serviceAccountTokenService
-            .AcquireServiceAccountIdentityAsync(credentials, cancellationToken);
+            .AcquireServiceAccountIdentityAsync(credentials, _tenantId, cancellationToken);
 
         if (identity == null)
         {

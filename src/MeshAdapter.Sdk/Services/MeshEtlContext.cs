@@ -139,7 +139,7 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
         {
             // Not wired (a hand-built context): never open another tenant.
             return Task.FromException<ICrossTenantAccess>(CrossTenantAccessDeniedException.Forbidden(
-                nodeContext.NodePath.ToString(), target.Relation.ToString(),
+                nodeContext.NodePath.ToString(), target.Relation?.ToString() ?? "(none)",
                 CrossTenantRefusalReason.TargetUnverifiable));
         }
 

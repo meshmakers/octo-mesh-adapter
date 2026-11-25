@@ -134,5 +134,5 @@ public interface IMeshEtlContext : IEtlContext
     Task<ICrossTenantAccess> OpenTenantAsync(TenantTargetConfiguration target, NodeExecutionIdentity identity,
         IDataContext dataContext, INodeContext nodeContext) =>
         Task.FromException<ICrossTenantAccess>(CrossTenantAccessDeniedException.Forbidden(
-            nodeContext.NodePath.ToString(), target.Relation.ToString(), CrossTenantRefusalReason.TargetUnverifiable));
+            nodeContext.NodePath.ToString(), target.Relation?.ToString() ?? "(none)", CrossTenantRefusalReason.TargetUnverifiable));
 }

@@ -34,8 +34,12 @@ public enum TenantRelation
 /// </remarks>
 public record TenantTargetConfiguration
 {
-    /// <summary>Relation of the target to the pipeline's tenant.</summary>
-    public required TenantRelation Relation { get; init; }
+    /// <summary>
+    ///     Relation of the target to the pipeline's tenant. Must be named: the pipeline serializer does not enforce
+    ///     <c>required</c>, so a missing relation stays <c>null</c> and the guard refuses it as a configuration error
+    ///     instead of defaulting to <see cref="TenantRelation.Parent" /> (AB#9768).
+    /// </summary>
+    public required TenantRelation? Relation { get; init; }
 
     /// <summary>
     ///     Id of the target tenant (<see cref="TenantRelation.Sibling" /> and <see cref="TenantRelation.Child" />).

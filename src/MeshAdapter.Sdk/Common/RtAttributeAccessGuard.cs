@@ -6,6 +6,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts.DependencyGraph;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.Runtime.Contracts;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Engine.Repositories.Query;
@@ -57,33 +58,45 @@ public static class RtAttributeAccessGuard
     ///     Loads the tenant CK cache when it is not loaded (the cache can be unloaded in the middle of a run); fails
     ///     closed with <see cref="RtAttributeAccessCheckUnavailableException" />.
     /// </summary>
-    public static async Task EnsureCacheLoadedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService)
+    public static Task EnsureCacheLoadedAsync(IMeshEtlContext etlContext, ICkCacheService ckCacheService)
     {
         ArgumentNullException.ThrowIfNull(etlContext);
+        return EnsureCacheLoadedAsync(etlContext.TenantRepository, etlContext.TenantId, ckCacheService);
+    }
+
+    /// <summary>
+    ///     Same as <see cref="EnsureCacheLoadedAsync(IMeshEtlContext, ICkCacheService)" /> for the repository of
+    ///     <paramref name="tenantId" /> — the target of a cross-tenant read (AB#9768): Hidden attributes are those of
+    ///     the tenant the data comes from.
+    /// </summary>
+    public static async Task EnsureCacheLoadedAsync(ITenantRepository tenantRepository, string tenantId,
+        ICkCacheService ckCacheService)
+    {
+        ArgumentNullException.ThrowIfNull(tenantRepository);
         ArgumentNullException.ThrowIfNull(ckCacheService);
-        if (ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        if (ckCacheService.IsTenantLoaded(tenantId))
         {
             return;
         }
 
         try
         {
-            await etlContext.TenantRepository.LoadCacheForTenantAsync(ckCacheService);
+            await tenantRepository.LoadCacheForTenantAsync(ckCacheService);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            throw new RtAttributeAccessCheckUnavailableException(etlContext.TenantId, e);
+            throw new RtAttributeAccessCheckUnavailableException(tenantId, e);
         }
 
-        if (!ckCacheService.IsTenantLoaded(etlContext.TenantId))
+        if (!ckCacheService.IsTenantLoaded(tenantId))
         {
-            throw new RtAttributeAccessCheckUnavailableException(etlContext.TenantId, null);
+            throw new RtAttributeAccessCheckUnavailableException(tenantId, null);
         }
     }
 
     /// <summary>
     ///     Returns the entity without its Hidden attributes. The same instance when nothing is hidden, otherwise a copy.
-    ///     The caller has made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync" />).
+    ///     The caller has made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync(IMeshEtlContext, ICkCacheService)" />).
     /// </summary>
     public static RtEntity DropHidden(ICkCacheService ckCacheService, string tenantId, RtEntity entity)
     {
@@ -116,13 +129,24 @@ public static class RtAttributeAccessGuard
     }
 
     /// <summary>Loads the cache if needed and drops the Hidden attributes of every entity of the result.</summary>
-    public static async Task<IResultSet<RtEntity>> DropHiddenAsync(IMeshEtlContext etlContext,
+    public static Task<IResultSet<RtEntity>> DropHiddenAsync(IMeshEtlContext etlContext,
         ICkCacheService ckCacheService, IResultSet<RtEntity> resultSet)
     {
+        ArgumentNullException.ThrowIfNull(etlContext);
+        return DropHiddenAsync(etlContext.TenantRepository, etlContext.TenantId, ckCacheService, resultSet);
+    }
+
+    /// <summary>
+    ///     Same as <see cref="DropHiddenAsync(IMeshEtlContext, ICkCacheService, IResultSet{RtEntity})" /> with the CK
+    ///     model of <paramref name="tenantId" /> (the target of a cross-tenant read, AB#9768).
+    /// </summary>
+    public static async Task<IResultSet<RtEntity>> DropHiddenAsync(ITenantRepository tenantRepository,
+        string tenantId, ICkCacheService ckCacheService, IResultSet<RtEntity> resultSet)
+    {
         ArgumentNullException.ThrowIfNull(resultSet);
-        await EnsureCacheLoadedAsync(etlContext, ckCacheService);
+        await EnsureCacheLoadedAsync(tenantRepository, tenantId, ckCacheService);
         var items = resultSet.Items.ToList();
-        var projected = items.Select(e => DropHidden(ckCacheService, etlContext.TenantId, e)).ToList();
+        var projected = items.Select(e => DropHidden(ckCacheService, tenantId, e)).ToList();
         if (projected.Where((e, i) => !ReferenceEquals(e, items[i])).Any() == false)
         {
             return resultSet;
@@ -384,7 +408,7 @@ public static class RtAttributeAccessGuard
     ///     stored filter on a hidden attribute is an oracle for its value (the number of rows answers the guess). The
     ///     paths are checked against the query type and every type derived from it; a query type the CK cache does
     ///     not know (e.g. a CK interface) is checked against every type of the tenant (fail closed). The caller has
-    ///     made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync" />).
+    ///     made sure the cache is loaded (<see cref="EnsureCacheLoadedAsync(IMeshEtlContext, ICkCacheService)" />).
     /// </summary>
     /// <exception cref="RtAttributeHiddenException">A stored path reaches a hidden attribute</exception>
     public static void EnsureStoredQueryNotHidden(ICkCacheService ckCacheService, string tenantId, string node,

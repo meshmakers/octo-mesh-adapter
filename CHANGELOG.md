@@ -34,6 +34,14 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- Read another tenant of the subtree (AB#9768, Feature AB#8673): `GetRtEntitiesByType@1`, `GetRtEntitiesById@1` and
+  `GetRtEntitiesByWellKnownName@1` take the optional `targetTenant` (`relation: Parent | Sibling | Child`, with
+  `tenantId` or `tenantIdPath` for a sibling or child). Every such read goes through the cross-tenant guard and runs on
+  the target's repository with the session proven there; Hidden attributes follow the target's CK model; a refusal
+  fails the execution with `CROSS_TENANT_FORBIDDEN`. Without the setting the nodes read their own tenant as before.
+  A `targetTenant` without a relation is a configuration error (never the parent by default). Node reference:
+  `docs/nodes-extract.md`.
+
 - Cross-tenant access guard (AB#9767, design AB#9766, Feature AB#8673): `IMeshEtlContext.OpenTenantAsync` is the
   one door for a node to reach its parent, a sibling or a child tenant (`TenantTargetConfiguration`, relations
   `Parent`, `Sibling`, `Child`). The guard checks the relation on the tenant registry, refuses the system identity
@@ -42,7 +50,7 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   of AB#9777; the issued token is verified with the shared AB#9776 verifier: signature, own issuer, lifetime, tenant,
   presenter and subject), checks tenant and generation of the proof and
   only then opens the target's repository; every refusal is `CROSS_TENANT_FORBIDDEN` with one uniform message and the
-  reason code in the log. No node uses it yet; the read and write nodes follow. An architecture test lists every call
+  reason code in the log. The read nodes use it since AB#9768 (below); the write nodes follow. An architecture test lists every call
   site that opens a tenant. Design and abuse cases: `docs/cross-tenant-access.md`.
 
 - `DetectStreamDataGaps@1` (AB#9588, PR #129): the missing time ranges `[start, end)` and missing slot counts

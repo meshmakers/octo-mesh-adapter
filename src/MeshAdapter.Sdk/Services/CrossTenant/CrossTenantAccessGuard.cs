@@ -62,7 +62,7 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
         CancellationToken cancellationToken = default)
     {
         var target = request.Target;
-        var relation = target.Relation.ToString();
+        var relation = target.Relation?.ToString() ?? "(none)";
         var source = TenantRegistrySnapshot.Normalize(request.SourceTenantId) ?? string.Empty;
         string? resolvedTarget = null;
 
@@ -107,7 +107,7 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
             throw Refuse(CrossTenantRefusalReason.InvalidTargetConfiguration);
         }
 
-        var relationRefusal = TenantRelationRules.Check(registry, source, target.Relation, resolvedTarget);
+        var relationRefusal = TenantRelationRules.Check(registry, source, target.Relation!.Value, resolvedTarget);
         if (relationRefusal == CrossTenantRefusalReason.TargetNotRegistered)
         {
             // A child created seconds ago is not in the cached snapshot yet: read the registry once more.
@@ -121,7 +121,7 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
                 throw Refuse(CrossTenantRefusalReason.TargetUnverifiable);
             }
 
-            relationRefusal = TenantRelationRules.Check(registry, source, target.Relation, resolvedTarget);
+            relationRefusal = TenantRelationRules.Check(registry, source, target.Relation!.Value, resolvedTarget);
         }
 
         if (relationRefusal != null)
@@ -239,6 +239,7 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
         var hasPath = !string.IsNullOrWhiteSpace(target.TenantIdPath);
         return target.Relation switch
         {
+            null => "targetTenant needs a relation (Parent, Sibling or Child)",
             TenantRelation.Parent when hasId || hasPath => "relation Parent takes no tenantId or tenantIdPath",
             TenantRelation.Sibling or TenantRelation.Child when hasId && hasPath =>
                 "set either tenantId or tenantIdPath, not both",
@@ -326,7 +327,7 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
         Decisions.Add(1,
             new KeyValuePair<string, object?>("source", source),
             new KeyValuePair<string, object?>("target", target ?? "(unresolved)"),
-            new KeyValuePair<string, object?>("relation", request.Target.Relation.ToString()),
+            new KeyValuePair<string, object?>("relation", request.Target.Relation?.ToString() ?? "(none)"),
             new KeyValuePair<string, object?>("mode", request.Identity.ToString()),
             new KeyValuePair<string, object?>("outcome", outcome),
             new KeyValuePair<string, object?>("reason", reason ?? "none"));

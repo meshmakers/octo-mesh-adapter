@@ -41,23 +41,29 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context, I
             return;
         }
 
-        // AB#7768: no filter on a Hidden attribute.
-        await RtAttributeAccessGuard.EnsureCacheLoadedAsync(context, ckCacheService);
-        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, context.TenantId, nodeContext.NodePath.ToString(),
+        // AB#9768: the own tenant, or the target the cross-tenant guard opened (a refusal ends the node here).
+        var scope = await TenantReadScope.OpenAsync(etlContext, c.TargetTenant, c.Identity, dataContext, nodeContext);
+
+        // AB#7768: no filter on a Hidden attribute (of the tenant the data comes from).
+        await scope.EnsureCacheLoadedAsync(ckCacheService);
+        RtAttributeAccessGuard.EnsureNotHidden(ckCacheService, scope.TenantId, nodeContext.NodePath.ToString(),
             [ckTypeId], (c.FieldFilters ?? []).Select(f => f.AttributePath), "field filter");
 
         var queryOptions = RtEntityQueryOptions.Create();
         c.FieldFilters.GetFieldFilter(dataContext, queryOptions);
 
         // AB#5028 — scoped: an ordinary read of tenant business data.
-        var session = await etlContext.GetSessionForAsync(c.Identity);
+        // AB#9768: with a target, the session the guard opened under the identity proven there.
+        var session = scope.IsCrossTenant
+            ? await scope.OpenTargetSessionAsync()
+            : await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
-        var r = await etlContext.TenantRepository.GetRtEntitiesByIdAsync(session, ckTypeId, rtIds,
+        var r = await scope.Repository.GetRtEntitiesByIdAsync(session, ckTypeId, rtIds,
             queryOptions, c.Skip, c.Take);
         await session.CommitTransactionAsync();
 
         // AB#7768: Hidden values never enter the data context.
-        r = await RtAttributeAccessGuard.DropHiddenAsync(context, ckCacheService, r);
+        r = await scope.DropHiddenAsync(ckCacheService, r);
 
         dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 

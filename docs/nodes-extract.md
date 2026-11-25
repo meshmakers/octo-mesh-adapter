@@ -6,6 +6,31 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Extract/**, src/MeshAdapter.Sdk/Nodes/Mail
 # Extract nodes
 
 1. **Extract Nodes** (`src/MeshAdapter.Sdk/Nodes/Extract/`): Data retrieval nodes
+   - **Reading another tenant of the subtree** (AB#9768, Feature AB#8673): `GetRtEntitiesByType@1`, `GetRtEntitiesById@1`
+     and `GetRtEntitiesByWellKnownName@1` take the optional `targetTenant` (`TenantTargetConfiguration`):
+     `relation` `Parent` (no id), `Sibling` or `Child` (with `tenantId`, or `tenantIdPath` for an id from the data
+     context). Without it the node reads its own tenant exactly as before (no guard call). With it the node opens the
+     target only through `IMeshEtlContext.OpenTenantAsync` (`Common/TenantReadScope.cs`): the guard checks the relation
+     on the tenant registry, proves the node identity's right in the target with the identity service (`Caller` or
+     `ServiceAccount`; `System` is always refused) and checks the tenant generation; the read runs on the target's
+     repository with the session proven there, and Hidden attributes are checked and dropped with the target's CK
+     model. A refusal fails the execution with `CROSS_TENANT_FORBIDDEN` before anything is read. Unknown relations
+     (`Descendant`, ...) and the key on any other node (e.g. `ApplyChanges@1`) are refused when the pipeline loads.
+     Example:
+
+     ```yaml
+     - type: GetRtEntitiesByType@1
+       ckTypeId: Basic/Contact
+       identity: Caller
+       targetTenant:
+         relation: Parent
+       targetPath: $.contacts
+     ```
+
+     Rules and abuse cases: [cross-tenant-access.md](cross-tenant-access.md). Tests:
+     `tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetRtEntitiesCrossTenantNodeTests.cs`,
+     `GetRtEntitiesTargetTenantConfigurationTests.cs`, integration
+     `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/GetRtEntitiesCrossTenantIntegrationTests.cs`.
    - GetRtEntitiesByIdNode
    - **GetRtEntitiesByTypeNode** (`GetRtEntitiesByType@1`) — entities of one CK type, or (F4.1 criterion 4) with **`ckInterfaceId`** the entities of **all types that implement a CK interface** (derived types included) in one global order. The interface variant is ONE call of the engine method `ITenantRepository.GetRtEntitiesByInterfaceAsync` (read `octo-construction-kit-engine-mongodb/docs/interface-query.md`); the node holds **no expansion, fan-out, merge or security logic** (test: `WithCkInterfaceId_CallsTheSharedEngineMethodOnce_AndNeverTheTypeQuery`). Rules of the node:
      - **Selection**: exactly one of `ckTypeId`/`ckTypeIdPath` or `ckInterfaceId`. `ckInterfaceId` is a **string** (the pipeline YAML serializer has no `RtCkId<CkInterfaceId>` converter) holding the runtime id `Model/Interface`, e.g. `System/Named`; the CK element id with its version (`System/Named-1`) is accepted too. Field filters and sort orders are translated by the same helpers as the type variant, but may only name **members of the interface** and system fields (engine rule).

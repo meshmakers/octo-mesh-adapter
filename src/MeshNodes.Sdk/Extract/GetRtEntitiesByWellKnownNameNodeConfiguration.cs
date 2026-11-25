@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
@@ -18,6 +19,17 @@ public record GetRtEntitiesByWellKnownNameNodeConfiguration : PathNodeConfigurat
     /// </summary>
     [PropertyGroup("Execution", 100)]
     public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.Caller;
+
+    /// <summary>
+    /// Optional tenant to read from instead of the pipeline's own tenant (AB#9768): the <c>Parent</c>, a
+    /// <c>Sibling</c> or a <c>Child</c> of the pipeline's tenant in the tenant registry. Without it (the default)
+    /// the node reads its own tenant exactly as before. Every read goes through the cross-tenant guard: the
+    /// relation is checked on the registry, the node identity must hold a right in the target that the identity
+    /// service proves (<c>Caller</c> or <c>ServiceAccount</c>; <c>System</c> is always refused), and a refusal
+    /// fails the execution with <c>CROSS_TENANT_FORBIDDEN</c>. See docs/cross-tenant-access.md.
+    /// </summary>
+    [PropertyGroup("Execution", 101)]
+    public TenantTargetConfiguration? TargetTenant { get; set; }
     /// <summary>
     /// Runtime construction kit type id to filter by (use either CkTypeId or CkTypeIdPath)
     /// </summary>

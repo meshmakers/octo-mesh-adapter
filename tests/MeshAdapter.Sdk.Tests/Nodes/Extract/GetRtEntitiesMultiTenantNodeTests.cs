@@ -175,6 +175,9 @@ public class GetRtEntitiesMultiTenantNodeTests : SessionNodeTestBase
     [Theory]
     [InlineData(CrossTenantRefusalReason.SystemIdentityRefused)]
     [InlineData(CrossTenantRefusalReason.InvalidTargetConfiguration)]
+    // A registry, identity-service or repository outage is no refusal of the tenant: an empty consolidation must not
+    // look like a valid one.
+    [InlineData(CrossTenantRefusalReason.TargetUnverifiable)]
     public async Task RefusalNotAboutTheTarget_FailsEvenWithReport(string reason)
     {
         _refused.Add("a");
@@ -182,12 +185,36 @@ public class GetRtEntitiesMultiTenantNodeTests : SessionNodeTestBase
         var (dataContext, nodeContext, next) = PrepareTest(ByType(new TenantReadSetConfiguration
         {
             Relation = TenantRelation.Child, OnRefused = CrossTenantRefusalHandling.Report
-        }, NodeExecutionIdentity.System));
+        }));
 
         var ex = await Assert.ThrowsAsync<CrossTenantAccessDeniedException>(() =>
             new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext));
 
         Assert.Equal(reason, ex.ReasonCode);
+        AssertNothingRead();
+    }
+
+    [Theory]
+    [InlineData(CrossTenantRefusalHandling.Fail)]
+    [InlineData(CrossTenantRefusalHandling.Report)]
+    public async Task SystemIdentity_WithoutAnyChild_IsRefused_BeforeTheChildListIsRead(
+        CrossTenantRefusalHandling onRefused)
+    {
+        A.CallTo(() => EtlContext.ListChildTenantsAsync(A<INodeContext>._))
+            .Returns(Task.FromResult<IReadOnlyList<string>>([]));
+        var (dataContext, nodeContext, next) = PrepareTest(ByType(new TenantReadSetConfiguration
+        {
+            Relation = TenantRelation.Child, OnRefused = onRefused
+        }, NodeExecutionIdentity.System));
+
+        var ex = await Assert.ThrowsAsync<CrossTenantAccessDeniedException>(() =>
+            new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal(CrossTenantRefusalReason.SystemIdentityRefused, ex.ReasonCode);
+        A.CallTo(() => EtlContext.ListChildTenantsAsync(A<INodeContext>._)).MustNotHaveHappened();
+        A.CallTo(() => EtlContext.OpenTenantAsync(A<TenantTargetConfiguration>._, A<NodeExecutionIdentity>._,
+            A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
         AssertNothingRead();
     }
 

@@ -379,7 +379,10 @@ transform nodes (`SumAggregation@1`, `GroupBy@1`) build the figures per company 
   context. With `onRefused: Report` the refused companies are listed in `RefusedTenants` (tenant id and
   `CROSS_TENANT_FORBIDDEN`, never the reason) and their data is absent; the others are returned. The identity
   `System` (abuse case 5) and an invalid configuration always fail, also with `Report`: they would refuse every
-  company, and an empty consolidation must not look like a valid one.
+  company, and an empty consolidation must not look like a valid one. `System` is refused before the list of children
+  is read, so a tenant without children does not turn it into an empty success. A company that could not be verified
+  (`target_unverifiable`: registry, identity service, generation store or repository unavailable) fails the read also
+  with `Report`: an outage is not a refusal, and it must not drop companies silently from a consolidation.
 - **Each item names its source tenant**: the result's `Items` are the entities of all companies, each with the added
   key `SourceTenantId`; `Tenants` lists the read companies with their `TotalCount`. Paging (`skip`, `take`) applies per
   company.
@@ -563,7 +566,8 @@ per-execution caller, caller token, identity resolver and proof cache.
   or missing relation, a proof for the source tenant, a proof of an earlier generation, `System` and `ApplyChanges@1`
   with a target are refused.
 - Consolidated read: `GetRtEntitiesMultiTenantNodeTests` (every target opened as `Child` before the first read, Fail
-  reads nothing, Report lists and skips, `System` and configuration errors fail also with Report) and
+  reads nothing, Report lists and skips, `System` (also without any child), configuration errors and
+  `target_unverifiable` fail also with Report; the session opened in a target is disposed on every path) and
   `ConsolidatedReadIntegrationTests` on `TenantConsolidationFixture` (G with A: invoices 100 + 50, B: 70, C: 999
   without a right, a grandchild: 500): the consolidation pipeline in G returns A = 150, B = 70, total 220; C refused
   with Fail and with Report; the detached company and the grandchild are no part of it; grandchild, system tenant,

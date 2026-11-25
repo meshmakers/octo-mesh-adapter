@@ -24,8 +24,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Common;
 ///         single refusal throws before the first read, so no data of any tenant enters the data context.</item>
 ///         <item>With <see cref="CrossTenantRefusalHandling.Report" /> a refused tenant contributes nothing but its entry
 ///         in <c>RefusedTenants</c> (tenant id and the stable code, never the reason).</item>
-///         <item>A refusal that is not about the target (system identity, invalid configuration) always fails, also with
-///         <c>Report</c>: it would refuse every target, and an empty consolidation must not look like a valid one.</item>
+///         <item>The identity <see cref="NodeExecutionIdentity.System" /> is refused before the list of children is read,
+///         also when the pipeline's tenant has no child: a read as System never succeeds, not even an empty one.</item>
+///         <item>A refusal that is not about the target (system identity, invalid configuration) and a target that could
+///         not be verified (<see cref="CrossTenantRefusalReason.TargetUnverifiable" />: registry, identity service,
+///         generation store or repository unavailable) always fail, also with <c>Report</c>: an outage would drop
+///         companies silently, and an incomplete consolidation must not look like a valid one.</item>
 ///         <item>Errors other than a refusal (a failed query, an unreadable registry) fail the node as before.</item>
 ///     </list>
 /// </remarks>
@@ -49,6 +53,14 @@ internal static class MultiTenantRead
             throw CrossTenantAccessDeniedException.InvalidConfiguration(nodePath, problem);
         }
 
+        // Fail closed before the child list: with no child there is no target the guard could refuse, and an empty
+        // result would look like a successful read as System.
+        if (identity == NodeExecutionIdentity.System)
+        {
+            throw CrossTenantAccessDeniedException.Forbidden(nodePath, nameof(TenantRelation.Child),
+                CrossTenantRefusalReason.SystemIdentityRefused);
+        }
+
         IReadOnlyList<string> targets = set.TenantIds != null
             ? set.TenantIds.Select(TenantRegistrySnapshot.Normalize).OfType<string>()
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList()
@@ -68,7 +80,8 @@ internal static class MultiTenantRead
             catch (CrossTenantAccessDeniedException ex)
             {
                 if (ex.ReasonCode is CrossTenantRefusalReason.SystemIdentityRefused
-                    or CrossTenantRefusalReason.InvalidTargetConfiguration)
+                    or CrossTenantRefusalReason.InvalidTargetConfiguration
+                    or CrossTenantRefusalReason.TargetUnverifiable)
                 {
                     throw;
                 }

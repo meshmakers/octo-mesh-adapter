@@ -228,7 +228,7 @@ pipeline runs in G: `FromWatchRtEntity@1` on G's own entities (no cross-tenant t
   the guard as a `Child` target: relation, identity proof in that company, generation. A listed id that is no direct
   child (a grandchild, a detached or foreign tenant) is refused like any other target.
 - **Owner marker and idempotency.** The copy keeps the source RtId and carries the System record `RtSyncOrigin`
-  (`SourceTenantId`, `SourceRtId`, `SyncedAt`; System 2.9.0). The node stamps it itself with the pipeline's tenant
+  (`SourceTenantId`, `SourceRtId`, `SyncedAt`; System 2.10.0). The node stamps it itself with the pipeline's tenant
   as source and drops any origin the input carries, so a sync can never claim another source. Per target the node
   reads the stored entities of the batch: no entity → insert, this sync's copy → update, a delete → delete (nothing
   when the copy is gone). Running twice leaves exactly one copy.

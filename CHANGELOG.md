@@ -45,7 +45,7 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 - One-way master-data sync into the child tenants (AB#9770, Feature AB#8673): `ApplyChanges@2` takes the optional
   `targetTenants` (`relation: Child`, optional `tenantIds`; without the list every registered direct child). Each
   entity update of the batch becomes, in every target, an idempotent upsert or delete keyed by source tenant and
-  source RtId: the copy keeps the source RtId and carries the System record `RtSyncOrigin` (System 2.9.0: source
+  source RtId: the copy keeps the source RtId and carries the System record `RtSyncOrigin` (System 2.10.0: source
   tenant, source RtId, sync time), stamped by the node and never taken from the input. An entity of the target
   without that origin, or with another source's origin, is never changed or deleted (the target fails with
   `SYNC_OWNED_ENTITY`). Every target goes through the cross-tenant guard and is written in its own transaction; a
@@ -55,7 +55,7 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   (octo-construction-kit-engine-mongodb `SyncOriginWriteRules`, in the write funnel of every tenant repository, so
   GraphQL, `ApplyChanges@1`/`@2` and system sessions alike); the sync writes with a sync-writer session of the
   pipeline's tenant (`ICrossTenantAccess.OpenSyncWriterSessionAsync`) and the write nodes map the engine's refusal to
-  `SyncOriginWriteRefusedException`. Entities without an origin are written as before. Needs System 2.9.0 and
+  `SyncOriginWriteRefusedException`. Entities without an origin are written as before. Needs System 2.10.0 and
   octo-construction-kit-engine-mongodb with `SyncOriginWriteRules`.
   `FromWatchRtEntity@1` takes the opt-in `includeDeletes` (default `false`: exactly today's events): delete events
   then reach the pipeline with `$.DocumentRtId` (needs octo-construction-kit-engine-mongodb with

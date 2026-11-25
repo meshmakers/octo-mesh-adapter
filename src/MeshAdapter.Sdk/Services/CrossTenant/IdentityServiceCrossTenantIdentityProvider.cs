@@ -314,8 +314,7 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
             throw new CrossTenantIdentityUnavailableException("The token exchange returned no access token.");
         }
 
-        var claims = await _verifier.VerifyAsync(response.AccessToken, discovery, request.TargetTenantId, purpose,
-            validateLifetime: true);
+        var claims = await _verifier.VerifyAsync(response.AccessToken, discovery, request.TargetTenantId, purpose);
         return claims;
     }
 

@@ -953,9 +953,10 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
     ///     is handed out (AB#9776): signature against the keys of <paramref name="discovery" />, own
     ///     issuer, an asymmetric signature algorithm
     ///     (<see cref="IssuedTokenVerifier.AcceptedSigningAlgorithms" />) and <c>tenant_id</c> ==
-    ///     <paramref name="tenantId" />. Delegates to the shared <see cref="IssuedTokenVerifier" /> (also used by the cross-tenant proof, AB#9767). Lifetime and
-    ///     audience are not checked here: the token is minutes old, and the audience is the downstream
-    ///     service's business. Returns null (after logging; the token itself is never logged).
+    ///     <paramref name="tenantId" />, and its lifetime (<c>exp</c> required and not past, one minute clock
+    ///     skew). Delegates to the shared <see cref="IssuedTokenVerifier" /> (also used by the cross-tenant proof,
+    ///     AB#9767). The audience is not checked here: it is the downstream service's business. Returns null
+    ///     (after logging; the token itself is never logged).
     /// </summary>
     private Task<JwtPayloadReader.JwtClaims?> ValidateIssuedTokenAsync(string accessToken,
         DiscoveryDocumentResponse discovery, string? tenantId, string configurationName)

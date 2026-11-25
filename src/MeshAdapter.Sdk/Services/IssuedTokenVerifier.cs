@@ -18,7 +18,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 ///         refused);</item>
 ///         <item>its <c>iss</c> is one of the adapter's own names (<see cref="OwnIssuerPolicy" />);</item>
 ///         <item>its <c>tenant_id</c> equals the tenant the request was made for (case-insensitive);</item>
-///         <item>with <c>validateLifetime</c>, it carries an <c>exp</c> that is not past (one minute clock skew).</item>
+///         <item>it carries an <c>exp</c> that is not past (one minute clock skew) — for every caller, the service-account
+///         tokens included: a stale or replayed token never becomes an identity.</item>
 ///     </list>
 ///     A failed check returns <c>null</c> after one log line; the token itself is never logged.
 /// </remarks>
@@ -54,10 +55,9 @@ internal sealed class IssuedTokenVerifier
     /// <param name="discovery">The discovery document of the own issuer the token was requested from.</param>
     /// <param name="tenantId">The tenant the token must be issued for.</param>
     /// <param name="purpose">Names the request in log lines, e.g. <c>service account configuration 'x'</c>.</param>
-    /// <param name="validateLifetime">Also refuse a token without <c>exp</c> or past it.</param>
     /// <returns>The claims of the verified token, or <c>null</c>.</returns>
     public async Task<JwtPayloadReader.JwtClaims?> VerifyAsync(string accessToken, DiscoveryDocumentResponse discovery,
-        string? tenantId, string purpose, bool validateLifetime = false)
+        string? tenantId, string purpose)
     {
         var rawKeySet = discovery.KeySet?.RawData;
         if (string.IsNullOrWhiteSpace(rawKeySet))
@@ -83,8 +83,8 @@ internal sealed class IssuedTokenVerifier
                     // Compared below with the own-issuer normalization (trailing slash, case of host).
                     ValidateIssuer = false,
                     ValidateAudience = false,
-                    ValidateLifetime = validateLifetime,
-                    RequireExpirationTime = validateLifetime,
+                    ValidateLifetime = true,
+                    RequireExpirationTime = true,
                     ClockSkew = ClockSkew
                 });
         }

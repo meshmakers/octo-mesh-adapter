@@ -1230,6 +1230,25 @@ public class ServiceAccountTokenServiceTests
     }
 
     [Fact]
+    public async Task OwnIssuerOnly_AnExpiredTokenIsRefused()
+    {
+        // Signed, own issuer, own tenant - but past its exp (beyond the one-minute clock skew): a replayed or stale
+        // token must not become the pipeline's service-account identity.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["TenantAdministrator"],
+                expiresInSeconds: -600), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var identity = await service.AcquireServiceAccountIdentityAsync(Credentials,
+            TenantId, TestContext.Current.CancellationToken);
+        var token = await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(identity);
+        Assert.Null(token);
+    }
+
+    [Fact]
     public async Task OwnIssuerOnly_ATokenNamingAnotherIssuerIsRefused()
     {
         var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(

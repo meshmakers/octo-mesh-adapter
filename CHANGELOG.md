@@ -22,7 +22,8 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   delegation) goes to `Adapter:IssuerUri` / `Adapter:AuthorityUrl`; a configured issuer other than empty,
   `{{service.authority}}` or an own name (`Adapter:AdditionalValidIssuers` included) and a `TenantId` other than
   the pipeline's tenant are refused before any request; the issued token's signature is verified against the own
-  JWKS (asymmetric algorithms only) and its `iss` and `tenant_id` are checked before any claim is used.
+  JWKS (asymmetric algorithms only), its lifetime (`exp` required and not past) and its `iss` and `tenant_id` are
+  checked before any claim is used.
   `IServiceAccountTokenService.AcquireServiceAccountIdentityAsync` now takes the pipeline's tenant as a required
   argument. Configurations with an empty or own
   issuer and an empty or own tenant work as before.

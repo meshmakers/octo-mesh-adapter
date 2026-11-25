@@ -72,6 +72,11 @@ internal sealed class TenantReadScope
     }
 
     /// <summary>
+    ///     The scope of one target of a multi-tenant read (AB#9771), already opened by the guard.
+    /// </summary>
+    public static TenantReadScope FromAccess(ICrossTenantAccess access) => new(access);
+
+    /// <summary>
     ///     The session of the target, under the identity the guard proved there. Only for a cross-tenant scope: the own
     ///     tenant's session stays at the node's own <c>GetSessionForAsync(identity)</c> call site, where the session
     ///     classification of AB#5028 sees it.

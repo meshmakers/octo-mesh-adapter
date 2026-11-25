@@ -12,7 +12,7 @@ namespace MeshAdapter.Sdk.IntegrationTests.Fixtures;
 ///     <see cref="PipelineExecutionFixture" />, so a test runs real pipeline YAML through the real orchestrator and the
 ///     registered mesh adapter nodes against the tree (AB#9768 reads, AB#9769 writes).
 /// </summary>
-public sealed class TenantSubtreePipelineFixture : TenantSubtreeFixture
+public class TenantSubtreePipelineFixture : TenantSubtreeFixture
 {
     protected override async Task InitializeServicesAsync()
     {

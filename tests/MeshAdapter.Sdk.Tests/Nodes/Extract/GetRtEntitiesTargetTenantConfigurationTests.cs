@@ -215,15 +215,20 @@ public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture s
 
     // ---- AB#9770: targetTenants (master-data sync) exists on ApplyChanges@2 only ---------------------------------
 
-    [Fact]
-    public void Schema_TargetTenantsIsOptional_OnApplyChangesV2Only()
+    [Theory]
+    [InlineData("ApplyChanges@2")]
+    // AB#9771: the multi-tenant read
+    [InlineData("GetRtEntitiesByType@1")]
+    [InlineData("GetRtEntitiesById@1")]
+    public void Schema_TargetTenantsIsOptional_OnApplyChangesV2AndTheTwoListReadNodesOnly(string nodeType)
     {
-        var node = schema.NodeSchema("ApplyChanges@2");
+        var node = schema.NodeSchema(nodeType);
         Assert.Contains("targetTenants", node["properties"]!.AsObject().Select(p => p.Key));
         var required = node["required"]?.AsArray().Select(r => r!.GetValue<string>()).ToArray() ?? [];
         Assert.DoesNotContain("targetTenants", required);
 
-        foreach (var other in new[] { "ApplyChanges@1", "GetRtEntitiesByType@1" })
+        // GetRtEntitiesByWellKnownName@1 resolves names in place, one entity per item: it has no multi-tenant read.
+        foreach (var other in new[] { "ApplyChanges@1", "GetRtEntitiesByWellKnownName@1" })
         {
             var otherNode = schema.NodeSchemaOrNull(other);
             if (otherNode != null)
@@ -267,6 +272,93 @@ public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture s
 
         var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
         Assert.Contains("targetTenants", ex.Message, StringComparison.Ordinal);
+    }
+
+    // ---- AB#9771: targetTenants on the read nodes (multi-tenant read) -------------------------------------------
+
+    [Fact]
+    public async Task ReadNodes_WithTargetTenants_LoadWithRelationListAndOnRefusedAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByType@1
+                                ckTypeId: Basic/Invoice
+                                targetTenants:
+                                  relation: Child
+                                  onRefused: Report
+                                targetPath: $.invoices
+                              - type: GetRtEntitiesById@1
+                                ckTypeId: Basic/Invoice
+                                rtIdsPath: $.ids
+                                targetTenants:
+                                  relation: Child
+                                  tenantIds: [companya, companyb]
+                                targetPath: $.invoice
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var byType = Assert.IsType<GetRtEntitiesByTypeNodeConfiguration>(root.Transformations!.ElementAt(0));
+        Assert.Null(byType.TargetTenant);
+        Assert.Equal(TenantRelation.Child, byType.TargetTenants!.Relation);
+        Assert.Equal(CrossTenantRefusalHandling.Report, byType.TargetTenants.OnRefused);
+        Assert.Null(byType.TargetTenants.TenantIds);
+        var byId = Assert.IsType<GetRtEntitiesByIdNodeConfiguration>(root.Transformations!.ElementAt(1));
+        Assert.Equal(new[] { "companya", "companyb" }, byId.TargetTenants!.TenantIds);
+        // Left out = Fail (resolved where it is read).
+        Assert.Null(byId.TargetTenants.OnRefused);
+    }
+
+    [Theory]
+    [InlineData("Ignore")]
+    [InlineData("Skip")]
+    public async Task ReadNodes_WithAnUnknownOnRefused_AreRefusedWhenThePipelineLoads(string onRefused)
+    {
+        var yaml = $"""
+                    transformations:
+                      - type: GetRtEntitiesByType@1
+                        ckTypeId: Basic/Invoice
+                        targetTenants:
+                          relation: Child
+                          onRefused: {onRefused}
+                        targetPath: $.invoices
+                    """;
+
+        await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+    }
+
+    [Fact]
+    public async Task WellKnownNameNode_WithTargetTenants_IsRefusedWhenThePipelineLoads()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: GetRtEntitiesByWellKnownName@1
+                                ckTypeId: Basic/Contact
+                                path: $.items
+                                wellKnownNamePath: $.name
+                                targetTenants:
+                                  relation: Child
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("targetTenants", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithOnRefused_IsRefusedWhenThePipelineLoads()
+    {
+        // onRefused belongs to the read set only; the sync keeps "fail after all targets".
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                                targetTenants:
+                                  relation: Child
+                                  onRefused: Report
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("onRefused", ex.Message, StringComparison.Ordinal);
     }
 
     private static IPipelineConfigurationSerializer Serializer()

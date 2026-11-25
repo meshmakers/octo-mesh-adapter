@@ -31,6 +31,18 @@ public record GetRtEntitiesByTypeNodeConfiguration : SourceTargetPathNodeConfigu
     /// </summary>
     [PropertyGroup("Execution", 101)]
     public TenantTargetConfiguration? TargetTenant { get; set; }
+
+    /// <summary>
+    /// Optional set of tenants to read from instead of the pipeline's own tenant (AB#9771), for example a group
+    /// tenant consolidating its companies: <c>relation: Child</c> (the only relation in v1), optional
+    /// <c>tenantIds</c> (default: every registered direct child at execution time) and <c>onRefused</c>
+    /// (<c>Fail</c>, the default, or <c>Report</c>). Every tenant passes the cross-tenant guard on its own. The output
+    /// is a multi-tenant result: <c>Items</c> (each entity with its <c>SourceTenantId</c>), <c>TotalCount</c>,
+    /// <c>Tenants</c> and <c>RefusedTenants</c>. Not together with <c>targetTenant</c>. See
+    /// docs/cross-tenant-access.md.
+    /// </summary>
+    [PropertyGroup("Execution", 102)]
+    public TenantReadSetConfiguration? TargetTenants { get; set; }
     /// <summary>
     /// Runtime construction kit type id to filter by (use either CkTypeId or CkTypeIdPath)
     /// </summary>

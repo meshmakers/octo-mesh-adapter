@@ -3,6 +3,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -41,8 +42,35 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context, I
             return;
         }
 
+        // AB#9771: several child tenants, each opened by the cross-tenant guard; the result names the source tenant of
+        // every item.
+        if (c.TargetTenants != null)
+        {
+            var consolidated = await MultiTenantRead.ReadAsync(etlContext, c.TargetTenant, c.TargetTenants,
+                c.Identity, dataContext, nodeContext, s => ReadAsync(s, c, ckTypeId, rtIds, dataContext, nodeContext));
+            dataContext.Set(c.TargetPath, consolidated, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         // AB#9768: the own tenant, or the target the cross-tenant guard opened (a refusal ends the node here).
         var scope = await TenantReadScope.OpenAsync(etlContext, c.TargetTenant, c.Identity, dataContext, nodeContext);
+
+        var r = await ReadAsync(scope, c, ckTypeId, rtIds, dataContext, nodeContext);
+
+        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+
+        await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Reads the entities from one tenant: the own one or one the cross-tenant guard opened. Hidden attributes are
+    /// checked and dropped with the CK model of that tenant.
+    /// </summary>
+    private async Task<IResultSet<RtEntity>> ReadAsync(TenantReadScope scope, GetRtEntitiesByIdNodeConfiguration c,
+        RtCkId<CkTypeId> ckTypeId, List<OctoObjectId> rtIds, IDataContext dataContext, INodeContext nodeContext)
+    {
+        var etlContext = context;
 
         // AB#7768: no filter on a Hidden attribute (of the tenant the data comes from).
         await scope.EnsureCacheLoadedAsync(ckCacheService);
@@ -63,11 +91,7 @@ public class GetRtEntitiesByIdNode(NodeDelegate next, IMeshEtlContext context, I
         await session.CommitTransactionAsync();
 
         // AB#7768: Hidden values never enter the data context.
-        r = await scope.DropHiddenAsync(ckCacheService, r);
-
-        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-
-        await next(dataContext, nodeContext);
+        return await scope.DropHiddenAsync(ckCacheService, r);
     }
 
     private static List<OctoObjectId> GetRtIds(GetRtEntitiesByIdNodeConfiguration c, IDataContext dataContext)

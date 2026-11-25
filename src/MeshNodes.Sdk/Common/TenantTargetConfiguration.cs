@@ -77,3 +77,43 @@ public record TenantSetConfiguration
     /// </summary>
     public ICollection<string>? TenantIds { get; init; }
 }
+
+/// <summary>
+///     What a multi-tenant read (<see cref="TenantReadSetConfiguration" />) does with a target tenant the cross-tenant
+///     guard refuses (AB#9771).
+/// </summary>
+public enum CrossTenantRefusalHandling
+{
+    /// <summary>
+    ///     Default. One refused tenant fails the execution with <c>CROSS_TENANT_FORBIDDEN</c>, naming every refused
+    ///     tenant; nothing is read, not even from the tenants that were allowed.
+    /// </summary>
+    Fail,
+
+    /// <summary>
+    ///     The allowed tenants are read; every refused tenant is listed in the node's output (<c>RefusedTenants</c>) and
+    ///     none of its data is returned.
+    /// </summary>
+    Report
+}
+
+/// <summary>
+///     Multi-tenant setting of the read nodes GetRtEntitiesByType@1 and GetRtEntitiesById@1 (AB#9771): the node reads
+///     the same selection from several tenants of the pipeline's subtree, for example a group tenant consolidating the
+///     figures of its companies. Every target goes through the cross-tenant guard exactly like a single
+///     <see cref="TenantTargetConfiguration" />.
+/// </summary>
+/// <remarks>
+///     Same shape and rules as the fan-out of ApplyChanges@2 (<see cref="TenantSetConfiguration" />): v1 allows only
+///     <see cref="TenantRelation.Child" />; without <see cref="TenantSetConfiguration.TenantIds" /> the targets are all
+///     registered direct children of the pipeline's tenant at execution time.
+/// </remarks>
+public record TenantReadSetConfiguration : TenantSetConfiguration
+{
+    /// <summary>
+    ///     What happens when the guard refuses a target: <see cref="CrossTenantRefusalHandling.Fail" /> (default) or
+    ///     <see cref="CrossTenantRefusalHandling.Report" />. Nullable because a key written without a value overwrites an
+    ///     initializer in the pipeline YAML; <c>null</c> means <see cref="CrossTenantRefusalHandling.Fail" />.
+    /// </summary>
+    public CrossTenantRefusalHandling? OnRefused { get; init; }
+}

@@ -63,6 +63,31 @@ public sealed class CrossTenantAccessDeniedException : PipelineExecutionExceptio
     public string ReasonCode { get; }
 
     /// <summary>
+    ///     The refused tenants of a multi-tenant read with <c>onRefused: Fail</c> (AB#9771), in target order; empty for
+    ///     the refusal of a single target.
+    /// </summary>
+    public IReadOnlyList<string> RefusedTenantIds { get; private init; } = [];
+
+    /// <summary>
+    ///     A multi-tenant read with <c>onRefused: Fail</c> (AB#9771) was refused for at least one of its targets, so it
+    ///     read nothing. Names every refused tenant (the targets are static configuration or the registry's children,
+    ///     never data); the per-target reason stays in <see cref="ReasonCode" /> of the first refusal and in the log.
+    /// </summary>
+    internal static CrossTenantAccessDeniedException ForbiddenTenants(string nodePath, int targetCount,
+        IReadOnlyList<CrossTenantAccessDeniedException> refusals, IReadOnlyList<string> refusedTenantIds)
+    {
+        var names = string.Join(", ", refusedTenantIds.Select(t => $"'{t}'"));
+        return new CrossTenantAccessDeniedException(
+            $"[{nodePath}]: {CrossTenantAccessCodes.Forbidden}: access to {refusedTenantIds.Count} of {targetCount} " +
+            $"target tenants is forbidden for this pipeline: {names}. Nothing was read (onRefused: Fail). Access " +
+            "needs the relation and a right of the node's identity in every tenant.",
+            refusals[0].ReasonCode)
+        {
+            RefusedTenantIds = refusedTenantIds
+        };
+    }
+
+    /// <summary>
     ///     The uniform refusal: the same text whatever the reason, so the answer does not tell whether a tenant exists,
     ///     lies outside the relation or holds no right for the identity.
     /// </summary>

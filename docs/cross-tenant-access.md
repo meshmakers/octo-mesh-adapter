@@ -333,6 +333,46 @@ pipeline runs in G: `FromWatchRtEntity@1` on G's own entities (no cross-tenant t
   a user of a company can still edit or delete a synced entity or set `RtSyncOrigin` through GraphQL until the asset
   repository applies the same rule.
 
+### 4.1c Consolidated read over the child tenants (read nodes with `targetTenants`)
+
+The controller of a group tenant G wants the figures of all companies in one place. A consolidation pipeline runs in
+G and reads every company with `GetRtEntitiesByType@1` (or `GetRtEntitiesById@1`) and `targetTenants`; ordinary
+transform nodes (`SumAggregation@1`, `GroupBy@1`) build the figures per company and in total from the result.
+
+```yaml
+- type: GetRtEntitiesByType@1
+  ckTypeId: Accounting/Invoice
+  identity: Caller               # the controller; ServiceAccount for a scheduled run
+  targetTenants:
+    relation: Child              # the only relation of v1
+    tenantIds: [companya, companyb]   # optional; without it every registered direct child
+    onRefused: Fail              # default; Report returns the allowed companies and lists the refused ones
+  targetPath: $.invoices
+```
+
+- **Targets.** As for the sync (section 4.1b): without `tenantIds` the registered direct children of G at execution
+  time; a detached company is no longer one, a grandchild never is. Each target, listed or not, is opened through the
+  guard as a `Child` target (relation, identity proof in that company, generation). `Parent` and `Sibling` are not
+  offered for a set: the parent is one tenant (`targetTenant`), and a set of siblings has no use case yet.
+- **All targets are opened before the first read.** With `onRefused: Fail` (default) one refusal fails the execution
+  with `CROSS_TENANT_FORBIDDEN`, the message names every refused tenant, and no data of any company enters the data
+  context. With `onRefused: Report` the refused companies are listed in `RefusedTenants` (tenant id and
+  `CROSS_TENANT_FORBIDDEN`, never the reason) and their data is absent; the others are returned. The identity
+  `System` (abuse case 5) and an invalid configuration always fail, also with `Report`: they would refuse every
+  company, and an empty consolidation must not look like a valid one.
+- **Each item names its source tenant**: the result's `Items` are the entities of all companies, each with the added
+  key `SourceTenantId`; `Tenants` lists the read companies with their `TotalCount`. Paging (`skip`, `take`) applies per
+  company.
+- **Why a pipeline and not GraphQL.** The asset repository's GraphQL API is bound to the tenant of its route: a request
+  to `/tenants/{tenantId}/graphQl` is answered from that tenant's database only. `TenantAuthorizationMiddleware`
+  (octo-common-services) accepts only tokens of that same tenant, so an administrator of G gets no business data of a
+  company through GraphQL (AB#5060); the only exception is a closed list of administration calls (the tenant dump
+  mutation and reads of `runtime.operations`, AB#8986), which a parent tenant's user token may send to a registered
+  child and which return no business data. A cross-tenant GraphQL query would have to open that middleware to parent tokens and
+  carry per-tenant proofs through the schema and the resolvers, which moves the security boundary of every API
+  client. The pipeline keeps the boundary where it is: the read runs in the adapter, through the one guard, with a
+  right proven by the identity service in every company, and only the figures the pipeline builds leave it.
+
 ### 4.2 Backwards compatibility
 
 - No property = `null` = the unchanged code path (the node keeps calling `etlContext.GetSessionForAsync` and
@@ -413,11 +453,18 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 28 | The sync meets a local entity (or another source's copy) under the source RtId | the whole target is refused, the entity stays unchanged; the other targets are written | `SYNC_OWNED_ENTITY` |
 | 29 | The sync's input carries an origin of another tenant | ignored; the node stamps the pipeline's tenant | — |
 | 30 | A listed sync target is a grandchild, a detached or a foreign tenant | that target refused, named in `CROSS_TENANT_WRITE_FAILED` | as rows 1, 2, 12 |
+| 31 | Consolidation with `onRefused: Fail` and one company without a right | execution failed naming the company; nothing of any company read | `identity_not_provable` (log) |
+| 32 | Consolidation with `onRefused: Report` and one company without a right | the company listed in `RefusedTenants`, none of its data returned | `identity_not_provable` (log) |
+| 33 | `targetTenants.tenantIds` naming a grandchild, the system tenant, a foreign or a detached tenant, the own tenant | that tenant refused (Fail: execution failed; Report: listed) | as rows 1, 2, 11, 12 |
+| 34 | Consolidation with the identity `System`, also with `onRefused: Report` | execution failed | `system_identity_refused` |
+| 35 | A company's proof of an earlier generation | that company refused | `tenant_generation_mismatch` |
 | 25 | Caller input chooses the tenant a service account acts in (`tenantIdPath` into `$.body`/`$.query`/`$.files`/`$.headers` with `ServiceAccount`, or `Caller` in a pipeline that can run without a verified caller) | deploy refused (controller, section 4.4); as the pure verified caller a deploy warning | — (deploy) |
 
 Rows 9 and 15–17 belong to the write node and are tested there (`ApplyChangesCrossTenantNodeTests`,
 `ApplyChangesCrossTenantIntegrationTests`, `GetRtEntitiesTargetTenantConfigurationTests`); rows 26–30 belong to the
-sync (`ApplyChangesSyncNodeTests`, `SyncOriginRulesTests`, `MasterDataSyncIntegrationTests`); row 23 is a non-feature.
+sync (`ApplyChangesSyncNodeTests`, `SyncOriginRulesTests`, `MasterDataSyncIntegrationTests`); rows 31–35 belong to
+the consolidated read (`GetRtEntitiesMultiTenantNodeTests`, `ConsolidatedReadIntegrationTests`); row 23 is a
+non-feature.
 
 ## 6. Implementation
 
@@ -483,5 +530,12 @@ per-execution caller, caller token, identity resolver and proof cache.
   is unchanged; without the setting the node writes its own tenant; grandchild, cousin, detached, system tenant, wrong
   or missing relation, a proof for the source tenant, a proof of an earlier generation, `System` and `ApplyChanges@1`
   with a target are refused.
+- Consolidated read: `GetRtEntitiesMultiTenantNodeTests` (every target opened as `Child` before the first read, Fail
+  reads nothing, Report lists and skips, `System` and configuration errors fail also with Report) and
+  `ConsolidatedReadIntegrationTests` on `TenantConsolidationFixture` (G with A: invoices 100 + 50, B: 70, C: 999
+  without a right, a grandchild: 500): the consolidation pipeline in G returns A = 150, B = 70, total 220; C refused
+  with Fail and with Report; the detached company and the grandchild are no part of it; grandchild, system tenant,
+  foreign tenant, other group and the own tenant in `tenantIds`, the identity `System` and a stale generation are
+  refused.
 - Architecture: `CrossTenantCallSiteArchitectureTests` lists every `ISystemContext.Find*Tenant*` call site; a new one
   fails unless it is added to the allow list with a reason.

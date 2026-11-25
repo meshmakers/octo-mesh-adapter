@@ -31,7 +31,6 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         var c = nodeContext.GetNodeConfiguration<GetRtEntitiesByTypeNodeConfiguration>();
 
         // Everything that can be decided from the configuration is decided before a session is opened.
-        Func<IOctoSession, Task<IResultSet<RtEntity>>> query;
         if (c.CkInterfaceId == null && c.CkTypeId == null && c.CkTypeIdPath == null)
         {
             var node = nodeContext.NodePath.ToString();
@@ -39,9 +38,35 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
                 $"[{node}]: CkTypeId is not set. Please set ckTypeId or ckTypeIdPath, or ckInterfaceId to select by CK interface.");
         }
 
+        // AB#9771: several child tenants, each opened by the cross-tenant guard; the result names the source tenant of
+        // every item.
+        if (c.TargetTenants != null)
+        {
+            var consolidated = await MultiTenantRead.ReadAsync(etlContext, c.TargetTenant, c.TargetTenants,
+                c.Identity, dataContext, nodeContext, s => ReadAsync(s, c, dataContext, nodeContext));
+            dataContext.Set(c.TargetPath, consolidated, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+            await next(dataContext, nodeContext);
+            return;
+        }
+
         // AB#9768: the own tenant, or the target the cross-tenant guard opened (a refusal ends the node here).
         var scope = await TenantReadScope.OpenAsync(etlContext, c.TargetTenant, c.Identity, dataContext, nodeContext);
 
+        var r = await ReadAsync(scope, c, dataContext, nodeContext);
+
+        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+
+        await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// Reads the selection from one tenant: the own one or one the cross-tenant guard opened. Hidden attributes are
+    /// checked and dropped with the CK model of that tenant.
+    /// </summary>
+    private async Task<IResultSet<RtEntity>> ReadAsync(TenantReadScope scope, GetRtEntitiesByTypeNodeConfiguration c,
+        IDataContext dataContext, INodeContext nodeContext)
+    {
+        Func<IOctoSession, Task<IResultSet<RtEntity>>> query;
         var queryOptions = RtEntityQueryOptions.Create();
         if (c.CkInterfaceId != null)
         {
@@ -112,11 +137,7 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
         }
 
         // AB#7768: Hidden values never enter the data context.
-        r = await scope.DropHiddenAsync(ckCacheService, r);
-
-        dataContext.Set(c.TargetPath, r, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-
-        await next(dataContext, nodeContext);
+        return await scope.DropHiddenAsync(ckCacheService, r);
     }
 
     private static RtCkId<CkInterfaceId> ValidateInterfaceSelection(GetRtEntitiesByTypeNodeConfiguration c,

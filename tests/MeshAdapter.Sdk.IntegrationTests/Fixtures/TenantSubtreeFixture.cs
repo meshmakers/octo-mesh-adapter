@@ -80,7 +80,7 @@ public class TenantSubtreeFixture : SystemFixture
         await systemContext.CreateChildTenantAsync(adminSession, $"db{tenantId}", tenantId);
     }
 
-    private static async Task CreateBelowAsync(ISystemContext systemContext, string parentTenantId, string tenantId)
+    protected static async Task CreateBelowAsync(ISystemContext systemContext, string parentTenantId, string tenantId)
     {
         var parentContext = await systemContext.FindTenantContextAsync(parentTenantId);
         using var adminSession = await systemContext.GetAdminSessionAsync();
@@ -92,7 +92,7 @@ public class TenantSubtreeFixture : SystemFixture
         await parentContext.CreateChildTenantAsync(adminSession, $"db{tenantId}", tenantId);
     }
 
-    private static async Task ImportModelAndSeedAsync(ISystemContext systemContext, ICkCacheService ckCacheService,
+    protected static async Task ImportModelAndSeedAsync(ISystemContext systemContext, ICkCacheService ckCacheService,
         string tenantId)
     {
         var operationResult = new OperationResult();

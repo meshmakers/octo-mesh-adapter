@@ -34,6 +34,14 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- Consolidated read over the child tenants (AB#9771, Feature AB#8673): `GetRtEntitiesByType@1` and
+  `GetRtEntitiesById@1` take the optional `targetTenants` (`relation: Child`, optional `tenantIds`; without the list
+  every registered direct child; `onRefused: Fail` (default) or `Report`). Every company is opened through the
+  cross-tenant guard before the first read. The output is a multi-tenant result: `Items` (each entity with
+  `SourceTenantId`), `TotalCount`, `Tenants` and `RefusedTenants`. `Fail` fails the execution with
+  `CROSS_TENANT_FORBIDDEN` naming every refused company and reads nothing; `Report` returns the allowed companies and
+  lists the refused ones without their data. The identity `System` and configuration errors always fail. Why a
+  pipeline and not GraphQL: docs/cross-tenant-access.md section 4.1c.
 - One-way master-data sync into the child tenants (AB#9770, Feature AB#8673): `ApplyChanges@2` takes the optional
   `targetTenants` (`relation: Child`, optional `tenantIds`; without the list every registered direct child). Each
   entity update of the batch becomes, in every target, an idempotent upsert or delete keyed by source tenant and

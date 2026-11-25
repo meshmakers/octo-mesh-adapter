@@ -31,6 +31,51 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Extract/**, src/MeshAdapter.Sdk/Nodes/Mail
      `tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetRtEntitiesCrossTenantNodeTests.cs`,
      `GetRtEntitiesTargetTenantConfigurationTests.cs`, integration
      `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/GetRtEntitiesCrossTenantIntegrationTests.cs`.
+   - **Reading several child tenants at once** (AB#9771, Feature AB#8673): `GetRtEntitiesByType@1` and
+     `GetRtEntitiesById@1` take the optional `targetTenants` (`TenantReadSetConfiguration`): `relation: Child` (the only
+     relation of v1, the same shape as the fan-out of `ApplyChanges@2`), optional `tenantIds` (without it every
+     registered direct child at execution time) and `onRefused` (`Fail`, the default, or `Report`). Not together with
+     `targetTenant`; `GetRtEntitiesByWellKnownName@1` has no multi-tenant read (it resolves one entity per item in
+     place). Every target is opened through the guard as a `Child` target before anything is read
+     (`Common/MultiTenantRead.cs`); each allowed tenant is read with the node's selection, paging, filters and sort
+     orders applied per tenant. The output at `targetPath` is a multi-tenant result:
+
+     ```json
+     {
+       "Items": [ { "RtId": "...", "Attributes": { "InvoiceAmount": 100.0 }, "SourceTenantId": "companya" } ],
+       "TotalCount": 3,
+       "Tenants": [ { "TenantId": "companya", "TotalCount": 2 }, { "TenantId": "companyb", "TotalCount": 1 } ],
+       "RefusedTenants": [ { "TenantId": "companyc", "ErrorCode": "CROSS_TENANT_FORBIDDEN" } ]
+     }
+     ```
+
+     `SourceTenantId` is added to every entity of `Items`; `TotalCount` is the sum of the tenants' totals. With
+     `onRefused: Fail` one refused tenant fails the execution with `CROSS_TENANT_FORBIDDEN`, naming every refused
+     tenant, and nothing of any tenant is read. With `Report` the refused tenants are listed in `RefusedTenants` (id and
+     code, never the reason) and a warning names each; their data is absent, the others are returned. The identity
+     `System` and an invalid configuration always fail, also with `Report`. Example (consolidation in a group):
+
+     ```yaml
+     - type: GetRtEntitiesByType@1
+       ckTypeId: Accounting/Invoice
+       identity: Caller
+       targetTenants:
+         relation: Child
+         onRefused: Report
+       targetPath: $.invoices
+     - type: SumAggregation@1
+       targetPath: $.figures.companya
+       aggregations:
+         - path: $.invoices.Items[*]
+           filterPath: $.SourceTenantId
+           comparisonValue: companya
+           aggregationPath: $.Attributes.InvoiceAmount
+           value: 1
+     ```
+
+     Tests: `tests/MeshAdapter.Sdk.Tests/Nodes/Extract/GetRtEntitiesMultiTenantNodeTests.cs`,
+     `GetRtEntitiesTargetTenantConfigurationTests.cs`, integration
+     `tests/MeshAdapter.Sdk.IntegrationTests/Nodes/Extract/ConsolidatedReadIntegrationTests.cs`.
    - GetRtEntitiesByIdNode
    - **GetRtEntitiesByTypeNode** (`GetRtEntitiesByType@1`) — entities of one CK type, or (F4.1 criterion 4) with **`ckInterfaceId`** the entities of **all types that implement a CK interface** (derived types included) in one global order. The interface variant is ONE call of the engine method `ITenantRepository.GetRtEntitiesByInterfaceAsync` (read `octo-construction-kit-engine-mongodb/docs/interface-query.md`); the node holds **no expansion, fan-out, merge or security logic** (test: `WithCkInterfaceId_CallsTheSharedEngineMethodOnce_AndNeverTheTypeQuery`). Rules of the node:
      - **Selection**: exactly one of `ckTypeId`/`ckTypeIdPath` or `ckInterfaceId`. `ckInterfaceId` is a **string** (the pipeline YAML serializer has no `RtCkId<CkInterfaceId>` converter) holding the runtime id `Model/Interface`, e.g. `System/Named`; the CK element id with its version (`System/Named-1`) is accepted too. Field filters and sort orders are translated by the same helpers as the type variant, but may only name **members of the interface** and system fields (engine rule).

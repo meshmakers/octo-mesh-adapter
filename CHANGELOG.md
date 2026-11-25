@@ -34,6 +34,24 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- One-way master-data sync into the child tenants (AB#9770, Feature AB#8673): `ApplyChanges@2` takes the optional
+  `targetTenants` (`relation: Child`, optional `tenantIds`; without the list every registered direct child). Each
+  entity update of the batch becomes, in every target, an idempotent upsert or delete keyed by source tenant and
+  source RtId: the copy keeps the source RtId and carries the System record `RtSyncOrigin` (System 2.9.0: source
+  tenant, source RtId, sync time), stamped by the node and never taken from the input. An entity of the target
+  without that origin, or with another source's origin, is never changed or deleted (the target fails with
+  `SYNC_OWNED_ENTITY`). Every target goes through the cross-tenant guard and is written in its own transaction; a
+  refused or failed target does not stop the others, and the execution then fails with `CROSS_TENANT_WRITE_FAILED`
+  naming every failed target. Outside the sync, `ApplyChanges@1` and `ApplyChanges@2` refuse to set or change
+  `RtSyncOrigin` and to update or delete an entity that carries it (`SYNC_OWNED_ENTITY`); entities without an origin
+  are written as before (one indexed read per type and batch inside the write transaction). Needs System 2.9.0.
+  `FromWatchRtEntity@1` takes the opt-in `includeDeletes` (default `false`: exactly today's events): delete events
+  then reach the pipeline with `$.DocumentRtId` (needs octo-construction-kit-engine-mongodb with
+  `WatchStreamFilter.IncludeDeleteEvents`), so a deletion in the source removes the copies. A write with a single
+  `targetTenant` whose target engine refuses the batch now fails the execution with `CROSS_TENANT_WRITE_FAILED`
+  instead of only logging (own-tenant writes unchanged). Node reference: `docs/nodes-load.md`,
+  `docs/cross-tenant-access.md` section 4.1b.
+
 - Write into another tenant of the subtree (AB#9769, Feature AB#8673): `ApplyChanges@2` takes the optional
   `targetTenant` (same shape as the read nodes). Every create, update, delete and association change then goes
   through the cross-tenant guard first and is written in one transaction of the target with the session proven there

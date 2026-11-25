@@ -31,6 +31,18 @@ public record FromWatchRtEntityNodeConfiguration : TriggerNodeConfiguration
     public OctoObjectId? RtId { get; set; }
 
     /// <summary>
+    /// Opt-in for delete events (AB#9770). <c>false</c> (default): no delete event reaches the pipeline, whatever
+    /// <see cref="UpdateTypes" /> says - the behaviour of every watch before this setting existed. <c>true</c> together
+    /// with <c>Delete</c> in <see cref="UpdateTypes" />: a delete of the watched type runs the pipeline with
+    /// <c>$.UpdateType</c> <c>Delete</c>, <c>$.Document</c> null and the deleted entity's id at <c>$.DocumentRtId</c>
+    /// (also set for every other event); <c>$.DocumentBeforeChange</c> holds the deleted entity when the type's
+    /// collection captures pre-images. Without pre-images the watch must name the collection root of the type and no
+    /// field filter (the deleted document is not available to match); any other combination fails the trigger start.
+    /// </summary>
+    [PropertyGroup("Options", 1)]
+    public bool IncludeDeletes { get; set; }
+
+    /// <summary>
     /// Gets or sets optional field filters to filter by on the version before storing runtime entity object.
     /// </summary>
     [PropertyGroup("Query", 0)]

@@ -52,3 +52,28 @@ public record TenantTargetConfiguration
     /// </summary>
     public string? TenantIdPath { get; init; }
 }
+
+/// <summary>
+///     Fan-out setting of ApplyChanges@2 (AB#9770): the node writes its batch as a one-way master-data sync into several
+///     tenants of the pipeline's subtree. Every target goes through the cross-tenant guard exactly like a single
+///     <see cref="TenantTargetConfiguration" />.
+/// </summary>
+/// <remarks>
+///     v1 allows only <see cref="TenantRelation.Child" />: the master data of a group tenant flows down into its
+///     companies. Without <see cref="TenantIds" /> the targets are all registered direct children of the pipeline's
+///     tenant at execution time; with it, exactly the listed tenants, each of which must be a direct child.
+/// </remarks>
+public record TenantSetConfiguration
+{
+    /// <summary>
+    ///     Relation of the targets to the pipeline's tenant. Must be named; only <see cref="TenantRelation.Child" /> is
+    ///     accepted. A missing value stays <c>null</c> and is refused as a configuration error.
+    /// </summary>
+    public required TenantRelation? Relation { get; init; }
+
+    /// <summary>
+    ///     The target tenants. <c>null</c> (default) = every registered direct child of the pipeline's tenant at
+    ///     execution time; an empty list is a configuration error.
+    /// </summary>
+    public ICollection<string>? TenantIds { get; init; }
+}

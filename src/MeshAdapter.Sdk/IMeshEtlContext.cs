@@ -135,4 +135,17 @@ public interface IMeshEtlContext : IEtlContext
         IDataContext dataContext, INodeContext nodeContext) =>
         Task.FromException<ICrossTenantAccess>(CrossTenantAccessDeniedException.Forbidden(
             nodeContext.NodePath.ToString(), target.Relation?.ToString() ?? "(none)", CrossTenantRefusalReason.TargetUnverifiable));
+
+    /// <summary>
+    ///     The registered direct children of the pipeline's tenant (AB#9770): the candidates of a master-data sync with
+    ///     <c>targetTenants</c> and no tenant list. Each one is still opened with <see cref="OpenTenantAsync" />, which
+    ///     checks relation and identity.
+    /// </summary>
+    /// <remarks>
+    ///     The default implementation refuses, like <see cref="OpenTenantAsync" /> (fail closed).
+    /// </remarks>
+    /// <param name="nodeContext">The node, for messages.</param>
+    Task<IReadOnlyList<string>> ListChildTenantsAsync(INodeContext nodeContext) =>
+        Task.FromException<IReadOnlyList<string>>(CrossTenantAccessDeniedException.Forbidden(
+            nodeContext.NodePath.ToString(), "Child", CrossTenantRefusalReason.TargetUnverifiable));
 }

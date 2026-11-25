@@ -221,6 +221,33 @@ public class ApplyChangesCrossTenantNodeTests : SessionNodeTestBase
             .MustHaveHappenedOnceExactly();
     }
 
+    [Fact]
+    public async Task WithTarget_AnEngineErrorInTheTarget_FailsTheExecution_AndNamesTheTarget()
+    {
+        // AB#9770 (decision 6): the target's engine refuses the batch (validation error in the operation result). In
+        // the own tenant this is only logged; for another tenant it must fail the execution.
+        A.CallTo(() => _targetRepository.ApplyChangesAsync(_targetSession,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .Invokes((IOctoSession _, IReadOnlyList<IEntityUpdateInfo<RtEntity>> _,
+                    IReadOnlyList<AssociationUpdateInfo> _, OperationResult or) =>
+                or.AddMessage(new OperationMessage(MessageLevel.Error, null, 0, "Test error")));
+        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath, TargetTenant = Sibling };
+        var (dataContext, nodeContext, next) = Prepare(config, CreateUpdateDelete());
+
+        var failed = await Assert.ThrowsAsync<CrossTenantWriteFailedException>(() =>
+            CreateNode(next).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal(CrossTenantWriteCodes.WriteFailed, failed.ErrorCode);
+        var failure = Assert.Single(failed.Failures);
+        Assert.Equal(TargetTenantId, failure.TenantId);
+        Assert.Equal("VALIDATION_FAILED", failure.ErrorCode);
+        Assert.Contains($"'{TargetTenantId}'", failed.Message);
+        A.CallTo(() => _targetSession.CommitTransactionAsync()).MustNotHaveHappened();
+        A.CallTo(() => _targetSession.AbortTransactionAsync()).MustHaveHappened();
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
     private static AssociationUpdateInfo Association(RtEntityId origin, RtEntityId target) =>
         AssociationUpdateInfo.CreateInsert(origin, target, new RtCkId<CkAssociationRoleId>("TestModel/RelatesTo"));
 

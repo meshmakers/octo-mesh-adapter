@@ -232,6 +232,25 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
         return new CrossTenantAccess(targetTenantId, repository, proof.SecurityContext);
     }
 
+    public async Task<IReadOnlyList<string>> ListChildTenantsAsync(string sourceTenantId, string nodePath,
+        CancellationToken cancellationToken = default)
+    {
+        var source = TenantRegistrySnapshot.Normalize(sourceTenantId) ?? string.Empty;
+        TenantRegistrySnapshot registry;
+        try
+        {
+            registry = await _registryReader.GetAsync(cancellationToken: cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "[{SourceTenantId}] Tenant registry unreadable for listing the child tenants", source);
+            throw CrossTenantAccessDeniedException.Forbidden(nodePath, nameof(TenantRelation.Child),
+                CrossTenantRefusalReason.TargetUnverifiable);
+        }
+
+        return registry.ChildrenOf(source);
+    }
+
     /// <summary>The static rules of the setting; <c>null</c> when consistent.</summary>
     internal static string? CheckConfiguration(TenantTargetConfiguration target)
     {

@@ -33,6 +33,9 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICk
         if (list != null)
         {
             await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, list);
+
+            // AB#9770: only the master-data sync (ApplyChanges@2 targetTenants) sets RtSyncOrigin.
+            SyncOriginWriteGuard.EnsureOriginNotWritten(nodeContext.NodePath.ToString(), list);
         }
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
@@ -79,6 +82,19 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICk
                         // to ApplyChanges@2 to get an identity.
                         var session = await etlContext.GetSystemSessionAsync();
                         session.StartTransaction();
+
+                        // AB#9770: synced master data is changed and deleted only by the sync of its source tenant,
+                        // also on this deprecated system-session path.
+                        try
+                        {
+                            await SyncOriginWriteGuard.EnsureNoSyncOwnedEntityAsync(etlContext.TenantRepository,
+                                session, nodeContext.NodePath.ToString(), resultUpdateInfos);
+                        }
+                        catch (SyncOriginWriteRefusedException)
+                        {
+                            await session.AbortTransactionAsync();
+                            throw;
+                        }
 
                         OperationResult operationResult = new();
                         await etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,

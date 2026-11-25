@@ -1,0 +1,11 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+# AB#9770: master data the group tenant maintains once and syncs one-way into its companies.
+- typeId: SyncedContact
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/ContactName
+    name: ContactName
+  - id: ${this}/ContactEmail
+    name: ContactEmail
+    isOptional: true

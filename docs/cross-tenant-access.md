@@ -208,6 +208,131 @@ several updates of one entity work as in the own tenant.
     tenantIdPath: $.invoice.Items[0].Attributes.RecipientTenantId
 ```
 
+### 4.1b Master-data sync into the child tenants (`ApplyChanges@2` with `targetTenants`)
+
+A group tenant G maintains master data (contacts, for example) once and syncs it one way into its companies. The sync
+pipeline runs in G: `FromWatchRtEntity@1` on G's own entities (no cross-tenant trigger, abuse case 23), then
+`ApplyChanges@2` with `targetTenants` and `identity: ServiceAccount` (a watch trigger has no caller).
+
+```yaml
+- type: ApplyChanges@2
+  identity: ServiceAccount
+  entityUpdatesPath: $._sync
+  targetTenants:
+    relation: Child              # the only relation of v1
+    tenantIds: [companya]        # optional; without it every registered direct child
+```
+
+- **Targets.** Without `tenantIds` the registered direct children of G at execution time (the guard's registry
+  snapshot, so a child created seconds ago may be missed for up to 30 s). Each target, listed or not, is opened through
+  the guard as a `Child` target: relation, identity proof in that company, generation. A listed id that is no direct
+  child (a grandchild, a detached or foreign tenant) is refused like any other target.
+- **Owner marker and idempotency.** The copy keeps the source RtId and carries the System record `RtSyncOrigin`
+  (`SourceTenantId`, `SourceRtId`, `SyncedAt`; System 2.9.0). The node stamps it itself with the pipeline's tenant
+  as source and drops any origin the input carries, so a sync can never claim another source. Per target the node
+  reads the stored entities of the batch: no entity → insert, this sync's copy → update, a delete → delete (nothing
+  when the copy is gone). Running twice leaves exactly one copy.
+- **Local entities are never touched.** An entity of the target under that RtId without `RtSyncOrigin`, or with the
+  origin of another source, refuses the whole target (`SYNC_OWNED_ENTITY`); nothing of that target is written.
+- **Engine refusal of a single-target write.** With `targetTenant` (one target) an engine validation error in the
+  target now fails the execution with `CROSS_TENANT_WRITE_FAILED` naming the target (code `VALIDATION_FAILED`). A write
+  into the own tenant keeps its old behaviour: the error is logged and the pipeline goes on.
+- **Failure.** Each target is written in its own transaction. A refused or failed target does not stop the others;
+  after the last target the node throws `CROSS_TENANT_WRITE_FAILED` naming every failed target with its stable code
+  (`CROSS_TENANT_FORBIDDEN`, `SYNC_OWNED_ENTITY`, `ATTRIBUTE_WRITE_RESTRICTED`, `VALIDATION_FAILED`, `WRITE_CONFLICT`,
+  `WRITE_FAILED`; never a value) and the written ones. The trigger reports the execution as failed with that message.
+- **Local edits of synced data.** Outside the sync, `ApplyChanges@1` and `ApplyChanges@2` (own tenant or one
+  `targetTenant`) refuse to set or change `RtSyncOrigin`, and refuse an update, replace or delete of an entity that
+  carries it (`SYNC_OWNED_ENTITY`). The data is changed in G and reaches the company with the next sync.
+- **Deletions.** The sync deletes a copy when it gets a delete entity update (`updateKind: DELETE` with the RtId
+  of the deleted entity; the copy is deleted with the engine's default strategy, i.e. archived). A deletion in G reaches
+  the watch in two shapes:
+  - the **default delete** of ApplyChanges and GraphQL **archives** the entity: an update event whose
+    `$.Document.RtState` is `1` (Archived);
+  - an **erase** removes it: a delete event, which `FromWatchRtEntity@1` delivers only with the opt-in
+    `includeDeletes: true` (and `Delete` in `updateTypes`); every existing watch keeps exactly the events it had. It has
+    `$.UpdateType` `8`, `$.Document` null and the id at `$.DocumentRtId` (set for every event). The engine matches it on
+    the pre-image when the type's collection captures pre-images (`enableChangeStreamPreAndPostImages`; exact for
+    derived types sharing the collection, field filters apply to the deleted document), otherwise on the document key
+    alone, which is exact only for a watch on the collection root without field filters - every other combination fails
+    the trigger start. A typical sync type derives from `System/Entity` and is its own collection root, so no pre-images
+    are needed.
+
+  Enums are numbers in the data context. The sync pipeline branches with `If@1` (tested in
+  `MasterDataSyncIntegrationTests`):
+
+  ```yaml
+  triggers:
+    - type: FromWatchRtEntity@1
+      ckTypeId: Acme.Crm/Contact
+      updateTypes: All
+      includeDeletes: true
+  transformations:
+    - type: If@1                       # erased in G
+      path: $.UpdateType
+      operator: Equals
+      valueType: Integer
+      value: 8
+      transformations:
+        - type: CreateUpdateInfo@1
+          targetPath: $._delete
+          targetValueKind: Array
+          updateKind: DELETE
+          ckTypeId: Acme.Crm/Contact
+          rtIdPath: $.DocumentRtId
+        - type: ApplyChanges@2
+          identity: ServiceAccount
+          entityUpdatesPath: $._delete
+          targetTenants: { relation: Child }
+    - type: If@1                       # archived in G (default delete)
+      path: $.Document.RtState
+      operator: Equals
+      valueType: Integer
+      value: 1
+      transformations:
+        - type: CreateUpdateInfo@1
+          targetPath: $._delete
+          targetValueKind: Array
+          updateKind: DELETE
+          ckTypeId: Acme.Crm/Contact
+          rtIdPath: $.DocumentRtId
+        - type: ApplyChanges@2
+          identity: ServiceAccount
+          entityUpdatesPath: $._delete
+          targetTenants: { relation: Child }
+    - type: If@1                       # created or changed: upsert the copies
+      path: $.UpdateType
+      operator: NotEquals
+      valueType: Integer
+      value: 8
+      transformations:
+        - type: If@1
+          path: $.Document.RtState
+          operator: NotEquals
+          valueType: Integer
+          value: 1
+          transformations:
+            - type: CreateUpdateInfo@1
+              targetPath: $._sync
+              targetValueKind: Array
+              updateKind: UPDATE
+              ckTypeId: Acme.Crm/Contact
+              rtIdPath: $.DocumentRtId
+              attributeUpdates:
+                - attributeName: Name
+                  attributeValueType: String
+                  valuePath: $.Document.Attributes.Name
+            - type: ApplyChanges@2
+              identity: ServiceAccount
+              entityUpdatesPath: $._sync
+              targetTenants: { relation: Child }
+  ```
+- Not supported with `targetTenants`: association updates, `onDuplicateKey: Report`, record array item updates and
+  secret clears (configuration error before any target is opened).
+- **Not covered here:** writes through the asset repository's GraphQL API. The rules above live in the mesh adapter;
+  a user of a company can still edit or delete a synced entity or set `RtSyncOrigin` through GraphQL until the asset
+  repository applies the same rule.
+
 ### 4.2 Backwards compatibility
 
 - No property = `null` = the unchanged code path (the node keeps calling `etlContext.GetSessionForAsync` and
@@ -283,10 +408,16 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 22 | Proof reuse across executions or callers | proofs are cached per execution only | — |
 | 23 | Watch trigger in T on U's data | not offered; triggers stay on the own tenant | — |
 | 24 | Pool adapter (no own tenant) executes T's pipeline | the relation is computed from T (the registration's tenant), never from the adapter's tenant | — |
+| 26 | A company forges an origin: its own pipeline writes `RtSyncOrigin` (claiming an entity for G, or pinning one of its own against its edits) | refused before anything is written | `SYNC_OWNED_ENTITY` |
+| 27 | A company edits or deletes synced master data locally (`ApplyChanges@1`/`@2`) | refused in the write transaction | `SYNC_OWNED_ENTITY` |
+| 28 | The sync meets a local entity (or another source's copy) under the source RtId | the whole target is refused, the entity stays unchanged; the other targets are written | `SYNC_OWNED_ENTITY` |
+| 29 | The sync's input carries an origin of another tenant | ignored; the node stamps the pipeline's tenant | — |
+| 30 | A listed sync target is a grandchild, a detached or a foreign tenant | that target refused, named in `CROSS_TENANT_WRITE_FAILED` | as rows 1, 2, 12 |
 | 25 | Caller input chooses the tenant a service account acts in (`tenantIdPath` into `$.body`/`$.query`/`$.files`/`$.headers` with `ServiceAccount`, or `Caller` in a pipeline that can run without a verified caller) | deploy refused (controller, section 4.4); as the pure verified caller a deploy warning | — (deploy) |
 
 Rows 9 and 15–17 belong to the write node and are tested there (`ApplyChangesCrossTenantNodeTests`,
-`ApplyChangesCrossTenantIntegrationTests`, `GetRtEntitiesTargetTenantConfigurationTests`); row 23 is a non-feature.
+`ApplyChangesCrossTenantIntegrationTests`, `GetRtEntitiesTargetTenantConfigurationTests`); rows 26–30 belong to the
+sync (`ApplyChangesSyncNodeTests`, `SyncOriginRulesTests`, `MasterDataSyncIntegrationTests`); row 23 is a non-feature.
 
 ## 6. Implementation
 
@@ -322,14 +453,16 @@ per-execution caller, caller token, identity resolver and proof cache.
 
 ### 6.3 Writes and synced master data
 
-- An entity synced from a source tenant carries the System CK record `SyncOrigin` (source tenant, source RtId, sync
-  time). Idempotency key = source tenant + source RtId; a re-run produces exactly one copy.
-- The write guard refuses local edits of an entity whose `SyncOrigin` names another tenant, except by the sync itself;
-  entities without `SyncOrigin` are never touched by the sync.
-- Every target is written in its own transaction; a failed target fails the execution and names the target, the other
-  targets stay written.
-- The sync pipeline runs in the source tenant (watch trigger on its own data, `ApplyChanges@2` with a set of children
-  and `identity: ServiceAccount`).
+- An entity synced from a source tenant carries the System CK record `SyncOrigin` (`RtSyncOrigin`: source tenant,
+  source RtId, sync time). Idempotency key = source tenant + source RtId, and the copy keeps the source RtId; a re-run
+  produces exactly one copy (section 4.1b).
+- `SyncOriginWriteGuard` (`src/MeshAdapter.Sdk/Common/SyncOriginGuard.cs`) refuses every other write that sets
+  `RtSyncOrigin` or changes or deletes an entity carrying it; entities without `SyncOrigin` are never touched by the
+  sync (`ApplyChangesNode2.PlanSyncAsync`).
+- Every target is written in its own transaction; a failed target fails the execution and names the target
+  (`CrossTenantWriteFailedException`), the other targets stay written.
+- The children come from `ICrossTenantAccessGuard.ListChildTenantsAsync` (the registry snapshot); every one is still
+  opened through `OpenAsync`.
 - The same `SyncOrigin` contract is reused by writers to other targets (e.g. an external database).
 
 ## 7. Tests

@@ -55,6 +55,21 @@ public record ApplyChangesNodeConfiguration2 : NodeConfiguration
     public TenantTargetConfiguration? TargetTenant { get; set; }
 
     /// <summary>
+    /// Optional one-way master-data sync into the child tenants of the pipeline's tenant (AB#9770): all registered
+    /// direct children, or the listed ones. Not together with <see cref="TargetTenant" />. Each entity update of the
+    /// batch is applied in every target as an idempotent upsert (insert, update or replace) or delete, keyed by the
+    /// source tenant and the source RtId: the copy in the target keeps the source RtId and carries the System record
+    /// <c>RtSyncOrigin</c> (source tenant, source RtId, sync time), which only this node sets. An entity of the target
+    /// without that origin, or with the origin of another tenant, is never changed or deleted. Every target goes
+    /// through the cross-tenant guard (<c>Caller</c> or <c>ServiceAccount</c>; <c>System</c> refused) and is written in
+    /// its own transaction; a refused or failed target does not stop the others, and the execution fails afterwards
+    /// with every failed target named. Association updates and <c>onDuplicateKey: Report</c> are not supported here.
+    /// See docs/cross-tenant-access.md.
+    /// </summary>
+    [PropertyGroup("Execution", 102)]
+    public TenantSetConfiguration? TargetTenants { get; set; }
+
+    /// <summary>
     /// The path to the entity update
     /// </summary>
     [PropertyGroup("Paths", 0, "jsonpath")]

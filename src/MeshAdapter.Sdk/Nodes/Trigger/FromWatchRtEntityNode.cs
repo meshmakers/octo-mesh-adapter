@@ -1,5 +1,6 @@
 using System.Reactive.Linq;
 using Meshmakers.Common.Shared;
+using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
@@ -34,6 +35,8 @@ public class FromWatchRtEntityNode(ISystemContext systemContext, ICkCacheService
         {
             UpdateTypes = (UpdateTypes)c.UpdateTypes,
             RtId = c.RtId,
+            // AB#9770: opt-in only; without it the engine delivers exactly the events it always did.
+            IncludeDeleteEvents = c.IncludeDeletes,
             BeforeFieldFilterCriteria = c.BeforeFieldFilters != null
                 ? FieldFilterCriteria.Create().Fields(c.BeforeFieldFilters.Select(f =>
                     new FieldFilter(f.AttributePath, f.Operator.ToFieldFilterOperator(), f.ComparisonValue)).ToList())
@@ -123,6 +126,9 @@ public class FromWatchRtEntityNode(ISystemContext systemContext, ICkCacheService
         public UpdateTypes UpdateType => source.UpdateType;
         public RtEntity? Document => document;
         public RtEntity? DocumentBeforeChange => before;
+
+        // AB#9770: the id of the changed (or deleted) document must survive the projection.
+        public OctoObjectId? DocumentRtId => source.DocumentRtId;
     }
 
     /// <inheritdoc />

@@ -117,4 +117,13 @@ public interface ICrossTenantAccessGuard
 {
     /// <summary>Checks the access and opens the target tenant, or throws <see cref="CrossTenantAccessDeniedException" />.</summary>
     Task<ICrossTenantAccess> OpenAsync(CrossTenantAccessRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     The registered direct children of <paramref name="sourceTenantId" /> (AB#9770, fan-out of the master-data
+    ///     sync). Only a list of candidates: every one of them is still opened with <see cref="OpenAsync" />, which checks
+    ///     relation and identity again. Empty for the system tenant and an unregistered source; throws
+    ///     <see cref="CrossTenantAccessDeniedException" /> when the registry cannot be read (fail closed).
+    /// </summary>
+    Task<IReadOnlyList<string>> ListChildTenantsAsync(string sourceTenantId, string nodePath,
+        CancellationToken cancellationToken = default);
 }

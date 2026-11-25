@@ -213,6 +213,62 @@ public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture s
         await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
     }
 
+    // ---- AB#9770: targetTenants (master-data sync) exists on ApplyChanges@2 only ---------------------------------
+
+    [Fact]
+    public void Schema_TargetTenantsIsOptional_OnApplyChangesV2Only()
+    {
+        var node = schema.NodeSchema("ApplyChanges@2");
+        Assert.Contains("targetTenants", node["properties"]!.AsObject().Select(p => p.Key));
+        var required = node["required"]?.AsArray().Select(r => r!.GetValue<string>()).ToArray() ?? [];
+        Assert.DoesNotContain("targetTenants", required);
+
+        foreach (var other in new[] { "ApplyChanges@1", "GetRtEntitiesByType@1" })
+        {
+            var otherNode = schema.NodeSchemaOrNull(other);
+            if (otherNode != null)
+            {
+                Assert.DoesNotContain("targetTenants", otherNode["properties"]!.AsObject().Select(p => p.Key));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithTargetTenants_LoadsWithTheRelationAndListAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                                identity: ServiceAccount
+                                targetTenants:
+                                  relation: Child
+                                  tenantIds: [companya, companyb]
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var node = Assert.IsType<ApplyChangesNodeConfiguration2>(Assert.Single(root.Transformations!));
+        Assert.Null(node.TargetTenant);
+        Assert.Equal(TenantRelation.Child, node.TargetTenants!.Relation);
+        Assert.Equal(new[] { "companya", "companyb" }, node.TargetTenants.TenantIds);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV1_WithTargetTenants_IsRefusedWhenThePipelineLoads()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@1
+                                path: $.updates
+                                targetTenants:
+                                  relation: Child
+                            """;
+
+        var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
+        Assert.Contains("targetTenants", ex.Message, StringComparison.Ordinal);
+    }
+
     private static IPipelineConfigurationSerializer Serializer()
     {
         var services = new ServiceCollection();

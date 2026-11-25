@@ -37,6 +37,23 @@ public sealed class TenantRegistrySnapshot
     /// <summary>Whether <paramref name="tenantId" /> is registered.</summary>
     public bool IsRegistered(string tenantId) => _parents.ContainsKey(tenantId);
 
+    /// <summary>
+    ///     The registered direct children of <paramref name="tenantId" />, ordered by id. Empty for the system tenant (its
+    ///     children are top-level tenants, never sync targets) and for an unregistered tenant.
+    /// </summary>
+    public IReadOnlyList<string> ChildrenOf(string tenantId)
+    {
+        if (IsSystemTenant(tenantId) || !IsRegistered(tenantId))
+        {
+            return [];
+        }
+
+        return _parents.Where(p => p.Value != null && string.Equals(p.Value, tenantId, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Key)
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     /// <summary>Whether <paramref name="tenantId" /> is the system tenant.</summary>
     public bool IsSystemTenant(string tenantId) =>
         string.Equals(tenantId, SystemTenantId, StringComparison.OrdinalIgnoreCase);

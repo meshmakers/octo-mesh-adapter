@@ -150,6 +150,18 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
             GlobalConfiguration, _crossTenantProofs));
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListChildTenantsAsync(INodeContext nodeContext)
+    {
+        if (_crossTenantAccessGuard == null)
+        {
+            return Task.FromException<IReadOnlyList<string>>(CrossTenantAccessDeniedException.Forbidden(
+                nodeContext.NodePath.ToString(), "Child", CrossTenantRefusalReason.TargetUnverifiable));
+        }
+
+        return _crossTenantAccessGuard.ListChildTenantsAsync(TenantId, nodeContext.NodePath.ToString());
+    }
+
     private ValueTask<RtSecurityContext> ResolveSecurityContextAsync()
     {
         if (_identityResolver != null)

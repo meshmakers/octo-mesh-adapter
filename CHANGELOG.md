@@ -47,7 +47,8 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   are written as before (one indexed read per type and batch inside the write transaction). Needs System 2.9.0.
   `FromWatchRtEntity@1` takes the opt-in `includeDeletes` (default `false`: exactly today's events): delete events
   then reach the pipeline with `$.DocumentRtId` (needs octo-construction-kit-engine-mongodb with
-  `WatchStreamFilter.IncludeDeleteEvents`), so a deletion in the source removes the copies. A write with a single
+  `WatchStreamFilter.IncludeDeleteEvents`, and its normalisation of generated record classes in updates, which the
+  update of an existing copy needs), so a deletion in the source removes the copies. A write with a single
   `targetTenant` whose target engine refuses the batch now fails the execution with `CROSS_TENANT_WRITE_FAILED`
   instead of only logging (own-tenant writes unchanged). Node reference: `docs/nodes-load.md`,
   `docs/cross-tenant-access.md` section 4.1b.

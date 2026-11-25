@@ -99,20 +99,17 @@ internal static class SyncOrigin
         attributes.Where(a => !IsName(a.Key)).ToDictionary(a => a.Key, a => a.Value);
 
     /// <summary>
-    ///     The origin record the sync stamps on a copy, as a plain <see cref="RtRecord" />: the update path of the engine
-    ///     serialises attribute values with an object serializer that knows <see cref="RtRecord" /> but not the generated
-    ///     subclass <see cref="RtSyncOriginRecord" /> (inserts happened to work, updates failed).
+    ///     The origin record the sync stamps on a copy. Updating an entity with a generated record class needs
+    ///     octo-construction-kit-engine-mongodb with the record normalisation of the update path (AB#9770); before it,
+    ///     the update of an existing copy failed with "not configured as a type that is allowed to be serialized".
     /// </summary>
-    public static RtRecord Create(string sourceTenantId, OctoObjectId sourceRtId, DateTime syncedAtUtc)
-    {
-        var typed = new RtSyncOriginRecord
+    public static RtSyncOriginRecord Create(string sourceTenantId, OctoObjectId sourceRtId, DateTime syncedAtUtc) =>
+        new()
         {
             SourceTenantId = sourceTenantId,
             SourceRtId = sourceRtId.ToString(),
             SyncedAt = syncedAtUtc
         };
-        return new RtRecord(typed.CkRecordId, typed.Attributes);
-    }
 
     private static bool IsName(string? name) =>
         string.Equals(name, AttributeName, StringComparison.OrdinalIgnoreCase);

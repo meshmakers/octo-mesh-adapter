@@ -120,9 +120,10 @@ public class GetRtEntitiesByTypeNode(NodeDelegate next, IMeshEtlContext etlConte
 
         // AB#5028 — scoped: an ordinary read of tenant business data. AB#9768: with a target, the session the guard
         // opened under the identity proven there (never this node's own session).
-        var session = scope.IsCrossTenant
-            ? await scope.OpenTargetSessionAsync()
-            : await etlContext.GetSessionForAsync(c.Identity);
+        // The session the guard opened in the target is the node's own and is disposed on every path (an open
+        // transaction is aborted with it); the own tenant's session stays as before.
+        using var targetSession = scope.IsCrossTenant ? await scope.OpenTargetSessionAsync() : null;
+        var session = targetSession ?? await etlContext.GetSessionForAsync(c.Identity);
         session.StartTransaction();
         IResultSet<RtEntity> r;
         try

@@ -261,6 +261,77 @@ public class GetRtEntitiesCrossTenantNodeTests : SessionNodeTestBase
         AssertTargetNeverRead();
     }
 
+    // ---- Session lifetime: the session the guard opened in the target is disposed on every path ----------
+
+    private async Task RunReadAsync(string node)
+    {
+        switch (node)
+        {
+            case "ByType":
+            {
+                var (dataContext, nodeContext, next) = PrepareTest(new GetRtEntitiesByTypeNodeConfiguration
+                {
+                    CkTypeId = ContactType, TargetPath = "$.contacts", TargetTenant = Parent
+                });
+                await new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext,
+                    nodeContext);
+                break;
+            }
+            case "ById":
+            {
+                var (dataContext, nodeContext, next) = PrepareTest(new GetRtEntitiesByIdNodeConfiguration
+                {
+                    CkTypeId = ContactType,
+                    RtIds = [new OctoObjectId("000000000000000000000001")],
+                    TargetPath = "$.contact",
+                    TargetTenant = Parent
+                });
+                await new GetRtEntitiesByIdNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext,
+                    nodeContext);
+                break;
+            }
+            default:
+            {
+                using var doc = JsonDocument.Parse("""{"items":[{"name":"c1"}]}""");
+                using var dataContext = new DataContextImpl(doc.RootElement);
+                var (nodeContext, next) =
+                    PrepareNode(dataContext, WellKnownNameConfig(), "GetRtEntitiesByWellKnownName");
+                await new GetRtEntitiesByWellKnownNameTypeNode(next, EtlContext, CkCache)
+                    .ProcessObjectAsync(dataContext, nodeContext);
+                break;
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("ByType")]
+    [InlineData("ById")]
+    [InlineData("ByWellKnownName")]
+    public async Task CrossTenantSession_IsDisposed_AfterARead(string node)
+    {
+        await RunReadAsync(node);
+
+        A.CallTo(() => _targetSession.Dispose()).MustHaveHappenedOnceExactly();
+    }
+
+    [Theory]
+    [InlineData("ByType")]
+    [InlineData("ById")]
+    [InlineData("ByWellKnownName")]
+    public async Task CrossTenantSession_IsDisposed_WhenTheQueryThrows(string node)
+    {
+        A.CallTo(() => _targetRepository.GetRtEntitiesByTypeAsync(A<IOctoSession>._, A<RtCkId<CkTypeId>>._,
+                A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .ThrowsAsync(new InvalidOperationException("query failed"));
+        A.CallTo(() => _targetRepository.GetRtEntitiesByIdAsync(A<IOctoSession>._, A<RtCkId<CkTypeId>>._,
+                A<IReadOnlyList<OctoObjectId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .ThrowsAsync(new InvalidOperationException("query failed"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => RunReadAsync(node));
+
+        A.CallTo(() => _targetSession.Dispose()).MustHaveHappenedOnceExactly();
+    }
+
     private static (INodeContext nodeContext, NodeDelegate next) PrepareNode<TConfig>(
         IDataContext dataContext, TConfig config, string nodeName) where TConfig : INodeConfiguration
     {

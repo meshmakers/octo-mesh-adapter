@@ -50,9 +50,13 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   without that origin, or with another source's origin, is never changed or deleted (the target fails with
   `SYNC_OWNED_ENTITY`). Every target goes through the cross-tenant guard and is written in its own transaction; a
   refused or failed target does not stop the others, and the execution then fails with `CROSS_TENANT_WRITE_FAILED`
-  naming every failed target. Outside the sync, `ApplyChanges@1` and `ApplyChanges@2` refuse to set or change
-  `RtSyncOrigin` and to update or delete an entity that carries it (`SYNC_OWNED_ENTITY`); entities without an origin
-  are written as before (one indexed read per type and batch inside the write transaction). Needs System 2.9.0.
+  naming every failed target. Outside the sync every writer is refused to set or change `RtSyncOrigin` and to
+  update, delete or archive an entity that carries it (`SYNC_OWNED_ENTITY`): the rule is the engine's
+  (octo-construction-kit-engine-mongodb `SyncOriginWriteRules`, in the write funnel of every tenant repository, so
+  GraphQL, `ApplyChanges@1`/`@2` and system sessions alike); the sync writes with a sync-writer session of the
+  pipeline's tenant (`ICrossTenantAccess.OpenSyncWriterSessionAsync`) and the write nodes map the engine's refusal to
+  `SyncOriginWriteRefusedException`. Entities without an origin are written as before. Needs System 2.9.0 and
+  octo-construction-kit-engine-mongodb with `SyncOriginWriteRules`.
   `FromWatchRtEntity@1` takes the opt-in `includeDeletes` (default `false`: exactly today's events): delete events
   then reach the pipeline with `$.DocumentRtId` (needs octo-construction-kit-engine-mongodb with
   `WatchStreamFilter.IncludeDeleteEvents`, and its normalisation of generated record classes in updates, which the

@@ -86,9 +86,6 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
             target == null ? WriteGuardScope.Own(etlContext) : WriteGuardScope.CrossTenant(etlContext, target),
             ckCacheService, entityUpdates, associationUpdates);
 
-        // AB#9770: only the sync sets RtSyncOrigin (no forged origin, no entity pinned against its own edits).
-        SyncOriginWriteGuard.EnsureOriginNotWritten(nodeContext.NodePath.ToString(), entityUpdates);
-
         // AB#9769: an association written into another tenant joins two entities of that tenant only.
         if (target != null)
         {
@@ -163,13 +160,20 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                             : await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
 
-                        // AB#9770: synced master data (an entity carrying RtSyncOrigin) is changed and deleted only by
-                        // the sync of its source tenant. Read in this transaction, so no write slips in between.
-                        await EnsureNoSyncOwnedEntityAsync(repository, session, resultUpdateInfos, nodeContext);
-
+                        // AB#9770: the engine refuses a change of synced master data (an entity carrying
+                        // RtSyncOrigin) and every write of RtSyncOrigin: only the sync of its source tenant writes them.
                         OperationResult operationResult = new();
-                        await repository.ApplyChangesAsync(session, resultUpdateInfos,
-                            resultAssocUpdate, operationResult);
+                        try
+                        {
+                            await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
+                                repository.ApplyChangesAsync(session, resultUpdateInfos, resultAssocUpdate,
+                                    operationResult));
+                        }
+                        catch (SyncOriginWriteRefusedException)
+                        {
+                            await AbortQuietlyAsync(session, nodeContext);
+                            throw;
+                        }
                         if (operationResult.HasErrors || operationResult.HasFatalErrors)
                         {
                             nodeContext.Error("Error updating RtEntity");
@@ -289,21 +293,6 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 
 
         await next(dataContext, nodeContext);
-    }
-
-    private static async Task EnsureNoSyncOwnedEntityAsync(ITenantRepository repository, IOctoSession session,
-        IReadOnlyList<EntityUpdateInfo<RtEntity>> updates, INodeContext nodeContext)
-    {
-        try
-        {
-            await SyncOriginWriteGuard.EnsureNoSyncOwnedEntityAsync(repository, session,
-                nodeContext.NodePath.ToString(), updates);
-        }
-        catch (SyncOriginWriteRefusedException)
-        {
-            await AbortQuietlyAsync(session, nodeContext);
-            throw;
-        }
     }
 
     // ------------------------------------------------------------------------------------------------ sync (AB#9770)
@@ -446,7 +435,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                 IOctoSession? session = null;
                 try
                 {
-                    session = await access.OpenSessionAsync();
+                    // The sync writer of the pipeline's tenant: the target's engine lets it write only the copies of
+                    // that source (and refuses every other session that touches them).
+                    session = await access.OpenSyncWriterSessionAsync(sourceTenantId);
                     session.StartTransaction();
 
                     var plan = await PlanSyncAsync(access, session, items, sourceTenantId, syncedAt,
@@ -461,7 +452,8 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                     }
 
                     var operationResult = new OperationResult();
-                    await access.Repository.ApplyChangesAsync(session, plan, [], operationResult);
+                    await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
+                        access.Repository.ApplyChangesAsync(session, plan, [], operationResult));
                     if (operationResult.HasErrors || operationResult.HasFatalErrors)
                     {
                         await AbortQuietlyAsync(session, nodeContext);

@@ -30,6 +30,13 @@ public interface ICrossTenantAccess
 
     /// <summary>A session in the target tenant under the identity proven for it.</summary>
     Task<IOctoSession> OpenSessionAsync();
+
+    /// <summary>
+    ///     A session of the master-data sync of <paramref name="sourceTenantId" /> in the target tenant, under the identity
+    ///     proven for it. The target's engine lets it write only the copies of that source (<c>SyncOriginWriteRules</c>).
+    ///     Only the sync of <c>ApplyChanges@2</c> with <c>targetTenants</c> opens it, with the pipeline's tenant as source.
+    /// </summary>
+    Task<IOctoSession> OpenSyncWriterSessionAsync(string sourceTenantId);
 }
 
 /// <summary>Everything the guard needs from one execution. Holds the caller's token; never logged.</summary>

@@ -360,5 +360,8 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
         public ITenantRepository Repository { get; } = repository;
 
         public Task<IOctoSession> OpenSessionAsync() => Repository.GetSessionAsync(securityContext);
+
+        public Task<IOctoSession> OpenSyncWriterSessionAsync(string sourceTenantId) =>
+            Repository.GetSyncWriterSessionAsync(securityContext, sourceTenantId);
     }
 }

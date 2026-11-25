@@ -2,7 +2,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Models.System.Generated.System.v2;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
-using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
+using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.Services;
 
@@ -25,17 +25,25 @@ public sealed class SyncOriginWriteRefusedException : PipelineExecutionException
     {
     }
 
+    private SyncOriginWriteRefusedException(string message, Exception inner) : base(message, inner)
+    {
+    }
+
     /// <summary>The stable error code, <see cref="SyncOriginCodes.SyncOwnedEntity" />.</summary>
     public string ErrorCode => SyncOriginCodes.SyncOwnedEntity;
 
-    internal static SyncOriginWriteRefusedException OriginWritten(string nodePath, string ckTypeId) =>
-        new($"[{nodePath}]: {SyncOriginCodes.SyncOwnedEntity}: an update of '{ckTypeId}' writes " +
-            $"{SyncOrigin.AttributeName}; only the master-data sync (ApplyChanges@2 with targetTenants) sets it.");
-
-    internal static SyncOriginWriteRefusedException SyncOwned(string nodePath, RtEntityId entityId,
-        string? sourceTenantId) =>
-        new($"[{nodePath}]: {SyncOriginCodes.SyncOwnedEntity}: entity '{entityId}' is master data synced from tenant " +
-            $"'{sourceTenantId ?? "(unknown)"}'; change or delete it there, the sync brings the change here.");
+    /// <summary>
+    ///     The engine's refusal (<see cref="SyncOriginWriteRules" />, raised in the write funnel of the target tenant) as
+    ///     the node's error: same stable code, the engine's message names the entity and the reason.
+    /// </summary>
+    internal static SyncOriginWriteRefusedException FromEngine(string nodePath, RuntimeRepositoryException refusal)
+    {
+        var message = refusal.OperationResult.Messages.FirstOrDefault(m =>
+            m.MessageNumber == SyncOriginWriteRules.MessageNumber &&
+            m.Parameters.TryGetValue("code", out var code) && code == SyncOriginWriteRules.ErrorCode);
+        return new SyncOriginWriteRefusedException(
+            $"[{nodePath}]: {SyncOriginCodes.SyncOwnedEntity}: {message?.MessageText ?? refusal.Message}", refusal);
+    }
 
     internal static SyncOriginWriteRefusedException NotOwnedBySync(string nodePath, string targetTenantId,
         RtEntityId entityId) =>
@@ -72,27 +80,6 @@ internal static class SyncOrigin
         origin is { } o &&
         string.Equals(o.SourceTenantId?.Trim(), sourceTenantId, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(o.SourceRtId?.Trim(), sourceRtId.ToString(), StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Whether an update writes the origin (a value, a null, an array item update or a secret clear of it).</summary>
-    public static bool IsWrittenBy(IEntityUpdateInfo<RtEntity> update)
-    {
-        if (update.ModOption == EntityModOptions.Delete)
-        {
-            return false;
-        }
-
-        if (update.RtEntity != null)
-        {
-            Find(update.RtEntity.Attributes, out var present);
-            if (present)
-            {
-                return true;
-            }
-        }
-
-        return (update.RecordArrayItemUpdates ?? []).Any(i => IsName(i.AttributeName)) ||
-               (update.ClearSecretAttributes ?? []).Any(IsName);
-    }
 
     /// <summary>The attributes of a source entity without any origin it carries (a source can itself be a copy).</summary>
     public static Dictionary<string, object?> WithoutOrigin(IReadOnlyDictionary<string, object?> attributes) =>
@@ -131,52 +118,23 @@ internal static class SyncOrigin
 }
 
 /// <summary>
-///     The write rules of synced master data (AB#9770) for every write except the sync itself (ApplyChanges@1,
-///     ApplyChanges@2 into the own tenant or one target tenant).
+///     The write rule of synced master data lives in the engine (<see cref="SyncOriginWriteRules" />): every tenant
+///     repository refuses, in its write funnel, an update, replace or delete of an entity carrying <c>RtSyncOrigin</c> and
+///     every write of <c>RtSyncOrigin</c>, except by a sync-writer session for the copies of its own source tenant. The
+///     write nodes only map that refusal to their stable error (<see cref="SyncOriginCodes.SyncOwnedEntity" />).
 /// </summary>
-/// <remarks>
-///     Invariant: an entity that carries <c>RtSyncOrigin</c> is changed and deleted only by the sync of its source
-///     tenant, and <c>RtSyncOrigin</c> is set or changed only by that sync. So a company can neither edit the group's
-///     master data locally (the next sync would silently overwrite it) nor forge an origin (claiming an entity of its own
-///     for the group, or pinning one of its entities against its own edits).
-/// </remarks>
-internal static class SyncOriginWriteGuard
+internal static class SyncOriginRefusal
 {
-    /// <summary>
-    ///     Rule 1, no database read: no update of the batch writes <c>RtSyncOrigin</c>. Call it before the dry-run branch.
-    /// </summary>
-    public static void EnsureOriginNotWritten(string nodePath, IEnumerable<IEntityUpdateInfo<RtEntity>> updates)
+    /// <summary>Runs <paramref name="write" />; the engine's sync-origin refusal becomes <see cref="SyncOriginWriteRefusedException" />.</summary>
+    public static async Task RunAsync(string nodePath, Func<Task> write)
     {
-        foreach (var update in updates)
+        try
         {
-            if (SyncOrigin.IsWrittenBy(update))
-            {
-                throw SyncOriginWriteRefusedException.OriginWritten(nodePath, update.CkTypeId.FullName);
-            }
+            await write();
         }
-    }
-
-    /// <summary>
-    ///     Rule 2, inside the write transaction: no update, replace or delete of the batch targets a stored entity that
-    ///     carries <c>RtSyncOrigin</c>. Reads only the entities of the batch that carry an origin (one query per type).
-    /// </summary>
-    public static async Task EnsureNoSyncOwnedEntityAsync(ITenantRepository repository, IOctoSession session,
-        string nodePath, IEnumerable<IEntityUpdateInfo<RtEntity>> updates)
-    {
-        var byType = updates.Where(u => u.ModOption != EntityModOptions.Insert && u.RtId != null)
-            .GroupBy(u => u.CkTypeId);
-        foreach (var group in byType)
+        catch (RuntimeRepositoryException e) when (SyncOriginWriteRules.IsRefusal(e))
         {
-            var ids = group.Select(u => u.RtId!.Value).Distinct().ToList();
-            var options = RtEntityQueryOptions.Create();
-            options.Field(SyncOrigin.AttributeName, FieldFilterOperator.IsNotNull, null);
-            var owned = await repository.GetRtEntitiesByIdAsync(session, group.Key, ids, options, null, null);
-            var first = owned.Items.FirstOrDefault(e => SyncOrigin.Read(e) != null);
-            if (first != null)
-            {
-                throw SyncOriginWriteRefusedException.SyncOwned(nodePath, first.ToRtEntityId(),
-                    SyncOrigin.Read(first)?.SourceTenantId);
-            }
+            throw SyncOriginWriteRefusedException.FromEngine(nodePath, e);
         }
     }
 }

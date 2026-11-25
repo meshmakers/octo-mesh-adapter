@@ -44,6 +44,8 @@ public class ApplyChangesSyncNodeTests : SessionNodeTestBase
             A.CallTo(() => Access.TenantId).Returns(tenantId);
             A.CallTo(() => Access.Repository).Returns(Repository);
             A.CallTo(() => Access.OpenSessionAsync()).ReturnsLazily(() => Task.FromResult(Session));
+            A.CallTo(() => Access.OpenSyncWriterSessionAsync(A<string>._))
+                .ReturnsLazily(() => Task.FromResult(Session));
             A.CallTo(() => Repository.GetRtEntitiesByIdAsync(A<IOctoSession>._, A<RtCkId<CkTypeId>>._,
                     A<IReadOnlyList<OctoObjectId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
                 .ReturnsLazily((IOctoSession _, RtCkId<CkTypeId> _, IReadOnlyList<OctoObjectId> ids,
@@ -350,49 +352,20 @@ public class ApplyChangesSyncNodeTests : SessionNodeTestBase
         await Assert.ThrowsAsync<CrossTenantAccessDeniedException>(() => RunAsync(Sync(), withoutId));
     }
 
-    // ---- sync-origin write rules outside the sync -------------------------------------------------------------
+    // ---- sync-origin write rules: the target's engine enforces them (SyncOriginWriteRules); integration tests
 
     [Fact]
-    public async Task OwnTenantWrite_ThatSetsRtSyncOrigin_IsRefused_BeforeAnythingIsWritten()
+    public async Task TheSync_WritesEveryTarget_WithASyncWriterSessionOfThePipelinesTenant()
     {
-        var forged = Contact(OctoObjectId.GenerateNewId(), "Mine",
-            SyncOrigin.Create(SourceTenant, OctoObjectId.GenerateNewId(), DateTime.UtcNow));
-        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
+        await RunAsync(Sync(), Upsert(Contact(OctoObjectId.GenerateNewId(), "Contact")));
 
-        var refused = await Assert.ThrowsAsync<SyncOriginWriteRefusedException>(() =>
-            RunAsync(config, EntityUpdateInfo<RtEntity>.CreateInsert(forged)));
-
-        Assert.Equal(SyncOriginCodes.SyncOwnedEntity, refused.ErrorCode);
-        A.CallTo(() => TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
-                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
-                A<OperationResult>._))
-            .MustNotHaveHappened();
+        foreach (var target in _targets.Values)
+        {
+            A.CallTo(() => target.Access.OpenSyncWriterSessionAsync(SourceTenant)).MustHaveHappenedOnceExactly();
+            A.CallTo(() => target.Access.OpenSessionAsync()).MustNotHaveHappened();
+        }
     }
 
-    [Fact]
-    public async Task OwnTenantUpdate_OfASyncedEntity_IsRefused_InTheWriteTransaction()
-    {
-        var rtId = OctoObjectId.GenerateNewId();
-        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(A<IOctoSession>._, ContactType,
-                A<IReadOnlyList<OctoObjectId>>._, A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
-            .Returns(Task.FromResult<IResultSet<RtEntity>>(new ResultSet<RtEntity>(
-                [Contact(rtId, "Synced", SyncOrigin.Create("group", rtId, DateTime.UtcNow))], 1, null, null)));
-        var config = new ApplyChangesNodeConfiguration2 { EntityUpdatesPath = EntityUpdatesPath };
-
-        await Assert.ThrowsAsync<SyncOriginWriteRefusedException>(() =>
-            RunAsync(config, Upsert(Contact(rtId, "Edited locally"))));
-
-        A.CallTo(() => TenantRepository.GetRtEntitiesByIdAsync(A<IOctoSession>._, ContactType,
-                A<IReadOnlyList<OctoObjectId>>.That.Contains(rtId),
-                A<RtEntityQueryOptions>.That.Matches(o => o.FieldFilters!.Any(f =>
-                    f.AttributePath == SyncOrigin.AttributeName && f.Operator == FieldFilterOperator.IsNotNull)),
-                A<int?>._, A<int?>._))
-            .MustHaveHappenedOnceExactly();
-        A.CallTo(() => TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
-                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
-                A<OperationResult>._))
-            .MustNotHaveHappened();
-    }
 
     [Fact]
     public async Task OwnTenantUpdate_OfAnEntityWithoutOrigin_IsWrittenAsBefore()
@@ -415,43 +388,6 @@ public class SyncOriginRulesTests
 
     private static RtEntity WithAttribute(string name, object? value) =>
         new(ContactType, OctoObjectId.GenerateNewId(), new Dictionary<string, object?> { [name] = value });
-
-    [Theory]
-    [InlineData("RtSyncOrigin")]
-    [InlineData("rtsyncorigin")]
-    public void AnUpdateWritingTheOrigin_IsRefused_InAnySpellingAndAlsoAsNull(string name)
-    {
-        foreach (var value in new object?[] { null, SyncOrigin.Create("g", OctoObjectId.GenerateNewId(), DateTime.UtcNow) })
-        {
-            var update = EntityUpdateInfo<RtEntity>.CreateInsert(WithAttribute(name, value));
-            Assert.Throws<SyncOriginWriteRefusedException>(() =>
-                SyncOriginWriteGuard.EnsureOriginNotWritten("n", [update]));
-        }
-    }
-
-    [Fact]
-    public void ARecordArrayItemUpdateOrASecretClearOfTheOrigin_IsRefused()
-    {
-        var rtId = new RtEntityId(ContactType, OctoObjectId.GenerateNewId());
-        var entity = new RtEntity(ContactType, rtId.RtId);
-        var itemUpdate = EntityUpdateInfo<RtEntity>.CreateRecordArrayItemUpdate(rtId, entity,
-            [new RtRecordArrayItemUpdate(SyncOrigin.AttributeName, "SourceTenantId", "g", new Dictionary<string, object?>())]);
-        var clear = EntityUpdateInfo<RtEntity>.CreateUpdate(rtId, entity, [SyncOrigin.AttributeName]);
-
-        Assert.Throws<SyncOriginWriteRefusedException>(() => SyncOriginWriteGuard.EnsureOriginNotWritten("n", [itemUpdate]));
-        Assert.Throws<SyncOriginWriteRefusedException>(() => SyncOriginWriteGuard.EnsureOriginNotWritten("n", [clear]));
-    }
-
-    [Fact]
-    public void OtherWritesAndDeletes_PassRuleOne()
-    {
-        var rtId = new RtEntityId(ContactType, OctoObjectId.GenerateNewId());
-        SyncOriginWriteGuard.EnsureOriginNotWritten("n",
-        [
-            EntityUpdateInfo<RtEntity>.CreateInsert(WithAttribute("ContactName", "x")),
-            EntityUpdateInfo<RtEntity>.CreateDelete(rtId)
-        ]);
-    }
 
     [Fact]
     public void IsCopyOf_NeedsTheSameSourceTenantAndRtId()

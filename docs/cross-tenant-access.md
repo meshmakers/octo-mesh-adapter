@@ -241,9 +241,16 @@ pipeline runs in G: `FromWatchRtEntity@1` on G's own entities (no cross-tenant t
   after the last target the node throws `CROSS_TENANT_WRITE_FAILED` naming every failed target with its stable code
   (`CROSS_TENANT_FORBIDDEN`, `SYNC_OWNED_ENTITY`, `ATTRIBUTE_WRITE_RESTRICTED`, `VALIDATION_FAILED`, `WRITE_CONFLICT`,
   `WRITE_FAILED`; never a value) and the written ones. The trigger reports the execution as failed with that message.
-- **Local edits of synced data.** Outside the sync, `ApplyChanges@1` and `ApplyChanges@2` (own tenant or one
-  `targetTenant`) refuse to set or change `RtSyncOrigin`, and refuse an update, replace or delete of an entity that
-  carries it (`SYNC_OWNED_ENTITY`). The data is changed in G and reaches the company with the next sync.
+- **Local edits of synced data.** The rule lives in the engine (octo-construction-kit-engine-mongodb,
+  `SyncOriginWriteRules`), in the write funnel of every tenant repository, so it holds for every writer: GraphQL and
+  REST of the asset repository, `ApplyChanges@1` and `ApplyChanges@2` (own tenant or one `targetTenant`), bots, and
+  system sessions too. Outside the sync, setting or changing `RtSyncOrigin`, and an update, replace, delete or archive of
+  an entity that carries it, are refused (`SYNC_OWNED_ENTITY`; the engine's operation message 144 with `code` =
+  `SYNC_OWNED_ENTITY` names the entity and the reason, the write nodes map it to `SyncOriginWriteRefusedException`). The
+  data is changed in G and reaches the company with the next sync. The sync writes each target with a sync-writer
+  session of the pipeline's tenant (`ICrossTenantAccess.OpenSyncWriterSessionAsync`), and the engine lets that
+  session write only the copies of that source: never a local entity, never another source's copy, and never an
+  insert without its own origin. A dry run no longer reports a forged origin: the engine judges it at the real write.
 - **Deletions.** The sync deletes a copy when it gets a delete entity update (`updateKind: DELETE` with the RtId
   of the deleted entity; the copy is deleted with the engine's default strategy, i.e. archived). A deletion in G reaches
   the watch in two shapes:
@@ -329,9 +336,20 @@ pipeline runs in G: `FromWatchRtEntity@1` on G's own entities (no cross-tenant t
   ```
 - Not supported with `targetTenants`: association updates, `onDuplicateKey: Report`, record array item updates and
   secret clears (configuration error before any target is opened).
-- **Not covered here:** writes through the asset repository's GraphQL API. The rules above live in the mesh adapter;
-  a user of a company can still edit or delete a synced entity or set `RtSyncOrigin` through GraphQL until the asset
-  repository applies the same rule.
+- **Known limitations of the write rule.**
+  - Copies change only through the sync, except through CK model or blueprint migration scripts that a tenant admin
+    imports; the next sync of a changed source entity overwrites the copy. (The engine maintenance services - CK model
+    migrations, blueprint migrations, secret maintenance - get their repository from `IRuntimeRepositoryProvider`
+    without the rule, so a child can still upgrade a model that holds copies.)
+  - The bulk import (`BulkInsertRtEntitiesAsync`: RT import, blueprint seeds, restore) and the `*ForMigrationAsync`
+    maintenance methods are not covered: an export and import of a tenant keeps its copies with their origin.
+  - A detached or removed group leaves its copies locked in the child: nobody may change or delete them any more, and
+    no sync comes. The admin path is an export and import of the data, or the maintenance APIs; there is no feature to
+    release copies yet.
+  - Associations are not refused: a local entity may link to a copy.
+  - A filter write (GraphQL or REST update/delete by filter) skips copies silently instead of refusing them, and an
+    atomic record array item update of a copy writes nothing but reports the usual "no item matched" warning; in both
+    cases the copy stays unchanged.
 
 ### 4.1c Consolidated read over the child tenants (read nodes with `targetTenants`)
 
@@ -448,8 +466,8 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 22 | Proof reuse across executions or callers | proofs are cached per execution only | — |
 | 23 | Watch trigger in T on U's data | not offered; triggers stay on the own tenant | — |
 | 24 | Pool adapter (no own tenant) executes T's pipeline | the relation is computed from T (the registration's tenant), never from the adapter's tenant | — |
-| 26 | A company forges an origin: its own pipeline writes `RtSyncOrigin` (claiming an entity for G, or pinning one of its own against its edits) | refused before anything is written | `SYNC_OWNED_ENTITY` |
-| 27 | A company edits or deletes synced master data locally (`ApplyChanges@1`/`@2`) | refused in the write transaction | `SYNC_OWNED_ENTITY` |
+| 26 | A company forges an origin: its own pipeline or GraphQL writes `RtSyncOrigin` (claiming an entity for G, or pinning one of its own against its edits) | refused by the engine before anything is written | `SYNC_OWNED_ENTITY` |
+| 27 | A company edits, deletes or archives synced master data locally (`ApplyChanges@1`/`@2`, GraphQL, any session) | refused by the engine before anything is written | `SYNC_OWNED_ENTITY` |
 | 28 | The sync meets a local entity (or another source's copy) under the source RtId | the whole target is refused, the entity stays unchanged; the other targets are written | `SYNC_OWNED_ENTITY` |
 | 29 | The sync's input carries an origin of another tenant | ignored; the node stamps the pipeline's tenant | — |
 | 30 | A listed sync target is a grandchild, a detached or a foreign tenant | that target refused, named in `CROSS_TENANT_WRITE_FAILED` | as rows 1, 2, 12 |
@@ -462,7 +480,8 @@ no write, and one log line with source, target, relation, identity mode and reas
 
 Rows 9 and 15–17 belong to the write node and are tested there (`ApplyChangesCrossTenantNodeTests`,
 `ApplyChangesCrossTenantIntegrationTests`, `GetRtEntitiesTargetTenantConfigurationTests`); rows 26–30 belong to the
-sync (`ApplyChangesSyncNodeTests`, `SyncOriginRulesTests`, `MasterDataSyncIntegrationTests`); rows 31–35 belong to
+sync (`ApplyChangesSyncNodeTests`, `SyncOriginRulesTests`, `MasterDataSyncIntegrationTests`; rows 26–27 also
+engine-mongodb `SyncOriginWriteGuardTests`); rows 31–35 belong to
 the consolidated read (`GetRtEntitiesMultiTenantNodeTests`, `ConsolidatedReadIntegrationTests`); row 23 is a
 non-feature.
 
@@ -503,9 +522,12 @@ per-execution caller, caller token, identity resolver and proof cache.
 - An entity synced from a source tenant carries the System CK record `SyncOrigin` (`RtSyncOrigin`: source tenant,
   source RtId, sync time). Idempotency key = source tenant + source RtId, and the copy keeps the source RtId; a re-run
   produces exactly one copy (section 4.1b).
-- `SyncOriginWriteGuard` (`src/MeshAdapter.Sdk/Common/SyncOriginGuard.cs`) refuses every other write that sets
-  `RtSyncOrigin` or changes or deletes an entity carrying it; entities without `SyncOrigin` are never touched by the
-  sync (`ApplyChangesNode2.PlanSyncAsync`).
+- The engine refuses every other write that sets `RtSyncOrigin` or changes or deletes an entity carrying it
+  (`SyncOriginWriteRules` and its decorator of the write funnel in octo-construction-kit-engine-mongodb); the sync opens
+  its target sessions with `ICrossTenantAccess.OpenSyncWriterSessionAsync(<pipeline tenant>)`. The adapter only maps
+  the refusal (`SyncOriginRefusal` in `src/MeshAdapter.Sdk/Common/SyncOriginGuard.cs`). Entities without `SyncOrigin`
+  are never touched by the sync: `ApplyChangesNode2.PlanSyncAsync` refuses the target when it meets one (so a dry run
+  reports it), and the engine refuses it again for the sync-writer session.
 - Every target is written in its own transaction; a failed target fails the execution and names the target
   (`CrossTenantWriteFailedException`), the other targets stay written.
 - The children come from `ICrossTenantAccessGuard.ListChildTenantsAsync` (the registry snapshot); every one is still

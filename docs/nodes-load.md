@@ -47,10 +47,12 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
      every failed target with its stable code, the written ones). Not supported with `targetTenants`:
      `associationUpdatesPath`, `onDuplicateKey: Report`, record array item updates and secret clears (configuration
      error). Dry run: nothing written, the intent lists per target the planned inserts, updates and deletes.
-     **Sync-origin write rules** (`Common/SyncOriginGuard.cs`) on every other write of `ApplyChanges@1` and
-     `ApplyChanges@2`: an update that writes `RtSyncOrigin` (a value, a null, an array item update or a secret clear)
-     is refused before the dry-run branch; inside the write transaction one by-id read per type with
-     `RtSyncOrigin IsNotNull` refuses an update, replace or delete of an entity that carries an origin. Example
+     **Sync-origin write rules**: enforced by the engine (octo-construction-kit-engine-mongodb
+     `SyncOriginWriteRules`) for every writer, `ApplyChanges@1` and `ApplyChanges@2` included: a write of
+     `RtSyncOrigin` (a value, an array item update or a secret clear) and an update, replace, delete or archive of an
+     entity that carries an origin are refused before anything is written; the nodes report it as
+     `SYNC_OWNED_ENTITY` (`Common/SyncOriginGuard.cs`, `SyncOriginRefusal`). The sync writes with a sync-writer session
+     of the pipeline's tenant, which writes only that source's copies. A dry run does not judge it. Example
      (sync pipeline of the group tenant):
 
      ```yaml

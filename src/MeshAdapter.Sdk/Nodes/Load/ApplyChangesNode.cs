@@ -33,9 +33,6 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICk
         if (list != null)
         {
             await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, list);
-
-            // AB#9770: only the master-data sync (ApplyChanges@2 targetTenants) sets RtSyncOrigin.
-            SyncOriginWriteGuard.EnsureOriginNotWritten(nodeContext.NodePath.ToString(), list);
         }
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
@@ -83,22 +80,20 @@ public class ApplyChangesNode(NodeDelegate next, IMeshEtlContext etlContext, ICk
                         var session = await etlContext.GetSystemSessionAsync();
                         session.StartTransaction();
 
-                        // AB#9770: synced master data is changed and deleted only by the sync of its source tenant,
-                        // also on this deprecated system-session path.
+                        // AB#9770: the engine refuses a change of synced master data (an entity carrying
+                        // RtSyncOrigin) and every write of RtSyncOrigin, also for this system session.
+                        OperationResult operationResult = new();
                         try
                         {
-                            await SyncOriginWriteGuard.EnsureNoSyncOwnedEntityAsync(etlContext.TenantRepository,
-                                session, nodeContext.NodePath.ToString(), resultUpdateInfos);
+                            await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
+                                etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,
+                                    operationResult));
                         }
                         catch (SyncOriginWriteRefusedException)
                         {
                             await session.AbortTransactionAsync();
                             throw;
                         }
-
-                        OperationResult operationResult = new();
-                        await etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,
-                            operationResult);
                         if (operationResult.HasErrors || operationResult.HasFatalErrors)
                         {
                             nodeContext.Error("Error updating RtEntity");

@@ -121,7 +121,7 @@ public enum TenantRelation { Parent, Sibling, Child }
 
 public record TenantTargetConfiguration
 {
-    public required TenantRelation Relation { get; init; }
+    public required TenantRelation? Relation { get; init; }  // must be named; a missing relation is refused
     public string? TenantId { get; init; }        // Sibling/Child: the target; Parent: not allowed
     public string? TenantIdPath { get; init; }    // alternative to TenantId; value from the data context
 }
@@ -130,10 +130,11 @@ public record TenantTargetConfiguration
 | Node | New property |
 |---|---|
 | `GetRtEntitiesByType@1`, `GetRtEntitiesById@1`, `GetRtEntitiesByWellKnownName@1` | `targetTenant` (read) |
-| `ApplyChanges@2` | `targetTenant` (write), later a fan-out for the master-data sync |
+| `ApplyChanges@2` | `targetTenant` (write: create, update, delete and association changes), later a fan-out for the master-data sync |
 | `ApplyChanges@1`, every other node | none: a target key there is a deserialization error |
 
-The read and write nodes are wired by their own changes; until then only a test node uses the guard.
+The read nodes (AB#9768) and `ApplyChanges@2` (AB#9769) open the target only through
+`IMeshEtlContext.OpenTenantAsync`, the one guard, and use only the repository and session it returns.
 
 ```yaml
 # A reads contacts of its group (parent)
@@ -157,13 +158,64 @@ A multi-tenant read and a fan-out write name a set of children and decide per re
 `onRefused: Fail | Report` (default `Fail`); a fan-out sync writes every allowed target, then fails the execution and
 names the refused target.
 
+### 4.1a Writing into another tenant (`ApplyChanges@2`)
+
+With `targetTenant` set, `ApplyChanges@2`:
+
+1. opens the target through the guard first (section 6.2) — before the write checks, before the dry-run branch and
+   before anything is written; a refusal fails the execution with `CROSS_TENANT_FORBIDDEN`, also in a dry run;
+2. checks the batch with the **target's** CK model and **without** the run's method marker (`WriteGuardScope`): a
+   method run belongs to the pipeline's own tenant, so MethodOnly attributes, inserts of a type whose method replaces the
+   generic create and identity association edges are always refused in another tenant (abuse cases 15 and 16);
+3. refuses an association change whose end is neither inserted by the same batch nor held by the target (read with
+   the session proven in the target, abuse case 17);
+4. writes every create, update and delete in one transaction of the target, with the session the guard proved there
+   (the engine stamps `RtCreatedBy` with that identity and enforces the target's data permissions for it).
+
+The dry-run intent names the target (`targetTenantId`). `onDuplicateKey`, the write-conflict retries and the merge of
+several updates of one entity work as in the own tenant.
+
+```yaml
+# Company A's release pipeline: the released invoice (own tenant) becomes an incoming document in the addressee
+- type: GetRtEntitiesByType@1
+  ckTypeId: Acme.Accounting/InterCompanyInvoice
+  targetPath: $.invoice
+  fieldFilters:
+    - attributePath: InvoiceNumber
+      operator: Equals
+      comparisonValuePath: $.invoiceNumber
+    - attributePath: InvoiceStatus
+      operator: Equals
+      comparisonValue: Released
+- type: CreateUpdateInfo@1
+  targetPath: $._inserts
+  targetValueKind: Array
+  updateKind: INSERT
+  ckTypeId: Acme.Accounting/IncomingDocument
+  generateRtId: true
+  attributeUpdates:
+    - attributeName: InvoiceNumber
+      attributeValueType: String
+      valuePath: $.invoice.Items[0].Attributes.InvoiceNumber
+    - attributeName: SourceInvoiceRtId
+      attributeValueType: String
+      valuePath: $.invoice.Items[0].RtId
+- type: ApplyChanges@2
+  entityUpdatesPath: $._inserts
+  identity: ServiceAccount
+  targetTenant:
+    relation: Sibling
+    tenantIdPath: $.invoice.Items[0].Attributes.RecipientTenantId
+```
+
 ### 4.2 Backwards compatibility
 
 - No property = `null` = the unchanged code path (the node keeps calling `etlContext.GetSessionForAsync` and
   `etlContext.TenantRepository`).
 - The strict deserializer works in our favour: an adapter that does not know `targetTenant` refuses the pipeline at
   registration, so an old adapter can never run a cross-tenant pipeline against its own tenant.
-- `ApplyChanges@1` gets no property; a pipeline that adds one fails registration.
+- `ApplyChanges@1` gets no property; a pipeline that adds one fails registration. Cross-tenant writes exist only
+  with `ApplyChanges@2` and the identity `Caller` or `ServiceAccount`.
 
 ### 4.3 Relative references and data-driven targets
 
@@ -221,9 +273,9 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 12 | Ancestor above the parent, nephew or cousin, grandchild | forbidden | `relation_not_allowed` |
 | 13 | Relation `Parent` with an id, `Sibling`/`Child` without one, both id and path | configuration error before any lookup | `invalid_target_configuration` |
 | 14 | Hidden attributes evaluated against T's CK model while reading U | the guard loads U's CK cache and the access names U's tenant id, so the attribute guards run against U | — |
-| 15 | Generic-create bypass: T's method-invocation marker used for inserts in U | the marker is never carried to U | — (existing guard) |
-| 16 | Identity escalation by writing U's identity data | refused cross-tenant, also with a valid grant (write node) | `identity_owned_write` |
-| 17 | Cross-tenant association (entity in U associated to an RtId of T) | refused (write node) | `cross_tenant_association` |
+| 15 | Generic-create bypass: T's method-invocation marker used for inserts in U | the marker is never carried to U: the batch is judged without a method run, the insert is refused | — (generic-create guard) |
+| 16 | Identity escalation by writing U's identity data | refused cross-tenant, also with a valid grant: MethodOnly identity attributes and identity association edges need a method run, which a cross-tenant write never has | — (attribute write guard) |
+| 17 | Cross-tenant association (entity in U associated to an RtId of T) | forbidden: every association end must be inserted by the batch or held by U | `cross_tenant_association` |
 | 18 | Second-factor user: caller token without second-factor evidence where U demands it | the identity service refuses → forbidden | `identity_not_provable` |
 | 19 | Locked-out or disabled source user | the identity service refuses → forbidden | `identity_not_provable` |
 | 20 | Registry, identity service or generation store unreachable | forbidden (fail closed), execution failed | `target_unverifiable` |
@@ -233,7 +285,8 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 24 | Pool adapter (no own tenant) executes T's pipeline | the relation is computed from T (the registration's tenant), never from the adapter's tenant | — |
 | 25 | Caller input chooses the tenant a service account acts in (`tenantIdPath` into `$.body`/`$.query`/`$.files`/`$.headers` with `ServiceAccount`, or `Caller` in a pipeline that can run without a verified caller) | deploy refused (controller, section 4.4); as the pure verified caller a deploy warning | — (deploy) |
 
-Rows 9 and 15–17 belong to the write node and are tested there; row 23 is a non-feature.
+Rows 9 and 15–17 belong to the write node and are tested there (`ApplyChangesCrossTenantNodeTests`,
+`ApplyChangesCrossTenantIntegrationTests`, `GetRtEntitiesTargetTenantConfigurationTests`); row 23 is a non-feature.
 
 ## 6. Implementation
 
@@ -289,5 +342,13 @@ per-execution caller, caller token, identity resolver and proof cache.
 - Integration: `CrossTenantAccessGuardIntegrationTests` with real MongoDB (Testcontainers): G with children A and B,
   an outsider X under another parent, a detached child D and a grandchild; a test node opens the target through the
   guard and reads marker entities.
+- Write node: `ApplyChangesCrossTenantNodeTests` (only the target's repository and the proven session are written,
+  a refusal writes nothing, also in a dry run; the target's CK model and no method marker judge the batch; association
+  ends), and `ApplyChangesCrossTenantIntegrationTests` against the same real tenant tree: a released inter-company
+  invoice in A becomes an incoming document in B (invoice data and a reference to A's invoice), update and delete are
+  visible in B (as `Caller` and as `ServiceAccount`); without a grant in B create, update and delete are refused and B
+  is unchanged; without the setting the node writes its own tenant; grandchild, cousin, detached, system tenant, wrong
+  or missing relation, a proof for the source tenant, a proof of an earlier generation, `System` and `ApplyChanges@1`
+  with a target are refused.
 - Architecture: `CrossTenantCallSiteArchitectureTests` lists every `ISystemContext.Find*Tenant*` call site; a new one
   fails unless it is added to the allow list with a reason.

@@ -34,6 +34,16 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- Write into another tenant of the subtree (AB#9769, Feature AB#8673): `ApplyChanges@2` takes the optional
+  `targetTenant` (same shape as the read nodes). Every create, update, delete and association change then goes
+  through the cross-tenant guard first and is written in one transaction of the target with the session proven there
+  (`Caller` or `ServiceAccount`; `System` refused); a refusal fails the execution with `CROSS_TENANT_FORBIDDEN` before
+  anything is written, also in a dry run. The write checks judge the batch with the target's CK model and never with
+  the run's method marker, so MethodOnly attributes, replaced creates and identity association edges are refused in
+  another tenant; an association end the batch does not insert and the target does not hold is refused
+  (`cross_tenant_association`). `ApplyChanges@1` has no such setting (the key fails registration). Without the setting
+  the node writes its own tenant as before. Node reference: `docs/nodes-load.md`.
+
 - Read another tenant of the subtree (AB#9768, Feature AB#8673): `GetRtEntitiesByType@1`, `GetRtEntitiesById@1` and
   `GetRtEntitiesByWellKnownName@1` take the optional `targetTenant` (`relation: Parent | Sibling | Child`, with
   `tenantId` or `tenantIdPath` for a sibling or child). Every such read goes through the cross-tenant guard and runs on
@@ -50,7 +60,7 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   of AB#9777; the issued token is verified with the shared AB#9776 verifier: signature, own issuer, lifetime, tenant,
   presenter and subject), checks tenant and generation of the proof and
   only then opens the target's repository; every refusal is `CROSS_TENANT_FORBIDDEN` with one uniform message and the
-  reason code in the log. The read nodes use it since AB#9768 (below); the write nodes follow. An architecture test lists every call
+  reason code in the log. The read nodes use it since AB#9768, `ApplyChanges@2` since AB#9769 (above). An architecture test lists every call
   site that opens a tenant. Design and abuse cases: `docs/cross-tenant-access.md`.
 
 - `DetectStreamDataGaps@1` (AB#9588, PR #129): the missing time ranges `[start, end)` and missing slot counts

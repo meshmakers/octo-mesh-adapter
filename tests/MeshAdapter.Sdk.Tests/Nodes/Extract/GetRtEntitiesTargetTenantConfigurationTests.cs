@@ -2,6 +2,7 @@ using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
@@ -10,9 +11,10 @@ using Microsoft.Extensions.DependencyInjection;
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
 /// <summary>
-///     AB#9768: <c>targetTenant</c> is one new optional property of exactly the three read nodes. The strict pipeline
-///     serializer accepts it there (with the relation as written) and refuses it on every other node, so an adapter can
-///     never load a cross-tenant setting into a node that would silently read or write its own tenant.
+///     AB#9768 / AB#9769: <c>targetTenant</c> is one optional property of exactly the three read nodes and of
+///     ApplyChanges@2. The strict pipeline serializer accepts it there (with the relation as written) and refuses it on
+///     every other node (ApplyChanges@1 included), so an adapter can never load a cross-tenant setting into a node that
+///     would silently read or write its own tenant.
 /// </summary>
 [Collection(PipelineSchemaCollection.Name)]
 public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture schema)
@@ -21,7 +23,9 @@ public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture s
     [InlineData("GetRtEntitiesByType@1")]
     [InlineData("GetRtEntitiesById@1")]
     [InlineData("GetRtEntitiesByWellKnownName@1")]
-    public void Schema_TargetTenantIsOptional_OnTheReadNodes(string nodeType)
+    // AB#9769: the one write node with the setting.
+    [InlineData("ApplyChanges@2")]
+    public void Schema_TargetTenantIsOptional_OnTheReadNodesAndApplyChangesV2(string nodeType)
     {
         var node = schema.NodeSchema(nodeType);
 
@@ -32,7 +36,6 @@ public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture s
 
     [Theory]
     [InlineData("ApplyChanges@1")]
-    [InlineData("ApplyChanges@2")]
     [InlineData("CreateUpdateInfo@1")]
     public void Schema_OtherNodesHaveNoTargetTenant(string nodeType)
     {
@@ -156,6 +159,58 @@ public class GetRtEntitiesTargetTenantConfigurationTests(PipelineSchemaFixture s
 
         var ex = await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
         Assert.Contains("targetTenant", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithASiblingTarget_LoadsWithTheRelationAndPathAsWritten()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                                identity: ServiceAccount
+                                targetTenant:
+                                  relation: Sibling
+                                  tenantIdPath: $.recipientTenantId
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        var node = Assert.IsType<ApplyChangesNodeConfiguration2>(Assert.Single(root.Transformations!));
+        Assert.Equal(TenantRelation.Sibling, node.TargetTenant!.Relation);
+        Assert.Equal("$.recipientTenantId", node.TargetTenant.TenantIdPath);
+        Assert.Null(node.TargetTenant.TenantId);
+    }
+
+    [Fact]
+    public async Task ApplyChangesV2_WithoutTarget_LoadsWithoutTarget()
+    {
+        const string yaml = """
+                            transformations:
+                              - type: ApplyChanges@2
+                                entityUpdatesPath: $.updates
+                            """;
+
+        var root = await Serializer().DeserializeAsync(yaml);
+
+        Assert.Null(Assert.IsType<ApplyChangesNodeConfiguration2>(Assert.Single(root.Transformations!)).TargetTenant);
+    }
+
+    [Theory]
+    [InlineData("Descendant")]
+    [InlineData("Ancestor")]
+    public async Task ApplyChangesV2_WithAnUnknownRelation_IsRefusedWhenThePipelineLoads(string relation)
+    {
+        var yaml = $"""
+                    transformations:
+                      - type: ApplyChanges@2
+                        entityUpdatesPath: $.updates
+                        targetTenant:
+                          relation: {relation}
+                          tenantId: x
+                    """;
+
+        await Assert.ThrowsAsync<PipelineSerializationException>(() => Serializer().DeserializeAsync(yaml));
     }
 
     private static IPipelineConfigurationSerializer Serializer()

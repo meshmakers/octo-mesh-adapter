@@ -1,0 +1,26 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+# AB#9769: an invoice company A releases to company B (a sibling in the same group) ...
+- typeId: InterCompanyInvoice
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/InvoiceNumber
+    name: InvoiceNumber
+  - id: ${this}/InvoiceAmount
+    name: InvoiceAmount
+  - id: ${this}/RecipientTenantId
+    name: RecipientTenantId
+  - id: ${this}/InvoiceStatus
+    name: InvoiceStatus
+# ... and the incoming document the pipeline of A creates for it in B, with a reference to A's invoice.
+- typeId: IncomingDocument
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/InvoiceNumber
+    name: InvoiceNumber
+  - id: ${this}/InvoiceAmount
+    name: InvoiceAmount
+  - id: ${this}/SourceTenantId
+    name: SourceTenantId
+  - id: ${this}/SourceInvoiceRtId
+    name: SourceInvoiceRtId

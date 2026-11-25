@@ -1,14 +1,17 @@
 ﻿using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.Messages;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Repositories;
+using Meshmakers.Octo.Runtime.Contracts.Repositories.Query;
 using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 using MongoDB.Driver;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
@@ -51,13 +54,32 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                 c.AssociationUpdatesPath) ?? [];
         }
 
+        // AB#9769: with a target tenant, the cross-tenant guard opens it first; a refusal (CROSS_TENANT_FORBIDDEN) ends
+        // the node here, before any check reads the target and before anything is written, also in a dry run.
+        ICrossTenantAccess? target = null;
+        if (c.TargetTenant != null)
+        {
+            target = await etlContext.OpenTenantAsync(c.TargetTenant, c.Identity, dataContext, nodeContext);
+        }
+
+        var repository = target?.Repository ?? etlContext.TenantRepository;
+
         // AB#7463: inserts of a type whose CK method replaces the generic create are refused outside that
         // method's own run. Checked on the raw entity updates (every insert is part of the later
         // resultUpdateInfos), before the dry-run branch and before any write; the whole batch is refused.
         // AB#8059: the same call refuses identity-owned User attributes and identity association edges (insert and
         // delete) outside the method run of a System.Identity type.
-        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(etlContext, ckCacheService, entityUpdates,
-            associationUpdates);
+        // AB#9769: a batch for another tenant is judged with that tenant's CK model and without a method run.
+        await RtAttributeAccessGuard.EnsureWritesAllowedAsync(
+            target == null ? WriteGuardScope.Own(etlContext) : WriteGuardScope.CrossTenant(etlContext, target),
+            ckCacheService, entityUpdates, associationUpdates);
+
+        // AB#9769: an association written into another tenant joins two entities of that tenant only.
+        if (target != null)
+        {
+            await EnsureAssociationEndsInTargetAsync(target, c.TargetTenant!, entityUpdates, associationUpdates,
+                nodeContext);
+        }
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {
@@ -65,6 +87,7 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
             {
                 entityUpdatesPath = c.EntityUpdatesPath,
                 associationUpdatesPath = c.AssociationUpdatesPath,
+                targetTenantId = target?.TenantId,
                 entityUpdateCount = entityUpdates.Count,
                 recordArrayItemUpdateCount = entityUpdates.Sum(u => u.RecordArrayItemUpdates?.Count ?? 0),
                 associationUpdateCount = associationUpdates.Count,
@@ -117,11 +140,16 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                         //
                         // Assigned rather than declared here: the catch blocks below roll the
                         // transaction back, so the session has to outlive this block (AB#3717).
-                        session = await etlContext.GetSessionForAsync(c.Identity);
+                        //
+                        // AB#9769: with a target, the session the guard opened under the identity proven there
+                        // (never this node's own session, the source identity or the system context).
+                        session = target != null
+                            ? await target.OpenSessionAsync()
+                            : await etlContext.GetSessionForAsync(c.Identity);
                         session.StartTransaction();
 
                         OperationResult operationResult = new();
-                        await etlContext.TenantRepository.ApplyChangesAsync(session, resultUpdateInfos,
+                        await repository.ApplyChangesAsync(session, resultUpdateInfos,
                             resultAssocUpdate, operationResult);
                         if (operationResult.HasErrors || operationResult.HasFatalErrors)
                         {
@@ -231,6 +259,50 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    /// AB#9769: every end of an association change in a cross-tenant write is an entity this batch inserts or an
+    /// entity the target holds, read with the session the guard proved there. An end the target does not hold (for
+    /// example an RtId of the pipeline's own tenant, abuse case "cross-tenant association") refuses the whole batch
+    /// with CROSS_TENANT_FORBIDDEN before anything is written. Applies to creates and deletes alike.
+    /// </summary>
+    private static async Task EnsureAssociationEndsInTargetAsync(ICrossTenantAccess target,
+        TenantTargetConfiguration targetConfiguration, IReadOnlyCollection<EntityUpdateInfo<RtEntity>> entityUpdates,
+        IReadOnlyCollection<AssociationUpdateInfo> associationUpdates, INodeContext nodeContext)
+    {
+        if (associationUpdates.Count == 0)
+        {
+            return;
+        }
+
+        // An insert carries its id on the entity (the update info has none of its own for a new entity).
+        var inserted = entityUpdates.Where(u => u.ModOption == EntityModOptions.Insert && u.RtEntity != null)
+            .Select(u => u.RtEntity!.RtId).ToHashSet();
+        var ends = associationUpdates.SelectMany(a => new[] { a.Origin, a.Target })
+            .Where(end => !inserted.Contains(end.RtId)).Distinct().ToList();
+        if (ends.Count == 0)
+        {
+            return;
+        }
+
+        using var session = await target.OpenSessionAsync();
+        session.StartTransaction();
+        foreach (var group in ends.GroupBy(end => end.CkTypeId))
+        {
+            var ids = group.Select(end => end.RtId).Distinct().ToList();
+            var found = await target.Repository.GetRtEntitiesByIdAsync(session, group.Key, ids,
+                RtEntityQueryOptions.Create(), null, null);
+            var foundIds = found.Items.Select(e => e.RtId).ToHashSet();
+            if (ids.Any(id => !foundIds.Contains(id)))
+            {
+                await session.AbortTransactionAsync();
+                throw CrossTenantAccessDeniedException.Forbidden(nodeContext.NodePath.ToString(),
+                    targetConfiguration.Relation?.ToString() ?? "(none)", CrossTenantRefusalReason.CrossTenantAssociation);
+            }
+        }
+
+        await session.CommitTransactionAsync();
     }
 
     /// <summary>

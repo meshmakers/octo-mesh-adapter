@@ -6,6 +6,34 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
 # Load nodes
 
 3. **Load Nodes** (`src/MeshAdapter.Sdk/Nodes/Load/`): Data persistence nodes
+   - **Writing into another tenant of the subtree** (AB#9769, Feature AB#8673): `ApplyChanges@2` takes the optional
+     `targetTenant` (`TenantTargetConfiguration`): `relation` `Parent` (no id), `Sibling` or `Child` (with `tenantId`,
+     or `tenantIdPath` for an id from the data context, e.g. the recipient of an invoice). Without it the node writes its
+     own tenant exactly as before (no guard call). With it the node first opens the target through
+     `IMeshEtlContext.OpenTenantAsync` (relation on the tenant registry, the node identity's right in the target proven
+     by the identity service — `Caller` or `ServiceAccount`, `System` always refused —, tenant generation); a refusal
+     fails the execution with `CROSS_TENANT_FORBIDDEN` before any check reads the target and before anything is
+     written, also in a dry run. The write checks (`GenericCreateGuard`, `RtAttributeAccessGuard`) then judge the batch
+     with the target's CK model and without the run's method marker (`Common/WriteGuardScope.cs`): MethodOnly
+     attributes, inserts of a type whose method replaces the generic create and identity association edges are always
+     refused in another tenant. Every association end must be inserted by the same batch or exist in the target (read
+     with the proven session), otherwise `CROSS_TENANT_FORBIDDEN` (`cross_tenant_association`). The batch is written in
+     one transaction of the target with the proven session; duplicate-key reporting, write-conflict retries and the merge
+     of several updates of one entity work as in the own tenant. `ApplyChanges@1` has no `targetTenant`: the key fails
+     registration. Example:
+
+     ```yaml
+     - type: ApplyChanges@2
+       entityUpdatesPath: $._inserts
+       identity: ServiceAccount
+       targetTenant:
+         relation: Sibling
+         tenantIdPath: $.invoice.Items[0].Attributes.RecipientTenantId
+     ```
+
+     Tests: `ApplyChangesCrossTenantNodeTests`, `ApplyChangesCrossTenantIntegrationTests` (real tenant tree in MongoDB:
+     a released invoice of A becomes an incoming document in B, then update and delete; refusals leave B unchanged).
+     Design and abuse cases: `docs/cross-tenant-access.md`.
    - ApplyChangesNode/ApplyChangesNode2 — `ApplyChanges@2` merges several updates of one entity into one (later value wins; Secret clear lists reconcile). **Conflict detection is structural:** `AttributeValueComparer` compares lists, dictionaries, `RtRecord`s and `JsonElement`/`JsonNode` trees by content and numbers by value (int/long/decimal/double), so equal content never warns (it used to use reference `Equals`, ~90k false WARN/day on `Loxone/Control.States`). A real conflict logs ONE warning per entity and batch listing all conflicting attributes with compact, 200-char-truncated values; attributes named like credentials (`password`, `secret`, `token`, `apikey`, …) and `RtSecretValue`s print `<redacted>`. **Concurrent writers:** a MongoDB WriteConflict (112) is detected **anywhere in the exception chain** (`IsWriteConflict`; the repository wraps it in `OperationFailedException`, so the old unwrapped-only catch let it fail the pipeline), the transaction is aborted (`AbortQuietlyAsync`) and the write retried on a fresh session, at most `MaxWriteAttempts` = 6 with a jittered exponential wait (`WriteConflictBackoff`: ceilings 25..400 ms, half to all of it, ~0.4-0.8 s total; the semaphore is released for the wait and re-acquired before the next attempt, so other writes of the adapter go on, test `The_backoff_releases_the_process_wide_lock_so_other_writes_go_on`). 🔴 A conflict that outlasts the retries is **never a silent success** (the old loop ended without error and without flag): with `onDuplicateKey: Report` + `duplicateKeyTargetPath` it writes the flag `true` (nothing written), otherwise it rethrows. The duplicate-key filter runs before the conflict filter. The process-wide semaphore serialises only one adapter; two replicas meet 112 (cross-replica case covered by `SlotBookingConflictTests`, Testcontainers, sample method pipeline `docs/examples/slot-booking-method.yaml` with the declared method error `CONCURRENT_CHANGE`). Each attempt's session is disposed. A unique index belongs in the CK type's first version: adding one to a type with data is a Major change. Details: `docs/developer-guide.md` "Unique keys and concurrent writers".
    - **Origin of archive rows**: the three archive load nodes take `Origin` (`Automated` default / `Manual`), `ManualReason`, (raw + time-range) `ManualReasonAttributePath` and the per-row reason from the request data: `ManualReasonPath` (raw + time-range, relative to each item at `Path`) / `ManualReasonProperty` (series, on each value); order per row: request data, attribute, static `ManualReason`. `ArchiveWriteOriginStamp` validates once per node run: a manual write records as writer the verified caller's readable name (`VerifiedPrincipal.Name`, else its subject id), else the client id of the pipeline's service identity (`IMeshEtlContext.GetServiceIdentitySubjectIdAsync`), else `pipeline:<rtId>` — never refused, never empty; a reason without `Manual` is refused. Write result: `ArchiveWriteResultReporter` warns with the rows not stored per reason (only automated `CkTypeMismatch` skips are logged at Debug instead: one update list fanned out to one node per archive skips the other CK types on every run), stores `{stored, skipped, skippedByReason}` at `WriteResultPath`, and fails with `FailOnSkippedRows`. See `docs/developer-guide.md`, *Origin of archive rows*.
    - SaveStreamDataInArchive — writes instant measurements to a raw archive. A record attribute is handed on as one value; the engine repository expands it into the member columns (needs engine-mongodb with that fix). Chain test against the real repository: `RawArchiveRecordMemberPipelineIntegrationTests` (`StreamDataPipelineFixture` = `StreamDataFixture` + `AddOctoMeshAdapter`).

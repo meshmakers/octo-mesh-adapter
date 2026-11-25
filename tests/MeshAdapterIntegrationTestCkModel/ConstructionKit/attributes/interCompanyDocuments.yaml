@@ -1,0 +1,15 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+  # AB#9769 (InterCompanyInvoice, IncomingDocument)
+  - id: InvoiceNumber
+    valueType: String
+  - id: InvoiceAmount
+    valueType: Double
+  - id: RecipientTenantId
+    valueType: String
+  - id: InvoiceStatus
+    valueType: String
+  - id: SourceTenantId
+    valueType: String
+  - id: SourceInvoiceRtId
+    valueType: String

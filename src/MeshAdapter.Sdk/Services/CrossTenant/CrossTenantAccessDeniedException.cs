@@ -36,6 +36,12 @@ public static class CrossTenantRefusalReason
 
     /// <summary>The target-tenant setting of the node is inconsistent, or a data-driven id is not a usable string.</summary>
     public const string InvalidTargetConfiguration = "invalid_target_configuration";
+
+    /// <summary>
+    ///     A cross-tenant write would associate an entity of the target with an entity the target does not hold (for
+    ///     example an RtId of the pipeline's own tenant). AB#9769.
+    /// </summary>
+    public const string CrossTenantAssociation = "cross_tenant_association";
 }
 
 /// <summary>

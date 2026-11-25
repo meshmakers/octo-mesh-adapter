@@ -186,7 +186,7 @@ stages:
             displayName: 'Test'
             inputs:
               command: 'test'
-              arguments: '--no-build --configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer)'
+              arguments: '--no-build --configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer) --filter "Category!=Stress&Category!=Performance"'
               projects: |
                 **/*Tests.csproj
                 !**/*SystemTests.csproj

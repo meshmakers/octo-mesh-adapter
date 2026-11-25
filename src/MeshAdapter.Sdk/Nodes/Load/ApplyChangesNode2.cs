@@ -502,8 +502,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 
     /// <summary>
     /// The writes of one target, keyed by source tenant and source RtId (the copy keeps the source RtId): an upsert
-    /// inserts a missing copy or updates the existing one and stamps <c>RtSyncOrigin</c>; a delete removes the copy and
-    /// is a no-op when there is none. An entity with that RtId that is not this sync's copy (no origin, or the origin of
+    /// inserts a missing copy or updates the existing one and stamps <c>RtSyncOrigin</c>; a replace of the source
+    /// replaces the existing copy as a whole (an attribute the replace leaves out is gone from the copy too), with the
+    /// origin stamped again; a delete removes the copy and is a no-op when there is none. An entity with that RtId that is not this sync's copy (no origin, or the origin of
     /// another source) refuses the whole target: the sync never touches a local entity.
     /// </summary>
     internal static async Task<List<EntityUpdateInfo<RtEntity>>> PlanSyncAsync(ICrossTenantAccess access,
@@ -547,7 +548,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
             var copy = new RtEntity(item.CkTypeId, item.RtId, attributes) { RtWellKnownName = item.RtWellKnownName };
             plan.Add(current == null
                 ? EntityUpdateInfo<RtEntity>.CreateInsert(copy)
-                : EntityUpdateInfo<RtEntity>.CreateUpdate(entityId, copy));
+                : item.IsReplace
+                    ? EntityUpdateInfo<RtEntity>.CreateReplace(entityId, copy)
+                    : EntityUpdateInfo<RtEntity>.CreateUpdate(entityId, copy));
         }
 
         return plan;
@@ -566,13 +569,17 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
     /// <summary>The target's validation refused the planned batch; details are in the pipeline log.</summary>
     private sealed class CrossTenantSyncTargetRejectedException() : Exception("The target refused the sync batch");
 
-    /// <summary>One entity of a sync batch: the source entity (insert, update, replace) or its deletion.</summary>
-    internal sealed record SyncItem(RtCkId<CkTypeId> CkTypeId, OctoObjectId RtId, bool IsDelete,
+    /// <summary>
+    /// One entity of a sync batch: the source entity (insert or update; <see cref="IsReplace" /> for a replace, which
+    /// replaces the copy as a whole) or its deletion.
+    /// </summary>
+    internal sealed record SyncItem(RtCkId<CkTypeId> CkTypeId, OctoObjectId RtId, bool IsDelete, bool IsReplace,
         IReadOnlyDictionary<string, object?>? Attributes, string? RtWellKnownName)
     {
         /// <summary>
-        /// The items of the batch, the last update of an entity winning (a change stream can carry several). Record
-        /// array item updates and secret clears are not part of a sync (the source entity is copied as it is).
+        /// The items of the batch, one per entity: several changes of an entity (a change stream can carry several)
+        /// are applied in order (<see cref="Then" />), so no change is lost. Record array item updates and secret
+        /// clears are not part of a sync (the source entity is copied as it is).
         /// </summary>
         public static IReadOnlyList<SyncItem> From(IEnumerable<EntityUpdateInfo<RtEntity>> updates, string nodePath)
         {
@@ -593,12 +600,47 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
                         "every entity update of a sync needs the source RtId (and the entity for an upsert)");
                 }
 
-                items.RemoveAll(i => i.RtId == rtId.Value && i.CkTypeId == update.CkTypeId);
-                items.Add(new SyncItem(update.CkTypeId, rtId.Value, isDelete, update.RtEntity?.Attributes,
-                    update.RtEntity?.RtWellKnownName));
+                var item = new SyncItem(update.CkTypeId, rtId.Value, isDelete,
+                    update.ModOption == EntityModOptions.Replace, update.RtEntity?.Attributes,
+                    update.RtEntity?.RtWellKnownName);
+                var index = items.FindIndex(i => i.RtId == rtId.Value && i.CkTypeId == update.CkTypeId);
+                if (index < 0)
+                {
+                    items.Add(item);
+                }
+                else
+                {
+                    items[index] = items[index].Then(item);
+                }
             }
 
             return items;
+        }
+
+        /// <summary>
+        /// This change followed by <paramref name="next" /> of the same entity: a delete or a replace ends what came
+        /// before; after a delete the entity was created again, so the next upsert replaces the copy; otherwise the
+        /// next update is merged onto this one (its attributes win, the others stay).
+        /// </summary>
+        internal SyncItem Then(SyncItem next)
+        {
+            if (next.IsDelete || next.IsReplace)
+            {
+                return next;
+            }
+
+            if (IsDelete)
+            {
+                return next with { IsReplace = true };
+            }
+
+            var attributes = new Dictionary<string, object?>(Attributes ?? new Dictionary<string, object?>());
+            foreach (var (name, value) in next.Attributes ?? new Dictionary<string, object?>())
+            {
+                attributes[name] = value;
+            }
+
+            return this with { Attributes = attributes, RtWellKnownName = next.RtWellKnownName ?? RtWellKnownName };
         }
     }
 

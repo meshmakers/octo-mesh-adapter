@@ -40,8 +40,10 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
      `targetTenant`). Without `tenantIds` the targets are the registered direct children of the pipeline's tenant
      (`IMeshEtlContext.ListChildTenantsAsync`, the guard's registry snapshot, cached up to 30 s). Every target is opened
      through `OpenTenantAsync` as a `Child` target and written in its own transaction with the proven session: the node
-     reads the existing copies, plans an insert (missing copy) or update (this sync's copy) per entity, or a delete
-     (a delete of a missing copy writes nothing), stamps `RtSyncOrigin` (source tenant = the pipeline's tenant, source
+     reads the existing copies, plans an insert (missing copy) or update (this sync's copy) per entity — a replace of
+     the source replaces this sync's copy as a whole, so an attribute the replace leaves out is gone from the copy
+     too — or a delete (a delete of a missing copy writes nothing); several changes of one entity in a batch are
+     applied in order (updates merged, the later value winning; a replace or delete ends what came before), stamps `RtSyncOrigin` (source tenant = the pipeline's tenant, source
      RtId, `SyncedAt`) and drops any origin of the input, judges the plan with the target's write guards and writes it.
      An entity under that RtId without this origin refuses the whole target (`SYNC_OWNED_ENTITY`). Failures are
      collected; after the last target the node throws `CrossTenantWriteFailedException` (`CROSS_TENANT_WRITE_FAILED`,

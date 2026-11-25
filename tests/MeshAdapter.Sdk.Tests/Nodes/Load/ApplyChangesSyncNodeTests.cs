@@ -227,6 +227,82 @@ public class ApplyChangesSyncNodeTests : SessionNodeTestBase
     }
 
     [Fact]
+    public async Task AReplaceOfTheSource_ReplacesTheExistingCopy_KeepingTheOrigin()
+    {
+        // The source dropped the attribute Phone with a replace: the copy must lose it too, so the write is a replace
+        // of the whole copy (an update would keep Phone in the copy).
+        var rtId = OctoObjectId.GenerateNewId();
+        var stored = Contact(rtId, "Old", SyncOrigin.Create(SourceTenant, rtId, DateTime.UtcNow));
+        stored.SetAttributeRawValue("Phone", "123");
+        _targets["companya"].Stored.Add(stored);
+
+        await RunAsync(Sync(), EntityUpdateInfo<RtEntity>.CreateReplace(new RtEntityId(ContactType, rtId),
+            Contact(rtId, "New")));
+
+        var replaced = Assert.Single(_targets["companya"].Written!);
+        Assert.Equal(EntityModOptions.Replace, replaced.ModOption);
+        Assert.Equal(rtId, replaced.RtId);
+        Assert.Equal("New", replaced.RtEntity!.Attributes["ContactName"]);
+        Assert.False(replaced.RtEntity.Attributes.ContainsKey("Phone"));
+        Assert.Equal(SourceTenant, OriginOf(replaced).SourceTenantId);
+        Assert.Equal(rtId.ToString(), OriginOf(replaced).SourceRtId);
+        // Without a copy the replace inserts one.
+        Assert.Equal(EntityModOptions.Insert, Assert.Single(_targets["companyb"].Written!).ModOption);
+    }
+
+    [Fact]
+    public async Task TwoUpdatesOfTheSameEntity_InOneBatch_AreBothApplied_InOrder()
+    {
+        var rtId = OctoObjectId.GenerateNewId();
+        _targets["companya"].Stored.Add(Contact(rtId, "Old", SyncOrigin.Create(SourceTenant, rtId, DateTime.UtcNow)));
+        var first = Contact(rtId, "First");
+        first.SetAttributeRawValue("Phone", "123");
+        var second = new RtEntity(ContactType, rtId, new Dictionary<string, object?> { ["ContactName"] = "Second" });
+
+        await RunAsync(Sync(), Upsert(first), Upsert(second));
+
+        var written = Assert.Single(_targets["companya"].Written!);
+        Assert.Equal(EntityModOptions.Update, written.ModOption);
+        // The second update wins where both set an attribute; the attribute only the first set is not lost.
+        Assert.Equal("Second", written.RtEntity!.Attributes["ContactName"]);
+        Assert.Equal("123", written.RtEntity.Attributes["Phone"]);
+        Assert.Equal(SourceTenant, OriginOf(written).SourceTenantId);
+    }
+
+    [Fact]
+    public void SyncItems_ApplyTheChangesOfOneEntityInOrder()
+    {
+        var rtId = OctoObjectId.GenerateNewId();
+        var id = new RtEntityId(ContactType, rtId);
+        RtEntity With(params (string Name, object? Value)[] attributes) =>
+            new(ContactType, rtId, attributes.ToDictionary(a => a.Name, a => a.Value));
+
+        // replace + update = a replace with both
+        var item = Assert.Single(ApplyChangesNode2.SyncItem.From([
+            EntityUpdateInfo<RtEntity>.CreateReplace(id, With(("A", 1))),
+            EntityUpdateInfo<RtEntity>.CreateUpdate(id, With(("B", 2)))
+        ], "transformations/0"));
+        Assert.True(item.IsReplace);
+        Assert.Equal(1, item.Attributes!["A"]);
+        Assert.Equal(2, item.Attributes["B"]);
+
+        // update + replace = the replace alone
+        item = Assert.Single(ApplyChangesNode2.SyncItem.From([
+            EntityUpdateInfo<RtEntity>.CreateUpdate(id, With(("A", 1))),
+            EntityUpdateInfo<RtEntity>.CreateReplace(id, With(("B", 2)))
+        ], "transformations/0"));
+        Assert.True(item.IsReplace);
+        Assert.False(item.Attributes!.ContainsKey("A"));
+
+        // update + delete = the delete
+        item = Assert.Single(ApplyChangesNode2.SyncItem.From([
+            EntityUpdateInfo<RtEntity>.CreateUpdate(id, With(("A", 1))),
+            EntityUpdateInfo<RtEntity>.CreateDelete(id)
+        ], "transformations/0"));
+        Assert.True(item.IsDelete);
+    }
+
+    [Fact]
     public async Task DeleteOfACopy_DeletesIt_AndDeleteOfAMissingCopy_WritesNothing()
     {
         var rtId = OctoObjectId.GenerateNewId();

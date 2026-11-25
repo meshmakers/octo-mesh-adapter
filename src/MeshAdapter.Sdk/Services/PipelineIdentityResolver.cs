@@ -29,6 +29,16 @@ public interface IPipelineIdentityResolver
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     ValueTask<RtSecurityContext> ResolveServiceAccountAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     The token of the pipeline's service account for the AI service's central-key LLM gateway (AB#8691),
+    ///     <b>independent of any caller</b>: the gateway meters the tenant, not the user. <c>null</c> when the
+    ///     pipeline has no service account or no token could be acquired (the cause is logged); the caller then
+    ///     fails closed. Never cached here beyond the token service's own cache.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
+    ValueTask<string?> AcquireLlmGatewayTokenAsync(CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult<string?>(null);
 }
 
 /// <summary>
@@ -151,6 +161,21 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
         // No caller: the effective identity IS the service account (or the system context when none is
         // configured) — the same result `identity: ServiceAccount` asks for explicitly.
         return await ResolveServiceAccountOrSystemCoreAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<string?> AcquireLlmGatewayTokenAsync(CancellationToken cancellationToken = default)
+    {
+        var credentials = TryReadServiceAccountCredentials();
+        if (credentials == null)
+        {
+            _logger.LogWarning(
+                "[{TenantId}] Pipeline execution has no service account configured; the central-key LLM gateway cannot be called",
+                _tenantId);
+            return null;
+        }
+
+        return await _serviceAccountTokenService.AcquireLlmGatewayTokenAsync(credentials, cancellationToken);
     }
 
     /// <summary>

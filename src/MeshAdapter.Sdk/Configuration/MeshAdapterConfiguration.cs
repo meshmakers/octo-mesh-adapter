@@ -21,6 +21,14 @@ public class MeshAdapterConfiguration
     public string ReportingServiceUrl { get; set; } = "https://localhost:5007";
 
     /// <summary>
+    ///     Base URL of the AI service's central-key LLM gateway (AB#8691), e.g. <c>https://octo-ai-services:5019</c>;
+    ///     <c>AnthropicAiQuery@1</c> with <c>keySource: Central</c> posts to <c>{url}/llm/anthropic/v1/messages</c>.
+    ///     Empty by default: a node that asks for the central key then fails before any request (fail closed).
+    ///     Environment variable <c>OCTO_ADAPTER__LLMGATEWAYURL</c>.
+    /// </summary>
+    public string? LlmGatewayUrl { get; set; }
+
+    /// <summary>
     /// Public URI of the identity service issuing the access tokens accepted by secured trigger nodes.
     /// </summary>
     public string AuthorityUrl { get; set; } = "https://localhost:5003";

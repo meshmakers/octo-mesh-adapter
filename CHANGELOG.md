@@ -13,6 +13,14 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   resolved for, e.g. `AcquireServiceAccountIdentityAsync(credentials, etlContext.TenantId, ct)`; implementations of
   the interface add the parameter.
 
+### Added
+
+- `AnthropicAiQuery@1` option `keySource: Central` (AB#8691): the node calls the AI service's central-key LLM gateway
+  (`Adapter:LlmGatewayUrl`) with the pipeline service account's `ai.llm.invoke` token and sends no API key; tool rounds
+  and JSON repair calls go the same way. `AiSpendCapReached` and `AiMeterUnavailable` fail the node with messages that
+  name cap, spent amount and UTC reset date, or the fail-closed meter. Missing gateway URL or token, or an inline
+  `apiKey`, fail before any request. `keySource: Configured` (default) is unchanged.
+
 ### Changed
 
 - NuGet packages raised to the newest version within the .NET 10 line (AB#9597): MailKit and MimeKit 5.0.0,

@@ -103,6 +103,22 @@ public interface IServiceAccountTokenService
     /// </remarks>
     Task<string?> AcquireServiceAccountTokenAsync(ITenantRepository tenantRepository, string wellKnownName,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Acquires the pipeline service account's own token for the AI service's central-key LLM gateway
+    ///     (AB#8691): the same grant as <see cref="AcquireServiceAccountTokenAsync" />, but with the single
+    ///     scope <see cref="LlmGatewayScope" /> instead of <c>octo_api</c>, so the token can call the gateway
+    ///     and nothing else. The gateway meters and caps every call of the token's tenant.
+    /// </summary>
+    /// <param name="credentials">The pipeline's service account (projected by the controller).</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The access token, or <c>null</c> when it could not be acquired (the cause is logged).</returns>
+    /// <remarks>Cached like the other service-account tokens, under a key that includes the scope.</remarks>
+    Task<string?> AcquireLlmGatewayTokenAsync(ServiceAccountCredentials credentials,
+        CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+
+    /// <summary>The API scope of the LLM gateway; granted to the pipeline service accounts (AB#9639).</summary>
+    const string LlmGatewayScope = "ai.llm.invoke";
 }
 
 /// <summary>
@@ -182,6 +198,14 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId,
         string IssuerUri), (string AccessToken, DateTime ExpiresAtUtc)> _accountTokenCache = new();
+
+    /// <summary>
+    ///     Gateway tokens of <see cref="AcquireLlmGatewayTokenAsync" />, keyed like <see cref="_accountTokenCache" />;
+    ///     separate so an <c>octo_api</c> token and an <c>ai.llm.invoke</c> token of one account never replace each
+    ///     other.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string TenantId, string ClientId,
+        string IssuerUri), (string AccessToken, DateTime ExpiresAtUtc)> _gatewayTokenCache = new();
 
     public ServiceAccountTokenService(ILogger<ServiceAccountTokenService> logger,
         IOptions<AdapterOptions> adapterOptions, IOptions<MeshAdapterConfiguration> meshAdapterConfiguration,
@@ -682,11 +706,14 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
     /// <summary>
     ///     The account's own token for <paramref name="configuration" /> (shared by
     ///     <see cref="AcquireServiceAccountTokenAsync" /> and <see cref="AcquireSubjectTokenAsync" />): own issuer
-    ///     only, tenant of the pipeline, verified before it is cached or returned (AB#9776).
+    ///     only, tenant of the pipeline, verified before it is cached or returned (AB#9776). With
+    ///     <paramref name="scope" /> (the LLM gateway token of <see cref="AcquireLlmGatewayTokenAsync" />) the token
+    ///     is requested for that scope and cached in <see cref="_gatewayTokenCache" />, never in the account cache.
     /// </summary>
     private async Task<string?> AcquireAccountTokenCoreAsync(ServiceAccountCredentials configuration,
-        string? pipelineTenantId, string wellKnownName, CancellationToken cancellationToken)
+        string? pipelineTenantId, string wellKnownName, CancellationToken cancellationToken, string? scope = null)
     {
+        var tokenCache = scope == null ? _accountTokenCache : _gatewayTokenCache;
         // The issuer resolves without network access; it is part of the cache key so two configurations
         // with the same tenant and client id but different issuers never share a token.
         var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
@@ -702,7 +729,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
         }
 
         var cacheKey = (tenantId ?? string.Empty, configuration.ClientId, issuerUri);
-        if (_accountTokenCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
+        if (tokenCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > DateTime.UtcNow)
         {
             return cached.AccessToken;
         }
@@ -736,7 +763,8 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
             return null;
         }
 
-        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value);
+        var tokenRequest = CreateAmbientTokenRequest(disco.TokenEndpoint, configuration, tenantId, mode.Value,
+            scope);
 
         TokenResponse response;
         try
@@ -754,8 +782,8 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
         if (response.IsError || string.IsNullOrEmpty(response.AccessToken))
         {
             _logger.LogError(
-                "Identity service {IssuerUri} refused a token for ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}) in tenant '{TenantId}': {Error} ({ErrorDescription})",
-                issuerUri, wellKnownName, configuration.ClientId, tenantId,
+                "Identity service {IssuerUri} refused a token (scope {Scope}) for ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}) in tenant '{TenantId}': {Error} ({ErrorDescription})",
+                issuerUri, scope ?? "default", wellKnownName, configuration.ClientId, tenantId,
                 response.Error ?? "no token", response.ErrorDescription ?? "no description");
             return null;
         }
@@ -769,12 +797,25 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
 
         // The token's own exp is the truth; expires_in is the fallback. Never logged — only the fact.
         var expiresAt = (claims.ExpiresAtUtc ?? DateTime.UtcNow.AddSeconds(response.ExpiresIn)) - IdentityCacheSkew;
-        _accountTokenCache[cacheKey] = (response.AccessToken, expiresAt);
+        tokenCache[cacheKey] = (response.AccessToken, expiresAt);
 
         _logger.LogInformation(
             "Service account token acquired via ServiceAccountConfiguration '{WellKnownName}' (client {ClientId}, {Mode}) in tenant '{TenantId}'",
             wellKnownName, configuration.ClientId, mode.Value, tenantId);
         return response.AccessToken;
+    }
+
+    /// <inheritdoc />
+    public Task<string?> AcquireLlmGatewayTokenAsync(ServiceAccountCredentials credentials,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+        // Same path as AcquireSubjectTokenAsync (own issuer only, tenant of the pipeline, verified before it is
+        // cached or returned, AB#9776), with the gateway scope and a cache of its own. invalid_scope from the
+        // identity service means the account is not allowed ai.llm.invoke yet (AB#9639: the controller grants it
+        // on the next reconcile).
+        return AcquireAccountTokenCoreAsync(credentials, credentials.TenantId, credentials.ClientId,
+            cancellationToken, IServiceAccountTokenService.LlmGatewayScope);
     }
 
     /// <summary>How the token for a service account is obtained (AB#5114).</summary>
@@ -826,7 +867,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
     ///     service account, which is why the two callers can treat them identically.
     /// </summary>
     private TokenRequest CreateAmbientTokenRequest(string? tokenEndpoint, ServiceAccountCredentials configuration,
-        string? tenantId, AcquisitionMode mode)
+        string? tenantId, AcquisitionMode mode, string? scope = null)
     {
         var tokenRequest = new TokenRequest
         {
@@ -835,7 +876,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService, IServic
             {
                 {
                     OidcConstants.TokenRequest.Scope,
-                    CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
+                    scope ?? CommonConstants.GetScopes(ApiScopes.OctoApiFullAccess, null, DefaultScopes.None)
                 }
             }
         };

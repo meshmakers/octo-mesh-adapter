@@ -44,7 +44,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 internal sealed class AnthropicMessagesChatClient(
     IHttpClientFactory httpClientFactory,
     string apiKey,
-    Uri? baseUrl = null) : IChatClient
+    Uri? baseUrl = null,
+    LlmGatewayAccess? gateway = null) : IChatClient
 {
     /// <summary>Name of the HTTP client the adapter registers for the Messages API.</summary>
     internal const string HttpClientName = "Anthropic";
@@ -62,7 +63,18 @@ internal sealed class AnthropicMessagesChatClient(
     private HttpClient? _httpClient;
 
     /// <summary>The URL every request of this client is posted to.</summary>
-    internal string MessagesEndpoint { get; } = BuildMessagesEndpoint(baseUrl);
+    internal string MessagesEndpoint { get; } = gateway != null
+        ? BuildGatewayMessagesEndpoint(gateway.BaseUrl)
+        : BuildMessagesEndpoint(baseUrl);
+
+    /// <summary>
+    ///     <c>{gateway}/llm/anthropic/v1/messages</c>: the AI service's central-key LLM gateway (AB#8691); a trailing
+    ///     slash of the base is dropped.
+    /// </summary>
+    internal static string BuildGatewayMessagesEndpoint(Uri gatewayBaseUrl)
+    {
+        return gatewayBaseUrl.AbsoluteUri.TrimEnd('/') + "/llm/anthropic/v1/messages";
+    }
 
     /// <summary><c>{baseUrl}/v1/messages</c> (a trailing slash of the base is dropped), or the public API.</summary>
     internal static string BuildMessagesEndpoint(Uri? baseUrl)
@@ -100,8 +112,18 @@ internal sealed class AnthropicMessagesChatClient(
             Content = new StringContent(jsonRequest, Encoding.UTF8, "application/json")
         };
 
+        if (gateway != null)
+        {
+            // AB#8691: the central key stays in the gateway. The node authenticates with the pipeline service
+            // account's token and sends no x-api-key; the caller reference is attribution only.
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            if (gateway.CallerRef != null)
+            {
+                request.Headers.Add(LlmGatewayAccess.CallerRefHeader, gateway.CallerRef);
+            }
+        }
         // A keyless endpoint (a sealed provider endpoint without a key) gets no key header.
-        if (!string.IsNullOrEmpty(apiKey))
+        else if (!string.IsNullOrEmpty(apiKey))
         {
             request.Headers.Add("x-api-key", apiKey);
         }
@@ -116,6 +138,12 @@ internal sealed class AnthropicMessagesChatClient(
             // query could not run (rate limit / token quota, overloaded, or input over the
             // context window) instead of a bare status code. The raw body is kept for
             // diagnostics. This message is what lands in the RtPipelineExecution audit record.
+            if (gateway != null &&
+                LlmGatewayAccess.TryReadRefusal(response.StatusCode, responseContent, out var refusal))
+            {
+                throw refusal;
+            }
+
             var message = BuildAnthropicApiErrorMessage(response.StatusCode, responseContent);
             if (temperature != null && TryReadSamplingRejection(response.StatusCode, responseContent,
                     out var providerError))

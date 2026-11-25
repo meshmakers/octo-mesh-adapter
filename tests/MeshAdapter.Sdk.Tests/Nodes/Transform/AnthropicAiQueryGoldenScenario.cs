@@ -39,6 +39,12 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     private const string McpServerUrl = "https://mcp.example.test";
     private const string SealedApiKey = "test-key-sealed-golden-0004";
 
+    /// <summary>The pipeline service account's token for the central-key LLM gateway (AB#8691).</summary>
+    internal const string GatewayToken = "test-token-gateway-0005";
+
+    /// <summary>The AI service the central-key runs reach the gateway at.</summary>
+    internal const string GatewayBaseUrl = "https://ai.example.test";
+
     /// <summary>The sealed endpoint of the OpenAI-compatible runs.</summary>
     internal const string OpenAiBaseUrl = "https://llm.example.test/v1";
 
@@ -317,6 +323,27 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
     }
 
     /// <summary>
+    ///     Runs the node with <c>keySource: Central</c> (AB#8691): the provider is the gateway at
+    ///     <see cref="GatewayBaseUrl" />, the pipeline's gateway token is <see cref="GatewayToken" />.
+    /// </summary>
+    public Task RunCentralAsync(AnthropicAiQueryNodeConfiguration config)
+    {
+        ProviderHost = new Uri(GatewayBaseUrl).Host;
+        var options = Microsoft.Extensions.Options.Options.Create(
+            new Meshmakers.Octo.Sdk.MeshAdapter.Configuration.MeshAdapterConfiguration
+            {
+                LlmGatewayUrl = GatewayBaseUrl
+            });
+        return RunNodeAsync(config with { KeySource = LlmKeySource.Central }, "AnthropicAiQueryNode",
+            (etlContext, factory, tokenService) =>
+            {
+                A.CallTo(() => etlContext.GetLlmGatewayTokenAsync())
+                    .Returns(ValueTask.FromResult<string?>(GatewayToken));
+                return new AnthropicAiQueryNode(A.Fake<NodeDelegate>(), etlContext, factory, tokenService, options);
+            });
+    }
+
+    /// <summary>
     ///     Runs <c>LlmQuery@1</c> with the same settings as the given <c>AnthropicAiQuery@1</c> configuration
     ///     (see <see cref="ToLlmQuery" />), on the same scripted wire.
     /// </summary>
@@ -534,6 +561,7 @@ internal sealed class AnthropicAiQueryGoldenScenario(string dataJson)
             "Bearer " + SealedApiKey => "Bearer <the key of the sealed provider endpoint>",
             "Bearer " + DelegatedToken => "Bearer <the delegated token of the caller>",
             "Bearer " + CallerToken => "Bearer <THE CALLER'S OWN TOKEN - must never be sent>",
+            "Bearer " + GatewayToken => "Bearer <the gateway token of the pipeline service account>",
             _ => "<AN UNEXPECTED CREDENTIAL>"
         };
     }

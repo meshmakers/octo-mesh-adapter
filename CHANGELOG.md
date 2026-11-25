@@ -38,7 +38,9 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   one door for a node to reach its parent, a sibling or a child tenant (`TenantTargetConfiguration`, relations
   `Parent`, `Sibling`, `Child`). The guard checks the relation on the tenant registry, refuses the system identity
   and the fallback to it, proves the executing identity's right in the target through the identity service (RFC 8693
-  exchange for a user caller; the service-account exchange follows), checks tenant and generation of the proof and
+  exchange for a user caller, and for the pipeline's service account through U's shadow client `xt_{T}_{clientId}`
+  of AB#9777; the issued token is verified with the shared AB#9776 verifier: signature, own issuer, lifetime, tenant,
+  presenter and subject), checks tenant and generation of the proof and
   only then opens the target's repository; every refusal is `CROSS_TENANT_FORBIDDEN` with one uniform message and the
   reason code in the log. No node uses it yet; the read and write nodes follow. An architecture test lists every call
   site that opens a tenant. Design and abuse cases: `docs/cross-tenant-access.md`.

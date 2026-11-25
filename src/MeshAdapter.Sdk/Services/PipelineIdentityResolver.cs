@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Meshmakers.Octo.Runtime.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -66,22 +65,10 @@ public interface IPipelineIdentityResolver
 /// </remarks>
 internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
 {
-    /// <summary>
-    ///     The CK type whose configurations carry service-account credentials.
-    /// </summary>
-    /// <remarks>
-    ///     ⚠️ Matched against <c>ConfigurationTypeId.SemanticVersionedFullName</c>, which appends
-    ///     <c>-N</c> as soon as the CK <b>type</b> version passes 1. A type bump would therefore make
-    ///     this match silently stop finding the configuration and every pipeline fall back to the
-    ///     system context — the failure would look like "nothing happened", not like an error. A CK
-    ///     bump of this type therefore has to be paired with a change here.
-    /// </remarks>
-    internal const string ServiceAccountConfigurationCkTypeId = "System.Communication/ServiceAccountConfiguration";
-
-    private static readonly JsonSerializerOptions ConfigurationJsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
+    /// <summary>The CK type whose configurations carry service-account credentials.</summary>
+    /// <remarks>See <see cref="ServiceAccountConfigurationReader.ServiceAccountConfigurationCkTypeId" />.</remarks>
+    internal const string ServiceAccountConfigurationCkTypeId =
+        ServiceAccountConfigurationReader.ServiceAccountConfigurationCkTypeId;
 
     private readonly string _tenantId;
     private readonly VerifiedPrincipal? _verifiedPrincipal;
@@ -197,103 +184,6 @@ internal sealed class PipelineIdentityResolver : IPipelineIdentityResolver
         return RtSecurityContext.ForUser(identity.SubjectId, identity.Roles);
     }
 
-    /// <summary>
-    ///     Picks the service account out of the pipeline's configuration list. The controller already
-    ///     guarantees at most one (a per-pipeline override wins over the adapter default, AB#5027);
-    ///     a hand-linked pipeline can still carry several, and the tie is broken the same way the
-    ///     controller breaks it — deterministically, so every pod and every redeploy agrees.
-    /// </summary>
-    private ServiceAccountCredentials? TryReadServiceAccountCredentials()
-    {
-        List<string> rawConfigurations;
-        try
-        {
-            rawConfigurations = _globalConfiguration
-                .GetAllRawJsonByCkTypeId(ServiceAccountConfigurationCkTypeId)
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "[{TenantId}] Could not read the pipeline's service account configuration", _tenantId);
-            return null;
-        }
-
-        var candidates = rawConfigurations
-            .Select(TryParseCredentials)
-            .Where(c => c != null)
-            .Select(c => c!)
-            .OrderBy(c => c.ClientId, StringComparer.Ordinal)
-            .ToList();
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        if (candidates.Count > 1)
-        {
-            _logger.LogWarning(
-                "[{TenantId}] Pipeline carries {Count} service account configurations; acting as '{ChosenClientId}'. Link exactly one to make the identity unambiguous (AB#5027).",
-                _tenantId, candidates.Count, candidates[0].ClientId);
-        }
-
-        return candidates[0];
-    }
-
-    private ServiceAccountCredentials? TryParseCredentials(string rawJson)
-    {
-        ServiceAccountConfigurationPayload? payload;
-        try
-        {
-            payload = JsonSerializer.Deserialize<ServiceAccountConfigurationPayload>(rawJson,
-                ConfigurationJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogError(ex,
-                "[{TenantId}] A service account configuration of this pipeline could not be read", _tenantId);
-            return null;
-        }
-
-        if (payload == null || string.IsNullOrWhiteSpace(payload.ClientId))
-        {
-            // Only ClientId is mandatory (AB#5115): an empty IssuerUri means "the adapter's own
-            // installation" and an empty ClientSecret selects the impersonation path (AB#5114) —
-            // both are resolved downstream by the token service, not repair-worthy defects here.
-            _logger.LogWarning(
-                "[{TenantId}] A service account configuration of this pipeline carries no ClientId and is ignored",
-                _tenantId);
-            return null;
-        }
-
-        // The grant needs acr_values=tenant:X, and it is always the PIPELINE's tenant (AB#9776): the roles
-        // of the token are applied to this pipeline's repository, so a configuration naming another tenant
-        // is refused — thrown, never skipped, because skipping it could widen the execution to System.
-        // Case and surrounding blanks are ignored like everywhere tenant ids are compared in the adapter.
-        if (!string.IsNullOrWhiteSpace(payload.TenantId)
-            && !string.Equals(payload.TenantId.Trim(), _tenantId.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogError(
-                "[{TenantId}] Service account configuration of client '{ClientId}' names the tenant '{ConfiguredTenantId}'; a service account acts only in the pipeline's own tenant (AB#9776)",
-                _tenantId, payload.ClientId, payload.TenantId);
-            throw MeshAdapterPipelineExecutionException.ServiceAccountTenantMismatch(_tenantId, payload.ClientId!,
-                payload.TenantId);
-        }
-
-        return new ServiceAccountCredentials(payload.IssuerUri ?? string.Empty, payload.ClientId!,
-            payload.ClientSecret, _tenantId);
-    }
-
-    /// <summary>
-    ///     The serialized CK entity as it reaches the pipeline. Every declared attribute is a present
-    ///     key and an unset optional one carries <c>null</c>, so every member is nullable here.
-    /// </summary>
-    private sealed record ServiceAccountConfigurationPayload
-    {
-        public string? IssuerUri { get; init; }
-        public string? ClientId { get; init; }
-        public string? ClientSecret { get; init; }
-        public string? TenantId { get; init; }
-    }
+    private ServiceAccountCredentials? TryReadServiceAccountCredentials() =>
+        ServiceAccountConfigurationReader.TryRead(_globalConfiguration, _tenantId, _logger);
 }

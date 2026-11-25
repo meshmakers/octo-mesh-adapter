@@ -92,9 +92,23 @@ Proofs are cached per execution only (a new execution proves again), never writt
 the data context or the process-wide `IServiceClientAccessToken`, and never logged. The guard keeps no token: it keeps
 only the subject and the roles the token carries.
 
-The adapter codes the proof against `ICrossTenantIdentityProvider`. The default implementation performs the user
-exchange; the service-account exchange is wired once the identity service offers it, and until then the
-service-account path is refused (`identity_not_provable`).
+The adapter codes the proof against `ICrossTenantIdentityProvider`. The default implementation
+(`IdentityServiceCrossTenantIdentityProvider`) performs both exchanges at the adapter's own issuer only:
+
+| Subject | Presenter (`client_id`) | `subject_token` | The issued token must carry |
+|---|---|---|---|
+| User caller | the adapter's own client (secret) | the caller's access token | a `sub` (the shadow user of U) |
+| Service account | U's public shadow client `xt_{T}_{clientId}` (no secret, AB#9777) | the account's own verified client-credentials token of T | `client_id` = `xt_{T}_{clientId}` (exact) and no `sub` |
+
+For both, the issued token is verified before a claim is used, with the verifier of the AB#9776 fix
+(`Services/IssuedTokenVerifier.cs`): signature against the own issuer's JWKS, `iss` one of the own names, not expired,
+`tenant_id` = U. Only its roles reach the session in U; its `tenant_gen` is compared with U's current generation by
+the guard. Identity's refusals (`access_denied` with `tenant_not_provisioned`, `grant_not_permitted`,
+`mirrored_client`, `ambiguous_subject`, `shadow_client_invalid`; `unauthorized_client`; `invalid_grant`) become
+`CROSS_TENANT_FORBIDDEN` (`identity_not_provable`); the log names only the error code and that reason keyword, never a
+token or identity's description text. An unreachable identity service is `target_unverifiable`. The service account is
+the one the execution acts as (`ServiceAccountConfigurationReader`, shared with the identity resolver); a
+configuration naming another tenant is refused (AB#9776) and is never a way into U.
 
 ## 4. Node configuration
 

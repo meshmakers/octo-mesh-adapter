@@ -1,0 +1,116 @@
+using Duende.IdentityModel.Client;
+using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
+
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
+
+/// <summary>
+///     Verifies a token the adapter's own identity service issued in answer to a request of the adapter, before any of
+///     its claims is used (AB#9776; shared with the cross-tenant identity proof of AB#9767).
+/// </summary>
+/// <remarks>
+///     Invariants every caller relies on — a token passes only when all hold:
+///     <list type="number">
+///         <item>it is a JWS whose signature verifies against the signing keys (<c>jwks_uri</c>) of the discovery
+///         document the request was made with — the own issuer's keys, never keys named by the token;</item>
+///         <item>its <c>iss</c> is one of the adapter's own names (<see cref="OwnIssuerPolicy" />);</item>
+///         <item>its <c>tenant_id</c> equals the tenant the request was made for (case-insensitive);</item>
+///         <item>with <c>validateLifetime</c>, it carries an <c>exp</c> that is not past (one minute clock skew).</item>
+///     </list>
+///     A failed check returns <c>null</c> after one log line; the token itself is never logged.
+/// </remarks>
+internal sealed class IssuedTokenVerifier
+{
+    private static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(1);
+
+    private readonly OwnIssuerPolicy _ownIssuer;
+    private readonly ILogger _logger;
+
+    public IssuedTokenVerifier(OwnIssuerPolicy ownIssuer, ILogger logger)
+    {
+        _ownIssuer = ownIssuer;
+        _logger = logger;
+    }
+
+    /// <summary>Verifies <paramref name="accessToken" />; see the class remarks.</summary>
+    /// <param name="accessToken">The issued token. Credential material, never logged.</param>
+    /// <param name="discovery">The discovery document of the own issuer the token was requested from.</param>
+    /// <param name="tenantId">The tenant the token must be issued for.</param>
+    /// <param name="purpose">Names the request in log lines, e.g. <c>service account configuration 'x'</c>.</param>
+    /// <param name="validateLifetime">Also refuse a token without <c>exp</c> or past it.</param>
+    /// <returns>The claims of the verified token, or <c>null</c>.</returns>
+    public async Task<JwtPayloadReader.JwtClaims?> VerifyAsync(string accessToken, DiscoveryDocumentResponse discovery,
+        string? tenantId, string purpose, bool validateLifetime = false)
+    {
+        var rawKeySet = discovery.KeySet?.RawData;
+        if (string.IsNullOrWhiteSpace(rawKeySet))
+        {
+            _logger.LogError(
+                "The token issued for {Purpose} cannot be verified: the identity service published no signing keys (jwks_uri); the token is refused (AB#9776)",
+                purpose);
+            return null;
+        }
+
+        TokenValidationResult result;
+        try
+        {
+            var signingKeys = new JsonWebKeySet(rawKeySet).GetSigningKeys();
+            result = await new JsonWebTokenHandler().ValidateTokenAsync(accessToken,
+                new TokenValidationParameters
+                {
+                    IssuerSigningKeys = signingKeys,
+                    RequireSignedTokens = true,
+                    TryAllIssuerSigningKeys = true,
+                    ValidateIssuerSigningKey = false,
+                    // Compared below with the own-issuer normalization (trailing slash, case of host).
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ValidateLifetime = validateLifetime,
+                    RequireExpirationTime = validateLifetime,
+                    ClockSkew = ClockSkew
+                });
+        }
+        catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException
+                                       or SecurityTokenException)
+        {
+            _logger.LogError(
+                "The token issued for {Purpose} cannot be verified ({Reason}); the token is refused (AB#9776)",
+                purpose, ex.GetType().Name);
+            return null;
+        }
+
+        if (!result.IsValid)
+        {
+            _logger.LogError(
+                "The token issued for {Purpose} failed signature or lifetime verification ({Reason}); the token is refused (AB#9776)",
+                purpose, result.Exception?.GetType().Name ?? "invalid");
+            return null;
+        }
+
+        if (!JwtPayloadReader.TryRead(accessToken, out var claims))
+        {
+            _logger.LogError("The token issued for {Purpose} is not a readable JWT; the token is refused", purpose);
+            return null;
+        }
+
+        if (!_ownIssuer.IsOwnIssuer(claims.Issuer))
+        {
+            _logger.LogError(
+                "The token issued for {Purpose} names the issuer '{Issuer}', which is not this adapter's own identity service; the token is refused (AB#9776)",
+                purpose, claims.Issuer ?? "(none)");
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(tenantId)
+            || !string.Equals(claims.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "The token issued for {Purpose} is for tenant '{TokenTenantId}', not for the requested tenant '{TenantId}'; the token is refused (AB#9776)",
+                purpose, claims.TenantId ?? "(none)", tenantId ?? "(unknown)");
+            return null;
+        }
+
+        return claims;
+    }
+}

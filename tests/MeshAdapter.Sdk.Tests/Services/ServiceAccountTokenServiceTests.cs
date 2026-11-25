@@ -522,6 +522,52 @@ public class ServiceAccountTokenServiceTests
     }
 
     // ---------------------------------------------------------------------------------------------
+    // AcquireSubjectTokenAsync (AB#9767): the account's own verified token of the pipeline's tenant,
+    // the subject of the cross-tenant exchange (AB#9777).
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AcquireSubjectTokenAsync_ReturnsTheVerifiedTokenOfThePipelinesTenant()
+    {
+        var token = TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600);
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(token, expiresIn: 3600));
+
+        var subjectToken = await CreateService(handler).AcquireSubjectTokenAsync(Credentials,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(token, subjectToken);
+        Assert.Equal("client_credentials", handler.LastTokenForm!["grant_type"]);
+        Assert.Equal($"tenant:{TenantId}", handler.LastTokenForm["acr_values"]);
+    }
+
+    [Theory]
+    [InlineData("another-tenant", Issuer, false)]
+    [InlineData(TenantId, "https://foreign-identity.test", false)]
+    [InlineData(TenantId, Issuer, true)]
+    public async Task AcquireSubjectTokenAsync_AnUnverifiableTokenIsNeverHandedOut(string tokenTenant, string tokenIssuer,
+        bool foreignKey)
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: ["Accounting"], expiresInSeconds: 3600,
+                issuer: tokenIssuer, tenantId: tokenTenant, signWith: foreignKey ? RSA.Create(2048) : null),
+            expiresIn: 3600));
+
+        Assert.Null(await CreateService(handler).AcquireSubjectTokenAsync(Credentials,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task AcquireSubjectTokenAsync_AForeignConfiguredIssuerIsRefused_BeforeAnyRequest()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
+
+        Assert.Null(await CreateService(handler).AcquireSubjectTokenAsync(
+            Credentials with { IssuerUri = "https://foreign-identity.test" }, TestContext.Current.CancellationToken));
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // AB#5029: the semantics of the SA ∩ user intersection, on the adapter side of the delegation
     // grant. The intersection itself is computed by the identity service (AB#5026); what the adapter
     // owns is how it reacts to the result — and the load-bearing part of that is the degenerate case.

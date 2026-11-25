@@ -12,8 +12,6 @@ using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.JsonWebTokens;
-using Microsoft.IdentityModel.Tokens;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Services;
 
@@ -105,7 +103,7 @@ public interface IServiceAccountTokenService
 /// Implementation of <see cref="IServiceAccountTokenService"/> that reads client credentials
 /// from a ServiceAccountConfiguration runtime entity and acquires tokens via OAuth2 client credentials grant.
 /// </summary>
-internal class ServiceAccountTokenService : IServiceAccountTokenService
+internal class ServiceAccountTokenService : IServiceAccountTokenService, IServiceAccountSubjectTokenSource
 {
     /// <summary>
     ///     The OctoMesh delegation ("on-behalf-of") grant type. Deliberately an own URN and not the
@@ -155,6 +153,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
     private readonly MeshAdapterConfiguration _meshAdapterConfiguration;
     private readonly ISecretAttributeProtector? _secretAttributeProtector;
     private readonly OwnIssuerPolicy _ownIssuer;
+    private readonly IssuedTokenVerifier _verifier;
 
     /// <summary>
     ///     Cached service-account identities, keyed by <c>(TenantId, ClientId)</c> — the pair that
@@ -197,6 +196,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
         _adapterOptions = adapterOptions ?? new AdapterOptions();
         _meshAdapterConfiguration = meshAdapterConfiguration ?? new MeshAdapterConfiguration();
         _ownIssuer = new OwnIssuerPolicy(_adapterOptions, _meshAdapterConfiguration);
+        _verifier = new IssuedTokenVerifier(_ownIssuer, logger);
     }
 
     /// <summary>
@@ -653,6 +653,28 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
+        return await AcquireAccountTokenCoreAsync(configuration, tenantRepository.TenantId, wellKnownName,
+            cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<string?> AcquireSubjectTokenAsync(ServiceAccountCredentials credentials,
+        CancellationToken cancellationToken = default)
+    {
+        // credentials.TenantId is the pipeline's tenant: ServiceAccountConfigurationReader refuses a configuration
+        // naming another tenant before it gets here (AB#9776).
+        return AcquireAccountTokenCoreAsync(credentials, credentials.TenantId, credentials.ClientId,
+            cancellationToken);
+    }
+
+    /// <summary>
+    ///     The account's own token for <paramref name="configuration" /> (shared by
+    ///     <see cref="AcquireServiceAccountTokenAsync" /> and <see cref="AcquireSubjectTokenAsync" />): own issuer
+    ///     only, tenant of the pipeline, verified before it is cached or returned (AB#9776).
+    /// </summary>
+    private async Task<string?> AcquireAccountTokenCoreAsync(ServiceAccountCredentials configuration,
+        string? pipelineTenantId, string wellKnownName, CancellationToken cancellationToken)
+    {
         // The issuer resolves without network access; it is part of the cache key so two configurations
         // with the same tenant and client id but different issuers never share a token.
         var issuerUri = ResolveIssuerUri(configuration.IssuerUri, wellKnownName);
@@ -661,7 +683,7 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
             return null;
         }
 
-        if (!TryResolveTenantId(configuration.TenantId, tenantRepository.TenantId, wellKnownName,
+        if (!TryResolveTenantId(configuration.TenantId, pipelineTenantId, wellKnownName,
                 out var tenantId))
         {
             return null;
@@ -915,89 +937,17 @@ internal class ServiceAccountTokenService : IServiceAccountTokenService
 
     /// <summary>
     ///     Checks a token the own identity service issued before any of its claims is used or the token
-    ///     is handed out (AB#9776): it must be a JWS whose signature verifies against the signing keys of
-    ///     the discovery document the request was made with, its <c>iss</c> must be one of the own names
-    ///     (<see cref="OwnIssuerPolicy" />) and its <c>tenant_id</c> must equal <paramref name="tenantId" />.
-    ///     Returns null (after logging; the token itself is never logged) when any check fails.
+    ///     is handed out (AB#9776): signature against the keys of <paramref name="discovery" />, own
+    ///     issuer and <c>tenant_id</c> == <paramref name="tenantId" />. Delegates to the shared
+    ///     <see cref="IssuedTokenVerifier" /> (also used by the cross-tenant proof, AB#9767). Lifetime and
+    ///     audience are not checked here: the token is minutes old, and the audience is the downstream
+    ///     service's business. Returns null (after logging; the token itself is never logged).
     /// </summary>
-    /// <remarks>
-    ///     The keys come with the discovery document IdentityModel fetches for every request anyway
-    ///     (<c>jwks_uri</c>), so the check costs no extra round trip and follows key rotation. Lifetime
-    ///     and audience are not checked: the token is minutes old, and the audience is the downstream
-    ///     service's business.
-    /// </remarks>
-    private async Task<JwtPayloadReader.JwtClaims?> ValidateIssuedTokenAsync(string accessToken,
+    private Task<JwtPayloadReader.JwtClaims?> ValidateIssuedTokenAsync(string accessToken,
         DiscoveryDocumentResponse discovery, string? tenantId, string configurationName)
     {
-        var rawKeySet = discovery.KeySet?.RawData;
-        if (string.IsNullOrWhiteSpace(rawKeySet))
-        {
-            _logger.LogError(
-                "The token issued for service account configuration '{ConfigurationName}' cannot be verified: the identity service published no signing keys (jwks_uri); the token is refused (AB#9776)",
-                configurationName);
-            return null;
-        }
-
-        TokenValidationResult result;
-        try
-        {
-            var signingKeys = new JsonWebKeySet(rawKeySet).GetSigningKeys();
-            result = await new JsonWebTokenHandler().ValidateTokenAsync(accessToken,
-                new TokenValidationParameters
-                {
-                    IssuerSigningKeys = signingKeys,
-                    RequireSignedTokens = true,
-                    TryAllIssuerSigningKeys = true,
-                    ValidateIssuerSigningKey = false,
-                    // Compared below with the own-issuer normalization (trailing slash, case of host).
-                    ValidateIssuer = false,
-                    ValidateAudience = false,
-                    ValidateLifetime = false
-                });
-        }
-        catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException
-                                       or SecurityTokenException)
-        {
-            _logger.LogError(
-                "The token issued for service account configuration '{ConfigurationName}' cannot be verified ({Reason}); the token is refused (AB#9776)",
-                configurationName, ex.GetType().Name);
-            return null;
-        }
-
-        if (!result.IsValid)
-        {
-            _logger.LogError(
-                "The token issued for service account configuration '{ConfigurationName}' failed signature verification ({Reason}); the token is refused (AB#9776)",
-                configurationName, result.Exception?.GetType().Name ?? "invalid");
-            return null;
-        }
-
-        if (!JwtPayloadReader.TryRead(accessToken, out var claims))
-        {
-            _logger.LogError(
-                "The token issued for service account configuration '{ConfigurationName}' is not a readable JWT; the token is refused",
-                configurationName);
-            return null;
-        }
-
-        if (!_ownIssuer.IsOwnIssuer(claims.Issuer))
-        {
-            _logger.LogError(
-                "The token issued for service account configuration '{ConfigurationName}' names the issuer '{Issuer}', which is not this adapter's own identity service; the token is refused (AB#9776)",
-                configurationName, claims.Issuer ?? "(none)");
-            return null;
-        }
-
-        if (string.IsNullOrWhiteSpace(tenantId)
-            || !string.Equals(claims.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogError(
-                "The token issued for service account configuration '{ConfigurationName}' is for tenant '{TokenTenantId}', not for the pipeline's tenant '{TenantId}'; the token is refused (AB#9776)",
-                configurationName, claims.TenantId ?? "(none)", tenantId ?? "(unknown)");
-            return null;
-        }
-
-        return claims;
+        return _verifier.VerifyAsync(accessToken, discovery, tenantId,
+            $"service account configuration '{configurationName}'");
     }
 
     /// <summary>

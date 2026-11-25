@@ -36,6 +36,22 @@ internal static class SignedTestJwt
         return signingInput + "." + Segment(signature);
     }
 
+    /// <summary>
+    ///     A token with any payload (serialized as JSON), signed with the stub's key — or, with
+    ///     <paramref name="foreignKey" />, with a key the stub's <see cref="Jwks" /> does not publish.
+    /// </summary>
+    internal static string Sign(object payload, bool foreignKey = false)
+    {
+        var header = Segment(Encoding.UTF8.GetBytes($$"""{"alg":"RS256","typ":"JWT","kid":"{{KeyId}}"}"""));
+        var body = Segment(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload));
+        var signingInput = header + "." + body;
+        var signature = (foreignKey ? ForeignKey : SigningKey).SignData(Encoding.ASCII.GetBytes(signingInput),
+            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        return signingInput + "." + Segment(signature);
+    }
+
+    private static readonly RSA ForeignKey = RSA.Create(2048);
+
     private static string Segment(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

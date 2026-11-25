@@ -19,6 +19,8 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
 ///     <list type="number">
 ///         <item>static configuration (relation and id combination) — abuse case "Parent with an id";</item>
 ///         <item>node identity <c>System</c> — refused, no exception;</item>
+///         <item>a target from data (<c>tenantIdPath</c>) without a verified caller — refused (service account,
+///         Caller fallback to it), before the data is even read;</item>
 ///         <item>target from configuration or data, then the relation on the registry — outside the subtree, detached,
 ///         system tenant, ancestors above the parent, cousins, grandchildren, data-driven ids;</item>
 ///         <item>effective identity: the user caller, else the service account; a fallback to the system context is
@@ -84,6 +86,16 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
         if (request.Identity == NodeExecutionIdentity.System)
         {
             throw Refuse(CrossTenantRefusalReason.SystemIdentityRefused);
+        }
+
+        // 2a. A target tenant taken from data is allowed only for a verified caller, whose own right in the target is
+        // proven (AB#9767). A service account — configured, or the fallback of a Caller node without a verified caller
+        // (lease queue, schedule, watch, event) — names a target only statically: otherwise the data would choose the
+        // tenant the service account acts in. Counterpart of the controller's deploy rule.
+        if (!string.IsNullOrWhiteSpace(target.TenantIdPath)
+            && !(request.Identity == NodeExecutionIdentity.Caller && request.Caller != null))
+        {
+            throw Refuse(CrossTenantRefusalReason.DataDrivenTargetNeedsCaller);
         }
 
         // 3. Target and relation.

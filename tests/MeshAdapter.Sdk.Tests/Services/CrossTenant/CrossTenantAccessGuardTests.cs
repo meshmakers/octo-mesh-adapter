@@ -259,6 +259,81 @@ public class CrossTenantAccessGuardTests
         Assert.Equal(CrossTenantRefusalReason.InvalidTargetConfiguration, refused.ReasonCode);
     }
 
+    // Abuse case 23 (AB#9767): a data-driven target only for a verified caller. A service account (configured, or the
+    // fallback of a Caller node without a verified caller: lease queue, cron, event) or the system identity must not
+    // let the data pick the tenant — the run-time counterpart of the controller's deploy rule "service-account and
+    // system nodes name a target tenant only statically".
+
+    private static TenantTargetConfiguration SiblingFromData() =>
+        new() { Relation = TenantRelation.Sibling, TenantIdPath = "$.body.tenant" };
+
+    private static IDataContext DataNaming(string tenantId)
+    {
+        var dataContext = A.Fake<IDataContext>();
+        A.CallTo(() => dataContext.Get<string>("$.body.tenant")).Returns(tenantId);
+        return dataContext;
+    }
+
+    [Fact]
+    public async Task AbuseCase23_ServiceAccount_WithTargetFromData_IsRefused()
+    {
+        _grants[("b", CrossTenantSubjectKind.ServiceAccount)] = ["R"]; // even a grant does not allow it
+
+        var refused = await RefusedAsync(Request("a", SiblingFromData(), NodeExecutionIdentity.ServiceAccount,
+            caller: Caller, dataContext: DataNaming("b")));
+
+        Assert.Equal(CrossTenantRefusalReason.DataDrivenTargetNeedsCaller, refused.ReasonCode);
+        AssertTargetNeverOpened();
+        A.CallTo(() => _registryReader.GetAsync(A<bool>._, A<CancellationToken>._)).MustNotHaveHappened();
+        A.CallTo(() => _provider.ProveAsync(A<CrossTenantProofRequest>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task AbuseCase23_CallerFallingBackToTheServiceAccount_WithTargetFromData_IsRefused()
+    {
+        _grants[("b", CrossTenantSubjectKind.ServiceAccount)] = ["R"];
+
+        var refused = await RefusedAsync(Request("a", SiblingFromData(), NodeExecutionIdentity.Caller, caller: null,
+            dataContext: DataNaming("b")));
+
+        Assert.Equal(CrossTenantRefusalReason.DataDrivenTargetNeedsCaller, refused.ReasonCode);
+        AssertTargetNeverOpened();
+        A.CallTo(() => _resolver.ResolveServiceAccountAsync(A<CancellationToken>._)).MustNotHaveHappened();
+        A.CallTo(() => _provider.ProveAsync(A<CrossTenantProofRequest>._, A<CancellationToken>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task AbuseCase23_SystemIdentity_WithTargetFromData_IsRefused()
+    {
+        var refused = await RefusedAsync(Request("a", SiblingFromData(), NodeExecutionIdentity.System, caller: Caller,
+            dataContext: DataNaming("b")));
+
+        Assert.Equal(CrossTenantRefusalReason.SystemIdentityRefused, refused.ReasonCode);
+        AssertTargetNeverOpened();
+    }
+
+    [Fact]
+    public async Task AbuseCase23_VerifiedCaller_WithTargetFromData_IsAllowed()
+    {
+        _grants[("b", CrossTenantSubjectKind.User)] = ["R"];
+
+        var access = await CreateGuard().OpenAsync(Request("a", SiblingFromData(), NodeExecutionIdentity.Caller,
+            caller: Caller, dataContext: DataNaming("b")), TestContext.Current.CancellationToken);
+
+        Assert.Equal("b", access.TenantId);
+    }
+
+    [Fact]
+    public async Task AbuseCase23_ServiceAccount_WithStaticTarget_IsAllowed()
+    {
+        _grants[("b", CrossTenantSubjectKind.ServiceAccount)] = ["R"];
+
+        var access = await CreateGuard().OpenAsync(Request("a", Sibling("b"), NodeExecutionIdentity.ServiceAccount),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("b", access.TenantId);
+    }
+
     [Fact]
     public async Task AbuseCase04_SiblingWithoutGrant_IsRefused()
     {

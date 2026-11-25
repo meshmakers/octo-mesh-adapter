@@ -145,9 +145,10 @@ The read nodes (AB#9768) and `ApplyChanges@2` (AB#9769) open the target only thr
     relation: Parent
   targetPath: $.contacts
 
-# A writes an incoming document into the addressee company, taken from the invoice
+# A writes an incoming document into the addressee company, taken from the invoice. A target from data needs a
+# verified caller (section 4.3): the user who releases the invoice, proven in the addressee company.
 - type: ApplyChanges@2
-  identity: ServiceAccount
+  identity: Caller
   entityUpdatesPath: $.updates
   targetTenant:
     relation: Sibling
@@ -176,7 +177,8 @@ The dry-run intent names the target (`targetTenantId`). `onDuplicateKey`, the wr
 several updates of one entity work as in the own tenant.
 
 ```yaml
-# Company A's release pipeline: the released invoice (own tenant) becomes an incoming document in the addressee
+# Company A's release pipeline (FromHttpRequest@2, run by the releasing user): the released invoice (own tenant)
+# becomes an incoming document in the addressee
 - type: GetRtEntitiesByType@1
   ckTypeId: Acme.Accounting/InterCompanyInvoice
   targetPath: $.invoice
@@ -202,7 +204,7 @@ several updates of one entity work as in the own tenant.
       valuePath: $.invoice.Items[0].RtId
 - type: ApplyChanges@2
   entityUpdatesPath: $._inserts
-  identity: ServiceAccount
+  identity: Caller
   targetTenant:
     relation: Sibling
     tenantIdPath: $.invoice.Items[0].Attributes.RecipientTenantId
@@ -405,34 +407,41 @@ transform nodes (`SumAggregation@1`, `GroupBy@1`) build the figures per company 
 - The relation is always static configuration; only the tenant id of a `Sibling` or `Child` target may come from data
   (`tenantIdPath`). `Parent` takes no id; a `Parent` with an id, a `Sibling`/`Child` without one, or both `tenantId`
   and `tenantIdPath` is a configuration error.
-- A data-driven id is checked like any other: same relation check, same identity proof, same error.
+- A data-driven id is allowed only when the node runs as a **verified caller** (`identity: Caller` with a caller the
+  trigger verified); the guard checks that before it reads the path. With `ServiceAccount`, with `System`, or with
+  `Caller` but no verified caller (lease queue, schedule, watch, event: the node would fall back to the service
+  account, section 3) the access is refused (`data_driven_target_needs_caller`; `System` as
+  `system_identity_refused`). Otherwise the data would choose the tenant a service account acts in. Such nodes
+  name their target statically (`tenantId`, `targetTenants.tenantIds`).
+- For a verified caller a data-driven id is checked like any other: same relation check, same identity proof (of the
+  caller's own right in the target), same error.
 - Tenant ids are trimmed and compared case-insensitively, as in the identity service.
 
-### 4.4 Deploy-time gate (communication controller)
+### 4.4 Deploy-time gate (communication controller) and run-time rule (adapter)
 
-Rules in `PipelineElevationInspector`, applied by `AdapterService.EnsureCrossTenantNodesAllowedAsync` on every deploy
-path before anything is stored. They hold whoever deploys and also with `ServiceAccountGuard:CheckElevation` off: they
-are about the pipeline, not about the deployer.
+Rules in `PipelineElevationInspector`, applied by `AdapterService.EnsureCrossTenantNodesAllowedAsync` before anything
+is stored, and again by `CreatePipelineConfigurationAsync` on every push of a stored definition (Update Configuration,
+refresh, registration, lease, deploys: an offending pipeline is left out, set to Error with the refusal message and
+reported; the others still go out). They hold whoever deploys and also with `ServiceAccountGuard:CheckElevation` off:
+they are about the pipeline, not about the deployer.
 
-1. `identity: System` on a node with `targetTenant` or `targetTenants` → deploy refused (`FindSystemCrossTenantNodes`).
-2. A **caller-controlled** `tenantIdPath`/`tenantIdsPath` (rooted in `$.body`, `$.query`, `$.files` or `$.headers`, also
-   under `$.full.`) depends on who acts in the target tenant:
+1. **Identity spellings.** Only an absent identity, `Caller` or `0` (trimmed, any case) is the caller; `ServiceAccount`/`1`
+   and `System`/`2` are elevated. Any other spelling the adapter's binder would accept (`01`, `+2`,
+   `Caller, ServiceAccount`) is refused at deploy and counts as elevated in every rule.
+2. **System.** `identity: System` (or an unrecognised identity) on a node with `targetTenant` or `targetTenants` →
+   deploy refused (`FindSystemCrossTenantNodes`).
+3. **Service-account and system nodes name a target tenant only statically.** A `ServiceAccount` or `System` node with
+   a data-driven target tenant — `targetTenant.tenantIdPath`, any other member of the setting named like a path, or a
+   setting that is no mapping — is refused (`FindDataDrivenTargetTenants`, error
+   `PipelineElevatedDataDrivenTargetTenant`). A `Caller` node with a `tenantIdPath` deploys with a warning. No path is
+   classified: every data-driven target counts, whatever it reads.
+4. **Every node is checked.** The rules walk nested nodes too (`Switch@1` `cases[].transformations` and `default`).
+5. **Unreadable definition.** A definition the controller cannot read is refused instead of skipping the rules.
 
-   | Node identity | Deploy |
-   |---|---|
-   | `ServiceAccount` | refused: the caller would choose the tenant the service account acts in |
-   | `Caller` (or no identity) in a pipeline that can run without a verified caller | refused: without a caller the node falls back to the service account (section 3) |
-   | `Caller` (or no identity) in a pipeline whose every trigger requires a verified caller | allowed, with a deploy warning: the adapter proves the caller's own right in the target before it reads or writes |
-
-   A pipeline requires a verified caller only when it has at least one trigger and every trigger is
-   `FromHttpRequest@2` without `allowAnonymous: true`. Every other trigger fails closed: schedules, watches and
-   events run without a caller, `FromHttpRequest@1` and `FromTeamsBot@1` publish anonymous routes, and an unreadable
-   `allowAnonymous` value counts as anonymous.
-3. A `tenantIdPath` the pipeline controls (any other path, e.g. `$.invoice.recipientTenantId`) stays allowed without a
-   warning; the guard checks the tenant it yields at run time (abuse case 3).
-
-The run-time guard enforces the relation, the identity proof and the system refusal again; the deploy gate reports
-early and closes the caller-steered service-account case, which the run-time guard cannot tell from a data-driven one.
+At **run time** the adapter's guard (section 6.2) enforces the counterpart: a data-driven target only with a verified
+caller, so also a `Caller` node that runs without one (it falls back to the service account) is refused
+(`data_driven_target_needs_caller`), and the relation, the identity proof and the system refusal are checked again for
+every access.
 
 ## 5. Abuse cases
 
@@ -476,7 +485,7 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 33 | `targetTenants.tenantIds` naming a grandchild, the system tenant, a foreign or a detached tenant, the own tenant | that tenant refused (Fail: execution failed; Report: listed) | as rows 1, 2, 11, 12 |
 | 34 | Consolidation with the identity `System`, also with `onRefused: Report` | execution failed | `system_identity_refused` |
 | 35 | A company's proof of an earlier generation | that company refused | `tenant_generation_mismatch` |
-| 25 | Caller input chooses the tenant a service account acts in (`tenantIdPath` into `$.body`/`$.query`/`$.files`/`$.headers` with `ServiceAccount`, or `Caller` in a pipeline that can run without a verified caller) | deploy refused (controller, section 4.4); as the pure verified caller a deploy warning | — (deploy) |
+| 25 | Data chooses the tenant a service account acts in (`tenantIdPath` with `ServiceAccount` or `System`, or with `Caller` but no verified caller) | `ServiceAccount`/`System`: deploy refused (controller, section 4.4); at run time refused for every identity but a verified caller, before the data is read | `data_driven_target_needs_caller` |
 
 Rows 9 and 15–17 belong to the write node and are tested there (`ApplyChangesCrossTenantNodeTests`,
 `ApplyChangesCrossTenantIntegrationTests`, `GetRtEntitiesTargetTenantConfigurationTests`); rows 26–30 belong to the
@@ -494,7 +503,7 @@ non-feature.
 | `ITenantRegistryReader` / `TenantRegistryReader` | reads `ISystemContext.GetAllTenantsAsync` with an admin session into a `TenantRegistrySnapshot` (tenant → parent); cached 30 s, refreshed on a miss at most once per second; throws on an unreadable registry |
 | `TenantRelationRules` | pure function: is U in T's relation, and if not, why |
 | `ICrossTenantIdentityProvider` / `IdentityServiceCrossTenantIdentityProvider` | proves the identity in U and returns a `CrossTenantProof` (tenant, generation, security context); no token leaves it |
-| `ICrossTenantAccessGuard` / `CrossTenantAccessGuard` | the one door: configuration → identity mode → relation → proof → generation → U's repository and CK cache → `ICrossTenantAccess` |
+| `ICrossTenantAccessGuard` / `CrossTenantAccessGuard` | the one door: configuration → identity mode (data-driven target only for a verified caller) → relation → proof → generation → U's repository and CK cache → `ICrossTenantAccess` |
 | `ICrossTenantAccess` | what a node uses: `TenantId`, `Repository`, `OpenSessionAsync()` (only with the U-proven context; no system session) |
 | `CrossTenantAccessDeniedException` | error code `CROSS_TENANT_FORBIDDEN`, reason code (log only), node path |
 
@@ -505,7 +514,8 @@ per-execution caller, caller token, identity resolver and proof cache.
 ### 6.2 Guard algorithm
 
 1. Check the configuration (relation and id combination).
-2. Identity `System` → refused.
+2. Identity `System` → refused. A `TenantIdPath` without a verified caller (`ServiceAccount`, or `Caller` without
+   one) → refused (`data_driven_target_needs_caller`), before the path is read.
 3. T is the registration's tenant (`etlContext.TenantId`); resolve U: `Parent` → `parent(T)`; else `TenantId` or the
    string at `TenantIdPath`; trim.
 4. Relation check on the registry snapshot; a target that is not registered triggers one refresh of the snapshot.
@@ -539,7 +549,7 @@ per-execution caller, caller token, identity resolver and proof cache.
 - Unit: `CrossTenantAccessGuardTests` (one test per abuse case with a fake registry, proof provider and generation
   reader), `TenantRelationRulesTests`, `IdentityServiceCrossTenantIdentityProviderTests` (scripted token endpoint; an
   exchanged token from another or no issuer is no proof).
-- Controller: `PipelineElevationInspectorTests` (the rules of section 4.4 per identity and trigger) and
+- Controller: `PipelineElevationInspectorTests` (the rules of section 4.4 per identity) and
   `DeployPipelineCrossTenantGateTests` (deploy refused or warned, one test per case of section 4.4).
 - Integration: `CrossTenantAccessGuardIntegrationTests` with real MongoDB (Testcontainers): G with children A and B,
   an outsider X under another parent, a detached child D and a grandchild; a test node opens the target through the

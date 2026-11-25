@@ -48,7 +48,10 @@ public record TenantTargetConfiguration
     public string? TenantId { get; init; }
 
     /// <summary>
-    ///     JSON path to the id of the target tenant in the data context, instead of <see cref="TenantId" />.
+    ///     JSON path to the id of the target tenant in the data context, instead of <see cref="TenantId" />. Only for a
+    ///     node that runs as a verified caller: with <c>ServiceAccount</c>, <c>System</c>, or <c>Caller</c> without a
+    ///     verified caller (it falls back to the service account) the access is refused at run time, and the
+    ///     communication controller refuses such a deploy for <c>ServiceAccount</c> and <c>System</c> (AB#9767).
     /// </summary>
     public string? TenantIdPath { get; init; }
 }

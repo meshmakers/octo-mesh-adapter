@@ -9,7 +9,7 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Extract/**, src/MeshAdapter.Sdk/Nodes/Mail
    - **Reading another tenant of the subtree** (AB#9768, Feature AB#8673): `GetRtEntitiesByType@1`, `GetRtEntitiesById@1`
      and `GetRtEntitiesByWellKnownName@1` take the optional `targetTenant` (`TenantTargetConfiguration`):
      `relation` `Parent` (no id), `Sibling` or `Child` (with `tenantId`, or `tenantIdPath` for an id from the data
-     context). Without it the node reads its own tenant exactly as before (no guard call). With it the node opens the
+     context, only with a verified caller). Without it the node reads its own tenant exactly as before (no guard call). With it the node opens the
      target only through `IMeshEtlContext.OpenTenantAsync` (`Common/TenantReadScope.cs`): the guard checks the relation
      on the tenant registry, proves the node identity's right in the target with the identity service (`Caller` or
      `ServiceAccount`; `System` is always refused) and checks the tenant generation; the read runs on the target's

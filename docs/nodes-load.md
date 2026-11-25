@@ -8,7 +8,8 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
 3. **Load Nodes** (`src/MeshAdapter.Sdk/Nodes/Load/`): Data persistence nodes
    - **Writing into another tenant of the subtree** (AB#9769, Feature AB#8673): `ApplyChanges@2` takes the optional
      `targetTenant` (`TenantTargetConfiguration`): `relation` `Parent` (no id), `Sibling` or `Child` (with `tenantId`,
-     or `tenantIdPath` for an id from the data context, e.g. the recipient of an invoice). Without it the node writes its
+     or `tenantIdPath` for an id from the data context, e.g. the recipient of an invoice; only with a verified caller,
+     `ServiceAccount`/`System` name the target statically). Without it the node writes its
      own tenant exactly as before (no guard call). With it the node first opens the target through
      `IMeshEtlContext.OpenTenantAsync` (relation on the tenant registry, the node identity's right in the target proven
      by the identity service — `Caller` or `ServiceAccount`, `System` always refused —, tenant generation); a refusal
@@ -25,7 +26,7 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
      ```yaml
      - type: ApplyChanges@2
        entityUpdatesPath: $._inserts
-       identity: ServiceAccount
+       identity: Caller            # a target from data needs a verified caller
        targetTenant:
          relation: Sibling
          tenantIdPath: $.invoice.Items[0].Attributes.RecipientTenantId

@@ -38,6 +38,13 @@ public static class CrossTenantRefusalReason
     public const string InvalidTargetConfiguration = "invalid_target_configuration";
 
     /// <summary>
+    ///     The target tenant comes from data (<c>tenantIdPath</c>) but the node does not run as a verified caller: a
+    ///     service account (configured, or the fallback of a <c>Caller</c> node without a verified caller) or the system
+    ///     identity may name a target tenant only statically. AB#9767.
+    /// </summary>
+    public const string DataDrivenTargetNeedsCaller = "data_driven_target_needs_caller";
+
+    /// <summary>
     ///     A cross-tenant write would associate an entity of the target with an entity the target does not hold (for
     ///     example an RtId of the pipeline's own tenant). AB#9769.
     /// </summary>

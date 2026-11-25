@@ -270,7 +270,9 @@ public class ApplyChangesCrossTenantIntegrationTests(TenantSubtreePipelineFixtur
         var number = NewNumber();
         var invoiceRtId = await SeedInvoiceInAAsync(number, TenantSubtreeFixture.TenantB);
 
-        await RunAsync(TenantSubtreeFixture.TenantA, ReleasePipeline(identity), ReleaseInput(number));
+        // A service account names its target statically; only a verified caller may take it from the invoice (AB#9767).
+        var target = identity == "ServiceAccount" ? SiblingB : RecipientFromTheInvoice;
+        await RunAsync(TenantSubtreeFixture.TenantA, ReleasePipeline(identity, target), ReleaseInput(number));
 
         var document = Assert.Single(await DocumentsInAsync(TenantSubtreeFixture.TenantB, number));
         Assert.Equal(1250.5, document.GetAttributeValueOrDefault<double>("InvoiceAmount"));
@@ -316,6 +318,20 @@ public class ApplyChangesCrossTenantIntegrationTests(TenantSubtreePipelineFixtur
         await RefusedAsync(TenantSubtreeFixture.TenantA, ReleasePipeline(), ReleaseInput(number));
         await RefusedAsync(TenantSubtreeFixture.TenantA, ChangePipeline("UPDATE", SiblingB), ChangeInput(existing));
         await RefusedAsync(TenantSubtreeFixture.TenantA, ChangePipeline("DELETE", SiblingB), ChangeInput(existing));
+
+        Assert.Equal(before, await SnapshotOfBAsync());
+    }
+
+    [Fact]
+    public async Task ServiceAccount_WithTheRecipientFromTheInvoice_IsRefused_EvenWithAGrant()
+    {
+        // AB#9767: the data must not choose the tenant a service account acts in.
+        _grants.Add((TenantSubtreeFixture.TenantB, CrossTenantSubjectKind.ServiceAccount));
+        var number = NewNumber();
+        await SeedInvoiceInAAsync(number, TenantSubtreeFixture.TenantB);
+        var before = await SnapshotOfBAsync();
+
+        await RefusedAsync(TenantSubtreeFixture.TenantA, ReleasePipeline("ServiceAccount"), ReleaseInput(number));
 
         Assert.Equal(before, await SnapshotOfBAsync());
     }

@@ -94,7 +94,10 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   presenter and subject), checks tenant and generation of the proof and
   only then opens the target's repository; every refusal is `CROSS_TENANT_FORBIDDEN` with one uniform message and the
   reason code in the log. The read nodes use it since AB#9768, `ApplyChanges@2` since AB#9769 (above). An architecture test lists every call
-  site that opens a tenant. Design and abuse cases: `docs/cross-tenant-access.md`.
+  site that opens a tenant. A target tenant taken from data (`tenantIdPath`) is allowed only for a verified caller:
+  with `ServiceAccount`, `System` or `Caller` without a verified caller (fallback to the service account) the guard
+  refuses it before reading the path (`data_driven_target_needs_caller`), the run-time counterpart of the
+  controller's deploy rule. Design and abuse cases: `docs/cross-tenant-access.md`.
 
 - `DetectStreamDataGaps@1` (AB#9588, PR #129): the missing time ranges `[start, end)` and missing slot counts
   of many series in one windowed stream-data archive over the half-open period `[from, to)`, without a row

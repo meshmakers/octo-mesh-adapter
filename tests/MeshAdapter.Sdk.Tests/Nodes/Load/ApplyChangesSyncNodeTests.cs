@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
@@ -12,11 +13,13 @@ using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
 using Meshmakers.Octo.Runtime.Engine.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Load;
 
@@ -387,6 +390,44 @@ public class ApplyChangesSyncNodeTests : SessionNodeTestBase
 
         Assert.All(_targets.Values, t => Assert.Null(t.Written));
         A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task InADryRun_WithOneFailedTarget_TheIntentKeepsTheOtherTargetsPlan_AndNamesOnlyTenantAndCode()
+    {
+        // The refusal is thrown for real (a stack trace and a TargetSite), as the guard throws it: an exception in
+        // the intent made the serialisation fail, and the whole intent was recorded as null.
+        A.CallTo(() => EtlContext.OpenTenantAsync(A<TenantTargetConfiguration>.That.Matches(t => t.TenantId == "companya"),
+                A<NodeExecutionIdentity>._, A<IDataContext>._, A<INodeContext>._))
+            .Throws(() => CrossTenantAccessDeniedException.Forbidden("transformations/0", "Child",
+                CrossTenantRefusalReason.IdentityNotProvable));
+        var debugger = A.Fake<IPipelineDebugger>();
+        var config = Sync();
+        var nodeContext = NodeContext.CreateRootNodeContext(new ServiceCollection().BuildServiceProvider(),
+            A.Fake<IPipelineLogger>(), "ApplyChanges", config, debugger,
+            new DefaultPipelineExecutionMode { IsDryRun = true });
+        var dataContext = A.Fake<IDataContext>();
+        A.CallTo(() => dataContext.Get<List<EntityUpdateInfo<RtEntity>>>(EntityUpdatesPath))
+            .Returns([Upsert(Contact(OctoObjectId.GenerateNewId(), "A"))]);
+
+        var failed = await Assert.ThrowsAsync<CrossTenantWriteFailedException>(() =>
+            CreateNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal("companya", Assert.Single(failed.Failures).TenantId);
+        Assert.All(_targets.Values, t => Assert.Null(t.Written));
+        var call = Assert.Single(Fake.GetCalls(debugger), c => c.Method.Name == nameof(IPipelineDebugger.RecordDryRunIntent));
+        Assert.Equal(DryRunHonouredLoadNodes.ApplyChanges2, call.Arguments[4]);
+        var intent = Assert.IsAssignableFrom<JsonNode>(call.Arguments[5]);
+
+        var plan = Assert.Single(intent["syncTargets"]!.AsArray())!;
+        Assert.Equal("companyb", plan["targetTenantId"]!.GetValue<string>());
+        Assert.Equal(1, plan["inserts"]!.GetValue<int>());
+        Assert.Single(plan["wouldApplyEntityUpdates"]!.AsArray());
+
+        var failedTarget = Assert.Single(intent["failedTargets"]!.AsArray())!.AsObject();
+        Assert.Equal(["errorCode", "tenantId"], failedTarget.Select(p => p.Key).Order());
+        Assert.Equal("companya", failedTarget["tenantId"]!.GetValue<string>());
+        Assert.Equal(CrossTenantAccessCodes.Forbidden, failedTarget["errorCode"]!.GetValue<string>());
     }
 
     // ---- configuration --------------------------------------------------------------------------------------

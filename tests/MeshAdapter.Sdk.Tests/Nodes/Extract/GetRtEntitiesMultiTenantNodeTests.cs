@@ -13,7 +13,13 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
+using Meshmakers.Octo.ConstructionKit.Contracts.Services;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb;
+using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services.CrossTenant;
+using Meshmakers.Octo.Services.Infrastructure.TenantGeneration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
@@ -191,6 +197,72 @@ public class GetRtEntitiesMultiTenantNodeTests : SessionNodeTestBase
             new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext));
 
         Assert.Equal(reason, ex.ReasonCode);
+        AssertNothingRead();
+    }
+
+    public enum Outage
+    {
+        Registry,
+        IdentityService,
+        ServiceAccount
+    }
+
+    [Theory]
+    [InlineData(Outage.Registry, NodeExecutionIdentity.Caller)]
+    [InlineData(Outage.Registry, NodeExecutionIdentity.ServiceAccount)]
+    [InlineData(Outage.IdentityService, NodeExecutionIdentity.Caller)]
+    [InlineData(Outage.IdentityService, NodeExecutionIdentity.ServiceAccount)]
+    [InlineData(Outage.ServiceAccount, NodeExecutionIdentity.ServiceAccount)]
+    public async Task AnOutage_WithExplicitTenants_FailsTheExecution_EvenWithReport(Outage outage,
+        NodeExecutionIdentity identity)
+    {
+        // The real guard behind the node: an outage is no refusal of a company, so a consolidation with
+        // onRefused: Report must not succeed with every company dropped.
+        var registry = A.Fake<ITenantRegistryReader>();
+        var provider = A.Fake<ICrossTenantIdentityProvider>();
+        var resolver = A.Fake<IPipelineIdentityResolver>();
+        A.CallTo(() => registry.GetAsync(A<bool>._, A<CancellationToken>._))
+            .Returns(new TenantRegistrySnapshot("octosystem", [("g", null), ("a", "g"), ("b", "g")]));
+        A.CallTo(() => resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
+            .Returns(new ValueTask<RtSecurityContext>(RtSecurityContext.ForUser("sa-of-g", ["AdminOfG"])));
+        switch (outage)
+        {
+            case Outage.Registry:
+                A.CallTo(() => registry.GetAsync(A<bool>._, A<CancellationToken>._))
+                    .ThrowsAsync(new TimeoutException("registry down"));
+                break;
+            case Outage.IdentityService:
+                A.CallTo(() => provider.ProveAsync(A<CrossTenantProofRequest>._, A<CancellationToken>._))
+                    .ThrowsAsync(new CrossTenantIdentityUnavailableException("identity down"));
+                break;
+            case Outage.ServiceAccount:
+                A.CallTo(() => resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
+                    .Throws(new InvalidOperationException("token endpoint down"));
+                break;
+        }
+
+        var systemContext = A.Fake<ISystemContext>();
+        var guard = new CrossTenantAccessGuard(systemContext, A.Fake<ICkCacheService>(), registry, provider,
+            NullLogger<CrossTenantAccessGuard>.Instance, A.Fake<ITenantGenerationReader>());
+        var caller = new VerifiedPrincipal("user-1", "g", null, null, ["AdminOfG"]);
+        var proofs = new CrossTenantProofCache();
+        A.CallTo(() => EtlContext.OpenTenantAsync(A<TenantTargetConfiguration>._, A<NodeExecutionIdentity>._,
+                A<IDataContext>._, A<INodeContext>._))
+            .ReturnsLazily((TenantTargetConfiguration target, NodeExecutionIdentity id, IDataContext data,
+                INodeContext node) => guard.OpenAsync(new CrossTenantAccessRequest("g", target, id, data,
+                node.NodePath.ToString(), caller, "caller-token", resolver, A.Fake<IGlobalConfiguration>(), proofs)));
+        var (dataContext, nodeContext, next) = PrepareTest(ByType(new TenantReadSetConfiguration
+        {
+            Relation = TenantRelation.Child, TenantIds = ["a", "b"], OnRefused = CrossTenantRefusalHandling.Report
+        }, identity));
+
+        var ex = await Assert.ThrowsAsync<CrossTenantAccessDeniedException>(() =>
+            new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Equal(CrossTenantRefusalReason.TargetUnverifiable, ex.ReasonCode);
+        Assert.DoesNotContain("down", ex.Message);
+        A.CallTo(() => systemContext.FindTenantRepositoryAsync(A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
         AssertNothingRead();
     }
 

@@ -96,13 +96,16 @@ public sealed class CrossTenantAccessDeniedException : PipelineExecutionExceptio
 
     /// <summary>
     ///     The uniform refusal: the same text whatever the reason, so the answer does not tell whether a tenant exists,
-    ///     lies outside the relation or holds no right for the identity.
+    ///     lies outside the relation or holds no right for the identity. It names the relation the node configured,
+    ///     never the relation the target actually has: "the sibling tenant" would claim a relation that a tenant
+    ///     outside the subtree does not have, and the actual one would tell what the uniform text hides.
     /// </summary>
     internal static CrossTenantAccessDeniedException Forbidden(string nodePath, string relation, string reasonCode)
     {
         return new CrossTenantAccessDeniedException(
-            $"[{nodePath}]: {CrossTenantAccessCodes.Forbidden}: access to the {relation.ToLowerInvariant()} tenant is forbidden " +
-            "for this pipeline. Access needs the relation and a right of the node's identity in that tenant.",
+            $"[{nodePath}]: {CrossTenantAccessCodes.Forbidden}: access to the target tenant is forbidden for this " +
+            $"pipeline. Access needs the configured relation ({relation.ToLowerInvariant()}) to the pipeline's tenant " +
+            "and a right of the node's identity in the target tenant.",
             reasonCode);
     }
 

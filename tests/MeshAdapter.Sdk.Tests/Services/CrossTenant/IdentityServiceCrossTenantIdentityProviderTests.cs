@@ -419,12 +419,18 @@ public class IdentityServiceCrossTenantIdentityProviderTests
     }
 
     [Fact]
-    public async Task ServiceAccountWithoutItsOwnToken_IsNoProof_AndNoExchangeIsSent()
+    public async Task ServiceAccountWithoutItsOwnToken_IsUnavailable_NotARefusal_AndNoExchangeIsSent()
     {
+        // The account has no token in its own tenant (identity unreachable, account refused, foreign issuer): that
+        // says nothing about the target, so it is an outage (target_unverifiable at the guard), never a refusal that
+        // a consolidation with onRefused: Report would drop silently.
         var identity = Issues(ServiceAccountClaims());
 
-        Assert.Null(await CreateProvider(identity, subjectTokens: new StubSubjectTokenSource { Answer = null })
-            .ProveAsync(ServiceAccountRequest(), TestContext.Current.CancellationToken));
+        var unavailable = await Assert.ThrowsAsync<CrossTenantIdentityUnavailableException>(() =>
+            CreateProvider(identity, subjectTokens: new StubSubjectTokenSource { Answer = null })
+                .ProveAsync(ServiceAccountRequest(), TestContext.Current.CancellationToken));
+        Assert.Contains(SaClientId, unavailable.Message);
+        Assert.DoesNotContain(StubSubjectTokenSource.Token, unavailable.Message);
         Assert.Equal(0, identity.TokenCalls);
     }
 

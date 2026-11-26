@@ -106,7 +106,9 @@ For both, the issued token is verified before a claim is used, with the verifier
 the guard. Identity's refusals (`access_denied` with `tenant_not_provisioned`, `grant_not_permitted`,
 `mirrored_client`, `ambiguous_subject`, `shadow_client_invalid`; `unauthorized_client`; `invalid_grant`) become
 `CROSS_TENANT_FORBIDDEN` (`identity_not_provable`); the log names only the error code and that reason keyword, never a
-token or identity's description text. An unreachable identity service is `target_unverifiable`. The service account is
+token or identity's description text. An unreachable identity service is `target_unverifiable`, and so is a service
+account that has no token in its own tenant (the token endpoint unreachable, the account refused there): that says
+nothing about U, so it is no refusal of U. The service account is
 the one the execution acts as (`ServiceAccountConfigurationReader`, shared with the identity resolver); a
 configuration naming another tenant is refused (AB#9776) and is never a way into U.
 
@@ -425,7 +427,8 @@ transform nodes (`SumAggregation@1`, `GroupBy@1`) build the figures per company 
 Rules in `PipelineElevationInspector`, applied by `AdapterService.EnsureCrossTenantNodesAllowedAsync` before anything
 is stored, and again by `CreatePipelineConfigurationAsync` on every push of a stored definition (Update Configuration,
 refresh, registration, lease, deploys: an offending pipeline is left out, set to Error with the refusal message and
-reported; the others still go out). They hold whoever deploys and also with `ServiceAccountGuard:CheckElevation` off:
+reported; the others still go out). The REST read of an adapter (`GET adapter/{id}`) projects the same way but only
+leaves the pipeline out: a read writes no state and no event. They hold whoever deploys and also with `ServiceAccountGuard:CheckElevation` off:
 they are about the pipeline, not about the deployer.
 
 1. **Identity spellings.** Only an absent identity, `Caller` or `0` (trimmed, any case) is the caller; `ServiceAccount`/`1`
@@ -473,8 +476,8 @@ no write, and one log line with source, target, relation, identity mode and reas
 | 17 | Cross-tenant association (entity in U associated to an RtId of T) | forbidden: every association end must be inserted by the batch or held by U | `cross_tenant_association` |
 | 18 | Second-factor user: caller token without second-factor evidence where U demands it | the identity service refuses → forbidden | `identity_not_provable` |
 | 19 | Locked-out or disabled source user | the identity service refuses → forbidden | `identity_not_provable` |
-| 20 | Registry, identity service or generation store unreachable | forbidden (fail closed), execution failed | `target_unverifiable` |
-| 21 | Enumeration: probing which tenant ids exist | "not registered", "outside relation" and "no right" give the same message; the reason code goes to the log only | — |
+| 20 | Registry, identity service or generation store unreachable, or no token of the pipeline's own service account | forbidden (fail closed), execution failed, also with `onRefused: Report` | `target_unverifiable` |
+| 21 | Enumeration: probing which tenant ids exist | "not registered", "outside relation" and "no right" give the same message, which names only the relation the node configured, never the one the target has; the reason code goes to the log only | — |
 | 22 | Proof reuse across executions or callers | proofs are cached per execution only | — |
 | 23 | Watch trigger in T on U's data | not offered; triggers stay on the own tenant | — |
 | 24 | Pool adapter (no own tenant) executes T's pipeline | the relation is computed from T (the registration's tenant), never from the adapter's tenant | — |

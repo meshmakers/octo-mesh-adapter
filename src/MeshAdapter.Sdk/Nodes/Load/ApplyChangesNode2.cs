@@ -371,7 +371,9 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
             {
                 entityUpdatesPath = c.EntityUpdatesPath,
                 syncTargets = dryRunPlans,
-                failedTargets = failures
+                // The tenant and the stable code only: the cause is an exception, which neither serialises (the
+                // whole intent would be lost) nor belongs into the intent (its message can carry a value).
+                failedTargets = failures.Select(f => new { tenantId = f.TenantId, errorCode = f.ErrorCode }).ToList()
             });
         }
 

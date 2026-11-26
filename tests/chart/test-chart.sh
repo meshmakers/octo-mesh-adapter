@@ -45,6 +45,12 @@ expect_absent() { # $1 = label, $2 = render, $3 = fixed string
   fi
 }
 
+expect_env() { # $1 = label, $2 = render, $3 = env name, $4 = expected value (the line after the name)
+  local actual
+  actual="$(grep -A1 -F -- "- name: $3" <<<"$2" | sed -n 's/^ *value: "\(.*\)"$/\1/p' | head -n1)"
+  if [[ "$actual" == "$4" ]]; then pass; else fail "$1: expected $3=$4, got '$actual'"; fi
+}
+
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
 forbidden_env=(
@@ -109,6 +115,17 @@ dedicated_plain="$(render dedicated -f "$here/dedicated-values.yaml" \
   --set secrets.secretEncryption.keys.k1=SENTINEL-KEYRING-K1)"
 expect_contains "dedicated (plaintext shape)" "$dedicated_plain" "databaseUser: \"$(b64 SENTINEL-DATABASE-USER-PASSWORD)\""
 expect_contains "dedicated (plaintext shape)" "$dedicated_plain" "secretEncryptionKey-k1: \"$(b64 SENTINEL-KEYRING-K1)\""
+
+# AB#9824 — runtime read guard: Warn (log-only) by default for every adapter; an override renders as given.
+for label in member dedicated; do
+  [[ "$label" == member ]] && out="$member_operator" || out="$dedicated"
+  expect_env "$label (read guard default)" "$out" OCTO_RUNTIMEREADGUARD__MODE Warn
+  expect_env "$label (read guard default)" "$out" OCTO_RUNTIMEREADGUARD__MAXTAKE 1000
+done
+read_guard_off="$(render dedicated -f "$here/dedicated-values.yaml" \
+  --set runtimeReadGuard.mode=Off --set runtimeReadGuard.maxTake=500)"
+expect_env "dedicated (read guard override)" "$read_guard_off" OCTO_RUNTIMEREADGUARD__MODE Off
+expect_env "dedicated (read guard override)" "$read_guard_off" OCTO_RUNTIMEREADGUARD__MAXTAKE 500
 
 echo "  $((checks - failures))/$checks checks passed"
 if ((failures > 0)); then

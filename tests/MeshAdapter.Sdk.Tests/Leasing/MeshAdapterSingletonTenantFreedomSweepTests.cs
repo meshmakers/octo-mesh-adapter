@@ -213,6 +213,27 @@ public class MeshAdapterSingletonTenantFreedomSweepTests
                 + "access; the database name is a method argument. It reads and writes the marker in "
                 + "the instance's SYSTEM database, which is not tenant data. The sweep flags it only "
                 + "for the field-name constant SystemTenantIdField.",
+            ["RuntimeReadGuardMetrics"] =
+                "AB#9824 (engine-mongodb). DOES retain per-tenant state, by design: the cumulative count "
+                + "of unbounded runtime-entity reads per (tenant, CK type, node type, mode) series of the "
+                + "observable counter octo.engine.runtime_read.unbounded, capped at 2000 series (the rest "
+                + "folds into 'other'). Every series carries its tenant as a label, so a read of tenant A "
+                + "is never counted as, or visible under, tenant B; no credential, no cache and no tenant "
+                + "data, only a number. It is deliberately NOT cleared on release: a cumulative counter "
+                + "that restarts at zero would break increase() in Dash0. The sweep flags it for the label "
+                + "constant TenantLabel. RuntimeReadGuardTests.Counter_SeriesOfTwoTenants_AreSeparate_"
+                + "AndNeverAttributedToTheOther pins the labelling.",
+            ["RuntimeReadGuard"] =
+                "AB#9824 (engine-mongodb). Listed although it holds no tenant state across a lease, because "
+                + "the sweep flags every type with a tenant-named member and cannot see a reset - here the "
+                + "reset method ForgetTenant itself. Its only tenant-keyed state is the log throttle for "
+                + "reads outside a pipeline node, keyed (tenant, CK type); it is DROPPED on every release: "
+                + "CkModelCacheLeaseParticipant.LeaveLeaseAsync calls "
+                + "ISystemContext.InvalidateTenantResolveImportGuards(lease tenant), which calls "
+                + "RuntimeReadGuard.ForgetTenant. The per-execution 'reported' marks live on the ambient "
+                + "RuntimeReadScope of the execution, not on the singleton; the remaining field is the set "
+                + "of reported configuration errors (no tenant). RuntimeReadGuardTests.ForgetTenant_"
+                + "DropsOnlyThatTenantsThrottle and the mesh adapter's lease integration test pin it.",
         };
 
     /// <summary>

@@ -4,7 +4,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.Runtime.Engine.CrateDb.Configuration;
+using Meshmakers.Octo.Runtime.Engine.MongoDb.RuntimeQueries;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
@@ -216,7 +218,18 @@ public static class ServiceCollectionExtensions
 
         services.AddRuntimeEngine()
             .AddMongoDbRuntimeRepository()
-            .AddCrateDbStreamDataRepository<ConfigureStreamDataConfiguration>();
+            .AddCrateDbStreamDataRepository<ConfigureStreamDataConfiguration>()
+            .AddRuntimeReadGuard();
+
+        // AB#9824: pipeline nodes read runtime entities directly through the engine, past the asset repository's
+        // query guard. The read guard logs one warning per execution and node and counts
+        // octo.engine.runtime_read.unbounded for every read without take or with take above
+        // RuntimeReadGuard:MaxTake (helm runtimeReadGuard.mode / maxTake). It never changes a read.
+        // Bound from the host's IConfiguration when it has one (every service host does; a bare test container does
+        // not, and BindConfiguration would then fail every resolve of the guard and with it the tenant context). An
+        // unbindable value surfaces in the guard as one warning (event 41002) and the guard runs as Warn.
+        services.AddOptions<RuntimeReadGuardOptions>().Configure<IServiceProvider>((options, provider) =>
+            provider.GetService<IConfiguration>()?.GetSection(RuntimeReadGuardOptions.SectionName).Bind(options));
 
         services.AddOctoServiceInfrastructure();
 

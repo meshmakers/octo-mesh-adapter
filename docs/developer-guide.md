@@ -2409,6 +2409,20 @@ A pipeline runs with system rights and reads the repository directly, so the Gra
 | `StreamDataPassword` | string | (empty) | CrateDB password |
 | `StreamDataCoverageCacheTtlSeconds` | int | `60` | TTL of the measured archive-coverage memo used by `GetQueryById@1`'s resolution-aware archive selection; the adapter's equivalent of the platform services' `StreamData:Coverage:CacheTtlSeconds` (env `OCTO_ADAPTER__STREAMDATACOVERAGECACHETTLSECONDS`) |
 
+### RuntimeReadGuardOptions
+
+**Configuration Section**: `"RuntimeReadGuard"` (engine-mongodb, registered by the adapter with `AddRuntimeReadGuard`; helm
+`runtimeReadGuard.mode` / `runtimeReadGuard.maxTake`)
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Mode` | text | `Warn` | `Off` or `Warn`. `Warn`: a node that reads runtime entities without `take` or with a `take` above `MaxTake` logs one warning (event 41001, "Unbounded runtime-entity read") per execution and node and counts `octo.engine.runtime_read.unbounded` (labels `tenant`, `ck_type`, `node_type`, `mode`). `Off` logs and counts nothing. Any other value is logged once (event 41002) and treated as `Warn`. The read itself is never changed (env `OCTO_RUNTIMEREADGUARD__MODE`) |
+| `MaxTake` | int | `1000` | Largest `take` that counts as bounded; `int.MaxValue` is unbounded (env `OCTO_RUNTIMEREADGUARD__MAXTAKE`) |
+
+Detection sits in the engine's runtime reads, so every node is covered, including future ones; reads outside a pipeline
+are reported with node type `unknown`, at most once per tenant, CK type and hour. Details:
+`octo-construction-kit-engine-mongodb/docs/runtime-read-guard.md`; operator page: Technology Guide, Query Limits.
+
 ### Build Configurations
 
 | Configuration | Description |

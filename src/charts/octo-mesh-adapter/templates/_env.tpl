@@ -290,6 +290,16 @@
 */}}
 - name: OCTO_ADAPTER__SERVICETOKENENFORCEMENT
   value: {{ .Values.serviceTokenEnforcement | default "Enforce" | quote }}
+{{/*
+  AB#9824 — runtime read guard of the pipeline nodes: Warn logs and counts unbounded
+  runtime-entity reads (no take or take above maxTake), Off does nothing. Never changes
+  a read. Always rendered so the mode is readable in `kubectl describe pod`.
+*/}}
+{{- $readGuard := .Values.runtimeReadGuard | default dict }}
+- name: OCTO_RUNTIMEREADGUARD__MODE
+  value: {{ $readGuard.mode | default "Warn" | quote }}
+- name: OCTO_RUNTIMEREADGUARD__MAXTAKE
+  value: {{ $readGuard.maxTake | default 1000 | quote }}
 {{- if .Values.authUri }}
 - name: OCTO_ADAPTER__AUTHORITYURL
   value: {{ .Values.authUri | quote }}

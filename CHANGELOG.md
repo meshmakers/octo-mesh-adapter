@@ -4,6 +4,20 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ## [Unreleased]
 
+### Added
+
+- AB#9824: unbounded runtime-entity reads of pipeline nodes become visible in Dash0, no behaviour change. The adapter
+  registers the engine's runtime read guard (`AddRuntimeReadGuard`): a node that reads without `take` or with a `take`
+  above `RuntimeReadGuard:MaxTake` (default 1000, `int.MaxValue` included) logs one warning per execution and node
+  ("Unbounded runtime-entity read", with tenant, pipeline, data flow, node type and path, CK type, take and returned
+  count) and counts `octo.engine.runtime_read.unbounded`. Configuration: section `RuntimeReadGuard` (`Mode` `Off` |
+  `Warn`, default `Warn`; an invalid value is logged and treated as `Warn`), helm `runtimeReadGuard.mode` /
+  `runtimeReadGuard.maxTake` (rendered as `OCTO_RUNTIMEREADGUARD__MODE` / `__MAXTAKE`). Reads, results and errors are
+  unchanged; there is no cap (that is AB#8911). The section is bound only when the host has an `IConfiguration`, so a
+  host without one runs with the defaults. A pooled adapter drops the guard's tenant-keyed log throttle when a lease
+  ends; the counter series stay (tenant label, cumulative). Integration tests per reading node:
+  `RuntimeReadGuardPipelineTests`.
+
 ### Breaking
 
 - `IServiceAccountTokenService.AcquireServiceAccountIdentityAsync(credentials, cancellationToken)` now requires the

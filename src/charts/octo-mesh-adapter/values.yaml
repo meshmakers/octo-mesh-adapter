@@ -106,6 +106,19 @@ additionalValidIssuers: []
 # runtime state, kept across blueprint re-apply) and redeploy the adapter.
 serviceTokenEnforcement: "Enforce"
 
+# AB#9824 — runtime read guard of the pipeline nodes. Pipeline nodes read runtime
+# entities directly through the engine, so the asset repository's query guard never
+# sees them. With mode Warn every read without take or with a take above maxTake
+# logs one warning per pipeline execution and node ("Unbounded runtime-entity read",
+# event RuntimeReadGuard.UnboundedRead) and counts octo.engine.runtime_read.unbounded
+# (labels tenant, ck_type, node_type, mode). Off logs and counts nothing. The guard
+# never caps, refuses or changes a read.
+runtimeReadGuard:
+  # Off | Warn
+  mode: "Warn"
+  # The largest take that counts as bounded (same default as the asset repository's guard).
+  maxTake: 1000
+
 # Client id of the adapter's own confidential OAuth client (AB#5072). Written
 # by the communication controller as a `ValueOverride` at deploy time from the
 # `ServiceAccountConfiguration` it provisions per adapter (AB#5027). Empty =

@@ -1,4 +1,5 @@
 using FakeItEasy;
+using FakeItEasy.Configuration;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -121,6 +122,22 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
         await node.ProcessObjectAsync(_dataContext, _nodeContext);
     }
 
+    // AB#9868: DeployPipeline@1 still deploys through the REST method ICommunicationServicesClient.DeployPipelineAsync
+    // (DeployPipelineNode keeps it under a scoped CS0618 suppression until AB#9563 gives the adapter an asset repository
+    // endpoint for the CK method System.Communication/Pipeline.Deploy-1). These tests verify exactly that call, so its
+    // [Obsolete] warning (octo-sdk, communication wave 3, AB#9052) is suppressed here, in one place. Remove both helpers
+    // and the suppression when the node deploys through Pipeline.Deploy-1 (AB#9563); the tests then verify that call.
+#pragma warning disable CS0618
+    /// <summary>The node's REST deploy call, with any arguments.</summary>
+    private IReturnValueArgumentValidationConfiguration<Task> AnyDeployPipelineCall() =>
+        A.CallTo(() => _client.DeployPipelineAsync(A<string>._, A<string>._, A<string>._));
+
+    /// <summary>The node's REST deploy call of the target pipeline to its adapter.</summary>
+    private IReturnValueArgumentValidationConfiguration<Task> DeployPipelineCallOfTheTargetPipeline() =>
+        A.CallTo(() => _client.DeployPipelineAsync(
+            AdapterRtId.ToString(), TargetPipelineRtId.ToString(), A<string>._));
+#pragma warning restore CS0618
+
     private IDataContext _dataContext = null!;
     private INodeContext _nodeContext = null!;
     private NodeDelegate _next = null!;
@@ -132,8 +149,7 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
 
         await RunAsync();
 
-        A.CallTo(() => _client.DeployPipelineAsync(A<string>._, A<string>._, A<string>._))
-            .MustNotHaveHappened();
+        AnyDeployPipelineCall().MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
 
@@ -144,9 +160,7 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
 
         await RunAsync();
 
-        A.CallTo(() => _client.DeployPipelineAsync(
-                AdapterRtId.ToString(), TargetPipelineRtId.ToString(), A<string>._))
-            .MustHaveHappenedOnceExactly();
+        DeployPipelineCallOfTheTargetPipeline().MustHaveHappenedOnceExactly();
     }
 
     /// <summary>
@@ -160,8 +174,7 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
 
         await RunAsync();
 
-        A.CallTo(() => _client.DeployPipelineAsync(A<string>._, A<string>._, A<string>._))
-            .MustHaveHappenedOnceExactly();
+        AnyDeployPipelineCall().MustHaveHappenedOnceExactly();
     }
 
     // ------------------------------------------------------------------ AB#8699: service-account token
@@ -176,9 +189,7 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
         A.CallTo(() => _tokenService.AcquireServiceAccountTokenAsync(TenantRepository, ServiceAccountConfigName,
             A<CancellationToken>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _clientFactory.Create(ServiceAccountToken)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _client.DeployPipelineAsync(
-                AdapterRtId.ToString(), TargetPipelineRtId.ToString(), A<string>._))
-            .MustHaveHappenedOnceExactly();
+        DeployPipelineCallOfTheTargetPipeline().MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -193,7 +204,7 @@ public class DeployPipelineNodeEnabledGuardTests : SessionNodeTestBase
         await RunAsync();
 
         A.CallTo(() => _clientFactory.Create(A<string>._)).MustNotHaveHappened();
-        A.CallTo(() => _client.DeployPipelineAsync(A<string>._, A<string>._, A<string>._)).MustNotHaveHappened();
+        AnyDeployPipelineCall().MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 

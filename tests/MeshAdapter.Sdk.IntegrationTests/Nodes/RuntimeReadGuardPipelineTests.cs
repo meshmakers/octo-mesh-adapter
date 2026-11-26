@@ -131,7 +131,8 @@ public class RuntimeReadGuardPipelineTests(F fixture) : IClassFixture<F>
 
     // BuildMappingTargets@1 reads the fixed type System.Communication/DataPointMapping, whose model lives in the
     // communication controller and is not available here; it makes the same unbounded type read as the other
-    // mapping nodes and is verified on the lane stack (a tenant with System.Communication).
+    // mapping nodes and is verified on the lane stack (a tenant with System.Communication, AB#9824 executions
+    // 07f53948-cf01-49e9-bc37-7519437aef6f and bd6578cb-38e1-44b3-b15f-28643f6c5457: one warning and one count each).
 
     [Fact]
     public async Task ExportDataPointMappings_WarnsOnce_AndCountsOnce() =>

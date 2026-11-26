@@ -1,0 +1,5 @@
+# AB#9824 — the natural spelling in a values file: unquoted Off (YAML 1.1 bool false) and a large maxTake
+# (float64 in Helm). Rendered on top of dedicated-values.yaml by test-chart.sh.
+runtimeReadGuard:
+  mode: Off
+  maxTake: 1000000

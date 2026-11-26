@@ -296,10 +296,14 @@
   a read. Always rendered so the mode is readable in `kubectl describe pod`.
 */}}
 {{- $readGuard := .Values.runtimeReadGuard | default dict }}
+{{- /* An unquoted `mode: Off` in a values file is the YAML 1.1 bool false: render it as Off (true as Warn) instead of letting `default` turn it into Warn. */}}
+{{- $readGuardMode := $readGuard.mode }}
+{{- if kindIs "bool" $readGuardMode }}{{- $readGuardMode = ternary "Warn" "Off" $readGuardMode }}{{- end }}
 - name: OCTO_RUNTIMEREADGUARD__MODE
-  value: {{ $readGuard.mode | default "Warn" | quote }}
+  value: {{ $readGuardMode | default "Warn" | toString | quote }}
+{{- /* Helm reads the numbers of a values file as float64 (1000000 would render as 1e+06): render an integer. */}}
 - name: OCTO_RUNTIMEREADGUARD__MAXTAKE
-  value: {{ $readGuard.maxTake | default 1000 | quote }}
+  value: {{ $readGuard.maxTake | default 1000 | int64 | quote }}
 {{- if .Values.authUri }}
 - name: OCTO_ADAPTER__AUTHORITYURL
   value: {{ .Values.authUri | quote }}

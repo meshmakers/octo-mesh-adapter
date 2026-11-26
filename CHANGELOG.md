@@ -12,7 +12,8 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   ("Unbounded runtime-entity read", with tenant, pipeline, data flow, node type and path, CK type, take and returned
   count) and counts `octo.engine.runtime_read.unbounded`. Configuration: section `RuntimeReadGuard` (`Mode` `Off` |
   `Warn`, default `Warn`; an invalid value is logged and treated as `Warn`), helm `runtimeReadGuard.mode` /
-  `runtimeReadGuard.maxTake` (rendered as `OCTO_RUNTIMEREADGUARD__MODE` / `__MAXTAKE`). Reads, results and errors are
+  `runtimeReadGuard.maxTake` (rendered as `OCTO_RUNTIMEREADGUARD__MODE` / `__MAXTAKE`; an unquoted `mode: Off` in a
+  values file renders `Off`, a large `maxTake` an integer). Reads, results and errors are
   unchanged; there is no cap (that is AB#8911). The section is bound only when the host has an `IConfiguration`, so a
   host without one runs with the defaults. A pooled adapter drops the guard's tenant-keyed log throttle when a lease
   ends; the counter series stay (tenant label, cumulative). Integration tests per reading node:

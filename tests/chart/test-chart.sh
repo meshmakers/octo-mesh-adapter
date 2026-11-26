@@ -126,6 +126,10 @@ read_guard_off="$(render dedicated -f "$here/dedicated-values.yaml" \
   --set runtimeReadGuard.mode=Off --set runtimeReadGuard.maxTake=500)"
 expect_env "dedicated (read guard override)" "$read_guard_off" OCTO_RUNTIMEREADGUARD__MODE Off
 expect_env "dedicated (read guard override)" "$read_guard_off" OCTO_RUNTIMEREADGUARD__MAXTAKE 500
+# A values file with unquoted `mode: Off` (YAML bool false) must render Off, and a large maxTake an integer.
+read_guard_file="$(render dedicated -f "$here/dedicated-values.yaml" -f "$here/read-guard-values.yaml")"
+expect_env "dedicated (read guard values file)" "$read_guard_file" OCTO_RUNTIMEREADGUARD__MODE Off
+expect_env "dedicated (read guard values file)" "$read_guard_file" OCTO_RUNTIMEREADGUARD__MAXTAKE 1000000
 
 echo "  $((checks - failures))/$checks checks passed"
 if ((failures > 0)); then

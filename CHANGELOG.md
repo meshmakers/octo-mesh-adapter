@@ -29,7 +29,8 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   now carries per failed target only `tenantId` and `errorCode`; the plans of the other targets stay. A consolidated
   read with `onRefused: Report` no longer succeeds with every company dropped when the pipeline's service account has
   no token in its own tenant (token endpoint unreachable, account refused): the guard and the identity provider now
-  answer `target_unverifiable` instead of `identity_not_provable`, so the execution fails. The uniform
+  answer `target_unverifiable` instead of `identity_not_provable`, so the execution fails. An identity service that
+  answers and refuses the exchange for one company stays `identity_not_provable`: `Report` drops only that company. The uniform
   `CROSS_TENANT_FORBIDDEN` message no longer calls the target "the sibling tenant" (or parent, child): it says access
   to the target tenant is forbidden and names the relation the node configured, the same text for every reason.
 - Service-account tokens are accepted only from the adapter's own identity service (AB#9776). The `IssuerUri` and

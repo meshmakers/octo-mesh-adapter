@@ -12,6 +12,7 @@ using Meshmakers.Octo.Runtime.Engine.Repositories.Query;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.ConstructionKit.Contracts.Services;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb;
@@ -207,6 +208,46 @@ public class GetRtEntitiesMultiTenantNodeTests : SessionNodeTestBase
         ServiceAccount
     }
 
+    /// <summary>The real guard behind the node's <see cref="IMeshEtlContext.OpenTenantAsync" />, for the tree g → a, b.</summary>
+    private sealed class RealGuard
+    {
+        public ITenantRegistryReader Registry { get; } = A.Fake<ITenantRegistryReader>();
+        public ICrossTenantIdentityProvider Provider { get; } = A.Fake<ICrossTenantIdentityProvider>();
+        public IPipelineIdentityResolver Resolver { get; } = A.Fake<IPipelineIdentityResolver>();
+        public ISystemContext SystemContext { get; } = A.Fake<ISystemContext>();
+        public ITenantGenerationReader Generations { get; } = A.Fake<ITenantGenerationReader>();
+
+        public RealGuard()
+        {
+            A.CallTo(() => Registry.GetAsync(A<bool>._, A<CancellationToken>._))
+                .Returns(new TenantRegistrySnapshot("octosystem", [("g", null), ("a", "g"), ("b", "g")]));
+            A.CallTo(() => Resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
+                .Returns(new ValueTask<RtSecurityContext>(RtSecurityContext.ForUser("sa-of-g", ["AdminOfG"])));
+            A.CallTo(() => Generations.GetGenerationAsync(A<string>._, A<bool>._, A<CancellationToken>._))
+                .Returns(new ValueTask<string?>("gen-1"));
+        }
+
+        public void WireInto(IMeshEtlContext etlContext)
+        {
+            var guard = new CrossTenantAccessGuard(SystemContext, A.Fake<ICkCacheService>(), Registry, Provider,
+                NullLogger<CrossTenantAccessGuard>.Instance, Generations);
+            var caller = new VerifiedPrincipal("user-1", "g", null, null, ["AdminOfG"]);
+            var proofs = new CrossTenantProofCache();
+            A.CallTo(() => etlContext.OpenTenantAsync(A<TenantTargetConfiguration>._, A<NodeExecutionIdentity>._,
+                    A<IDataContext>._, A<INodeContext>._))
+                .ReturnsLazily((TenantTargetConfiguration target, NodeExecutionIdentity id, IDataContext data,
+                    INodeContext node) => guard.OpenAsync(new CrossTenantAccessRequest("g", target, id, data,
+                    node.NodePath.ToString(), caller, "caller-token", Resolver, A.Fake<IGlobalConfiguration>(),
+                    proofs)));
+        }
+    }
+
+    private static GetRtEntitiesByTypeNodeConfiguration ReportOnAAndB(NodeExecutionIdentity identity) =>
+        ByType(new TenantReadSetConfiguration
+        {
+            Relation = TenantRelation.Child, TenantIds = ["a", "b"], OnRefused = CrossTenantRefusalHandling.Report
+        }, identity);
+
     [Theory]
     [InlineData(Outage.Registry, NodeExecutionIdentity.Caller)]
     [InlineData(Outage.Registry, NodeExecutionIdentity.ServiceAccount)]
@@ -216,54 +257,81 @@ public class GetRtEntitiesMultiTenantNodeTests : SessionNodeTestBase
     public async Task AnOutage_WithExplicitTenants_FailsTheExecution_EvenWithReport(Outage outage,
         NodeExecutionIdentity identity)
     {
-        // The real guard behind the node: an outage is no refusal of a company, so a consolidation with
-        // onRefused: Report must not succeed with every company dropped.
-        var registry = A.Fake<ITenantRegistryReader>();
-        var provider = A.Fake<ICrossTenantIdentityProvider>();
-        var resolver = A.Fake<IPipelineIdentityResolver>();
-        A.CallTo(() => registry.GetAsync(A<bool>._, A<CancellationToken>._))
-            .Returns(new TenantRegistrySnapshot("octosystem", [("g", null), ("a", "g"), ("b", "g")]));
-        A.CallTo(() => resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
-            .Returns(new ValueTask<RtSecurityContext>(RtSecurityContext.ForUser("sa-of-g", ["AdminOfG"])));
+        // An outage on the pipeline's own side (registry, identity service unreachable or 5xx, no token of the
+        // pipeline's own account) is no refusal of a company, so a consolidation with onRefused: Report must not
+        // succeed with every company dropped.
+        var real = new RealGuard();
         switch (outage)
         {
             case Outage.Registry:
-                A.CallTo(() => registry.GetAsync(A<bool>._, A<CancellationToken>._))
+                A.CallTo(() => real.Registry.GetAsync(A<bool>._, A<CancellationToken>._))
                     .ThrowsAsync(new TimeoutException("registry down"));
                 break;
             case Outage.IdentityService:
-                A.CallTo(() => provider.ProveAsync(A<CrossTenantProofRequest>._, A<CancellationToken>._))
+                A.CallTo(() => real.Provider.ProveAsync(A<CrossTenantProofRequest>._, A<CancellationToken>._))
                     .ThrowsAsync(new CrossTenantIdentityUnavailableException("identity down"));
                 break;
             case Outage.ServiceAccount:
-                A.CallTo(() => resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
+                A.CallTo(() => real.Resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
                     .Throws(new InvalidOperationException("token endpoint down"));
                 break;
         }
 
-        var systemContext = A.Fake<ISystemContext>();
-        var guard = new CrossTenantAccessGuard(systemContext, A.Fake<ICkCacheService>(), registry, provider,
-            NullLogger<CrossTenantAccessGuard>.Instance, A.Fake<ITenantGenerationReader>());
-        var caller = new VerifiedPrincipal("user-1", "g", null, null, ["AdminOfG"]);
-        var proofs = new CrossTenantProofCache();
-        A.CallTo(() => EtlContext.OpenTenantAsync(A<TenantTargetConfiguration>._, A<NodeExecutionIdentity>._,
-                A<IDataContext>._, A<INodeContext>._))
-            .ReturnsLazily((TenantTargetConfiguration target, NodeExecutionIdentity id, IDataContext data,
-                INodeContext node) => guard.OpenAsync(new CrossTenantAccessRequest("g", target, id, data,
-                node.NodePath.ToString(), caller, "caller-token", resolver, A.Fake<IGlobalConfiguration>(), proofs)));
-        var (dataContext, nodeContext, next) = PrepareTest(ByType(new TenantReadSetConfiguration
-        {
-            Relation = TenantRelation.Child, TenantIds = ["a", "b"], OnRefused = CrossTenantRefusalHandling.Report
-        }, identity));
+        real.WireInto(EtlContext);
+        var (dataContext, nodeContext, next) = PrepareTest(ReportOnAAndB(identity));
 
         var ex = await Assert.ThrowsAsync<CrossTenantAccessDeniedException>(() =>
             new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext));
 
         Assert.Equal(CrossTenantRefusalReason.TargetUnverifiable, ex.ReasonCode);
         Assert.DoesNotContain("down", ex.Message);
-        A.CallTo(() => systemContext.FindTenantRepositoryAsync(A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => real.SystemContext.FindTenantRepositoryAsync(A<string>._)).MustNotHaveHappened();
         A.CallTo(() => next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
         AssertNothingRead();
+    }
+
+    [Theory]
+    [InlineData(NodeExecutionIdentity.Caller)]
+    [InlineData(NodeExecutionIdentity.ServiceAccount)]
+    public async Task IdentityRefusingTheExchangeForOneCompany_IsARefusal_ReportListsIt_AndReadsTheOther(
+        NodeExecutionIdentity identity)
+    {
+        // The counterpart of the outage: the identity service answers and refuses the exchange for a (no grant, not
+        // provisioned; the provider answers null). That is a refusal of a only: Report lists it and reads b.
+        var real = new RealGuard();
+        A.CallTo(() => real.Provider.ProveAsync(A<CrossTenantProofRequest>._, A<CancellationToken>._))
+            .ReturnsLazily((CrossTenantProofRequest r, CancellationToken _) => Task.FromResult(
+                r.TargetTenantId == "a"
+                    ? null
+                    : new CrossTenantProof(r.TargetTenantId, "gen-1",
+                        RtSecurityContext.ForUser("xt_g_proven", ["TenantDataReader"]))));
+        var repositoryOfB = A.Fake<ITenantRepository>(o => o.Implements<ISecureSessionFactory>());
+        A.CallTo(() => ((ISecureSessionFactory)repositoryOfB).GetSessionAsync(A<RtSecurityContext>._))
+            .Returns(Task.FromResult(A.Fake<IOctoSession>()));
+        var invoice = new RtEntity(InvoiceType, OctoObjectId.GenerateNewId());
+        invoice.SetAttributeRawValue("InvoiceNumber", "INV-b");
+        A.CallTo(() => repositoryOfB.GetRtEntitiesByTypeAsync(A<IOctoSession>._, A<RtCkId<CkTypeId>>._,
+                A<RtEntityQueryOptions>._, A<int?>._, A<int?>._))
+            .Returns(Task.FromResult<IResultSet<RtEntity>>(new ResultSet<RtEntity>([invoice], 1, null, null)));
+        A.CallTo(() => real.SystemContext.FindTenantRepositoryAsync("b")).Returns(repositoryOfB);
+        real.WireInto(EtlContext);
+        var (dataContext, nodeContext, next) = PrepareTest(ReportOnAAndB(identity));
+        JsonObject? result = null;
+        A.CallTo(() => dataContext.Set("$.invoices", A<JsonObject?>._, A<DocumentModes>._, A<ValueKinds>._,
+                A<TargetValueWriteModes>._))
+            .Invokes((string _, JsonObject? value, DocumentModes _, ValueKinds _, TargetValueWriteModes _) =>
+                result = value);
+
+        await new GetRtEntitiesByTypeNode(next, EtlContext, CkCache).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(result);
+        var refused = Assert.Single(result["RefusedTenants"]!.AsArray())!;
+        Assert.Equal("a", refused["TenantId"]!.GetValue<string>());
+        Assert.Equal(CrossTenantAccessCodes.Forbidden, refused["ErrorCode"]!.GetValue<string>());
+        var item = Assert.Single(result["Items"]!.AsArray())!;
+        Assert.Equal("b", item["SourceTenantId"]!.GetValue<string>());
+        A.CallTo(() => real.SystemContext.FindTenantRepositoryAsync("a")).MustNotHaveHappened();
+        A.CallTo(() => next(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 
     [Theory]

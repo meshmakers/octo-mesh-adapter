@@ -106,9 +106,11 @@ For both, the issued token is verified before a claim is used, with the verifier
 the guard. Identity's refusals (`access_denied` with `tenant_not_provisioned`, `grant_not_permitted`,
 `mirrored_client`, `ambiguous_subject`, `shadow_client_invalid`; `unauthorized_client`; `invalid_grant`) become
 `CROSS_TENANT_FORBIDDEN` (`identity_not_provable`); the log names only the error code and that reason keyword, never a
-token or identity's description text. An unreachable identity service is `target_unverifiable`, and so is a service
-account that has no token in its own tenant (the token endpoint unreachable, the account refused there): that says
-nothing about U, so it is no refusal of U. The service account is
+token or identity's description text. Only a failure of the pipeline's own side is `target_unverifiable`: the
+service account cannot be resolved, it has no token in its own tenant, or the discovery or token endpoint cannot be
+reached or answers 5xx. That says nothing about U, so it is no refusal of U, and a consolidation with
+`onRefused: Report` fails instead of dropping every company. An answer that refuses the exchange for U (the 4xx
+refusals above) stays `identity_not_provable`, so `Report` drops only U. The service account is
 the one the execution acts as (`ServiceAccountConfigurationReader`, shared with the identity resolver); a
 configuration naming another tenant is refused (AB#9776) and is never a way into U.
 
@@ -383,8 +385,11 @@ transform nodes (`SumAggregation@1`, `GroupBy@1`) build the figures per company 
   `System` (abuse case 5) and an invalid configuration always fail, also with `Report`: they would refuse every
   company, and an empty consolidation must not look like a valid one. `System` is refused before the list of children
   is read, so a tenant without children does not turn it into an empty success. A company that could not be verified
-  (`target_unverifiable`: registry, identity service, generation store or repository unavailable) fails the read also
-  with `Report`: an outage is not a refusal, and it must not drop companies silently from a consolidation.
+  (`target_unverifiable`: registry, identity service, generation store or repository unavailable, or no token of the
+  pipeline's own service account) fails the read also with `Report`: an outage is not a refusal, and it must not
+  drop companies silently from a consolidation. An identity service that answers and refuses the exchange for one
+  company (section 3, `identity_not_provable`) stays a refusal of that company: `Report` lists it and reads the
+  others.
 - **Each item names its source tenant**: the result's `Items` are the entities of all companies, each with the added
   key `SourceTenantId`; `Tenants` lists the read companies with their `TotalCount`. Paging (`skip`, `take`) applies per
   company.

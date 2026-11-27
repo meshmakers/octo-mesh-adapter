@@ -49,7 +49,8 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Load/**, src/MeshAdapter.Sdk/Nodes/Sftp*.c
      collected; after the last target the node throws `CrossTenantWriteFailedException` (`CROSS_TENANT_WRITE_FAILED`,
      every failed target with its stable code, the written ones). Not supported with `targetTenants`:
      `associationUpdatesPath`, `onDuplicateKey: Report`, record array item updates and secret clears (configuration
-     error). Dry run: nothing written, the intent lists per target the planned inserts, updates and deletes.
+     error). Dry run: nothing written, the intent lists per target the planned inserts, updates and deletes
+     (`syncTargets`) and per failed target only its tenant and stable code (`failedTargets`: `tenantId`, `errorCode`).
      **Sync-origin write rules**: enforced by the engine (octo-construction-kit-engine-mongodb
      `SyncOriginWriteRules`) for every writer, `ApplyChanges@1` and `ApplyChanges@2` included: a write of
      `RtSyncOrigin` (a value, an array item update or a secret clear) and an update, replace, delete or archive of an

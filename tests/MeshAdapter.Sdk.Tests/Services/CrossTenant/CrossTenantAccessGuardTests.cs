@@ -385,14 +385,18 @@ public class CrossTenantAccessGuardTests
     }
 
     [Fact]
-    public async Task AbuseCase06_ServiceAccountUnavailable_IsRefused()
+    public async Task AbuseCase06_ServiceAccountUnavailable_IsRefused_AsUnverifiable()
     {
+        // The pipeline's own account is unavailable: nothing about the target is known, so the refusal is
+        // target_unverifiable (an outage), which a consolidation with onRefused: Report does not drop silently.
         A.CallTo(() => _resolver.ResolveServiceAccountAsync(A<CancellationToken>._))
             .Throws(new InvalidOperationException("token endpoint down"));
 
         var refused = await RefusedAsync(Request("a", Parent(), NodeExecutionIdentity.ServiceAccount));
 
-        Assert.Equal(CrossTenantRefusalReason.IdentityNotProvable, refused.ReasonCode);
+        Assert.Equal(CrossTenantRefusalReason.TargetUnverifiable, refused.ReasonCode);
+        Assert.DoesNotContain("token endpoint down", refused.Message);
+        AssertTargetNeverOpened();
     }
 
     [Fact]
@@ -612,6 +616,11 @@ public class CrossTenantAccessGuardTests
         Assert.DoesNotContain("'b'", noRight.Message);
         Assert.Equal(3, new[] { notRegistered.ReasonCode, outsideRelation.ReasonCode, noRight.ReasonCode }
             .Distinct().Count());
+        // It names the relation the node configured, never as a property of the target: "the sibling tenant" would
+        // claim that the outsider x is a sibling.
+        Assert.Contains("access to the target tenant is forbidden", outsideRelation.Message);
+        Assert.Contains("configured relation (sibling)", outsideRelation.Message);
+        Assert.DoesNotContain("sibling tenant", outsideRelation.Message);
     }
 
     [Fact]

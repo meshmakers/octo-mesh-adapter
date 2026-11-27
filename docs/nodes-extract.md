@@ -54,8 +54,9 @@ applies_to: src/MeshAdapter.Sdk/Nodes/Extract/**, src/MeshAdapter.Sdk/Nodes/Mail
      tenant, and nothing of any tenant is read. With `Report` the refused tenants are listed in `RefusedTenants` (id and
      code, never the reason) and a warning names each; their data is absent, the others are returned. The identity
      `System` (refused before the child list is read, so also without any child), an invalid configuration and a
-     company that could not be verified (registry, identity service or repository unavailable, `target_unverifiable`)
-     always fail, also with `Report`. Example (consolidation in a group):
+     company that could not be verified (registry, identity service or repository unavailable, or no token of the
+     pipeline's own service account: `target_unverifiable`) always fail, also with `Report`. An identity service that
+     answers and refuses the exchange for one company is a refusal of that company only: `Report` lists it. Example (consolidation in a group):
 
      ```yaml
      - type: GetRtEntitiesByType@1

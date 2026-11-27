@@ -182,11 +182,12 @@ internal sealed class IdentityServiceCrossTenantIdentityProvider : ICrossTenantI
         var subjectToken = await _subjectTokenSource.AcquireSubjectTokenAsync(credentials, cancellationToken);
         if (string.IsNullOrEmpty(subjectToken))
         {
-            // The cause (refused, unverifiable, foreign issuer) is logged by the token service.
-            _logger.LogWarning(
-                "[{SourceTenantId}] Cross-tenant proof to '{TargetTenantId}': no token of service account client {ClientId} in the source tenant; refused",
-                request.SourceTenantId, request.TargetTenantId, credentials.ClientId);
-            return null;
+            // The cause (identity service unreachable, account refused, foreign issuer) is logged by the token
+            // service. None of them is about the target: the account has no token in its own tenant, so the target
+            // cannot be verified, which fails a consolidation also with onRefused: Report (an outage must not drop
+            // every company silently).
+            throw new CrossTenantIdentityUnavailableException(
+                $"No token of the pipeline's service account (client {credentials.ClientId}) in its own tenant.");
         }
 
         // The presenter is U's public shadow client; it has no secret (AB#9777 provisioning rule).

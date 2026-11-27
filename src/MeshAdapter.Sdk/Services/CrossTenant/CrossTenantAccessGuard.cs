@@ -173,9 +173,13 @@ internal sealed class CrossTenantAccessGuard : ICrossTenantAccessGuard
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // The pipeline's own account could not be resolved (identity service unreachable, account refused in
+                // its own tenant): nothing about the target is known, so this is no refusal of the target. As
+                // target_unverifiable it fails a consolidation also with onRefused: Report instead of dropping
+                // every company silently.
                 _logger.LogWarning(ex,
                     "[{SourceTenantId}] Service account unavailable for a cross-tenant access", source);
-                throw Refuse(CrossTenantRefusalReason.IdentityNotProvable);
+                throw Refuse(CrossTenantRefusalReason.TargetUnverifiable);
             }
 
             if (sourceIdentity.IsSystem)

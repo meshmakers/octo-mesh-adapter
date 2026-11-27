@@ -8,7 +8,9 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.Common.Adapters;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 
@@ -55,10 +57,13 @@ internal static class HttpTriggerDryRun
 
     /// <summary>
     ///     The reason the request is refused, or <c>null</c> when the caller may dry-run the route. Mirrors the route's
-    ///     own check (<c>HttpRequestService.IsCallerAuthorizedAsync</c>): tenant of the token first, then any-of the
-    ///     required roles, compared ordinally, blank entries skipped.
+    ///     own check (<c>HttpRequestService.IsCallerAuthorizedAsync</c>): the adapter must have a tenant of its own
+    ///     (<c>AdapterOptions.DedicatedTenantId</c>, the value the route compares with), the token tenant must be it,
+    ///     then any-of the required roles, compared ordinally; a blank entry matches nobody, so a list of blank entries
+    ///     refuses every caller, as on the route. Agent tokens never get here: the controller's HTTP API and CK method
+    ///     token check refuse them (AB#6054).
     /// </summary>
-    internal static string? Authorize(ExecutePipelineRequest message, string adapterTenantId,
+    internal static string? Authorize(ExecutePipelineRequest message, string? adapterTenantId,
         FromHttpRequestNodeConfiguration2 route)
     {
         var routeName = $"{route.Method.ToString().ToUpperInvariant()} {route.Path}";
@@ -74,6 +79,12 @@ internal static class HttpTriggerDryRun
             return $"A dry run of the HTTP route {routeName} needs an authenticated caller; the request carried none.";
         }
 
+        if (string.IsNullOrEmpty(adapterTenantId))
+        {
+            return $"This adapter serves no tenant of its own, so its route {routeName} refuses every caller; " +
+                   "it cannot be dry-run here.";
+        }
+
         if (string.IsNullOrEmpty(caller.TenantId) ||
             !string.Equals(caller.TenantId, adapterTenantId, StringComparison.OrdinalIgnoreCase))
         {
@@ -81,22 +92,25 @@ internal static class HttpTriggerDryRun
                    $"the route {routeName} refuses it too. Sign in to tenant '{adapterTenantId}' itself.";
         }
 
-        var required = route.RequiredRoles.Where(r => !string.IsNullOrWhiteSpace(r)).ToArray();
-        if (required.Length > 0 && !required.Any(r => caller.Roles.Contains(r, StringComparer.Ordinal)))
+        var callerRoles = caller.Roles ?? [];
+        if (route.RequiredRoles.Length > 0 &&
+            !route.RequiredRoles.Any(r => !string.IsNullOrWhiteSpace(r) && callerRoles.Contains(r, StringComparer.Ordinal)))
         {
-            return $"The caller holds none of the roles {string.Join(", ", required)} the route {routeName} requires.";
+            return $"The caller holds none of the roles {string.Join(", ", route.RequiredRoles)} the route {routeName} requires.";
         }
 
         return null;
     }
 
     /// <summary>
-    ///     The data root of the dry run, shaped as the route builds it: <c>path</c>, <c>method</c>, the caller as
-    ///     <c>principal</c> and the input as <c>body</c> (JSON when it parses, else the text; no body for empty input).
-    ///     Query and headers are not part of a dry run.
+    ///     The data root of the dry run, shaped as the route builds it: <c>path</c> (<c>/{tenant}{path}</c>, lower case,
+    ///     as the route publishes it), <c>method</c>, the caller as <c>principal</c> and the input as <c>body</c> (JSON
+    ///     when it parses, else the text; no body for empty input). Query and headers are not part of a dry run. One
+    ///     difference: for a client-credentials caller the route fills <c>principal.subjectId</c> with the client id,
+    ///     the carried caller has none, so it stays null.
     /// </summary>
     internal static JsonObject BuildInput(string? pipelineInput, VerifiedPrincipal principal,
-        FromHttpRequestNodeConfiguration2 route)
+        FromHttpRequestNodeConfiguration2 route, string adapterTenantId)
     {
         var roles = new JsonArray();
         foreach (var role in principal.Roles)
@@ -106,7 +120,7 @@ internal static class HttpTriggerDryRun
 
         var input = new JsonObject
         {
-            ["path"] = route.Path.ToLowerInvariant(),
+            ["path"] = $"/{adapterTenantId}{route.Path}".ToLowerInvariant(),
             ["method"] = route.Method.ToString().ToUpperInvariant(),
             ["principal"] = new JsonObject
             {
@@ -140,19 +154,21 @@ internal static class HttpTriggerDryRun
 
     /// <summary>Handles one command on the dry-run address: refuses, or starts the dry run and answers its id.</summary>
     internal static async Task HandleAsync(ITriggerContext context, FromHttpRequestNodeConfiguration2 route,
-        ExecutePipelineRequest message, RespondToCommandHandler respond)
+        string? adapterTenantId, ExecutePipelineRequest message, RespondToCommandHandler respond)
     {
-        var refusal = Authorize(message, context.TenantId, route);
-        if (refusal != null)
-        {
-            context.NodeContext.Warning("[{TenantId}] Refusing execute command for HTTP pipeline '{PipelineId}': {Reason}",
-                context.TenantId, context.PipelineRtEntityId, refusal);
-            await respond(new ExecutePipelineResponse(false, refusal, null, null));
-            return;
-        }
-
         try
         {
+            // Inside the try: a malformed message is answered as a failure at once instead of a 30 s timeout.
+            var refusal = Authorize(message, adapterTenantId, route);
+            if (refusal != null)
+            {
+                context.NodeContext.Warning(
+                    "[{TenantId}] Refusing execute command for HTTP pipeline '{PipelineId}': {Reason}",
+                    context.TenantId, context.PipelineRtEntityId, refusal);
+                await respond(new ExecutePipelineResponse(false, refusal, null, null));
+                return;
+            }
+
             var caller = message.Caller!;
             var principal = ExecuteCommandCallerCarryThrough.ToPrincipal(caller)!;
             var startDateTime = DateTime.UtcNow;
@@ -167,7 +183,7 @@ internal static class HttpTriggerDryRun
 
             context.NodeContext.Info("Received dry run of the HTTP route {Method} {Path}", route.Method, route.Path);
             var executionId = await context.StartExecutePipelineAsync(options,
-                BuildInput(message.PipelineInput, principal, route));
+                BuildInput(message.PipelineInput, principal, route, adapterTenantId!));
             await respond(new ExecutePipelineResponse(true, null, executionId, startDateTime));
 
             // As FromExecutePipelineCommand@1 (AB#4279): never hold the delivery ack open for the whole run.
@@ -209,6 +225,7 @@ internal interface IHttpTriggerDryRunEndpoints
 /// <inheritdoc />
 internal sealed class HttpTriggerDryRunEndpoints(
     IEventHubControl eventHubControl,
+    IOptions<AdapterOptions> adapterOptions,
     ILogger<HttpTriggerDryRunEndpoints> logger) : IHttpTriggerDryRunEndpoints
 {
     private readonly ConcurrentDictionary<string, byte> _claimed = new(StringComparer.Ordinal);
@@ -228,7 +245,8 @@ internal sealed class HttpTriggerDryRunEndpoints(
         try
         {
             var handle = eventHubControl.RegisterCommandConsumer<ExecutePipelineRequest>(address,
-                (message, respond) => HttpTriggerDryRun.HandleAsync(context, route, message, respond),
+                (message, respond) => HttpTriggerDryRun.HandleAsync(context, route,
+                    adapterOptions.Value.DedicatedTenantId, message, respond),
                 CommandConsumerOptions.ExclusiveByDesign(HttpTriggerDryRun.ExclusiveByDesignReason));
             return new Registration(this, address, handle);
         }

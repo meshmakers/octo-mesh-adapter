@@ -57,7 +57,7 @@ public class HttpTriggerDryRunTests
         new(TenantId, input) { IsDryRun = isDryRun, Caller = caller };
 
     private Task Handle(FromHttpRequestNodeConfiguration2 route, ExecutePipelineRequest request) =>
-        HttpTriggerDryRun.HandleAsync(_context, route, request, r =>
+        HttpTriggerDryRun.HandleAsync(_context, route, TenantId, request, r =>
         {
             _responses.Add((ExecutePipelineResponse)r);
             return Task.CompletedTask;
@@ -110,12 +110,35 @@ public class HttpTriggerDryRunTests
     }
 
     [Fact]
-    public void RoleCheck_IsOrdinal_AndSkipsBlankEntries()
+    public void RoleCheck_IsOrdinal_AndABlankEntryMatchesNobody_AsOnTheRoute()
     {
         Assert.NotNull(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId, "maintenancemanagement")), TenantId,
             Route(false, "MaintenanceManagement")));
         Assert.NotNull(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId, "")), TenantId, Route(false, "", "X")));
-        Assert.Null(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId)), TenantId, Route(false, " ")));
+        // Kassandra round 1: the route refuses everyone for a list of blank entries (HttpRequestServiceTests
+        // SendRequestAsync_BlankRequiredRole_ReturnsForbiddenInsteadOfThrowing); so must the dry run.
+        Assert.NotNull(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId, " ")), TenantId, Route(false, " ")));
+        Assert.NotNull(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId)), TenantId, Route(false, "")));
+        Assert.Null(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId)), TenantId, Route()));
+    }
+
+    [Fact]
+    public void AnAdapterWithoutATenantOfItsOwn_RefusesEveryCaller_AsItsRouteDoes()
+    {
+        Assert.NotNull(HttpTriggerDryRun.Authorize(Request(true, Caller(TenantId)), null, Route()));
+        Assert.NotNull(HttpTriggerDryRun.Authorize(Request(true, Caller("")), "", Route()));
+    }
+
+    [Fact]
+    public async Task MalformedCaller_WithoutRoles_IsAnsweredAtOnce()
+    {
+        var caller = Caller(TenantId) with { Roles = null! };
+
+        await Handle(Route(false, "X"), Request(true, caller));
+
+        Assert.False(Assert.Single(_responses).IsSuccessStartingExecution);
+        A.CallTo(() => _context.StartExecutePipelineAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .MustNotHaveHappened();
     }
 
     [Fact]
@@ -142,7 +165,7 @@ public class HttpTriggerDryRunTests
         var input = Assert.IsType<JsonObject>(_startedInput);
         Assert.Equal("Pump leaks", input["body"]?["title"]?.GetValue<string>());
         Assert.Equal("POST", input["method"]?.GetValue<string>());
-        Assert.Equal("/maintenance-tickets", input["path"]?.GetValue<string>());
+        Assert.Equal("/dr10015/maintenance-tickets", input["path"]?.GetValue<string>());
         Assert.Equal(TenantId, input["principal"]?["tenantId"]?.GetValue<string>());
     }
 
@@ -164,9 +187,11 @@ public class HttpTriggerDryRunTests
     {
         var principal = new VerifiedPrincipal("s", TenantId, null, null, ["R"]);
 
-        Assert.Equal("plain text", HttpTriggerDryRun.BuildInput("plain text", principal, Route())["body"]?.GetValue<string>());
-        Assert.False(HttpTriggerDryRun.BuildInput("  ", principal, Route()).ContainsKey("body"));
-        Assert.Equal("R", HttpTriggerDryRun.BuildInput(null, principal, Route())["principal"]?["roles"]?[0]?.GetValue<string>());
+        Assert.Equal("plain text",
+            HttpTriggerDryRun.BuildInput("plain text", principal, Route(), TenantId)["body"]?.GetValue<string>());
+        Assert.False(HttpTriggerDryRun.BuildInput("  ", principal, Route(), TenantId).ContainsKey("body"));
+        Assert.Equal("R",
+            HttpTriggerDryRun.BuildInput(null, principal, Route(), TenantId)["principal"]?["roles"]?[0]?.GetValue<string>());
     }
 
     [Fact]
@@ -183,7 +208,10 @@ public class HttpTriggerDryRunTests
         A.CallTo(() => eventHub.RegisterCommandConsumer(A<string>._, A<ExecuteCommandHandler<ExecutePipelineRequest>>._,
                 A<CommandConsumerOptions>._))
             .ReturnsLazily(() => new EndpointHandle(A.Fake<HostReceiveEndpointHandle>()));
-        var endpoints = new HttpTriggerDryRunEndpoints(eventHub, NullLogger<HttpTriggerDryRunEndpoints>.Instance);
+        var endpoints = new HttpTriggerDryRunEndpoints(eventHub,
+            Microsoft.Extensions.Options.Options.Create(new Meshmakers.Octo.Sdk.Common.Adapters.AdapterOptions
+                { DedicatedTenantId = TenantId }),
+            NullLogger<HttpTriggerDryRunEndpoints>.Instance);
 
         var first = endpoints.Register(_context, Route());
         var second = endpoints.Register(_context, Route());

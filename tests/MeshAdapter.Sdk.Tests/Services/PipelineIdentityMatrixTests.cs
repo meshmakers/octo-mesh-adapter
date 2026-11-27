@@ -353,7 +353,10 @@ public class PipelineIdentityMatrixTests
             "FromMicrosoftGraphEmailNode.cs",
             "FromMicrosoftGraphNode.cs",
             "FromSignalNode.cs",
-            "FromTeamsBotNode.cs"
+            "FromTeamsBotNode.cs",
+            // AB#10015: the dry run of a FromHttpRequest@2 route carries the caller the controller verified, as the
+            // route does; it starts only after the route's own caller rules (HttpTriggerDryRun.Authorize) passed.
+            "HttpTriggerDryRun.cs"
         ], carriers);
     }
 
@@ -390,7 +393,8 @@ public class PipelineIdentityMatrixTests
             "FromSendNotificationNode.cs",   // Channel
             "FromSignalNode.cs",             // Channel
             "FromTeamsBotNode.cs",           // Channel
-            "FromWatchRtEntityNode.cs"       // Channel
+            "FromWatchRtEntityNode.cs",      // Channel
+            "HttpTriggerDryRun.cs"           // HttpWithVerifiedCaller (dry run of FromHttpRequest@2, AB#10015)
         ];
 
         Assert.Equal(expected, starters);

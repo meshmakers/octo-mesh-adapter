@@ -41,6 +41,9 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Changed
 
+- `SftpList@1` takes the time for `MinFileAgeSeconds` once the session is open, right before the listing, in every
+  configuration (AB#9569): a file that reaches the age while the node waits for a slot or connects is listed in the
+  same run, no longer in the next one.
 - NuGet packages raised to the newest version within the .NET 10 line (AB#9597): MailKit and MimeKit 5.0.0,
   Microsoft.ML and Microsoft.ML.TimeSeries 6.0.0, AngleSharp 1.10.5, ModelContextProtocol.AspNetCore 2.4.0,
   SSH.NET 2026.0.1, System.Security.Cryptography.Pkcs 10.0.15, and the test tooling (xunit, Testcontainers 4.17.0,

@@ -387,6 +387,59 @@ public class HttpRequestServiceTests
         Assert.True(executed);
     }
 
+    /// <remarks>
+    /// AB#6054: an agent acts only through its MCP mandate. An agent token of the adapter's own tenant that holds the
+    /// required role - and carries octo_api beside the agent scope - is refused before the tenant and role checks.
+    /// </remarks>
+    [Theory]
+    [InlineData("octo_agent")]
+    [InlineData("octo_agent octo_api")]
+    public async Task SendRequestAsync_AgentTokenWithTheRequiredRole_ReturnsForbiddenAgentTokenNotAccepted(string scope)
+    {
+        var executed = false;
+        var options = CreateRouteOptions("/api/agent", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/agent");
+        var agent = CreateServiceToken(TenantId, "CommunicationAdmin");
+        ((ClaimsIdentity)agent.Identity!).AddClaim(new Claim("scope", scope));
+        context.User = agent;
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Contains("error_code=\"agent_token_not_accepted\"", context.Response.Headers.WWWAuthenticate.ToString());
+        Assert.False(executed);
+        var entry = Assert.Single(_eventService.Events);
+        Assert.Equal(RtEventLevelsEnum.Warning, entry.Level);
+    }
+
+    [Fact]
+    public async Task SendRequestAsync_ServiceTokenWithOctoApi_IsNotTakenForAnAgentToken()
+    {
+        var executed = false;
+        var options = CreateRouteOptions("/api/platform", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/platform");
+        var platform = CreateServiceToken(TenantId, "CommunicationAdmin");
+        ((ClaimsIdentity)platform.Identity!).AddClaim(new Claim("scope", "octo_api"));
+        context.User = platform;
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.True(executed);
+    }
+
     [Fact]
     public async Task SendRequestAsync_NoRequiredRolesConfigured_AcceptsAnyValidTokenWithoutRoleCheck()
     {

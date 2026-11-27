@@ -25,6 +25,12 @@ internal static class BearerChallenge
     internal const string RoleMissing = "role_missing";
 
     /// <summary>
+    /// AB#6054: the token is an agent token (scope <c>octo_agent</c>). An agent acts only through its MCP mandate, so
+    /// no inbound route accepts its token; a new token of the same agent shares the condition.
+    /// </summary>
+    internal const string AgentTokenNotAccepted = "agent_token_not_accepted";
+
+    /// <summary>
     /// The caller presented a token and nothing looked at it, which happens when no identity
     /// service is configured and the authentication scheme was therefore left unwired. Naming it
     /// matters: without a code a client falls back to "reason unknown, try refreshing", and would
@@ -102,6 +108,7 @@ internal static class BearerChallenge
         NotEvaluated => "The access token was not evaluated - this adapter has no identity service configured",
         TenantMismatch => "The access token does not serve this tenant",
         RoleMissing => "The caller holds none of the required roles",
+        AgentTokenNotAccepted => "Agent tokens are accepted only by the MCP agent endpoint",
         _ => "The access token is not valid"
     };
 }

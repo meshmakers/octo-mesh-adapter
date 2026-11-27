@@ -1,0 +1,15 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+# The released-document lock of the engine behind ApplyChanges@1 and @2: the range ReleasedTestInvoiceNumber releases
+# a ReleasedTestInvoice at ReleasedTestStatus = Released.
+- typeId: ReleasedTestInvoice
+  derivedFromCkTypeId: ${System}/Entity
+  attributes:
+  - id: ${this}/ReleasedTestTitle
+    name: ReleasedTestTitle
+  - id: ${this}/ReleasedTestStatus
+    name: ReleasedTestStatus
+  - id: ${this}/ReleasedTestNumber
+    name: ReleasedTestNumber
+    isOptional: true
+    autoIncrementReference: "ReleasedTestInvoiceNumber"

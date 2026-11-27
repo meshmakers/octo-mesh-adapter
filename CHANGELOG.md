@@ -15,6 +15,13 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- `ApplyChanges@1` and `ApplyChanges@2` (AB#9760) fail a write the engine's released-document lock refuses with
+  `ReleasedDocumentWriteRefusedException` and the engine's stable code - `RELEASED_DOCUMENT_LOCKED` (message 168),
+  `STORNO_REFUSED` (169 to 172) or `DOCUMENT_AUDIT_ENTRY_APPEND_ONLY` (173) - in `ErrorCode` and in the message
+  (`[<node path>]: <code>: ...`), for the system session of `@1` and every identity of `@2`; the transaction is aborted
+  explicitly (also in `@1`), nothing of the batch is written. No second lock: the nodes only map the engine's refusal.
+  Needs the engine packages of the same change. Tests: `ApplyChangesReleasedDocumentRefusalTests`,
+  `ReleasedDocumentLockPipelineTests`; the test CK model gains `ReleasedTestInvoice`. Docs: `docs/nodes-load.md`.
 - `GetNumberRangeGapReport@1` (AB#9763) writes the gap report of a number range for one fiscal year (missing numbers
   as intervals, duplicate numbers with every document, irregular numbers) to the target path. A thin mapping of the
   engine method `ITenantRepository.GetNumberRangeGapReportAsync`, read with the session of the node's identity (default

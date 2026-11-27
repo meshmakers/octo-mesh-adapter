@@ -162,14 +162,19 @@ public class ApplyChangesNode2(NodeDelegate next, IMeshEtlContext etlContext, IC
 
                         // AB#9770: the engine refuses a change of synced master data (an entity carrying
                         // RtSyncOrigin) and every write of RtSyncOrigin: only the sync of its source tenant writes them.
+                        // The engine's released-document lock refuses every identity (Caller, ServiceAccount,
+                        // System); the node fails with the engine's code and nothing of the batch is written.
                         OperationResult operationResult = new();
+                        var nodePath = nodeContext.NodePath.ToString();
                         try
                         {
-                            await SyncOriginRefusal.RunAsync(nodeContext.NodePath.ToString(), () =>
-                                repository.ApplyChangesAsync(session, resultUpdateInfos, resultAssocUpdate,
-                                    operationResult));
+                            await ReleasedDocumentWriteRefusal.RunAsync(nodePath, () =>
+                                SyncOriginRefusal.RunAsync(nodePath, () =>
+                                    repository.ApplyChangesAsync(session, resultUpdateInfos, resultAssocUpdate,
+                                        operationResult)));
                         }
-                        catch (SyncOriginWriteRefusedException)
+                        catch (Exception e) when (e is SyncOriginWriteRefusedException
+                                                      or ReleasedDocumentWriteRefusedException)
                         {
                             await AbortQuietlyAsync(session, nodeContext);
                             throw;

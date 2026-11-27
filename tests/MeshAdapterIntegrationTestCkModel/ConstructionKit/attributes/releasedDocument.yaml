@@ -1,0 +1,8 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+- id: ReleasedTestTitle
+  valueType: String
+- id: ReleasedTestStatus
+  valueType: String
+- id: ReleasedTestNumber
+  valueType: String

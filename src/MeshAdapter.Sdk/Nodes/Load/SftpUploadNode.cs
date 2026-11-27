@@ -31,7 +31,7 @@ public class SftpUploadNode(
             ValidateConfiguration(c, nodeContext);
 
             var serverConfiguration = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration,
-                nodeContext);
+                nodeContext, c.ConnectRetry);
 
             // Resolve file name
             var fileName = ResolveFileName(c, dataContext, nodeContext);

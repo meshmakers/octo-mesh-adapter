@@ -105,6 +105,32 @@ public class SftpListNodeTests : NodeTestBase
     }
 
     [Fact]
+    public async Task MinFileAge_IsTakenOnceTheSessionIsOpen_NotBeforeConnecting()
+    {
+        var opened = DateTime.MinValue;
+        // Stands in for the wait of a connection retry: the files appear once the connect returns, and a
+        // clock read before it would make AR_A.TXT look younger than the 120 s it has at the listing.
+        A.CallTo(() => _sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
+                A<INodeContext>._, A<CancellationToken>._))
+            .ReturnsLazily(async () =>
+            {
+                await Task.Delay(300);
+                opened = DateTime.UtcNow;
+                return _session;
+            });
+        A.CallTo(() => _session.List(RemoteDir)).ReturnsLazily(() => new List<SftpEntry>
+        {
+            File("AR_A.TXT", opened.AddSeconds(-120)),
+            File("AR_B.TXT", opened.AddSeconds(-60))
+        });
+
+        var emitted = await RunAsync(Config(minAgeSeconds: 120));
+
+        Assert.Single(emitted!);
+        Assert.Equal("AR_A.TXT", emitted![0]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_FutureTimestampWithoutAgeGuard_IsStillListed()
     {
         // The server's clock and the pod's clock are independent. With the guard off, a file

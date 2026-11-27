@@ -704,8 +704,9 @@ Lists a remote directory over SFTP and emits one element per matching file. Meta
 |-----------|------|-------------|
 | `ServerConfiguration` | string | Global config reference for SFTP server |
 | `RemoteDirectory` | string | Directory to list |
+| `ConnectRetry` | object | Attempts and waits for opening the session when the server refuses or drops the connection attempt; see [Connection retry](#connection-retry-connectretry). Absent: one attempt |
 | `FilePattern` | string | Glob: `*` any run of characters, `?` exactly one, anchored, case insensitive, everything else literal. A file under the temporary name of `SftpDelete@1` is listed only by a pattern that contains `.sftpdelete-` |
-| `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0) |
+| `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0). The age is taken once the session is open, after any connection retry |
 | `TargetPath` | string | Where the array is written |
 
 Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nested `source` object with `serverConfiguration`, `remoteDirectory` and `filePattern`.
@@ -767,6 +768,7 @@ Downloads exactly one file and writes its decoded content to the target path. Re
 | `ServerConfiguration` | string | Global config reference for SFTP server |
 | `RemotePath` | string | Static remote path (set this or `RemotePathPath`) |
 | `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
+| `ConnectRetry` | object | Attempts and waits for opening the session when the server refuses or drops the connection attempt; see [Connection retry](#connection-retry-connectretry). Absent: one attempt |
 | `Encoding` | string | Encoding the remote file is written in, default `utf-8`; unknown names are rejected when the configuration is bound |
 | `OnEncodingError` | enum | `Replace` (default): undecodable bytes become the replacement character and a warning is logged. `Fail`: the node aborts |
 | `MaxFileSizeBytes` | long | Largest file this node will read, default `104857600` (100 MiB). A larger file fails this node only |
@@ -1854,6 +1856,7 @@ Uploads files to an SFTP server. Supports both binary files from MongoDB storage
 |-----------|------|-------------|
 | `ServerConfiguration` | string | Global config reference for SFTP server |
 | `RemoteDirectory` | string | Target directory on the SFTP server |
+| `ConnectRetry` | object | Attempts and waits for opening the session when the server refuses or drops the connection attempt; see [Connection retry](#connection-retry-connectretry). Absent: one attempt |
 | `FileName` | string | Static file name (required: set `FileName` or `FileNamePath`) |
 | `FileNamePath` | string | Dynamic file name from data context (required: set `FileName` or `FileNamePath`; takes precedence over `FileName`) |
 | `FileRtId` | string | Static RtId of binary file (content source; exactly one source required) |
@@ -1911,6 +1914,50 @@ The values mean, once they are reachable:
 
 All three timeouts are rejected when the settings are resolved if they are negative or beyond 2 147 483 seconds (about 24.8 days), which is the largest millisecond count the underlying timers accept.
 
+##### Connection retry (`connectRetry`)
+
+All four SFTP nodes take the optional `connectRetry`. It belongs to the node, not to the server configuration entry: two nodes against the same server can retry differently, and a `connectRetry` key written into the entry is not read.
+
+```yaml
+  - type: SftpUpload@1
+    serverConfiguration: sftp-server-1
+    remoteDirectory: /in
+    fileNamePath: $.fileName
+    path: $.content
+    connectRetry:
+      maxAttempts: 3          # 1 to 10; 1 (the default) means no retry
+      backoffBaseSeconds: 10  # waits 10 s, then 20 s
+```
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `maxAttempts` | int | Total connection attempts of one node execution, 1 to 10. Default 1: one attempt, exactly the behaviour before the option existed |
+| `backoffBaseSeconds` | number | The wait after attempt n is `backoffBaseSeconds * 2^(n - 1)` seconds, at most 60 s per wait; 0 retries without waiting. Default 1 |
+
+A value out of range (`maxAttempts` below 1 or above 10, a `backoffBaseSeconds` that is negative or not a finite number) fails when the pipeline is loaded, naming the member. A member left out or set to null takes its default, so `connectRetry` without `maxAttempts`, an empty `connectRetry: {}` included, leaves one attempt. The shape is the one of `MakeHttpRequest@1`'s `retry`; unlike there, `maxAttempts: 0` is refused rather than read as 1, a `backoffBaseSeconds` that is not a finite number is refused as well, and a value out of range fails when the pipeline is loaded rather than when the node runs.
+
+**What is repeated**: a failure of the connection attempt itself - whatever SSH.NET's `Connect` raises, except for a refused host key and a blank host: authentication refused (`Permission denied`), subsystem or channel refused, connection refused, reset or dropped, a connect timeout. A permanent mistake that only shows while connecting - a wrong password or user name, a host name that does not resolve, a handshake that can never succeed - is repeated as well and costs the full waits, since it cannot be told apart from a passing refusal.
+
+**What is not repeated**: a host key that `HostKeyFingerprint` refuses, whatever SSH.NET raises for it (the same server presents the same key again, and a refused key is a security signal); a configuration mistake found before connecting (`MaxConcurrentConnections` not positive, key material that cannot be read, a missing or invalid server configuration entry); any failure against an empty or blank host name, a mistake SSH.NET finds only while connecting (for an empty host `Connect` raises an `ArgumentException`), thrown as it came; a wait for a free slot that runs into `WaitForSlotTimeoutSeconds` (a sign of stalled transfers or a limit set too low, and repeating it would multiply the configured wait) - between two attempts it ends the call with the slot error, and the earlier refusals are in the warnings only; a cancellation; every failure after the session is open - the node never repeats a listing, a download, an upload or a delete.
+
+**Slots**: every attempt takes a slot of `MaxConcurrentConnections` and hands it back as soon as it failed, before the wait, so other executions against the same server go on meanwhile. The slot counters belong to the pipeline's registration: after a redeploy an execution that is still retrying keeps counting on the old one while the new registration counts on its own, so for the remaining retry time each can hold up to `MaxConcurrentConnections` connections to the same server.
+
+**Logging and the final error**: with more than one attempt, every failed connection attempt logs one warning - attempt number, the number of attempts, the server configuration name and the type of the failure (for a `SocketException` also its socket error, such as `ConnectionRefused`), never the failure text, a host or a credential. N attempts that all fail log N warnings; a failure that is not repeated ends the call after its own warning, and a configuration failure before any connection (key material) logs none. When the last attempt failed, the node fails with its usual message - `Cannot list directory via SFTP: ...`, `Cannot download file via SFTP: ...`, `Cannot upload file via SFTP: ...`, `Cannot delete file '...' via SFTP: ...` - around `SftpConnectFailedException`, whose text names the number of attempts and the type and text of the last failure, masked by the node's secret registry: the session factory registers the entry's password, private key and passphrase there itself, as the resolver does, and the registry masks a value of four characters or more wherever it appears and a shorter one only where it is the whole text. The inner exception is the last failure itself, or the registry's redacted copy when a registered value appears in it. Without the option nothing of this applies: no warning, no wait, and the failure reaches the node as before.
+
+**Time**: the longest time one node execution can spend connecting is the sum of its waits, plus `maxAttempts` times the time one attempt can take, plus the wait for a free slot before every attempt. One attempt that stalls ends at the connect timeout - `ConnectTimeoutSeconds`, SSH.NET's 30 s while it is 0 - and SSH.NET applies that timeout to every step of the handshake that waits for the server, the socket connect and the opening of the SFTP channel among them, so a server that stalls at several steps can make one attempt last longer. These bounds cover an attempt that fails or times out while the connection is being established; a server that completes the handshake and accepts the SFTP subsystem but never answers its first requests (the protocol version, then the working directory) is bounded only by `OperationTimeoutSeconds`, as before this option, and not at all while it is 0. The wait for a free slot is bounded by `WaitForSlotTimeoutSeconds` and unbounded while it is 0. All three timeouts are settings of the server configuration entry and 0 by default; the note on the entry's keys above says which of them an entry can carry. Examples, for a server that refuses or stalls at one step every time, with `ConnectTimeoutSeconds` at 0:
+
+| `maxAttempts` / `backoffBaseSeconds` | Waits | Attempts (30 s each) | Longest time, without slot waits |
+|--------------------------------------|-------|----------------------|----------------------------------|
+| 3 / 10 | 10 s + 20 s = 30 s | 90 s | 2 min |
+| 5 / 10 | 10 + 20 + 40 + 60 = 130 s | 150 s | 4 min 40 s |
+| 10 / 60 | 9 x 60 s = 540 s | 300 s | 14 min |
+
+A refusal that comes back at once (a closed port, a dropped connection, a refused login) costs the waits and next to nothing per attempt. The figure is per node execution: a `ForEach@1` with one SFTP node per element can retry once per element, so a run over many elements against a refusing server takes that many times longer. `SftpUpload@1` obtains its content once, before connecting, and a retry does not fetch it again: string content is encoded in memory, while the stream of a binary source is opened before connecting and read only during the upload, so it stays open while the node retries - keep the total retry time of binary uploads short.
+
+**Cancellation**: a token given to the session factory is honoured before every attempt (the wait for a free slot) and during the waits between attempts. A running attempt is not interrupted - SSH.NET's synchronous `Connect` takes no token - so an attempt that succeeds returns its session; with more than one attempt, one that fails after the token was cancelled logs its warning and ends the call without a wait: while an attempt is left, with an `OperationCanceledException` that carries that failure, or its redacted copy, as inner exception; on the last attempt with `SftpConnectFailedException`; and a failure that is not repeated is thrown as it came (a refused host key as the host key error). A cancellation during a wait - for a free slot or between attempts - ends the call with the cancellation alone. The nodes hand the factory no token - the pipeline gives them none - so nothing cuts a retrying node execution short: when the adapter shuts down or the pipeline is redeployed while a node waits or connects, that execution goes on until it connects or its attempts are used up (see **Time**), unless the process ends first.
+
+**Account lockout and address bans**: every attempt that reaches the server's authentication is a login. A server that locks an account after a number of failed logins counts each refused attempt of every node execution, so `maxAttempts` times the number of executions in a run can reach such a limit quickly when the password is wrong. A server that bans an address after failed logins blocks every pipeline behind the same outgoing address, and the dropped connections that follow are repeated as well. The waits have no jitter, so executions that failed together retry together. Keep `maxAttempts` small where the server has such a policy.
+
 #### SftpDeleteNode
 
 Deletes exactly one file from an SFTP server: it removes the file `SftpDownload@1` read, once the content has been processed.
@@ -1920,6 +1967,7 @@ Deletes exactly one file from an SFTP server: it removes the file `SftpDownload@
 | `ServerConfiguration` | string | Global config reference for SFTP server |
 | `RemotePath` | string | Static remote path (set this or `RemotePathPath`) |
 | `RemotePathPath` | string | Data context path resolving to the remote path; takes precedence over `RemotePath` |
+| `ConnectRetry` | object | Attempts and waits for opening the session when the server refuses or drops the connection attempt; see [Connection retry](#connection-retry-connectretry). Absent: one attempt |
 | `OnMissingFile` | enum | `Fail` (default): a file that is not there any more fails the node. `Ignore`: log a warning and continue |
 | `ExpectedLength` / `ExpectedLengthPath` | long / string | Length of the file as it was listed - the `length` of an `SftpList@1` element - statically or from the data context (the path takes precedence). Not set by default |
 | `ExpectedLastWriteTimeUtc` / `ExpectedLastWriteTimeUtcPath` | string / string | Last write time of the file as it was listed - the `lastWriteTimeUtc` of an `SftpList@1` element, in the form that node writes: `yyyy-MM-ddTHH:mm:ss`, seven fractional digits and `Z` (zero to seven are accepted). Not set by default |

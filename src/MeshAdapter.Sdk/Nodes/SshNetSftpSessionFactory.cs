@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Net.Sockets;
 using System.Text;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Renci.SshNet;
 using Renci.SshNet.Common;
@@ -12,16 +15,43 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 /// counters live on the ETL context rather than on this instance, which is the scope
 /// <c>EMailSender@1</c> and the pre-seam upload node both use: a redeployed pipeline gets a
 /// fresh registration and therefore picks up a changed limit.
+/// <para />
+/// A refused or dropped connection attempt is repeated as the node's <c>connectRetry</c> allows
+/// (<see cref="SftpServerSettings.ConnectRetry" />): only here is it known which step failed.
 /// </summary>
 internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
 {
     private const string SemaphoresKey = "SftpSessionFactory.Semaphores";
     private static readonly Lock SemaphoresLock = new();
 
+    private readonly TimeProvider _timeProvider;
+    private readonly ConnectStep _connect;
+
+    /// <summary>Connects a client just created; all it raises is a failure of the attempt itself. Tests replace it.</summary>
+    internal delegate void ConnectStep(SftpClient client, HostKeyOutcome hostKey);
+
+    /// <summary>The instance the service collection creates: system clock, SSH.NET's own connect.</summary>
+    public SshNetSftpSessionFactory() : this(TimeProvider.System)
+    {
+    }
+
+    /// <summary>For tests: the clock of the waits between attempts, and the connect step (null: SSH.NET).</summary>
+    internal SshNetSftpSessionFactory(TimeProvider timeProvider, ConnectStep? connect = null)
+    {
+        _timeProvider = timeProvider;
+        _connect = connect ?? ((client, _) => client.Connect());
+    }
+
     /// <inheritdoc />
     public async Task<ISftpSession> ConnectAsync(SftpServerSettings settings, string serverConfigurationName,
         IMeshEtlContext etlContext, INodeContext nodeContext, CancellationToken cancellationToken = default)
     {
+        // As in the resolver, so a caller that did not go through it is covered too: the warnings and the
+        // final error below are masked through the node's secret registry, the one masking rule of the adapter.
+        nodeContext.RegisterSecret(settings.Password);
+        nodeContext.RegisterSecret(settings.PrivateKey);
+        nodeContext.RegisterSecret(settings.PrivateKeyPassphrase);
+
         if (settings.MaxConcurrentConnections <= 0)
         {
             throw MeshAdapterPipelineExecutionException.InvalidMaxConcurrentConnections(
@@ -29,9 +59,135 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         }
 
         var semaphore = GetOrCreateSemaphore(etlContext, serverConfigurationName, settings);
+        var maxAttempts = ResolveMaxAttempts(settings.ConnectRetry);
 
+        for (var attempt = 1;; attempt++)
+        {
+            // A slot per attempt: the wait between two attempts holds none.
+            await WaitForSlotAsync(semaphore, settings, serverConfigurationName, nodeContext, cancellationToken);
+
+            var wait = TimeSpan.Zero;
+            SftpClient? client = null;
+            PrivateKeyFile? privateKeyFile = null;
+            var hostKey = new HostKeyOutcome();
+            try
+            {
+                client = CreateClient(settings, hostKey, out privateKeyFile);
+                _connect(client, hostKey);
+                return new SshNetSftpSession(client, semaphore, privateKeyFile);
+            }
+            catch (Exception exception)
+            {
+                // The session never came into existence, so nothing will dispose it: close the
+                // client and hand the slot back here, or the limit leaks one slot per failure.
+                // The release sits in a finally because a slot lost here is lost for the lifetime
+                // of the process, while a client that fails to dispose costs one socket.
+                try
+                {
+                    // Each disposal stands on its own: letting one throw would skip the next and
+                    // replace the failure the operator has to read - a host key mismatch would
+                    // surface as whatever the teardown complained about instead.
+                    DisposeQuietly(client);
+                    DisposeQuietly(privateKeyFile);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+
+                // SSH.NET refuses the connection itself once the handler reports CanTrust = false,
+                // and surfaces it as a generic connection failure. Translating it here keeps the
+                // library's own teardown - it sends SSH_MSG_DISCONNECT and unsubscribes its key
+                // exchange handlers - while still telling the operator which key was presented.
+                var translated = TranslateConnectFailure(exception, settings, hostKey, nodeContext);
+
+                // Only a failed connection attempt is repeated. Not a failure before the client exists (key
+                // material), a refused host key whatever the library raised for it (a security signal), a
+                // cancellation, or any failure against a blank host, a mistake SSH.NET finds only while connecting.
+                var retryable = client is not null && !hostKey.Refused && !string.IsNullOrWhiteSpace(settings.Host)
+                                && exception is not OperationCanceledException;
+                var lastAttempt = attempt >= maxAttempts;
+                // Connect takes no token: an attempt that failed after a cancellation ends the call, no wait.
+                var cancelled = retryable && !lastAttempt && cancellationToken.IsCancellationRequested;
+                if (retryable && !lastAttempt && !cancelled)
+                {
+                    wait = WaitAfterFailedAttempt(settings.ConnectRetry, attempt);
+                }
+
+                // Without a client no connection was attempted (key material): no attempt warning.
+                if (maxAttempts > 1 && client is not null)
+                {
+                    WarnFailedAttempt(nodeContext, serverConfigurationName, attempt, maxAttempts, exception,
+                        NextStep(retryable, lastAttempt, cancelled, wait));
+                }
+
+                if (!ReferenceEquals(translated, exception))
+                {
+                    throw translated;
+                }
+
+                // Not repeated, or a single attempt: thrown as it came, as before the option. The factory masks
+                // what it creates (the final error, the cancellation). A failure thrown as it came is masked like
+                // every failure of a node: the pipeline engine redacts it with the node's secret registry before
+                // it logs it or passes it on.
+                if (!retryable || maxAttempts == 1)
+                {
+                    throw;
+                }
+
+                if (lastAttempt || cancelled)
+                {
+                    // The attempt handled a credential: its failure is passed on as it is, or as the secret
+                    // registry's redacted copy when a registered value appears in it.
+                    var lastFailure = nodeContext.SecretRegistry?.RedactException(exception) ?? exception;
+                    if (lastAttempt)
+                    {
+                        throw new SftpConnectFailedException(maxAttempts, DescribeMasked(exception, nodeContext),
+                            lastFailure);
+                    }
+
+                    throw new OperationCanceledException(
+                        "Connecting to the SFTP server was cancelled after a failed attempt.", lastFailure,
+                        cancellationToken);
+                }
+            }
+
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait, _timeProvider, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>The option's attempts (its setter keeps them within 1 to 10), or one without the option.</summary>
+    internal static int ResolveMaxAttempts(SftpConnectRetryOptions? retry)
+    {
+        return retry?.MaxAttempts ?? SftpConnectRetryOptions.DefaultMaxAttempts;
+    }
+
+    /// <summary>
+    /// The wait after failed attempt n: base * 2^(n - 1) seconds, at most the cap; a large base
+    /// overflows to infinity, which the cap turns back into the cap.
+    /// </summary>
+    internal static TimeSpan WaitAfterFailedAttempt(SftpConnectRetryOptions? retry, int failedAttempt)
+    {
+        var baseSeconds = retry?.BackoffBaseSeconds ?? SftpConnectRetryOptions.DefaultBackoffBaseSeconds;
+        if (baseSeconds <= 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var seconds = Math.Min(baseSeconds * Math.Pow(2, failedAttempt - 1),
+            SftpConnectRetryOptions.MaxBackoffSeconds);
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    private static async Task WaitForSlotAsync(SemaphoreSlim semaphore, SftpServerSettings settings,
+        string serverConfigurationName, INodeContext nodeContext, CancellationToken cancellationToken)
+    {
         // A wait that never ends turns one stalled transfer into a silent stop for every SFTP
-        // node against that server. Zero keeps the previous unbounded behaviour.
+        // node against that server. Zero keeps the previous unbounded behaviour. A timed-out wait
+        // is not repeated: it signals stalled transfers, and a retry would multiply the wait.
         if (settings.WaitForSlotTimeoutSeconds > 0)
         {
             if (!await semaphore.WaitAsync(TimeSpan.FromSeconds(settings.WaitForSlotTimeoutSeconds),
@@ -45,47 +201,43 @@ internal sealed class SshNetSftpSessionFactory : ISftpSessionFactory
         {
             await semaphore.WaitAsync(cancellationToken);
         }
+    }
 
-        SftpClient? client = null;
-        PrivateKeyFile? privateKeyFile = null;
-        var hostKey = new HostKeyOutcome();
-        try
+    /// <summary>One warning per failed attempt, with the failure type only: the text came from a call that handled credentials.</summary>
+    private static void WarnFailedAttempt(INodeContext nodeContext, string serverConfigurationName, int attempt,
+        int maxAttempts, Exception exception, string outcome)
+    {
+        nodeContext.Warning("SFTP connection attempt {0} of {1} to server configuration '{2}' failed with {3}; {4}",
+            attempt, maxAttempts, serverConfigurationName, DescribeFailure(exception), outcome);
+    }
+
+    /// <summary>The end of a failed attempt's warning: what follows it.</summary>
+    private static string NextStep(bool retryable, bool lastAttempt, bool cancelled, TimeSpan wait) =>
+        (retryable, lastAttempt, cancelled) switch
         {
-            client = CreateClient(settings, hostKey, out privateKeyFile);
-            client.Connect();
-            return new SshNetSftpSession(client, semaphore, privateKeyFile);
-        }
-        catch (Exception exception)
-        {
-            // The session never came into existence, so nothing will dispose it: close the
-            // client and hand the slot back here, or the limit leaks one slot per failure.
-            // The release sits in a finally because a slot lost here is lost for the lifetime
-            // of the process, while a client that fails to dispose costs one socket.
-            try
-            {
-                // Each disposal stands on its own: letting one throw would skip the next and
-                // replace the failure the operator has to read - a host key mismatch would
-                // surface as whatever the teardown complained about instead.
-                DisposeQuietly(client);
-                DisposeQuietly(privateKeyFile);
-            }
-            finally
-            {
-                semaphore.Release();
-            }
+            (false, _, _) => "this failure is not retried",
+            (true, true, _) => "no attempt left",
+            (true, false, true) => "cancelled, no further attempt",
+            _ => $"next attempt in {wait.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)} s"
+        };
 
-            // SSH.NET refuses the connection itself once the handler reports CanTrust = false,
-            // and surfaces it as a generic connection failure. Translating it here keeps the
-            // library's own teardown - it sends SSH_MSG_DISCONNECT and unsubscribes its key
-            // exchange handlers - while still telling the operator which key was presented.
-            var translated = TranslateConnectFailure(exception, settings, hostKey, nodeContext);
-            if (!ReferenceEquals(translated, exception))
-            {
-                throw translated;
-            }
+    /// <summary>The failure type, with the socket error (refused and reset are both a SocketException).</summary>
+    internal static string DescribeFailure(Exception exception)
+    {
+        return exception is SocketException socketException
+            ? $"{exception.GetType().Name} ({socketException.SocketErrorCode})"
+            : exception.GetType().Name;
+    }
 
-            throw;
-        }
+    /// <summary>
+    /// Type and text of a failure for the message of <see cref="SftpConnectFailedException" />, the text
+    /// masked by the node's secret registry, which holds the entry's credentials. Its rule decides: a value
+    /// shorter than four characters only where the whole text equals it, a blank one never. Without a
+    /// registry nothing is masked, as everywhere else in the adapter.
+    /// </summary>
+    internal static string DescribeMasked(Exception exception, INodeContext nodeContext)
+    {
+        return $"{DescribeFailure(exception)}: {nodeContext.SecretRegistry?.Redact(exception.Message) ?? exception.Message}";
     }
 
     /// <summary>

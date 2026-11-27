@@ -15,6 +15,13 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- `SftpList@1`, `SftpDownload@1`, `SftpUpload@1` and `SftpDelete@1` option `connectRetry` (AB#9569): `maxAttempts`
+  (1 to 10, default 1), `backoffBaseSeconds` (default 1, zero or a positive finite number), wait base * 2^(n - 1) s
+  after attempt n, at most 60 s. Only what SSH.NET's `Connect` raises is repeated, never a refused host key, a blank
+  host, a cancellation, unreadable key material or a failure after the session is open; a slot
+  per attempt; with more than one attempt a warning per failed connection attempt, N when all N fail, and a failure
+  that is not repeated ends the call after its own warning; the last failure inside the new
+  `SftpConnectFailedException`. Unset: one attempt.
 - A `FromHttpRequest@2` pipeline can be dry-run (AB#10015): the trigger consumes the controller's dry-run address
   `…-pipeline-{rtId}-http-dry-run` and starts the run with the input as request body, the caller as principal and
   dry-run-honouring load nodes suppressed. A real execute through the command, a request without a caller, a token of
@@ -34,6 +41,9 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Changed
 
+- `SftpList@1` takes the time for `MinFileAgeSeconds` once the session is open, right before the listing, in every
+  configuration (AB#9569): a file that reaches the age while the node waits for a slot or connects is listed in the
+  same run, no longer in the next one.
 - NuGet packages raised to the newest version within the .NET 10 line (AB#9597): MailKit and MimeKit 5.0.0,
   Microsoft.ML and Microsoft.ML.TimeSeries 6.0.0, AngleSharp 1.10.5, ModelContextProtocol.AspNetCore 2.4.0,
   SSH.NET 2026.0.1, System.Security.Cryptography.Pkcs 10.0.15, and the test tooling (xunit, Testcontainers 4.17.0,

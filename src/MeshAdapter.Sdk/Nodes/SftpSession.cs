@@ -26,6 +26,30 @@ public sealed class SftpFileTooLargeException(string remotePath, long? size, lon
 }
 
 /// <summary>
+/// Raised when every connection attempt a node's <c>connectRetry</c> allows has failed. Not a
+/// pipeline exception on purpose: a node wraps it like a single failed connection ("Cannot list
+/// directory via SFTP: ..."). The message names the attempts and the type and masked text of the
+/// last failure. The inner exception is that failure, or the secret registry's redacted copy of it
+/// when a value registered as secret appears in it.
+/// </summary>
+public sealed class SftpConnectFailedException : Exception
+{
+    /// <summary>Creates the exception from the already masked description of the last failure.</summary>
+    /// <param name="attempts">Number of attempts that were made, all of them failed</param>
+    /// <param name="lastFailure">Type and masked text of the last failure</param>
+    /// <param name="lastException">The exception of the last attempt, redacted where it carries a secret</param>
+    public SftpConnectFailedException(int attempts, string lastFailure, Exception lastException)
+        : base($"Connecting failed in all {attempts} attempts the node's connectRetry allows; the last attempt failed with {lastFailure}",
+            lastException)
+    {
+        Attempts = attempts;
+    }
+
+    /// <summary>Number of attempts that were made, all of them failed.</summary>
+    public int Attempts { get; }
+}
+
+/// <summary>
 /// One entry of a remote directory listing.
 /// </summary>
 /// <param name="Name">File or directory name without its path</param>
@@ -101,12 +125,21 @@ public interface ISftpSessionFactory
     /// Waits for a free slot of the named server configuration, connects and returns the open
     /// session. The slot counters live on the ETL context, the same scope
     /// <c>EMailSender@1</c> uses for its own concurrency limit.
+    /// <para />
+    /// With <see cref="SftpServerSettings.ConnectRetry" /> allowing more than one attempt, a
+    /// connection attempt the server refuses or drops is repeated after a wait, each attempt with
+    /// a slot of its own that is handed back before the wait; when every attempt failed,
+    /// <see cref="SftpConnectFailedException" /> is raised. With a single attempt the failure
+    /// comes back as it was raised.
     /// </summary>
     /// <param name="settings">Resolved connection settings</param>
     /// <param name="serverConfigurationName">Name the concurrency limit is tracked under</param>
     /// <param name="etlContext">The ETL context holding the slot counters</param>
     /// <param name="nodeContext">The node context, so a connection failure names the step it came from</param>
-    /// <param name="cancellationToken">Cancels the wait for a free slot</param>
+    /// <param name="cancellationToken">
+    /// Cancels the wait for a free slot and the wait between attempts; a running attempt is not
+    /// interrupted, and one that fails after the token was cancelled is not repeated
+    /// </param>
     /// <returns>The open session</returns>
     Task<ISftpSession> ConnectAsync(SftpServerSettings settings, string serverConfigurationName,
         IMeshEtlContext etlContext, INodeContext nodeContext, CancellationToken cancellationToken = default);

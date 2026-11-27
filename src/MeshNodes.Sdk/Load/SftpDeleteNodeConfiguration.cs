@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -15,6 +16,10 @@ public record SftpDeleteNodeConfiguration : NodeConfiguration
     /// </summary>
     [PropertyGroup("Connection", 0)]
     public required string ServerConfiguration { get; set; }
+
+    /// <summary>Repeats a refused or dropped connection attempt (absent: one attempt), never the delete.</summary>
+    [PropertyGroup("Connection", 1)]
+    public SftpConnectRetryOptions? ConnectRetry { get; set; }
 
     /// <summary>
     /// Static remote path of the file to delete (set this or <c>RemotePathPath</c>)

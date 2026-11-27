@@ -418,6 +418,92 @@ public class HttpRequestServiceTests
         Assert.Equal(RtEventLevelsEnum.Warning, entry.Level);
     }
 
+    /// <remarks>
+    /// AB#6054: in Warn mode a service token of another tenant runs (see
+    /// <see cref="SendRequestAsync_ServiceTokenOfAnotherTenantInWarnMode_ExecutesAndRecordsWarning" />); an agent token
+    /// of another tenant does not, because the agent check comes before the service-token rule.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_AgentServiceTokenOfAnotherTenantInWarnMode_ReturnsForbiddenAgentTokenNotAccepted()
+    {
+        var service = CreateService(auditAnonymousInvocations: false, ServiceTokenEnforcementMode.Warn);
+        var executed = false;
+        var options = CreateRouteOptions("/api/agent", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/agent");
+        var agent = CreateServiceToken("otherTenant", "CommunicationAdmin");
+        ((ClaimsIdentity)agent.Identity!).AddClaim(new Claim("scope", "octo_agent"));
+        context.User = agent;
+        var result = await service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Contains("error_code=\"agent_token_not_accepted\"", context.Response.Headers.WWWAuthenticate.ToString());
+        Assert.False(executed);
+    }
+
+    /// <remarks>
+    /// AB#6054: a user token (with sub) that carries the agent scope is refused with the agent code, not with the
+    /// tenant mismatch it would otherwise get.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_UserTokenOfAnotherTenantWithTheAgentScope_ReturnsAgentTokenNotAccepted()
+    {
+        var executed = false;
+        var options = CreateRouteOptions("/api/agent", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/agent");
+        var user = CreateAuthenticatedUserOfTenant("otherTenant", "CommunicationAdmin");
+        ((ClaimsIdentity)user.Identity!).AddClaim(new Claim("scope", "octo_agent"));
+        context.User = user;
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        var challenge = context.Response.Headers.WWWAuthenticate.ToString();
+        Assert.Contains("error_code=\"agent_token_not_accepted\"", challenge);
+        Assert.DoesNotContain("tenant_mismatch", challenge);
+        Assert.False(executed);
+    }
+
+    /// <remarks>
+    /// AB#6054: the scope as one claim per value (the usual JWT array encoding): octo_api and octo_agent as two claims.
+    /// </remarks>
+    [Fact]
+    public async Task SendRequestAsync_AgentScopeAsItsOwnClaimBesideOctoApi_ReturnsForbiddenAgentTokenNotAccepted()
+    {
+        var executed = false;
+        var options = CreateRouteOptions("/api/agent", HttpMethod.Post, _ =>
+        {
+            executed = true;
+            return Task.FromResult<JsonNode?>(null);
+        }, allowAnonymous: false, requiredRoles: ["CommunicationAdmin"]);
+        _service.CreateRoute(options);
+
+        var context = CreateHttpContext("POST", $"/{TenantId}/api/agent");
+        var agent = CreateServiceToken(TenantId, "CommunicationAdmin");
+        var identity = (ClaimsIdentity)agent.Identity!;
+        identity.AddClaim(new Claim("scope", "octo_api"));
+        identity.AddClaim(new Claim("scope", "octo_agent"));
+        context.User = agent;
+        var result = await _service.SendRequestAsync(context);
+
+        Assert.True(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Contains("error_code=\"agent_token_not_accepted\"", context.Response.Headers.WWWAuthenticate.ToString());
+        Assert.False(executed);
+    }
+
     [Fact]
     public async Task SendRequestAsync_ServiceTokenWithOctoApi_IsNotTakenForAnAgentToken()
     {

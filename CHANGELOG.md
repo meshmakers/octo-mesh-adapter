@@ -32,6 +32,10 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
   Microsoft.NET.Test.Sdk, coverlet, FluentAssertions, TimeProvider.Testing 10.11.1). The IMAP requeue tests now
   intercept `IMailFolder.MoveToAsync(IList<UniqueId>, IMoveRequest, ...)` because MailKit 5 made the single-id
   overload an extension method. IronOcr, PdfSharp and QuestPDF stay on their versions (see the PR for the reasons).
+- `DeployPipelineNodeEnabledGuardTests` reach the REST call `ICommunicationServicesClient.DeployPipelineAsync`, which
+  octo-sdk marks `[Obsolete]` with communication wave 3 (AB#9052), through two helpers that suppress CS0618 in one
+  place (AB#9868), so the test build stays free of warnings. `DeployPipeline@1` keeps the REST deploy until AB#9563;
+  the docs note on that (lost when the docs moved to `AGENTS.md`/`docs/`) is back in `docs/nodes-load.md`.
 
 ### Fixed
 

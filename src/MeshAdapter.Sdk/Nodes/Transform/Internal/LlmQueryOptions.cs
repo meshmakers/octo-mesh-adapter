@@ -134,4 +134,12 @@ internal sealed record LlmQueryOptions
 
     /// <summary>The key of the sealed endpoint; <c>null</c> for a keyless one (no key header is sent).</summary>
     public string? SealedProviderApiKey { get; init; }
+
+    /// <summary>
+    ///     The pipeline service account's token for the central-key LLM gateway (AB#8691), set when the node runs
+    ///     with the central key. It is then the credential of every call of the run (tool rounds and JSON repair
+    ///     calls included), sent as a bearer token to the gateway; no API key of the AiConfiguration or the node is
+    ///     read. Registered as a secret of the execution like any key.
+    /// </summary>
+    public string? CentralGatewayToken { get; init; }
 }

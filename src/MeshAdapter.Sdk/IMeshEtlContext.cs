@@ -56,6 +56,14 @@ public interface IMeshEtlContext : IEtlContext
     ValueTask<string?> GetServiceIdentitySubjectIdAsync() => ValueTask.FromResult<string?>(null);
 
     /// <summary>
+    ///     Token of the pipeline's service account for the AI service's central-key LLM gateway (AB#8691), scope
+    ///     <c>ai.llm.invoke</c> only, or <c>null</c> when the pipeline has no service account or the token could not
+    ///     be acquired. Credential material: never log it. The gateway takes the tenant from this token and meters
+    ///     and caps every call; no caller identity is involved.
+    /// </summary>
+    ValueTask<string?> GetLlmGatewayTokenAsync() => ValueTask.FromResult<string?>(null);
+
+    /// <summary>
     ///     Opens a session that <b>deliberately</b> acts as <see cref="RtSecurityContext.System" />,
     ///     bypassing data-level permissions and creator stamping.
     /// </summary>

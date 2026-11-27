@@ -284,6 +284,20 @@
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL
   value: {{ .Values.reportingServiceUri | quote }}
 {{/*
+  AB#8691 — base URL of the AI service's central-key LLM gateway
+  (MeshAdapterConfiguration.LlmGatewayUrl). AnthropicAiQuery@1 with keySource: Central
+  posts to {url}/llm/anthropic/v1/messages with the pipeline service account's token.
+  Rendered only when set: without it a node that asks for the central key fails before
+  any request (fail closed), and the tenant-key path is unaffected.
+*/}}
+{{- with .Values.llmGatewayUrl }}
+{{- if not (regexMatch "^https?://[^/[:space:]]+" .) }}
+{{- fail (printf "llmGatewayUrl must be an absolute http(s) URL, got '%s'" .) }}
+{{- end }}
+- name: OCTO_ADAPTER__LLMGATEWAYURL
+  value: {{ . | quote }}
+{{- end }}
+{{/*
   AB#5628 — tenant check for client-credentials tokens. Always rendered: an
   empty value would bind as the enum's zero value, which is Enforce as well,
   but the explicit value makes the mode readable in `kubectl describe pod`.

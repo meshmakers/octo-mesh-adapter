@@ -470,6 +470,12 @@ internal sealed class LlmQueryEngine(
     private static string? ResolveApiKey(LlmQueryOptions options, IMeshEtlContext etlContext,
         INodeContext nodeContext)
     {
+        // AB#8691: the central key is the gateway's; the run's only credential is the gateway token.
+        if (options.CentralGatewayToken != null)
+        {
+            return options.CentralGatewayToken;
+        }
+
         // A sealed endpoint brings its own key, or none: the configuration's key never goes to its URL.
         if (options.HasSealedProviderEndpoint)
         {

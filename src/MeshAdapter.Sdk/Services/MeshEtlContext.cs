@@ -183,6 +183,13 @@ public class MeshEtlContext : DefaultEtlContext, IMeshEtlContext
         return context.IsSystem ? null : context.SubjectId;
     }
 
+    /// <inheritdoc />
+    public ValueTask<string?> GetLlmGatewayTokenAsync()
+    {
+        // No resolver wired: no service account, no gateway token (the node fails closed).
+        return _identityResolver?.AcquireLlmGatewayTokenAsync() ?? ValueTask.FromResult<string?>(null);
+    }
+
     private ValueTask<RtSecurityContext> ResolveServiceAccountContextAsync()
     {
         if (_identityResolver != null)

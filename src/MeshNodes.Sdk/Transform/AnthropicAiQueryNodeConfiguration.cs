@@ -24,6 +24,17 @@ public record AnthropicAiQueryNodeConfiguration : SourceTargetPathNodeConfigurat
     public string? ApiKey { get; set; }
 
     /// <summary>
+    /// Where the right to call the model comes from (AB#8691). <see cref="LlmKeySource.Configured"/> (default):
+    /// the tenant's key from <see cref="ApiKeyConfigurationName"/> or <see cref="ApiKey"/>.
+    /// <see cref="LlmKeySource.Central"/>: the central Meshmakers key through the AI service's LLM gateway, which
+    /// meters every call against the tenant's monthly cap; the node sends no key, <see cref="ApiKey"/> must be
+    /// empty, and an AiConfiguration named by <see cref="ApiKeyConfigurationName"/> still supplies model, token
+    /// limit, temperature and MCP server URL but never its key or provider endpoint.
+    /// </summary>
+    [PropertyGroup("Connection", 2)]
+    public LlmKeySource KeySource { get; set; } = LlmKeySource.Configured;
+
+    /// <summary>
     /// The Claude model to use (e.g., "claude-sonnet-4-6", "claude-opus-4-1").
     /// Optional on the node when the <c>promptTemplateName</c> template supplies
     /// <c>DefaultModelId</c> or the referenced AiConfiguration supplies <c>aiModel</c>; those values

@@ -1611,6 +1611,83 @@ public class ServiceAccountTokenServiceTests
         }
     }
 
+    // ---- AcquireLlmGatewayTokenAsync (AB#8691): the pipeline account's token for the central-key gateway ----
+
+    [Fact]
+    public async Task AcquireLlmGatewayTokenAsync_AsksForTheGatewayScopeOnly_AsTheServiceAccount()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        var token = await service.AcquireLlmGatewayTokenAsync(Credentials, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(token);
+        var form = handler.LastTokenForm!;
+        Assert.Equal("ai.llm.invoke", form["scope"]);
+        Assert.Equal("client_credentials", form["grant_type"]);
+        Assert.Equal($"tenant:{TenantId}", form["acr_values"]);
+    }
+
+    [Fact]
+    public async Task AcquireLlmGatewayTokenAsync_IsCached_SeparatelyFromTheOctoApiToken()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
+        var service = CreateService(handler);
+
+        await service.AcquireLlmGatewayTokenAsync(Credentials, TestContext.Current.CancellationToken);
+        await service.AcquireLlmGatewayTokenAsync(Credentials, TestContext.Current.CancellationToken);
+        Assert.Equal(1, handler.CallCount);
+
+        // The octo_api token of the same account is a different token, never served from the gateway entry.
+        await service.AcquireServiceAccountTokenAsync(_tenantRepository, WellKnownName,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(2, handler.CallCount);
+        Assert.Contains("octo_api", handler.LastTokenForm!["scope"]);
+    }
+
+    [Fact]
+    public async Task AcquireLlmGatewayTokenAsync_IdentityRefusesTheScope_ReturnsNull()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenError(
+            System.Net.HttpStatusCode.BadRequest, """{"error":"invalid_scope"}"""));
+
+        Assert.Null(await CreateService(handler).AcquireLlmGatewayTokenAsync(Credentials,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("another-tenant", Issuer, false)]
+    [InlineData(TenantId, "https://foreign-identity.test", false)]
+    [InlineData(TenantId, Issuer, true)]
+    public async Task AcquireLlmGatewayTokenAsync_AnUnverifiableTokenIsNeverHandedOutOrCached(string tokenTenant,
+        string tokenIssuer, bool foreignKey)
+    {
+        // AB#9776 applies to the gateway token as well: a token of another tenant, another issuer or signed with a
+        // foreign key is refused, and the refusal is not cached as a token.
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600,
+                issuer: tokenIssuer, tenantId: tokenTenant, signWith: foreignKey ? RSA.Create(2048) : null),
+            expiresIn: 3600));
+        var service = CreateService(handler);
+
+        Assert.Null(await service.AcquireLlmGatewayTokenAsync(Credentials, TestContext.Current.CancellationToken));
+        Assert.Null(await service.AcquireLlmGatewayTokenAsync(Credentials, TestContext.Current.CancellationToken));
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AcquireLlmGatewayTokenAsync_AForeignConfiguredIssuerIsRefused_BeforeAnyRequest()
+    {
+        var handler = new IdentityEndpointHandler(IdentityEndpointHandler.TokenResponse(
+            TestJwt.Create(subject: null, clientId: ClientId, roles: [], expiresInSeconds: 3600), expiresIn: 3600));
+
+        Assert.Null(await CreateService(handler).AcquireLlmGatewayTokenAsync(
+            Credentials with { IssuerUri = "https://foreign-identity.test" }, TestContext.Current.CancellationToken));
+        Assert.Equal(0, handler.CallCount);
+    }
+
     /// <summary>
     /// Answers the OIDC discovery document itself (IdentityModel always fetches it first) and hands
     /// every token request to the scripted step, recording the posted form so the wire contract can

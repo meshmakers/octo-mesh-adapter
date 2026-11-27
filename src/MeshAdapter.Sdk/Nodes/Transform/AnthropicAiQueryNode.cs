@@ -6,8 +6,10 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
+using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform.Internal;
 using Meshmakers.Octo.Sdk.MeshAdapter.Services;
+using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 
@@ -24,7 +26,8 @@ internal class AnthropicAiQueryNode(
     NodeDelegate next,
     IMeshEtlContext etlContext,
     IHttpClientFactory httpClientFactory,
-    IServiceAccountTokenService serviceAccountTokenService)
+    IServiceAccountTokenService serviceAccountTokenService,
+    IOptions<MeshAdapterConfiguration>? meshAdapterConfiguration = null)
     : IPipelineNode
 {
     /// <summary>The node as pipeline authors write it; part of the node's warnings.</summary>
@@ -39,7 +42,60 @@ internal class AnthropicAiQueryNode(
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<AnthropicAiQueryNodeConfiguration>();
-        await _engine.RunAsync(ToOptions(config), dataContext, nodeContext, next);
+        if (config.KeySource != LlmKeySource.Central)
+        {
+            await _engine.RunAsync(ToOptions(config), dataContext, nodeContext, next);
+            return;
+        }
+
+        // AB#8691: the central key. Everything that could fail before a request fails here, whatever
+        // continueOnError says: a node that asked for the central key never falls back to a tenant key.
+        var gateway = ResolveGatewayAccess(config, meshAdapterConfiguration?.Value, etlContext);
+        var token = await etlContext.GetLlmGatewayTokenAsync();
+        if (string.IsNullOrEmpty(token))
+        {
+            throw new InvalidOperationException(
+                $"{NodeDisplayName} with keySource Central needs a token of the pipeline's service account for the " +
+                "AI service's LLM gateway (scope ai.llm.invoke), and none could be acquired. The pipeline needs a " +
+                "service account that is allowed the scope; see the adapter log for the cause. Nothing was sent.");
+        }
+
+        nodeContext.RegisterSecret(token);
+        nodeContext.Info($"Using the central Meshmakers key through the AI service's LLM gateway ({gateway.BaseUrl})");
+        var engine = new LlmQueryEngine(etlContext, httpClientFactory, serviceAccountTokenService,
+            credential => new AnthropicMessagesChatClient(httpClientFactory, credential, gateway: gateway));
+        await engine.RunAsync(ToOptions(config) with { CentralGatewayToken = token }, dataContext, nodeContext, next);
+    }
+
+    /// <summary>
+    ///     The gateway of a node with <c>keySource: Central</c>: the adapter's <c>LlmGatewayUrl</c> (an absolute
+    ///     http or https URL) and the caller reference of this execution. Refuses an inline <c>apiKey</c>, so a key in
+    ///     the pipeline definition is never silently ignored, and a missing or malformed gateway URL (fail closed).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Configuration not usable; nothing has been sent.</exception>
+    internal static LlmGatewayAccess ResolveGatewayAccess(AnthropicAiQueryNodeConfiguration config,
+        MeshAdapterConfiguration? adapterConfiguration, IMeshEtlContext etlContext)
+    {
+        if (!string.IsNullOrEmpty(config.ApiKey))
+        {
+            throw new InvalidOperationException(
+                $"{NodeDisplayName}: 'apiKey' cannot be combined with keySource Central — the central key is held by " +
+                "the AI service and no key may be configured on the node. Remove 'apiKey'.");
+        }
+
+        var url = adapterConfiguration?.LlmGatewayUrl;
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var baseUrl) ||
+            (baseUrl.Scheme != Uri.UriSchemeHttps && baseUrl.Scheme != Uri.UriSchemeHttp) ||
+            !string.IsNullOrEmpty(baseUrl.UserInfo) || !string.IsNullOrEmpty(baseUrl.Query) ||
+            !string.IsNullOrEmpty(baseUrl.Fragment))
+        {
+            throw new InvalidOperationException(
+                $"{NodeDisplayName} with keySource Central needs the AI service's LLM gateway, but this adapter has " +
+                "no valid 'Adapter:LlmGatewayUrl' (OCTO_ADAPTER__LLMGATEWAYURL). Nothing was sent.");
+        }
+
+        var callerRef = $"pipeline:{etlContext.PipelineRtEntityId.RtId}/execution:{etlContext.PipelineExecutionId:N}";
+        return new LlmGatewayAccess(baseUrl, LlmGatewayAccess.IsValidCallerRef(callerRef) ? callerRef : null);
     }
 
     /// <summary>The node's configuration as the engine reads it: every value as configured.</summary>

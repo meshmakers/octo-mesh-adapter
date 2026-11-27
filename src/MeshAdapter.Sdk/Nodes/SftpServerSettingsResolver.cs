@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -22,9 +23,11 @@ internal static class SftpServerSettingsResolver
     /// <param name="etlContext">The ETL context carrying the tenant global configuration</param>
     /// <param name="serverConfigurationName">Name of the global configuration entry</param>
     /// <param name="nodeContext">The node context, for error reporting</param>
+    /// <param name="connectRetry">The node's <c>connectRetry</c>, carried on the result for the session factory;
+    /// without a default, so no node can drop it by accident and connect once whatever its definition says</param>
     /// <returns>The resolved settings</returns>
     public static SftpServerSettings Resolve(IMeshEtlContext etlContext, string serverConfigurationName,
-        INodeContext nodeContext)
+        INodeContext nodeContext, SftpConnectRetryOptions? connectRetry)
     {
         if (!etlContext.GlobalConfiguration.IsDefined(serverConfigurationName))
         {
@@ -81,7 +84,10 @@ internal static class SftpServerSettingsResolver
         CheckTimeout(settings.OperationTimeoutSeconds, nameof(settings.OperationTimeoutSeconds));
         CheckTimeout(settings.WaitForSlotTimeoutSeconds, nameof(settings.WaitForSlotTimeoutSeconds));
 
-        return settings;
+        // The options checked their range when the definition was bound; the entry cannot carry them
+        // (JsonIgnore). Both are copied: what the global configuration hands out is never changed, and
+        // no instance is shared with the node configuration, so two nodes never see each other's option.
+        return connectRetry is null ? settings : settings with { ConnectRetry = connectRetry with { } };
 
         void CheckTimeout(int value, string propertyName)
         {

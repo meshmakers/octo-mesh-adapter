@@ -2,6 +2,7 @@ using System.Text.Json;
 using FakeItEasy;
 using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Common.Shared;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -41,7 +42,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(false);
 
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null));
         Assert.Contains(ServerConfig, ex.Message);
     }
 
@@ -53,7 +54,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
             .Returns(new SftpServerSettings { Host = "sftp.example.com", Username = "user" });
 
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null));
         Assert.Contains("authentication", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -75,7 +76,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         // Caught while resolving, so a misconfigured entry fails before the node does any
         // work - the upload node otherwise downloads a binary from storage first.
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null));
         Assert.Contains("MaxConcurrentConnections", ex.Message);
     }
 
@@ -97,7 +98,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         // Leaving the field out disables pinning on purpose. A blank value is a typo, and
         // silently accepting it leaves an operator believing the server is pinned.
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null));
         Assert.Contains("HostKeyFingerprint", ex.Message);
     }
 
@@ -143,7 +144,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         // Zero means "leave it as it is". A negative value is a mistake, and silently reading
         // it as zero would leave an operator believing a limit is in place.
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null));
         Assert.Contains("Seconds", ex.Message);
     }
 
@@ -170,7 +171,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         // configuration entry - and the connect timeout only reaches its setter once the
         // client has been created.
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext()));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null));
         Assert.Contains("Seconds", ex.Message);
         Assert.Contains(ServerConfig, ex.Message);
     }
@@ -190,7 +191,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
                 WaitForSlotTimeoutSeconds = 2147483
             });
 
-        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext());
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null);
 
         Assert.Equal(2147483, settings.ConnectTimeoutSeconds);
     }
@@ -207,7 +208,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         // Left alone, the deserializer's message reaches the run as a bare sentence about a
         // JSON path, with nothing saying which node or which configuration entry it belongs to.
         var ex = Assert.Throws<MeshAdapterPipelineExecutionException>(
-            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, nodeContext));
+            () => SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, nodeContext, connectRetry: null));
         Assert.Contains(ServerConfig, ex.Message);
         Assert.Contains("System.Int32", ex.Message);
         Assert.StartsWith($"[{nodeContext.NodePath}]", ex.Message);
@@ -220,7 +221,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
         A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
             .Returns(new SftpServerSettings { Host = "sftp.example.com", Username = "user", Password = "secret" });
 
-        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext());
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null);
 
         Assert.Equal("sftp.example.com", settings.Host);
         Assert.Equal(22, settings.Port);
@@ -242,7 +243,7 @@ public class SftpServerSettingsResolverTests : NodeTestBase
                      }
                      """.Deserialize<SftpServerSettings>());
 
-        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext());
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null);
 
         // Deserializing the payload and validating it are two different steps, and the second
         // one only helps if the first produced the default: reading the unset attribute as zero
@@ -262,9 +263,51 @@ public class SftpServerSettingsResolverTests : NodeTestBase
                 PrivateKey = "-----BEGIN OPENSSH PRIVATE KEY-----"
             });
 
-        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext());
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null);
 
         Assert.Null(settings.Password);
         Assert.NotNull(settings.PrivateKey);
+    }
+
+    [Fact]
+    public void Resolve_TwoNodesWithDifferentOptionsAgainstOneEntry_DoNotSeeEachOther()
+    {
+        // The global configuration may hand out the same instance every time; the option goes on
+        // a copy per call, and no instance is shared with the node configuration either.
+        var shared = new SftpServerSettings { Host = "sftp.example.com", Username = "user", Password = "secret" };
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig)).Returns(shared);
+        var three = new SftpConnectRetryOptions { MaxAttempts = 3, BackoffBaseSeconds = 10 };
+
+        var first = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), three);
+        var second = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(),
+            new SftpConnectRetryOptions { MaxAttempts = 5, BackoffBaseSeconds = 0 });
+        var none = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null);
+
+        Assert.Equal<(int?, double?)>((3, 10.0), (first.ConnectRetry!.MaxAttempts, first.ConnectRetry!.BackoffBaseSeconds));
+        Assert.Equal<(int?, double?)>((5, 0.0), (second.ConnectRetry!.MaxAttempts, second.ConnectRetry!.BackoffBaseSeconds));
+        Assert.Null(none.ConnectRetry);
+        Assert.Null(shared.ConnectRetry);
+        Assert.NotSame(three, first.ConnectRetry);
+    }
+
+    [Fact]
+    public void Resolve_EntryCarryingConnectRetry_DoesNotSetTheOption()
+    {
+        // Only the node configuration decides how often a node connects.
+        A.CallTo(() => _globalConfiguration.IsDefined(ServerConfig)).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpServerSettings>(ServerConfig))
+            .Returns("""
+                     {
+                       "host": "sftp.example.com",
+                       "username": "user",
+                       "password": "secret",
+                       "connectRetry": { "maxAttempts": 5, "backoffBaseSeconds": 2 }
+                     }
+                     """.Deserialize<SftpServerSettings>());
+
+        var settings = SftpServerSettingsResolver.Resolve(_etlContext, ServerConfig, NodeContext(), connectRetry: null);
+
+        Assert.Null(settings.ConnectRetry);
     }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.MeshAdapter.Common;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
@@ -114,6 +116,14 @@ public sealed record SftpServerSettings
     /// verification path here is complete and waits on that.
     /// </summary>
     public string? HostKeyFingerprint { get; init; }
+
+    /// <summary>
+    /// The node's <c>connectRetry</c>, set when the settings are resolved; null means a single attempt.
+    /// Never read from the entry: two nodes against one server can retry differently, and the CK type
+    /// would not carry the attribute anyway.
+    /// </summary>
+    [JsonIgnore]
+    public SftpConnectRetryOptions? ConnectRetry { get; init; }
 
     /// <summary>
     /// Redacted on purpose. A record prints every property, so a single interpolation into a

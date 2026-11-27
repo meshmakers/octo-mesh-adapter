@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -20,6 +21,10 @@ public record SftpListNodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public required string RemoteDirectory { get; set; }
+
+    /// <summary>Repeats a refused or dropped connection attempt (absent: one attempt), never the listing.</summary>
+    [PropertyGroup("Connection", 2)]
+    public SftpConnectRetryOptions? ConnectRetry { get; set; }
 
     /// <summary>
     /// Glob the file name must match: '*' any run of characters, '?' exactly one, anchored at

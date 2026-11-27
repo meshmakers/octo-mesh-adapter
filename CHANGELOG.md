@@ -15,6 +15,13 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- `SftpList@1`, `SftpDownload@1`, `SftpUpload@1` and `SftpDelete@1` option `connectRetry` (AB#9569): `maxAttempts`
+  (1 to 10, default 1), `backoffBaseSeconds` (default 1, zero or a positive finite number), wait base * 2^(n - 1) s
+  after attempt n, at most 60 s. Only what SSH.NET's `Connect` raises is repeated, never a refused host key, a blank
+  host, a cancellation, unreadable key material or a failure after the session is open; a slot
+  per attempt; with more than one attempt a warning per failed connection attempt, N when all N fail, and a failure
+  that is not repeated ends the call after its own warning; the last failure inside the new
+  `SftpConnectFailedException`. Unset: one attempt.
 - Inbound HTTP routes refuse an agent token (scope `octo_agent`, AB#6054) with `403` and
   `WWW-Authenticate: Bearer error="insufficient_scope", error_code="agent_token_not_accepted"` before the tenant and
   role checks; an agent acts only through its MCP mandate.

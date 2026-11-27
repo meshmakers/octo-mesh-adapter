@@ -74,7 +74,8 @@ public partial class SftpDeleteNode(
         // run would refuse.
         var expected = ResolveExpectedIdentity(c, dataContext, nodeContext);
 
-        var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext);
+        var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext,
+            c.ConnectRetry);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {

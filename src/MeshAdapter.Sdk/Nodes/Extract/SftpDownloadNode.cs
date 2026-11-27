@@ -49,7 +49,8 @@ public class SftpDownloadNode(
             throw PipelineExecutionException.ValueNotSet(nodeContext, c.RemotePathPath!);
         }
 
-        var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext);
+        var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext,
+            c.ConnectRetry);
 
         byte[] content;
         try

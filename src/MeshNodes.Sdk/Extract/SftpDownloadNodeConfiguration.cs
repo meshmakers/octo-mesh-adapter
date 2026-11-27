@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
@@ -15,6 +16,10 @@ public record SftpDownloadNodeConfiguration : TargetPathNodeConfiguration
     /// </summary>
     [PropertyGroup("Connection", 0)]
     public required string ServerConfiguration { get; set; }
+
+    /// <summary>Repeats a refused or dropped connection attempt (absent: one attempt), never the download.</summary>
+    [PropertyGroup("Connection", 1)]
+    public SftpConnectRetryOptions? ConnectRetry { get; set; }
 
     /// <summary>
     /// Static remote path of the file to read (set this or <see cref="RemotePathPath" />)

@@ -1,3 +1,4 @@
+using Meshmakers.Octo.MeshAdapter.Nodes.Common;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 
 namespace Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -19,6 +20,10 @@ public record SftpUploadNodeConfiguration : PathNodeConfiguration
     /// </summary>
     [PropertyGroup("Connection", 1)]
     public required string RemoteDirectory { get; set; }
+
+    /// <summary>Repeats a refused or dropped connection attempt (absent: one attempt), never the upload.</summary>
+    [PropertyGroup("Connection", 2)]
+    public SftpConnectRetryOptions? ConnectRetry { get; set; }
 
     /// <summary>
     /// Static file name for the uploaded file

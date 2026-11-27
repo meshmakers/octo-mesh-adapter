@@ -65,7 +65,8 @@ public class SftpListNode(
             throw MeshAdapterPipelineExecutionException.FilePatternNotConfigured(nodeContext);
         }
 
-        var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext);
+        var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext,
+            c.ConnectRetry);
         var now = DateTime.UtcNow;
         var glob = SftpFileNameGlob.Compile(c.FilePattern);
         // A file under the temporary name of SftpDelete@1 was already handed to a delete, so it is

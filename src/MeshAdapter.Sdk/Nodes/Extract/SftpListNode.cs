@@ -67,7 +67,6 @@ public class SftpListNode(
 
         var settings = SftpServerSettingsResolver.Resolve(etlContext, c.ServerConfiguration, nodeContext,
             c.ConnectRetry);
-        var now = DateTime.UtcNow;
         var glob = SftpFileNameGlob.Compile(c.FilePattern);
         // A file under the temporary name of SftpDelete@1 was already handed to a delete, so it is
         // not offered as a delivery unless the pattern asks for that name: a pattern with a wildcard
@@ -80,6 +79,9 @@ public class SftpListNode(
         {
             using var session = await sessionFactory.ConnectAsync(settings, c.ServerConfiguration, etlContext,
                 nodeContext);
+            // Taken once the session is open: a connection retry can wait for minutes, and a time from
+            // before it would make a file look younger than it is when the directory is listed.
+            var now = DateTime.UtcNow;
             var listed = session.List(c.RemoteDirectory)
                 .Where(e => !e.IsDirectory)
                 .Where(e => IsPlainName(e, nodeContext))

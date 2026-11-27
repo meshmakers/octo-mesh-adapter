@@ -706,7 +706,7 @@ Lists a remote directory over SFTP and emits one element per matching file. Meta
 | `RemoteDirectory` | string | Directory to list |
 | `ConnectRetry` | object | Attempts and waits for opening the session when the server refuses or drops the connection attempt; see [Connection retry](#connection-retry-connectretry). Absent: one attempt |
 | `FilePattern` | string | Glob: `*` any run of characters, `?` exactly one, anchored, case insensitive, everything else literal. A file under the temporary name of `SftpDelete@1` is listed only by a pattern that contains `.sftpdelete-` |
-| `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0) |
+| `MinFileAgeSeconds` | int | Omit entries whose last write is younger, so a file still being written is picked up later (default 0). The age is taken once the session is open, after any connection retry |
 | `TargetPath` | string | Where the array is written |
 
 Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nested `source` object with `serverConfiguration`, `remoteDirectory` and `filePattern`.

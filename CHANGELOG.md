@@ -15,6 +15,9 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- Inbound HTTP routes refuse an agent token (scope `octo_agent`, AB#6054) with `403` and
+  `WWW-Authenticate: Bearer error="insufficient_scope", error_code="agent_token_not_accepted"` before the tenant and
+  role checks; an agent acts only through its MCP mandate.
 - `AnthropicAiQuery@1` option `keySource: Central` (AB#8691): the node calls the AI service's central-key LLM gateway
   (`Adapter:LlmGatewayUrl`) with the pipeline service account's `ai.llm.invoke` token and sends no API key; tool rounds
   and JSON repair calls go the same way. `AiSpendCapReached` and `AiMeterUnavailable` fail the node with messages that

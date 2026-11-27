@@ -47,6 +47,12 @@ internal partial class HttpRequestService(
     /// </summary>
     private const string ClientIdClaim = "client_id";
 
+    /// <summary>
+    /// Scope of an agent token (AB#6054). Same value as <c>AgentTokens.AgentScope</c> in octo-common-services, which this
+    /// SDK does not reference.
+    /// </summary>
+    private const string AgentScope = "octo_agent";
+
     public HttpRouteHandle CreateRoute(HttpRequestOptions options)
     {
         var key = new Tuple<string, string>(options.Method.ToString().ToUpper(), GetUri(options.Route));
@@ -462,6 +468,19 @@ internal partial class HttpRequestService(
         var clientId = context.User.FindFirstValue(ClientIdClaim);
         var tenantId = context.User.FindFirstValue(TenantIdClaim);
 
+        // AB#6054: an agent acts only through its MCP mandate; its token reaches no inbound route, whatever roles or
+        // tenant it carries. Checked before the tenant and role checks, in every mode of the service-token rule.
+        if (IsAgentToken(context.User))
+        {
+            logger.LogWarning("Denied {Method} {Route} for client {ClientId}: agent token ({Code})",
+                route.Method, route.Route, clientId, BearerChallenge.AgentTokenNotAccepted);
+            await eventService.StoreWarningEventAsync(tenantOfAdapter,
+                $"Denied {route.Method.ToString().ToUpper()} {route.Route} for client {clientId}: agent tokens are accepted only by the MCP agent endpoint.");
+            Deny(context, StatusCodes.Status403Forbidden,
+                BearerChallenge.ForInsufficientScope(BearerChallenge.AgentTokenNotAccepted, []));
+            return false;
+        }
+
         // An adapter serves exactly one tenant, so a token minted for another tenant of the same
         // installation must not reach its routes - and this runs before the role check, so the
         // role names of another tenant never matter. Both kinds of token are compared: since
@@ -601,6 +620,15 @@ internal partial class HttpRequestService(
             return null;
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="principal" /> carries the agent scope, in either encoding of <c>scope</c> (one claim per
+    /// scope or one space-delimited claim).
+    /// </summary>
+    internal static bool IsAgentToken(ClaimsPrincipal principal) =>
+        principal.FindAll("scope")
+            .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Contains(AgentScope, StringComparer.Ordinal);
 
     /// <summary>
     /// Answers a denied request with the status and the challenge that names the reason.

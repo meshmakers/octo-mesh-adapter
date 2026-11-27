@@ -622,9 +622,6 @@ internal partial class HttpRequestService(
     }
 
     /// <summary>
-    /// Answers a denied request with the status and the challenge that names the reason.
-    /// </summary>
-    /// <summary>
     /// True when <paramref name="principal" /> carries the agent scope, in either encoding of <c>scope</c> (one claim per
     /// scope or one space-delimited claim).
     /// </summary>
@@ -633,6 +630,9 @@ internal partial class HttpRequestService(
             .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             .Contains(AgentScope, StringComparer.Ordinal);
 
+    /// <summary>
+    /// Answers a denied request with the status and the challenge that names the reason.
+    /// </summary>
     private static void Deny(HttpContext context, int statusCode, string challenge)
     {
         context.Response.StatusCode = statusCode;

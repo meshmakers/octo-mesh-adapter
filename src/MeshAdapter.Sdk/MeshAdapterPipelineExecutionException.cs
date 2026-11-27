@@ -92,6 +92,29 @@ internal class MeshAdapterPipelineExecutionException : PipelineExecutionExceptio
             $"[{nodeContext.NodePath}]: {reason}; its value is usable only by platform nodes and is never revealed to a pipeline.");
     }
 
+    /// <summary><c>GetNumberRangeGapReport@1</c>: neither the number range nor a path to it is set.</summary>
+    public static Exception NumberRangeNotSet(INodeContext nodeContext)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: the number range is not set; set numberRange or numberRangePath.");
+    }
+
+    /// <summary>
+    /// <c>GetNumberRangeGapReport@1</c>: the range does not exist, or the node's identity may not read it (the two
+    /// are not told apart).
+    /// </summary>
+    public static Exception NumberRangeNotFound(INodeContext nodeContext, string numberRange)
+    {
+        return new MeshAdapterPipelineExecutionException(
+            $"[{nodeContext.NodePath}]: number range '{numberRange}' was not found or may not be read by the node's identity.");
+    }
+
+    /// <summary><c>GetNumberRangeGapReport@1</c>: the engine refused the report (fiscal year missing or not allowed).</summary>
+    public static Exception NumberRangeGapReportRefused(INodeContext nodeContext, Exception inner)
+    {
+        return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: {inner.Message}", inner);
+    }
+
     public static Exception InputValueNull(INodeContext nodeContext, string path)
     {
         return new MeshAdapterPipelineExecutionException($"[{nodeContext.NodePath}]: Path ${path} is null.");

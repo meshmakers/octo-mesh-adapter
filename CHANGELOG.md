@@ -15,6 +15,13 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- `GetNumberRangeGapReport@1` (AB#9763) writes the gap report of a number range for one fiscal year (missing numbers
+  as intervals, duplicate numbers with every document, irregular numbers) to the target path. A thin mapping of the
+  engine method `ITenantRepository.GetNumberRangeGapReportAsync`, read with the session of the node's identity (default
+  `Caller`; without a verified principal the service account or the system session, which sees every document of the
+  range). Needs the engine-mongodb packages of the same change. `SessionIdentityClassificationTests` classifies the new
+  site and accepts the marker `// Session identity:` besides the work item markers. Docs: `docs/nodes-extract.md`,
+  `docs/developer-guide.md`. Tests: `GetNumberRangeGapReportNodeTests`.
 - Inbound HTTP routes refuse an agent token (scope `octo_agent`, AB#6054) with `403` and
   `WWW-Authenticate: Bearer error="insufficient_scope", error_code="agent_token_not_accepted"` before the tenant and
   role checks; an agent acts only through its MCP mandate.

@@ -106,6 +106,7 @@ public static class ServiceCollectionExtensions
             .RegisterNode<AggregateStreamDataNode>()
             .RegisterNode<DetectStreamDataGapsNode>()
             .RegisterNode<GetPipelineConfigByCkTypeIdNode>()
+            .RegisterNode<GetNumberRangeGapReportNode>()
             .RegisterNode<QueryResultToMarkdownTableNode>()
             .RegisterNode<MakeHttpRequestNode>()
             .RegisterNode<VerifyCaptchaNode>()

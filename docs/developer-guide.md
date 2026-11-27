@@ -251,6 +251,22 @@ Retrieves entities by semantic well-known name identifiers.
 
 Fetches existing entities or creates them if not found (idempotent retrieval).
 
+#### GetNumberRangeGapReportNode
+
+Writes the gap report of a number range for one fiscal year to `TargetPath`: the numbers from the range's start value
+to the fiscal year's current value that no released document carries (`missing`, intervals) and those more than one
+document carries (`duplicates`, with every document). A thin mapping of
+`ITenantRepository.GetNumberRangeGapReportAsync`; the report counts the documents the node's identity may read, so a
+pipeline without a verified principal (service account or system session) sees every document of the range. Details
+and the output shape: [nodes-extract.md](nodes-extract.md).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `NumberRange` / `NumberRangePath` | string | Well-known name of the range (`autoIncrementReference` of the number attribute) |
+| `FiscalYear` / `FiscalYearPath` | int | Fiscal year; required for a range with fiscal-year periods |
+| `Identity` | `Caller` (default), `ServiceAccount`, `System` | Session the report is read with |
+| `TargetPath` | string | Where the report is written |
+
 #### GetQueryByIdNode
 
 Executes a persisted query entity (`RtPersistentQuery`) by its RtId and writes a `QueryResult`

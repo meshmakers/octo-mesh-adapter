@@ -44,6 +44,8 @@ public class SessionIdentityClassificationTests
             ["Extract/BackfillFromRtEntityNode.cs"] = (0, 1),
             ["Extract/GetAssociationTargetsNode.cs"] = (1, 0),
             ["Extract/GetFileSystemContentNode.cs"] = (0, 1),
+            // The gap report of a number range counts the documents the node's identity may read.
+            ["Extract/GetNumberRangeGapReportNode.cs"] = (1, 0),
             ["Extract/GetNotificationTemplateNode.cs"] = (0, 1),
             ["Extract/GetOrCreateRtEntitiesByTypeNode.cs"] = (1, 0),
             ["Extract/GetQueryByIdNode.cs"] = (1, 0),
@@ -150,7 +152,9 @@ public class SessionIdentityClassificationTests
         //
         // 47 now (26 scoped): VerifyCaptcha@1 reads the tenant's own secret config-selected and the platform's
         // secret default as system, because no tenant identity may read a SecretDefault.
-        Assert.Equal(26, actual.Sum(sessionCounts => sessionCounts.Scoped));
+        //
+        // 48 now (27 scoped): GetNumberRangeGapReport@1 reads the documents of a number range config-selected.
+        Assert.Equal(27, actual.Sum(sessionCounts => sessionCounts.Scoped));
         Assert.Equal(21, actual.Sum(sessionCounts => sessionCounts.System));
     }
 
@@ -194,9 +198,11 @@ public class SessionIdentityClassificationTests
                 for (var j = windowStart; j < i; j++)
                 {
                     // AB#5028 classified every site originally; AB#5127 turned the caller-scoped ones
-                    // into config-selected ones — either marker documents the decision.
+                    // into config-selected ones — either marker documents the decision. New sites in this
+                    // public repository carry no work item id: they start the comment with "Session identity:".
                     if (lines[j].Contains("AB#5028", StringComparison.Ordinal)
-                        || lines[j].Contains("AB#5127", StringComparison.Ordinal))
+                        || lines[j].Contains("AB#5127", StringComparison.Ordinal)
+                        || lines[j].Contains("// Session identity:", StringComparison.Ordinal))
                     {
                         documented = true;
                         break;

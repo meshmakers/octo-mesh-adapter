@@ -128,7 +128,8 @@ public class VerifyCaptchaPipelineTests : VerifyCaptchaTestBase
 
     private async Task<string> Post(string body)
     {
-        var node = new FromHttpRequestNode2(NullLogger<FromHttpRequestNode2>.Instance, _httpRequestService, _events);
+        var node = new FromHttpRequestNode2(NullLogger<FromHttpRequestNode2>.Instance, _httpRequestService, _events,
+            A.Fake<IHttpTriggerDryRunEndpoints>());
         await node.StartAsync(_triggerContext);
         var context = new DefaultHttpContext();
         context.Request.Method = "POST";

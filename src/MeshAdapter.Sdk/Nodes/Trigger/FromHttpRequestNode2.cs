@@ -17,10 +17,12 @@ namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Trigger;
 internal class FromHttpRequestNode2(
     ILogger<FromHttpRequestNode2> logger,
     IHttpRequestService httpRequestService,
-    IAdapterEventService eventService)
+    IAdapterEventService eventService,
+    IHttpTriggerDryRunEndpoints dryRunEndpoints)
     : ITriggerPipelineNode
 {
     private HttpRouteHandle? _routeHandle;
+    private IAsyncDisposable? _dryRunEndpoint;
 
     public async Task StartAsync(ITriggerContext context)
     {
@@ -63,6 +65,10 @@ internal class FromHttpRequestNode2(
         }, c.AllowAnonymous, c.RequiredRoles, receivesCredentialHeaders: false);
         _routeHandle = httpRequestService.CreateRoute(requestOptions);
 
+        // AB#10015: the dry run of this route (dry_run_pipeline) arrives on its own address, never a real execute;
+        // HttpTriggerDryRun.Authorize applies the route's caller rules to it.
+        _dryRunEndpoint = dryRunEndpoints.Register(context, c);
+
         // An unauthenticated route is a standing exposure, not a per-request occurrence, so the
         // fact that one exists is audited once per deployment - where an operator can find it.
         if (c.AllowAnonymous)
@@ -72,9 +78,13 @@ internal class FromHttpRequestNode2(
         }
     }
 
-    public Task StopAsync(ITriggerContext context)
+    public async Task StopAsync(ITriggerContext context)
     {
         _routeHandle?.Dispose();
-        return Task.CompletedTask;
+        if (_dryRunEndpoint != null)
+        {
+            await _dryRunEndpoint.DisposeAsync();
+            _dryRunEndpoint = null;
+        }
     }
 }

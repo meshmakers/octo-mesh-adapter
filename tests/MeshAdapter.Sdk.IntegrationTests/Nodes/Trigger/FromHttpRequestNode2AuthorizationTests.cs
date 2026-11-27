@@ -425,7 +425,8 @@ public sealed class FromHttpRequestNode2AuthorizationTests : IDisposable
                     app.UseOctoMeshAdapter();
 
                     var node = new FromHttpRequestNode2(NullLogger<FromHttpRequestNode2>.Instance,
-                        app.ApplicationServices.GetRequiredService<IHttpRequestService>(), _eventService);
+                        app.ApplicationServices.GetRequiredService<IHttpRequestService>(), _eventService,
+                        A.Fake<IHttpTriggerDryRunEndpoints>());
                     node.StartAsync(_triggerContext).GetAwaiter().GetResult();
                 }))
             .StartAsync();

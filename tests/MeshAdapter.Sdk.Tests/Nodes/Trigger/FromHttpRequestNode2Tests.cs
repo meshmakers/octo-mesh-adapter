@@ -53,7 +53,7 @@ public class FromHttpRequestNode2Tests
             });
 
         return new FromHttpRequestNode2(NullLogger<FromHttpRequestNode2>.Instance, _httpRequestService,
-            _eventService);
+            _eventService, A.Fake<IHttpTriggerDryRunEndpoints>());
     }
 
     private static DefaultHttpContext CreateHttpContext()

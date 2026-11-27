@@ -148,6 +148,7 @@ public static class ServiceCollectionExtensions
             .RegisterEtlContext<IMeshEtlContext>();
 
         services.AddSingleton<IHttpRequestService, HttpRequestService>();
+        services.AddSingleton<IHttpTriggerDryRunEndpoints, HttpTriggerDryRunEndpoints>();
         services.AddSingleton<IServiceAccountTokenService, ServiceAccountTokenService>();
         // Cross-tenant access within a tenant subtree: the registry (relation), the identity proof and the guard that
         // combines them. TryAdd, so a host can wire another identity provider.

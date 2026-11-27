@@ -15,6 +15,11 @@ Notable changes of the OctoMesh mesh adapter. Newest first; entries name their w
 
 ### Added
 
+- A `FromHttpRequest@2` pipeline can be dry-run (AB#10015): the trigger consumes the controller's dry-run address
+  `…-pipeline-{rtId}-http-dry-run` and starts the run with the input as request body, the caller as principal and
+  dry-run-honouring load nodes suppressed. A real execute through the command, a request without a caller, a token of
+  another tenant and a caller without one of the route's required roles are refused at once. Needs the communication
+  controller with AB#10015; nodes outside `DryRunHonouredLoadNodes` still run for real (AB#10016).
 - Inbound HTTP routes refuse an agent token (scope `octo_agent`, AB#6054) with `403` and
   `WWW-Authenticate: Bearer error="insufficient_scope", error_code="agent_token_not_accepted"` before the tenant and
   role checks; an agent acts only through its MCP mandate.
